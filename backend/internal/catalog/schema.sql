@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS videos (
     dislikes         INTEGER DEFAULT 0,
     category         TEXT,
     hidden           INTEGER DEFAULT 0,          -- 1 = hidden from public display
+    frontend_selected INTEGER DEFAULT 0,         -- 1 = explicitly selected for frontend access
     tags_manual      INTEGER DEFAULT 0,          -- 1 = user explicitly curated tags
     badges           TEXT,                      -- JSON array
     description      TEXT,
@@ -47,6 +48,7 @@ CREATE TABLE IF NOT EXISTS tags (
     label      TEXT NOT NULL UNIQUE COLLATE NOCASE,
     aliases    TEXT NOT NULL DEFAULT '[]',       -- JSON array
     source     TEXT NOT NULL DEFAULT 'user',     -- system / user / collection / legacy
+    frontend_access INTEGER DEFAULT 0,           -- 1 = tag allows frontend access candidates
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );

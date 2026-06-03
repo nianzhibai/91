@@ -293,6 +293,7 @@ export type AdminVideo = {
   title: string;
   author: string;
   tags: string[];
+  category: string;
   durationSeconds: number;
   size: number;
   ext: string;
@@ -303,11 +304,9 @@ export type AdminVideo = {
   favorites: number;
   comments: number;
   likes: number;
-  category: string;
+  frontendSelected: boolean;
   badges: string[];
   description: string;
-  publishedAt: string;
-  updatedAt: string;
 };
 
 export type AdminVideoList = {
@@ -317,17 +316,14 @@ export type AdminVideoList = {
   size: number;
 };
 
-export function listVideos(params: { driveId?: string; page?: number; size?: number; keyword?: string } = {}) {
-  const qs = new URLSearchParams();
-  if (params.driveId) qs.set("driveId", params.driveId);
-  if (params.page) qs.set("page", String(params.page));
-  if (params.size) qs.set("size", String(params.size));
-  if (params.keyword) qs.set("keyword", params.keyword);
-  const suffix = qs.toString() ? `?${qs.toString()}` : "";
-  return request<AdminVideoList>(`/videos${suffix}`);
-}
+export type ListVideosParams = {
+  driveId?: string;
+  page?: number;
+  size?: number;
+  keyword?: string;
+};
 
-export type UpdateVideoInput = Partial<{
+export type UpdateVideoInput = {
   title: string;
   author: string;
   tags: string[];
@@ -337,12 +333,29 @@ export type UpdateVideoInput = Partial<{
   thumbnail: string;
   quality: string;
   durationSeconds: number;
-}>;
+};
+
+export function listVideos(params: ListVideosParams = {}) {
+  const qs = new URLSearchParams();
+  if (params.driveId) qs.set("driveId", params.driveId);
+  if (params.page) qs.set("page", String(params.page));
+  if (params.size) qs.set("size", String(params.size));
+  if (params.keyword) qs.set("keyword", params.keyword);
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  return request<AdminVideoList>(`/videos${suffix}`);
+}
 
 export function updateVideo(id: string, body: UpdateVideoInput) {
   return request<AdminVideo>(`/videos/${encodeURIComponent(id)}`, {
     method: "PUT",
     body: JSON.stringify(body),
+  });
+}
+
+export function setVideoFrontendSelected(id: string, enabled: boolean) {
+  return request<AdminVideo>(`/videos/${encodeURIComponent(id)}/frontend-selected`, {
+    method: "POST",
+    body: JSON.stringify({ enabled }),
   });
 }
 
@@ -360,6 +373,7 @@ export type AdminTag = {
   label: string;
   aliases?: string[];
   source: string;
+  frontendAccess: boolean;
   count: number;
 };
 
@@ -372,6 +386,16 @@ export function createTag(label: string, aliases: string[]) {
     method: "POST",
     body: JSON.stringify({ label, aliases }),
   });
+}
+
+export function setTagFrontendAccess(id: number, enabled: boolean) {
+  return request<{ ok: boolean; frontendAccess: boolean }>(
+    `/tags/${encodeURIComponent(String(id))}/frontend-access`,
+    {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    }
+  );
 }
 
 export function deleteTag(id: number) {

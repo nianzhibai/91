@@ -21,6 +21,7 @@ export function TagsPage() {
   const [loadError, setLoadError] = useState("");
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [togglingFrontendTagId, setTogglingFrontendTagId] = useState<number | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirmState>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [filterSource, setFilterSource] = useState<string>("all");
@@ -63,6 +64,19 @@ export function TagsPage() {
       show(e instanceof Error ? e.message : "添加标签失败", "error");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleToggleFrontendAccess(tag: api.AdminTag) {
+    setTogglingFrontendTagId(tag.id);
+    try {
+      await api.setTagFrontendAccess(tag.id, !tag.frontendAccess);
+      show(tag.frontendAccess ? "已取消前台访问标签" : "已设为前台可访问标签", "success");
+      await refresh();
+    } catch (e) {
+      show(e instanceof Error ? e.message : "切换前台访问失败", "error");
+    } finally {
+      setTogglingFrontendTagId(null);
     }
   }
 
@@ -132,10 +146,11 @@ export function TagsPage() {
     let systemCount = 0;
     let userCount = 0;
     let collectionCount = 0;
-    let legacyCount = 0;
+    let frontendAccessCount = 0;
 
     tags.forEach((t) => {
       totalVideos += t.count ?? 0;
+      if (t.frontendAccess) frontendAccessCount++;
       if (t.source === "system") systemCount++;
       else if (t.source === "user") userCount++;
       else if (t.source === "collection") collectionCount++;
@@ -149,6 +164,7 @@ export function TagsPage() {
       userCount,
       collectionCount,
       legacyCount,
+      frontendAccessCount,
     };
   }, [tags]);
 
@@ -265,6 +281,10 @@ export function TagsPage() {
               <div className="admin-tag-stat-item">
                 <span>关联视频次</span>
                 <strong>{stats.totalVideos}</strong>
+              </div>
+              <div className="admin-tag-stat-item">
+                <span>前台可访问</span>
+                <strong>{stats.frontendAccessCount}</strong>
               </div>
             </div>
           </div>
@@ -419,6 +439,21 @@ export function TagsPage() {
                         </span>
                         <div className="admin-tag-card__footer-actions">
                           <span className="admin-tag-card__id">#{tag.id}</span>
+                          {!selectMode && (
+                            <button
+                              type="button"
+                              className={`admin-btn ${tag.frontendAccess ? "is-primary" : ""}`}
+                              onClick={() => handleToggleFrontendAccess(tag)}
+                              disabled={togglingFrontendTagId === tag.id}
+                              aria-label={`${tag.frontendAccess ? "取消" : "允许"}标签 ${tag.label} 前台访问`}
+                            >
+                              {togglingFrontendTagId === tag.id
+                                ? "切换中"
+                                : tag.frontendAccess
+                                  ? "前台访问"
+                                  : "设为前台"}
+                            </button>
+                          )}
                           {!selectMode && tag.source !== "system" && (
                             <button
                               type="button"

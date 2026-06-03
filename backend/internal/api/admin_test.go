@@ -1136,6 +1136,99 @@ func TestHandleDeleteTagRemovesTagFromVideos(t *testing.T) {
 	}
 }
 
+func TestHandleSetVideoFrontendSelectedRequiresAllowedFrontendTag(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cat.Close(); err != nil {
+			t.Fatalf("close catalog: %v", err)
+		}
+	})
+
+	now := time.Now()
+	if err := cat.UpsertVideo(ctx, &catalog.Video{
+		ID:          "video-1",
+		DriveID:     "drive",
+		FileID:      "file-1",
+		Title:       "Video",
+		PublishedAt: now,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatalf("seed video: %v", err)
+	}
+
+	server := &AdminServer{Catalog: cat}
+	badReq := requestWithRouteParam(http.MethodPost, "/admin/api/videos/video-1/frontend-selected", "id", "video-1", strings.NewReader(`{"enabled":true}`))
+	badRR := httptest.NewRecorder()
+	server.handleSetVideoFrontendSelected(badRR, badReq)
+	if badRR.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 when no frontend-access tag; body = %s", badRR.Code, badRR.Body.String())
+	}
+
+	ensureAPITestTag(t, ctx, cat, "public-tag")
+	if err := cat.SetManualVideoTags(ctx, "video-1", []string{"public-tag"}); err != nil {
+		t.Fatalf("tag video: %v", err)
+	}
+	tag := mustAPITestTagByLabel(t, ctx, cat, "public-tag")
+	if err := cat.SetTagFrontendAccess(ctx, tag.ID, true); err != nil {
+		t.Fatalf("set tag frontend access: %v", err)
+	}
+	req := requestWithRouteParam(http.MethodPost, "/admin/api/videos/video-1/frontend-selected", "id", "video-1", strings.NewReader(`{"enabled":true}`))
+	rr := httptest.NewRecorder()
+	server.handleSetVideoFrontendSelected(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var got catalog.Video
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !got.FrontendSelected {
+		t.Fatalf("frontendSelected = false, want true: %#v", got)
+	}
+}
+
+func TestHandleSetTagFrontendAccessTogglesTag(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cat.Close(); err != nil {
+			t.Fatalf("close catalog: %v", err)
+		}
+	})
+	if _, err := cat.CreateTagAndClassify(ctx, "清纯", nil, "user"); err != nil {
+		t.Fatalf("create tag: %v", err)
+	}
+	tag := mustAPITestTagByLabel(t, ctx, cat, "清纯")
+
+	req := requestWithRouteParam(http.MethodPost, "/admin/api/tags/1/frontend-access", "id", strconv.FormatInt(tag.ID, 10), strings.NewReader(`{"enabled":true}`))
+	rr := httptest.NewRecorder()
+	(&AdminServer{Catalog: cat}).handleSetTagFrontendAccess(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var got struct {
+		FrontendAccess bool `json:"frontendAccess"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !got.FrontendAccess {
+		t.Fatalf("frontendAccess = false, want true")
+	}
+	updated := mustAPITestTagByLabel(t, ctx, cat, "清纯")
+	if !updated.FrontendAccess {
+		t.Fatalf("stored frontendAccess = false, want true")
+	}
+}
+
 func TestHandleAdminListVideosFiltersByDriveID(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")

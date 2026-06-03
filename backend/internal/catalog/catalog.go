@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -40,6 +41,8 @@ func (c *Catalog) Close() error { return c.db.Close() }
 
 // ---------- Video ----------
 
+var ErrVideoOutsideFrontendTags = errors.New("video must have at least one frontend-accessible tag")
+
 type Video struct {
 	ID                string    `json:"id"`
 	DriveID           string    `json:"driveId"`
@@ -68,6 +71,7 @@ type Video struct {
 	Dislikes          int       `json:"dislikes"`
 	Category          string    `json:"category"`
 	Hidden            bool      `json:"hidden"`
+	FrontendSelected  bool      `json:"frontendSelected"`
 	Badges            []string  `json:"badges"`
 	Description       string    `json:"description"`
 	PublishedAt       time.Time `json:"publishedAt"`
@@ -92,13 +96,13 @@ INSERT INTO videos (
   duration_seconds, size_bytes, ext, quality, thumbnail_url, thumbnail_status,
   preview_file_id, preview_local, preview_status,
   views, favorites, comments, likes, dislikes,
-  category, hidden, badges, description, published_at, created_at, updated_at
+  category, hidden, frontend_selected, badges, description, published_at, created_at, updated_at
 ) VALUES (
   ?, ?, ?, ?, ?, ?, ?, ?, ?,
   ?, ?, ?, ?, ?, CASE WHEN COALESCE(?, '') != '' THEN 'ready' ELSE 'pending' END,
   ?, ?, ?,
   ?, ?, ?, ?, ?,
-  ?, ?, ?, ?, ?, ?, ?
+  ?, ?, ?, ?, ?, ?, ?, ?
 )
 ON CONFLICT(id) DO UPDATE SET
   file_name       = CASE
@@ -146,7 +150,7 @@ ON CONFLICT(id) DO UPDATE SET
 		v.DurationSeconds, v.Size, v.Ext, v.Quality, v.ThumbnailURL, v.ThumbnailURL,
 		v.PreviewFileID, v.PreviewLocal, nullableStatus(v.PreviewStatus),
 		v.Views, v.Favorites, v.Comments, v.Likes, v.Dislikes,
-		v.Category, boolToInt(v.Hidden), string(badgesJSON), v.Description,
+		v.Category, boolToInt(v.Hidden), boolToInt(v.FrontendSelected), string(badgesJSON), v.Description,
 		v.PublishedAt.UnixMilli(), v.CreatedAt.UnixMilli(), v.UpdatedAt.UnixMilli(),
 	)
 	if err != nil {
@@ -183,6 +187,62 @@ func (c *Catalog) HideVideo(ctx context.Context, id string) error {
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+func (c *Catalog) SetVideoFrontendSelected(ctx context.Context, id string, selected bool) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return sql.ErrNoRows
+	}
+	if selected {
+		accessible, err := c.videoHasFrontendAccessTag(ctx, id)
+		if err != nil {
+			return err
+		}
+		if !accessible {
+			return ErrVideoOutsideFrontendTags
+		}
+	}
+	res, err := c.db.ExecContext(ctx,
+		`UPDATE videos SET frontend_selected = ?, updated_at = ? WHERE id = ?`,
+		boolToInt(selected), time.Now().UnixMilli(), id)
+	if err != nil {
+		return err
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (c *Catalog) IsFrontendAccessible(ctx context.Context, id string) (bool, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false, nil
+	}
+	var n int
+	err := c.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM videos WHERE id = ? AND `+frontendVisibleWhereSQL,
+		id,
+	).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+func (c *Catalog) videoHasFrontendAccessTag(ctx context.Context, id string) (bool, error) {
+	var n int
+	err := c.db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+  FROM video_tags vt
+  JOIN tags t ON t.id = vt.tag_id
+ WHERE vt.video_id = ?
+   AND COALESCE(t.frontend_access, 0) = 1`, id).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // MigrateVideoToDrive 把 catalog 里 id=videoID 这条视频迁移到另一个 drive。
@@ -879,6 +939,7 @@ type ListParams struct {
 	Sort                  string // latest | hot | week | long
 	ThumbnailReadyOnly    bool
 	PreferReadyThumbnails bool
+	FrontendOnly          bool
 	SkipTotal             bool
 	Page                  int
 	PageSize              int
@@ -914,7 +975,11 @@ func (c *Catalog) ListVideos(ctx context.Context, p ListParams) ([]*Video, int, 
 	if p.ThumbnailReadyOnly {
 		where = append(where, "COALESCE(thumbnail_url, '') != ''")
 	}
-	where = append(where, "COALESCE(hidden, 0) = 0")
+	if p.FrontendOnly {
+		where = append(where, frontendVisibleWhereSQL)
+	} else {
+		where = append(where, "COALESCE(hidden, 0) = 0")
+	}
 	where = append(where, activeDriveWhereSQL)
 	where = append(where, uniqueVideoWhereSQL)
 
@@ -971,7 +1036,7 @@ func (c *Catalog) CountVisibleVideos(ctx context.Context) (int, error) {
 	var total int
 	err := c.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM videos
-		  WHERE COALESCE(hidden, 0) = 0
+		  WHERE `+frontendVisibleWhereSQL+`
 		    AND `+activeDriveWhereSQL+`
 		    AND `+uniqueVideoWhereSQL,
 	).Scan(&total)
@@ -1000,7 +1065,7 @@ func (c *Catalog) randomVideosExcluding(ctx context.Context, excludeIDs []string
 
 	cleaned := cleanVideoIDs(excludeIDs)
 	args := make([]any, 0, len(cleaned)+1)
-	whereSQL := `WHERE COALESCE(hidden, 0) = 0
+	whereSQL := `WHERE ` + frontendVisibleWhereSQL + `
 		           AND ` + activeDriveWhereSQL + `
 		           AND ` + uniqueVideoWhereSQL
 	if thumbnailReadyOnly {
@@ -1084,10 +1149,11 @@ func (c *Catalog) LeastPopulatedVisibleUniqueTag(ctx context.Context, labels []s
 		if err := c.db.QueryRowContext(ctx,
 			`SELECT COUNT(*)
 			   FROM videos
-			  WHERE COALESCE(hidden, 0) = 0
+			  WHERE `+frontendVisibleWhereSQL+`
 			    AND `+activeDriveWhereSQL+`
 			    AND `+uniqueVideoWhereSQL+`
 			    AND EXISTS (
+
 			      SELECT 1
 			        FROM video_tags vt
 			        JOIN tags t ON t.id = vt.tag_id
@@ -1121,7 +1187,7 @@ func (c *Catalog) RandomVideosByTagExcluding(ctx context.Context, tag string, ex
 	cleaned := cleanVideoIDs(excludeIDs)
 	args := make([]any, 0, len(cleaned)+2)
 	args = append(args, tag)
-	whereSQL := `WHERE COALESCE(hidden, 0) = 0
+	whereSQL := `WHERE ` + frontendVisibleWhereSQL + `
 		           AND ` + activeDriveWhereSQL + `
 		           AND ` + uniqueVideoWhereSQL + `
 		           AND EXISTS (
@@ -1766,9 +1832,19 @@ COALESCE(parent_id, ''), title, COALESCE(author, ''), COALESCE(tags, '[]'),
 duration_seconds, size_bytes, COALESCE(ext, ''), COALESCE(quality, ''), COALESCE(thumbnail_url, ''),
 COALESCE(preview_file_id, ''), COALESCE(preview_local, ''), COALESCE(preview_status, 'pending'),
 views, favorites, comments, likes, dislikes,
-COALESCE(category, ''), COALESCE(hidden, 0), COALESCE(badges, '[]'), COALESCE(description, ''),
+COALESCE(category, ''), COALESCE(hidden, 0), COALESCE(frontend_selected, 0), COALESCE(badges, '[]'), COALESCE(description, ''),
 published_at, created_at, updated_at
 `
+
+const frontendVisibleWhereSQL = `COALESCE(hidden, 0) = 0
+	AND COALESCE(frontend_selected, 0) = 1
+	AND EXISTS (
+		SELECT 1
+		  FROM video_tags frontend_vt
+		  JOIN tags frontend_t ON frontend_t.id = frontend_vt.tag_id
+		 WHERE frontend_vt.video_id = videos.id
+		   AND COALESCE(frontend_t.frontend_access, 0) = 1
+	)`
 
 const activeDriveWhereSQL = `(videos.drive_id = 'local-upload'
 	OR EXISTS (
@@ -1829,7 +1905,7 @@ func scanVideo(row rowScanner) (*Video, error) {
 	v := &Video{}
 	var tagsJSON, badgesJSON string
 	var publishedAt, createdAt, updatedAt int64
-	var hidden int
+	var hidden, frontendSelected int
 	err := row.Scan(
 		&v.ID, &v.DriveID, &v.FileID, &v.FileName, &v.ContentHash,
 		&v.SampledSHA256, &v.FingerprintStatus, &v.FingerprintError,
@@ -1837,7 +1913,7 @@ func scanVideo(row rowScanner) (*Video, error) {
 		&v.DurationSeconds, &v.Size, &v.Ext, &v.Quality, &v.ThumbnailURL,
 		&v.PreviewFileID, &v.PreviewLocal, &v.PreviewStatus,
 		&v.Views, &v.Favorites, &v.Comments, &v.Likes, &v.Dislikes,
-		&v.Category, &hidden, &badgesJSON, &v.Description,
+		&v.Category, &hidden, &frontendSelected, &badgesJSON, &v.Description,
 		&publishedAt, &createdAt, &updatedAt,
 	)
 	if err != nil {
@@ -1846,6 +1922,7 @@ func scanVideo(row rowScanner) (*Video, error) {
 	_ = json.Unmarshal([]byte(tagsJSON), &v.Tags)
 	_ = json.Unmarshal([]byte(badgesJSON), &v.Badges)
 	v.Hidden = hidden == 1
+	v.FrontendSelected = frontendSelected == 1
 	v.PublishedAt = time.UnixMilli(publishedAt)
 	v.CreatedAt = time.UnixMilli(createdAt)
 	v.UpdatedAt = time.UnixMilli(updatedAt)

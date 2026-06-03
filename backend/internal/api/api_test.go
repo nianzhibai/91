@@ -146,6 +146,7 @@ func TestHandleHomePrioritizesVideosWithReadyThumbnails(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("seed pending video %s: %v", id, err)
 		}
+		makeFrontendVisible(t, ctx, cat, id)
 	}
 	for i := 0; i < homePageSize+2; i++ {
 		id := "ready-video-" + strconv.Itoa(i)
@@ -161,6 +162,7 @@ func TestHandleHomePrioritizesVideosWithReadyThumbnails(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("seed ready video %s: %v", id, err)
 		}
+		makeFrontendVisible(t, ctx, cat, id)
 	}
 
 	rr := httptest.NewRecorder()
@@ -214,6 +216,7 @@ func TestHandleHomeExcludesRecentlyShownVideos(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("seed ready video %s: %v", id, err)
 		}
+		makeFrontendVisible(t, ctx, cat, id)
 	}
 
 	rr := httptest.NewRecorder()
@@ -266,6 +269,7 @@ func TestHandleListLatestPrefersReadyThumbnails(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("seed pending video %s: %v", id, err)
 		}
+		makeFrontendVisible(t, ctx, cat, id)
 	}
 	for i := 0; i < 12; i++ {
 		id := "ready-latest-" + strconv.Itoa(i)
@@ -281,6 +285,7 @@ func TestHandleListLatestPrefersReadyThumbnails(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("seed ready video %s: %v", id, err)
 		}
+		makeFrontendVisible(t, ctx, cat, id)
 	}
 
 	rr := httptest.NewRecorder()
@@ -330,6 +335,79 @@ func TestHandleListLatestPrefersReadyThumbnails(t *testing.T) {
 	}
 	if len(got.Items) != 12 {
 		t.Fatalf("count=false items = %d, want 12", len(got.Items))
+	}
+}
+
+func TestHandleListAndDetailRequireFrontendSelectionAllowedTagAndNotHidden(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cat.Close(); err != nil {
+			t.Fatalf("close catalog: %v", err)
+		}
+	})
+
+	now := time.Now()
+	for _, v := range []*catalog.Video{
+		{ID: "visible", DriveID: "drive", FileID: "visible-file", Title: "Visible", PublishedAt: now, CreatedAt: now, UpdatedAt: now},
+		{ID: "unselected", DriveID: "drive", FileID: "unselected-file", Title: "Unselected", PublishedAt: now.Add(-time.Minute), CreatedAt: now, UpdatedAt: now},
+		{ID: "no-access-tag", DriveID: "drive", FileID: "no-access-tag-file", Title: "No access tag", FrontendSelected: true, PublishedAt: now.Add(-2 * time.Minute), CreatedAt: now, UpdatedAt: now},
+		{ID: "hidden", DriveID: "drive", FileID: "hidden-file", Title: "Hidden", Hidden: true, PublishedAt: now.Add(-3 * time.Minute), CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := cat.UpsertVideo(ctx, v); err != nil {
+			t.Fatalf("seed video %s: %v", v.ID, err)
+		}
+	}
+	makeFrontendVisible(t, ctx, cat, "visible", "public-tag")
+	ensureAPITestTag(t, ctx, cat, "public-tag")
+	if err := cat.SetManualVideoTags(ctx, "unselected", []string{"public-tag"}); err != nil {
+		t.Fatalf("tag unselected video: %v", err)
+	}
+	publicTag := mustAPITestTagByLabel(t, ctx, cat, "public-tag")
+	if err := cat.SetTagFrontendAccess(ctx, publicTag.ID, true); err != nil {
+		t.Fatalf("set public tag frontend access: %v", err)
+	}
+	ensureAPITestTag(t, ctx, cat, "private-tag")
+	if err := cat.SetManualVideoTags(ctx, "no-access-tag", []string{"private-tag"}); err != nil {
+		t.Fatalf("tag no-access video: %v", err)
+	}
+	makeFrontendVisible(t, ctx, cat, "hidden", "public-tag")
+
+	server := &Server{Catalog: cat}
+	listReq := httptest.NewRequest(http.MethodGet, "/api/list?page=1&size=24", nil)
+	listRR := httptest.NewRecorder()
+	server.handleList(listRR, listReq)
+
+	if listRR.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", listRR.Code, listRR.Body.String())
+	}
+	var listed struct {
+		Items []VideoDTO `json:"items"`
+		Total int        `json:"total"`
+	}
+	if err := json.NewDecoder(listRR.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if listed.Total != 1 || len(listed.Items) != 1 || listed.Items[0].ID != "visible" {
+		t.Fatalf("listed = total:%d items:%#v, want only visible", listed.Total, listed.Items)
+	}
+
+	for _, id := range []string{"visible", "unselected", "no-access-tag", "hidden"} {
+		req := requestWithVideoID(http.MethodGet, "/api/video/"+id, id, strings.NewReader(``))
+		rr := httptest.NewRecorder()
+		server.handleVideoDetail(rr, req)
+		if id == "visible" {
+			if rr.Code != http.StatusOK {
+				t.Fatalf("detail %s status = %d, want 200; body = %s", id, rr.Code, rr.Body.String())
+			}
+			continue
+		}
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("detail %s status = %d, want 404; body = %s", id, rr.Code, rr.Body.String())
+		}
 	}
 }
 
@@ -580,6 +658,7 @@ func TestHandleTagsReturnsUnifiedTagPool(t *testing.T) {
 	if _, err := cat.CreateTagAndClassify(ctx, "清纯", nil, "user"); err != nil {
 		t.Fatalf("create tag: %v", err)
 	}
+	makeFrontendVisible(t, ctx, cat, "video-1", "清纯", "后入")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/tags", nil)
 	rr := httptest.NewRecorder()
@@ -639,6 +718,7 @@ func TestHandleShortsNextUsesPreferredVideoLeastPopulatedTag(t *testing.T) {
 		if err := cat.UpsertVideo(ctx, v); err != nil {
 			t.Fatalf("seed %s: %v", v.ID, err)
 		}
+		makeFrontendVisible(t, ctx, cat, v.ID, v.Tags...)
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/shorts/next", strings.NewReader(`{"seenIds":["current"],"count":3,"preferredFromVideoId":"current"}`))
@@ -787,6 +867,7 @@ func TestHandleVideoDetailIncludesDriveKindLabel(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed video: %v", err)
 	}
+	makeFrontendVisible(t, ctx, cat, "video-1")
 
 	req := requestWithVideoID(http.MethodGet, "/api/video/video-1", "video-1", strings.NewReader(``))
 	rr := httptest.NewRecorder()
@@ -830,6 +911,7 @@ func TestHandleVideoDetailRecommendationsPreferReadyThumbnails(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed current video: %v", err)
 	}
+	makeFrontendVisible(t, ctx, cat, "current-video", "same-tag")
 	for i := 0; i < 20; i++ {
 		id := "pending-related-" + strconv.Itoa(i)
 		if err := cat.UpsertVideo(ctx, &catalog.Video{
@@ -844,6 +926,7 @@ func TestHandleVideoDetailRecommendationsPreferReadyThumbnails(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("seed pending related video %s: %v", id, err)
 		}
+		makeFrontendVisible(t, ctx, cat, id, "same-tag")
 	}
 	for i := 0; i < 8; i++ {
 		id := "ready-related-" + strconv.Itoa(i)
@@ -860,6 +943,7 @@ func TestHandleVideoDetailRecommendationsPreferReadyThumbnails(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("seed ready related video %s: %v", id, err)
 		}
+		makeFrontendVisible(t, ctx, cat, id, "same-tag")
 	}
 
 	req := requestWithVideoID(http.MethodGet, "/api/video/current-video", "current-video", strings.NewReader(``))
@@ -922,6 +1006,7 @@ func TestHandleHideVideoRemovesVideoFromPublicListAndDetail(t *testing.T) {
 		if err := cat.UpsertVideo(ctx, v); err != nil {
 			t.Fatalf("seed video %s: %v", v.ID, err)
 		}
+		makeFrontendVisible(t, ctx, cat, v.ID)
 	}
 
 	server := &Server{Catalog: cat}
@@ -996,6 +1081,61 @@ func sameStringSet(a, b []string) bool {
 		seen[value]--
 	}
 	return true
+}
+
+func makeFrontendVisible(t *testing.T, ctx context.Context, cat *catalog.Catalog, videoID string, labels ...string) {
+	t.Helper()
+	if len(labels) == 0 {
+		labels = []string{"AV"}
+	}
+	for _, label := range labels {
+		ensureAPITestTag(t, ctx, cat, label)
+	}
+	if err := cat.SetManualVideoTags(ctx, videoID, labels); err != nil {
+		t.Fatalf("attach frontend tags to %s: %v", videoID, err)
+	}
+	for _, label := range labels {
+		tag := mustAPITestTagByLabel(t, ctx, cat, label)
+		if err := cat.SetTagFrontendAccess(ctx, tag.ID, true); err != nil {
+			t.Fatalf("set frontend access for tag %s: %v", label, err)
+		}
+	}
+	if err := cat.SetVideoFrontendSelected(ctx, videoID, true); err != nil {
+		t.Fatalf("select %s for frontend: %v", videoID, err)
+	}
+}
+
+func ensureAPITestTag(t *testing.T, ctx context.Context, cat *catalog.Catalog, label string) {
+	t.Helper()
+	if _, ok := findAPITestTagByLabel(t, ctx, cat, label); ok {
+		return
+	}
+	if _, err := cat.CreateTagAndClassify(ctx, label, nil, "user"); err != nil {
+		t.Fatalf("create tag %s: %v", label, err)
+	}
+}
+
+func mustAPITestTagByLabel(t *testing.T, ctx context.Context, cat *catalog.Catalog, label string) catalog.Tag {
+	t.Helper()
+	if tag, ok := findAPITestTagByLabel(t, ctx, cat, label); ok {
+		return tag
+	}
+	t.Fatalf("tag %q not found", label)
+	return catalog.Tag{}
+}
+
+func findAPITestTagByLabel(t *testing.T, ctx context.Context, cat *catalog.Catalog, label string) (catalog.Tag, bool) {
+	t.Helper()
+	tags, err := cat.ListTags(ctx)
+	if err != nil {
+		t.Fatalf("list tags: %v", err)
+	}
+	for _, tag := range tags {
+		if tag.Label == label {
+			return tag, true
+		}
+	}
+	return catalog.Tag{}, false
 }
 
 func requestWithVideoID(method, target, videoID string, body *strings.Reader) *http.Request {

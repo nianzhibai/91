@@ -256,13 +256,14 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	}
 	sort := q.Get("sort")
 	params := catalog.ListParams{
-		Keyword:   q.Get("q"),
-		Tag:       q.Get("tag"),
-		Category:  q.Get("cat"),
-		Sort:      sort,
-		Page:      page,
-		PageSize:  size,
-		SkipTotal: strings.EqualFold(q.Get("count"), "false"),
+		Keyword:      q.Get("q"),
+		Tag:          q.Get("tag"),
+		Category:     q.Get("cat"),
+		Sort:         sort,
+		Page:         page,
+		PageSize:     size,
+		FrontendOnly: true,
+		SkipTotal:    strings.EqualFold(q.Get("count"), "false"),
 	}
 	if sort == "" || sort == "latest" {
 		params.PreferReadyThumbnails = true
@@ -287,7 +288,8 @@ func (s *Server) handleVideoDetail(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	if v.Hidden {
+	accessible, err := s.Catalog.IsFrontendAccessible(r.Context(), id)
+	if err != nil || !accessible {
 		writeErr(w, http.StatusNotFound, sql.ErrNoRows)
 		return
 	}
@@ -394,6 +396,7 @@ func (s *Server) relatedTagPool(ctx context.Context, tags []string, seen map[str
 			PageSize:              30,
 			ThumbnailReadyOnly:    readyOnly,
 			PreferReadyThumbnails: !readyOnly,
+			FrontendOnly:          true,
 		})
 		if err != nil {
 			continue
@@ -422,6 +425,7 @@ func (s *Server) relatedListPool(ctx context.Context, seen map[string]struct{}, 
 		PageSize:              pageSize,
 		ThumbnailReadyOnly:    readyOnly,
 		PreferReadyThumbnails: !readyOnly,
+		FrontendOnly:          true,
 	})
 	if err != nil {
 		return nil
@@ -474,7 +478,7 @@ func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 	}
 	s.tagCacheMu.Unlock()
 
-	stats, err := s.Catalog.ListTags(r.Context())
+	stats, err := s.Catalog.ListFrontendTags(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return

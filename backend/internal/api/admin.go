@@ -137,11 +137,13 @@ func (a *AdminServer) Register(r chi.Router) {
 			r.Get("/videos", a.handleAdminListVideos)
 			r.Put("/videos/{id}", a.handleUpdateVideo)
 			r.Post("/videos/regen-preview", a.handleRegenAllPreviews)
+			r.Post("/videos/{id}/frontend-selected", a.handleSetVideoFrontendSelected)
 			r.Post("/videos/{id}/regen-preview", a.handleRegenPreview)
 
 			// 标签
 			r.Get("/tags", a.handleListTags)
 			r.Post("/tags", a.handleCreateTag)
+			r.Post("/tags/{id}/frontend-access", a.handleSetTagFrontendAccess)
 			r.Delete("/tags/{id}", a.handleDeleteTag)
 
 			// 运行时设置
@@ -1001,6 +1003,58 @@ func (a *AdminServer) handleUpdateVideo(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	writeJSON(w, http.StatusOK, v)
+}
+
+type setEnabledReq struct {
+	Enabled bool `json:"enabled"`
+}
+
+func (a *AdminServer) handleSetVideoFrontendSelected(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var body setEnabledReq
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := a.Catalog.SetVideoFrontendSelected(r.Context(), id, body.Enabled); err != nil {
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			writeErr(w, http.StatusNotFound, err)
+		case errors.Is(err, catalog.ErrVideoOutsideFrontendTags):
+			writeErr(w, http.StatusBadRequest, err)
+		default:
+			writeErr(w, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	v, err := a.Catalog.GetVideo(r.Context(), id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, v)
+}
+
+func (a *AdminServer) handleSetTagFrontendAccess(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeErr(w, http.StatusBadRequest, errors.New("invalid tag id"))
+		return
+	}
+	var body setEnabledReq
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := a.Catalog.SetTagFrontendAccess(r.Context(), id, body.Enabled); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeErr(w, http.StatusNotFound, err)
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "frontendAccess": body.Enabled})
 }
 
 func (a *AdminServer) handleRegenPreview(w http.ResponseWriter, r *http.Request) {

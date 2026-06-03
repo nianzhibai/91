@@ -31,11 +31,12 @@ var (
 )
 
 type Tag struct {
-	ID      int64    `json:"id"`
-	Label   string   `json:"label"`
-	Aliases []string `json:"aliases,omitempty"`
-	Source  string   `json:"source"`
-	Count   int      `json:"count"`
+	ID             int64    `json:"id"`
+	Label          string   `json:"label"`
+	Aliases        []string `json:"aliases,omitempty"`
+	Source         string   `json:"source"`
+	FrontendAccess bool     `json:"frontendAccess"`
+	Count          int      `json:"count"`
 }
 
 func (c *Catalog) migrate(ctx context.Context) error {
@@ -58,6 +59,12 @@ func (c *Catalog) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := c.addColumnIfMissing(ctx, "videos", "hidden", "INTEGER DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := c.addColumnIfMissing(ctx, "videos", "frontend_selected", "INTEGER DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := c.addColumnIfMissing(ctx, "tags", "frontend_access", "INTEGER DEFAULT 0"); err != nil {
 		return err
 	}
 	if err := c.addColumnIfMissing(ctx, "videos", "thumbnail_status", "TEXT DEFAULT 'pending'"); err != nil {
@@ -610,6 +617,44 @@ func (c *Catalog) DeleteTag(ctx context.Context, tagID int64) (int, error) {
 	return len(videoIDs), nil
 }
 
+func (c *Catalog) SetTagFrontendAccess(ctx context.Context, tagID int64, enabled bool) error {
+	if tagID <= 0 {
+		return sql.ErrNoRows
+	}
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx,
+		`UPDATE tags SET frontend_access = ?, updated_at = ? WHERE id = ?`,
+		boolToInt(enabled), time.Now().UnixMilli(), tagID)
+	if err != nil {
+		return err
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return sql.ErrNoRows
+	}
+	if !enabled {
+		if _, err := tx.ExecContext(ctx, `
+UPDATE videos
+   SET frontend_selected = 0,
+       updated_at = ?
+ WHERE COALESCE(frontend_selected, 0) = 1
+   AND NOT EXISTS (
+       SELECT 1
+         FROM video_tags vt
+         JOIN tags t ON t.id = vt.tag_id
+        WHERE vt.video_id = videos.id
+          AND COALESCE(t.frontend_access, 0) = 1
+   )`, time.Now().UnixMilli()); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (c *Catalog) ListTags(ctx context.Context) ([]Tag, error) {
 	rows, err := c.db.QueryContext(ctx, `
 WITH tagged_tags AS (
@@ -666,13 +711,13 @@ tag_candidates AS (
 	  FROM tagged_tags
 	 WHERE file_name != '' AND size_bytes > 0
 )
-SELECT t.id, t.label, t.aliases, t.source, COUNT(DISTINCT videos.id) AS cnt
+SELECT t.id, t.label, t.aliases, t.source, COALESCE(t.frontend_access, 0), COUNT(DISTINCT videos.id) AS cnt
 FROM tags t
 LEFT JOIN tag_candidates tc ON tc.tag_id = t.id AND tc.video_id IS NOT NULL
 LEFT JOIN videos ON videos.id = tc.video_id
 	AND COALESCE(videos.hidden, 0) = 0
 	AND `+uniqueVideoWhereSQL+`
-GROUP BY t.id, t.label, t.aliases, t.source
+GROUP BY t.id, t.label, t.aliases, t.source, COALESCE(t.frontend_access, 0)
 ORDER BY cnt DESC, t.label ASC`)
 	if err != nil {
 		return nil, err
@@ -687,6 +732,38 @@ ORDER BY cnt DESC, t.label ASC`)
 		out = append(out, tag)
 	}
 	return out, nil
+}
+
+func (c *Catalog) ListFrontendTags(ctx context.Context) ([]Tag, error) {
+	rows, err := c.db.QueryContext(ctx, `
+SELECT t.id,
+       t.label,
+       t.aliases,
+       t.source,
+       COALESCE(t.frontend_access, 0),
+       COUNT(DISTINCT videos.id) AS cnt
+  FROM tags t
+  LEFT JOIN video_tags vt ON vt.tag_id = t.id
+  LEFT JOIN videos ON videos.id = vt.video_id
+	AND `+frontendVisibleWhereSQL+`
+	AND `+activeDriveWhereSQL+`
+	AND `+uniqueVideoWhereSQL+`
+ WHERE COALESCE(t.frontend_access, 0) = 1
+ GROUP BY t.id, t.label, t.aliases, t.source, COALESCE(t.frontend_access, 0)
+ ORDER BY cnt DESC, t.label ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Tag
+	for rows.Next() {
+		tag, err := scanTag(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, tag)
+	}
+	return out, rows.Err()
 }
 
 func videoMatchesTagLabelSQL(videoAlias string) string {
@@ -861,7 +938,7 @@ VALUES (?, ?, ?, ?, ?)`, label, string(aliasesJSON), source, now, now); err != n
 
 func (c *Catalog) getTagByLabel(ctx context.Context, label string) (Tag, error) {
 	row := c.db.QueryRowContext(ctx,
-		`SELECT id, label, aliases, source, 0 FROM tags WHERE label = ? COLLATE NOCASE`,
+		`SELECT id, label, aliases, source, COALESCE(frontend_access, 0), 0 FROM tags WHERE label = ? COLLATE NOCASE`,
 		label)
 	return scanTag(row)
 }
@@ -1266,14 +1343,14 @@ func (c *Catalog) categoryVideoCount(ctx context.Context, category string) (int,
 
 func (c *Catalog) getTagByLabelTx(ctx context.Context, tx *sql.Tx, label string) (Tag, error) {
 	row := tx.QueryRowContext(ctx,
-		`SELECT id, label, aliases, source, 0 FROM tags WHERE label = ? COLLATE NOCASE`,
+		`SELECT id, label, aliases, source, COALESCE(frontend_access, 0), 0 FROM tags WHERE label = ? COLLATE NOCASE`,
 		label)
 	return scanTag(row)
 }
 
 func (c *Catalog) getTagByIDTx(ctx context.Context, tx *sql.Tx, id int64) (Tag, error) {
 	row := tx.QueryRowContext(ctx,
-		`SELECT id, label, aliases, source, 0 FROM tags WHERE id = ?`,
+		`SELECT id, label, aliases, source, COALESCE(frontend_access, 0), 0 FROM tags WHERE id = ?`,
 		id)
 	return scanTag(row)
 }
@@ -1343,10 +1420,12 @@ type tagRowScanner interface {
 func scanTag(row tagRowScanner) (Tag, error) {
 	var tag Tag
 	var aliasesJSON string
-	if err := row.Scan(&tag.ID, &tag.Label, &aliasesJSON, &tag.Source, &tag.Count); err != nil {
+	var frontendAccess int
+	if err := row.Scan(&tag.ID, &tag.Label, &aliasesJSON, &tag.Source, &frontendAccess, &tag.Count); err != nil {
 		return Tag{}, err
 	}
 	_ = json.Unmarshal([]byte(aliasesJSON), &tag.Aliases)
+	tag.FrontendAccess = frontendAccess == 1
 	return tag, nil
 }
 

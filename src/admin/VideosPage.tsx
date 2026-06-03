@@ -23,6 +23,7 @@ export function VideosPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [batchRegenOpen, setBatchRegenOpen] = useState(false);
   const [batchRegening, setBatchRegening] = useState(false);
+  const [togglingFrontendVideoId, setTogglingFrontendVideoId] = useState<string | null>(null);
   const { show } = useToast();
 
   async function refresh() {
@@ -64,6 +65,9 @@ export function VideosPage() {
   const driveNameMap = new Map(
     drives.map((d) => [d.id, d.name || d.id])
   );
+  const frontendAccessTagLabels = new Set(
+    availableTags.filter((tag) => tag.frontendAccess).map((tag) => tag.label)
+  );
 
   const listItems = list;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -72,6 +76,19 @@ export function VideosPage() {
   const listSummary = driveId
     ? `${driveNameMap.get(driveId) ?? driveId}：共 ${total} 个视频，第 ${page} / ${totalPages} 页，显示 ${pageStart}-${pageEnd}`
     : `全部网盘：共 ${total} 个视频，第 ${page} / ${totalPages} 页，显示 ${pageStart}-${pageEnd}`;
+
+  async function handleToggleFrontendSelected(v: api.AdminVideo) {
+    setTogglingFrontendVideoId(v.id);
+    try {
+      const updated = await api.setVideoFrontendSelected(v.id, !v.frontendSelected);
+      setList((items) => items.map((item) => (item.id === v.id ? updated : item)));
+      show(v.frontendSelected ? "已取消前台显示" : "已设为前台显示", "success");
+    } catch (e) {
+      show(e instanceof Error ? e.message : "切换前台显示失败", "error");
+    } finally {
+      setTogglingFrontendVideoId(null);
+    }
+  }
 
   async function handleRegen(v: api.AdminVideo) {
     try {
@@ -259,8 +276,10 @@ export function VideosPage() {
               </tr>
             </thead>
             <tbody>
-              {listItems.map((v) => (
-                <tr key={v.id} className={selectedIds.has(v.id) ? "is-selected" : ""}>
+              {listItems.map((v) => {
+                const hasFrontendAccessTag = (v.tags ?? []).some((tag) => frontendAccessTagLabels.has(tag));
+                return (
+                  <tr key={v.id} className={selectedIds.has(v.id) ? "is-selected" : ""}>
                   <td className="is-checkbox">
                     <button
                       type="button"
@@ -297,6 +316,19 @@ export function VideosPage() {
                     {driveNameMap.get(v.driveId) ?? v.driveId}
                   </td>
                   <td className="is-actions" data-label="操作">
+                    <button
+                      type="button"
+                      className={`admin-btn ${v.frontendSelected ? "is-primary" : ""}`}
+                      onClick={() => handleToggleFrontendSelected(v)}
+                      disabled={togglingFrontendVideoId === v.id || (!v.frontendSelected && !hasFrontendAccessTag)}
+                      title={hasFrontendAccessTag ? "切换前台显示" : "需先给视频添加一个前台可访问标签"}
+                    >
+                      {togglingFrontendVideoId === v.id
+                        ? "切换中"
+                        : v.frontendSelected
+                          ? "前台显示"
+                          : "设为前台"}
+                    </button>{" "}
                     <button type="button" className="admin-btn" onClick={() => setEditing(v)}>
                       <Edit size={13} /> 编辑
                     </button>{" "}
@@ -304,8 +336,9 @@ export function VideosPage() {
                       <RefreshCw size={13} />
                     </button>
                   </td>
-                </tr>
-              ))}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
           <div className="admin-table-pagination">
