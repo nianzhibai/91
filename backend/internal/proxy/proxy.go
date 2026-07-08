@@ -229,6 +229,11 @@ func localFilePath(u *url.URL, raw string) (string, bool) {
 	if u == nil {
 		return "", false
 	}
+	// Windows 盘符绝对路径，如 E:\videos\file.mp4
+	// url.Parse 会把盘符当作 scheme（如 "e"），所以必须在 scheme 检查之前处理
+	if isWindowsDrivePath(raw) {
+		return raw, true
+	}
 	if u.Scheme == "file" && u.Path != "" {
 		return u.Path, true
 	}
@@ -236,6 +241,21 @@ func localFilePath(u *url.URL, raw string) (string, bool) {
 		return raw, true
 	}
 	return "", false
+}
+
+// isWindowsDrivePath 检查是否为 Windows 盘符绝对路径，如 C:\path 或 D:/path
+func isWindowsDrivePath(p string) bool {
+	if len(p) < 3 {
+		return false
+	}
+	c := p[0]
+	if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+		return false
+	}
+	if p[1] != ':' {
+		return false
+	}
+	return p[2] == '\\' || p[2] == '/'
 }
 
 var errDriveNotFound = &httpError{Code: http.StatusNotFound, Msg: "drive not found"}
