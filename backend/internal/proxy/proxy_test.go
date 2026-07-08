@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -278,6 +279,31 @@ func TestServeStreamServesLocalFilePath(t *testing.T) {
 	}
 	if drv.calls != 1 {
 		t.Fatalf("link calls = %d, want 1", drv.calls)
+	}
+}
+
+func TestLocalFilePathWindowsDrive(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"backslash", `E:\videos\file.mp4`, true},
+		{"forward_slash", `E:/videos/file.mp4`, true},
+		{"lowercase", `d:\file.mp4`, true},
+		{"unix_abs", `/mnt/videos/file.mp4`, false},
+		{"http_url", `http://example.com/file.mp4`, false},
+		{"too_short", `E:`, false},
+		{"no_separator", `E:file.mp4`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			u, _ := url.Parse(tc.raw)
+			_, got := localFilePath(u, tc.raw)
+			if got != tc.want {
+				t.Fatalf("localFilePath(%q) = %v, want %v", tc.raw, got, tc.want)
+			}
+		})
 	}
 }
 
