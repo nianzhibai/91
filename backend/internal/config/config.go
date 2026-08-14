@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/video-site/backend/internal/atomicfile"
 	"github.com/video-site/backend/internal/localpath"
 	"github.com/video-site/backend/internal/schedule"
 	"gopkg.in/yaml.v3"
@@ -493,10 +494,7 @@ func writeFileAtomically(path string, data []byte, mode os.FileMode) error {
 	// Windows) reject syncing directory handles. The rename has already committed
 	// at this point, so returning an error would falsely tell callers that the
 	// save failed even though config.yaml was replaced.
-	if dirHandle, err := os.Open(dir); err == nil {
-		_ = dirHandle.Sync()
-		_ = dirHandle.Close()
-	}
+	_ = atomicfile.SyncDirectory(dir)
 	return nil
 }
 

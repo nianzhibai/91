@@ -7,10 +7,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
+	"github.com/video-site/backend/internal/atomicfile"
 	"github.com/video-site/backend/internal/backup"
 )
 
@@ -60,11 +60,7 @@ func readJSONFile(path string, destination any) error {
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return errors.New("backup transfer: state is not a regular file")
 	}
-	// Windows has no Unix permission bits: Chmod only toggles the read-only
-	// attribute and Lstat always reports 0666 for a writable file, so this guard
-	// would reject every state file we just wrote ourselves. Access there is
-	// governed by the directory ACL instead.
-	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+	if stateFilePermissionsTooBroad(info.Mode()) {
 		return errors.New("backup transfer: state file permissions are too broad")
 	}
 	if info.Size() > maxStateFileBytes {
@@ -124,15 +120,7 @@ func writeJSONAtomic(path string, value any) error {
 		return err
 	}
 	removeTemporary = false
-	// Directory Sync is best-effort because several supported filesystems (and
-	// Windows) reject syncing directory handles. The rename has already committed
-	// at this point, so returning an error would falsely tell callers that the
-	// state write failed even though the file was replaced.
-	if directoryHandle, err := os.Open(directory); err == nil {
-		_ = directoryHandle.Sync()
-		_ = directoryHandle.Close()
-	}
-	return nil
+	return atomicfile.SyncDirectory(directory)
 }
 
 func validOpaqueID(value string) bool {
