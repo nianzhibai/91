@@ -1086,9 +1086,22 @@ const (
 	DeletedVideoRestorePolicyNone    = "none"
 	DeletedVideoRestorePolicyScan    = "scan"
 	DeletedVideoRestorePolicyCrawler = "crawler"
+	// DeletedVideoRestorePolicyDirect covers sources whose file is retained by
+	// this application but that cannot be enumerated, so no scan or crawl will
+	// ever rediscover them. Local uploads are the only such source today: the
+	// drive supports Stat but returns ErrNotSupported for List. The tombstone
+	// already carries the full restore payload, so the row is rebuilt directly
+	// instead of waiting for a rediscovery pass that would never come.
+	DeletedVideoRestorePolicyDirect = "direct"
 )
 
-var ErrDeletedVideoNotRestorable = errors.New("deleted video is not restorable")
+var (
+	ErrDeletedVideoNotRestorable = errors.New("deleted video is not restorable")
+	// ErrDeletedVideoSourceMissing means a direct restore was attempted but the
+	// retained source file is gone, so rebuilding the row would publish a video
+	// that cannot be played.
+	ErrDeletedVideoSourceMissing = errors.New("deleted video source file is missing")
+)
 
 type DeleteVideoTombstoneOptions struct {
 	Reason           string
@@ -1466,6 +1479,18 @@ func (c *Catalog) PurgeDeletedVideo(ctx context.Context, id string) error {
 // 扫描或爬取。爬虫来源会保留墓碑和 seen 记录，并标记为待目录扫描恢复，
 // 使下一轮爬取仍将其当作已见来源跳过。
 func (c *Catalog) RemoveDeletedVideo(ctx context.Context, id string) error {
+	return c.RemoveDeletedVideoWithSourceCheck(ctx, id, nil)
+}
+
+// RemoveDeletedVideoWithSourceCheck 与 RemoveDeletedVideo 相同，但在 direct
+// 策略当场重建记录之前，先让调用方确认保留下来的源文件还在——只有这条路径
+// 会无条件写回记录，文件已经不在时必须拒绝，否则库里会多出一条点开就播放
+// 失败的视频。verifySource 为 nil 时跳过校验。
+func (c *Catalog) RemoveDeletedVideoWithSourceCheck(
+	ctx context.Context,
+	id string,
+	verifySource func(driveID, fileID string) error,
+) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return sql.ErrNoRows
@@ -1479,19 +1504,30 @@ func (c *Catalog) RemoveDeletedVideo(ctx context.Context, id string) error {
 	var deleted DeletedVideo
 	var sourceDeleted int
 	var driveKind string
+	var restorePayload string
 	err = tx.QueryRowContext(ctx, `
 SELECT dv.id,
        COALESCE(dv.drive_id, ''),
+       COALESCE(dv.file_id, ''),
+       COALESCE(dv.parent_id, ''),
+       COALESCE(dv.file_name, ''),
+       COALESCE(dv.size_bytes, 0),
        COALESCE(dv.reason, ''),
        COALESCE(dv.source_deleted, 0),
+       COALESCE(dv.restore_payload, ''),
        COALESCE(d.kind, '')
   FROM deleted_videos dv
   LEFT JOIN drives d ON d.id = dv.drive_id
  WHERE dv.id = ?`, id).Scan(
 		&deleted.ID,
 		&deleted.DriveID,
+		&deleted.FileID,
+		&deleted.ParentID,
+		&deleted.FileName,
+		&deleted.Size,
 		&deleted.Reason,
 		&sourceDeleted,
+		&restorePayload,
 		&driveKind,
 	)
 	if err != nil {
@@ -1508,6 +1544,31 @@ SELECT dv.id,
 		default:
 			return fmt.Errorf("%w: source does not support rediscovery", ErrDeletedVideoNotRestorable)
 		}
+	}
+
+	// Direct restores rebuild the row here and now: nothing will ever rescan
+	// this source, so deferring to a later pass would leave the video gone for
+	// good. The tombstone payload holds the whole row, so title, author and tags
+	// survive. UpsertVideo owns its own statements, so the read transaction is
+	// released first and the two writes follow the same non-atomic order the
+	// crawler restore path already uses.
+	if deleted.RestorePolicy == DeletedVideoRestorePolicyDirect {
+		if verifySource != nil {
+			if err := verifySource(deleted.DriveID, deleted.FileID); err != nil {
+				return fmt.Errorf("%w: %v", ErrDeletedVideoSourceMissing, err)
+			}
+		}
+		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+			return err
+		}
+		video, err := directRestoreVideo(&deleted, restorePayload)
+		if err != nil {
+			return err
+		}
+		if err := c.UpsertVideo(ctx, video); err != nil {
+			return err
+		}
+		return c.PurgeDeletedVideo(ctx, id)
 	}
 
 	if deleted.RestorePolicy == DeletedVideoRestorePolicyCrawler {
@@ -3325,12 +3386,65 @@ func normalizeDeletedVideoReason(reason string) string {
 	}
 }
 
+// directRestoreVideo rebuilds the catalog row for a direct restore from the
+// tombstone payload. Derived assets (thumbnail, preview, transcode output) were
+// deleted together with the original row, so their state is reset to pending
+// and the generation workers rebuild them; keeping the recorded paths would
+// publish a video pointing at files that no longer exist.
+func directRestoreVideo(deleted *DeletedVideo, restorePayload string) (*Video, error) {
+	if deleted == nil {
+		return nil, sql.ErrNoRows
+	}
+	video := &Video{}
+	if payload := strings.TrimSpace(restorePayload); payload != "" {
+		if err := json.Unmarshal([]byte(payload), video); err != nil {
+			return nil, fmt.Errorf("catalog: decode restore payload for %s: %w", deleted.ID, err)
+		}
+	}
+	video.ID = deleted.ID
+	video.DriveID = deleted.DriveID
+	video.FileID = deleted.FileID
+	video.ParentID = deleted.ParentID
+	if strings.TrimSpace(video.FileName) == "" {
+		video.FileName = strings.TrimSpace(deleted.FileName)
+	}
+	if strings.TrimSpace(video.FileName) == "" {
+		video.FileName = deleted.FileID
+	}
+	if strings.TrimSpace(video.Title) == "" {
+		video.Title = strings.TrimSuffix(video.FileName, path.Ext(video.FileName))
+	}
+	if video.Size <= 0 {
+		video.Size = deleted.Size
+	}
+	// The row was tombstoned, never hidden; restoring it must not resurrect the
+	// deprecated hidden flag even if an old payload carried it.
+	video.Hidden = false
+	video.ThumbnailURL = ""
+	video.ThumbnailUpdatedAt = time.Time{}
+	video.PreviewFileID = ""
+	video.PreviewLocal = ""
+	video.PreviewUpdatedAt = time.Time{}
+	video.PreviewStatus = "pending"
+	video.TranscodeStatus = ""
+	video.TranscodeError = ""
+	video.TranscodedFileID = ""
+	video.TranscodedSize = 0
+	return video, nil
+}
+
+// deletedVideoRestorePolicy decides how (and whether) a tombstone can go back
+// to the library. The order matters: a missing source file and a deduplicated
+// row are unrestorable no matter which drive they came from, so those are
+// checked before the per-drive branches below.
 func deletedVideoRestorePolicy(v *DeletedVideo, driveKind string) string {
 	if v == nil ||
 		v.SourceDeleted ||
-		v.Reason == DeletedVideoReasonDuplicate ||
-		strings.TrimSpace(v.DriveID) == "local-upload" {
+		v.Reason == DeletedVideoReasonDuplicate {
 		return DeletedVideoRestorePolicyNone
+	}
+	if strings.TrimSpace(v.DriveID) == "local-upload" {
+		return DeletedVideoRestorePolicyDirect
 	}
 	if strings.TrimSpace(driveKind) == "scriptcrawler" {
 		return DeletedVideoRestorePolicyCrawler

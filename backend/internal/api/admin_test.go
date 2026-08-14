@@ -296,20 +296,26 @@ func TestHandleRemoveBlacklistRejectsNonRestorableVideo(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = cat.Close() })
 
+	// 被去重删掉的视频不可恢复，应当去看保留下来的那一条。
 	now := time.Now()
-	if err := cat.UpsertVideo(ctx, &catalog.Video{
-		ID: "local-upload-video", DriveID: "local-upload", FileID: "upload.mp4",
-		Title: "Upload", PublishedAt: now, CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("seed video: %v", err)
+	for _, id := range []string{"canonical-video", "duplicate-video"} {
+		if err := cat.UpsertVideo(ctx, &catalog.Video{
+			ID: id, DriveID: "remote", FileID: id + ".mp4",
+			Title: id, PublishedAt: now, CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
 	}
-	if err := cat.DeleteVideoWithTombstone(ctx, "local-upload-video"); err != nil {
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, "duplicate-video", catalog.DeleteVideoTombstoneOptions{
+		Reason:           catalog.DeletedVideoReasonDuplicate,
+		CanonicalVideoID: "canonical-video",
+	}); err != nil {
 		t.Fatalf("tombstone video: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodDelete, "/admin/api/blacklist/local-upload-video", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/admin/api/blacklist/duplicate-video", nil)
 	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("id", "local-upload-video")
+	rctx.URLParams.Add("id", "duplicate-video")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 	rr := httptest.NewRecorder()
 
@@ -318,8 +324,154 @@ func TestHandleRemoveBlacklistRejectsNonRestorableVideo(t *testing.T) {
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409; body = %s", rr.Code, rr.Body.String())
 	}
-	if deleted, err := cat.IsVideoDeleted(ctx, "local-upload-video"); err != nil || !deleted {
+	if deleted, err := cat.IsVideoDeleted(ctx, "duplicate-video"); err != nil || !deleted {
 		t.Fatalf("non-restorable tombstone was removed: deleted=%v err=%v", deleted, err)
+	}
+}
+
+// 本地上传的视频没有任何重新发现的途径，取消拉黑必须当场把记录放回媒体库。
+func TestHandleRemoveBlacklistRestoresLocalUploadImmediately(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+
+	now := time.Now()
+	if err := cat.UpsertVideo(ctx, &catalog.Video{
+		ID: "local-upload-video", DriveID: "local-upload", FileID: "upload.mp4",
+		FileName: "upload.mp4", Title: "Upload", PublishedAt: now, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed video: %v", err)
+	}
+	if err := cat.DeleteVideoWithTombstone(ctx, "local-upload-video"); err != nil {
+		t.Fatalf("tombstone video: %v", err)
+	}
+
+	verified := ""
+	server := &AdminServer{
+		Catalog: cat,
+		OnVerifyRestorableSource: func(_ context.Context, driveID, fileID string) error {
+			verified = driveID + "/" + fileID
+			return nil
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/admin/api/blacklist/local-upload-video", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "local-upload-video")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rr := httptest.NewRecorder()
+
+	server.handleRemoveBlacklist(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+	if verified != "local-upload/upload.mp4" {
+		t.Fatalf("verified source = %q, want local-upload/upload.mp4", verified)
+	}
+	if _, err := cat.GetVideo(ctx, "local-upload-video"); err != nil {
+		t.Fatalf("video was not restored: %v", err)
+	}
+	if deleted, err := cat.IsVideoDeleted(ctx, "local-upload-video"); err != nil || deleted {
+		t.Fatalf("tombstone still present: deleted=%v err=%v", deleted, err)
+	}
+}
+
+// 源文件已经不在时必须拒绝恢复，否则库里会多出一条点开就播放失败的视频。
+func TestHandleRemoveBlacklistRejectsDirectRestoreWhenSourceMissing(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+
+	now := time.Now()
+	if err := cat.UpsertVideo(ctx, &catalog.Video{
+		ID: "local-upload-video", DriveID: "local-upload", FileID: "upload.mp4",
+		FileName: "upload.mp4", Title: "Upload", PublishedAt: now, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed video: %v", err)
+	}
+	if err := cat.DeleteVideoWithTombstone(ctx, "local-upload-video"); err != nil {
+		t.Fatalf("tombstone video: %v", err)
+	}
+
+	server := &AdminServer{
+		Catalog: cat,
+		OnVerifyRestorableSource: func(context.Context, string, string) error {
+			return errors.New("stat upload.mp4: no such file")
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/admin/api/blacklist/local-upload-video", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "local-upload-video")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rr := httptest.NewRecorder()
+
+	server.handleRemoveBlacklist(rr, req)
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body = %s", rr.Code, rr.Body.String())
+	}
+	if deleted, err := cat.IsVideoDeleted(ctx, "local-upload-video"); err != nil || !deleted {
+		t.Fatalf("tombstone was removed despite missing source: deleted=%v err=%v", deleted, err)
+	}
+	if _, err := cat.GetVideo(ctx, "local-upload-video"); err == nil {
+		t.Fatalf("video must not be restored when the source file is gone")
+	}
+}
+
+// 可扫描来源不该触发源文件校验：它们本来就要等下一轮扫盘，此刻文件在不在
+// 都不影响「删掉墓碑」这个动作。
+func TestHandleRemoveBlacklistSkipsSourceCheckForScannableDrive(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+
+	now := time.Now()
+	if err := cat.UpsertVideo(ctx, &catalog.Video{
+		ID: "remote-video", DriveID: "remote", FileID: "remote.mp4",
+		FileName: "remote.mp4", Title: "Remote", PublishedAt: now, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed video: %v", err)
+	}
+	if err := cat.DeleteVideoWithTombstone(ctx, "remote-video"); err != nil {
+		t.Fatalf("tombstone video: %v", err)
+	}
+
+	server := &AdminServer{
+		Catalog: cat,
+		OnVerifyRestorableSource: func(context.Context, string, string) error {
+			t.Fatalf("scannable drive must not be source-checked")
+			return nil
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/admin/api/blacklist/remote-video", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "remote-video")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rr := httptest.NewRecorder()
+
+	server.handleRemoveBlacklist(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+	// 扫盘来源只是移除墓碑，不会当场重建记录。
+	if _, err := cat.GetVideo(ctx, "remote-video"); err == nil {
+		t.Fatalf("scannable restore must wait for the next scan")
+	}
+	if deleted, err := cat.IsVideoDeleted(ctx, "remote-video"); err != nil || deleted {
+		t.Fatalf("tombstone not removed: deleted=%v err=%v", deleted, err)
 	}
 }
 

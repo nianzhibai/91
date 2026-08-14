@@ -264,15 +264,41 @@ func TestBlacklistRestorePolicies(t *testing.T) {
 		t.Fatalf("source-deleted catalog lookup error = %v, want sql.ErrNoRows", err)
 	}
 
+	// 本地上传的源文件被保留，但这个盘不支持枚举，永远不会被扫盘或爬取重新
+	// 发现，所以取消拉黑必须当场重建记录。
 	seedVideo("local-upload-video", "local-upload", "upload-file", "Upload")
 	if err := cat.DeleteVideoWithTombstone(ctx, "local-upload-video"); err != nil {
 		t.Fatalf("tombstone local upload: %v", err)
 	}
-	if got := findDeleted("local-upload-video").RestorePolicy; got != DeletedVideoRestorePolicyNone {
-		t.Fatalf("local upload restore policy = %q, want %q", got, DeletedVideoRestorePolicyNone)
+	if got := findDeleted("local-upload-video").RestorePolicy; got != DeletedVideoRestorePolicyDirect {
+		t.Fatalf("local upload restore policy = %q, want %q", got, DeletedVideoRestorePolicyDirect)
 	}
-	if err := cat.RemoveDeletedVideo(ctx, "local-upload-video"); !errors.Is(err, ErrDeletedVideoNotRestorable) {
-		t.Fatalf("restore local upload error = %v, want ErrDeletedVideoNotRestorable", err)
+
+	// 源文件已删的本地上传仍然不可恢复：source_deleted 的优先级高于来源类型。
+	seedVideo("local-upload-gone", "local-upload", "gone-file", "Gone upload")
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, "local-upload-gone", DeleteVideoTombstoneOptions{
+		SourceDeleted: true,
+	}); err != nil {
+		t.Fatalf("delete local upload with source: %v", err)
+	}
+	if deleted, err := cat.IsVideoDeleted(ctx, "local-upload-gone"); err != nil || deleted {
+		t.Fatalf("source-deleted local upload should not keep tombstone: deleted=%v err=%v", deleted, err)
+	}
+
+	// 被去重删掉的本地上传也仍然不可恢复：应当去看保留下来的那一条。
+	seedVideo("local-upload-canonical", "local-upload", "canonical-file", "Canonical upload")
+	seedVideo("local-upload-duplicate", "local-upload", "duplicate-file", "Duplicate upload")
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, "local-upload-duplicate", DeleteVideoTombstoneOptions{
+		Reason:           DeletedVideoReasonDuplicate,
+		CanonicalVideoID: "local-upload-canonical",
+	}); err != nil {
+		t.Fatalf("tombstone duplicate local upload: %v", err)
+	}
+	if got := findDeleted("local-upload-duplicate").RestorePolicy; got != DeletedVideoRestorePolicyNone {
+		t.Fatalf("duplicate local upload restore policy = %q, want %q", got, DeletedVideoRestorePolicyNone)
+	}
+	if err := cat.RemoveDeletedVideo(ctx, "local-upload-duplicate"); !errors.Is(err, ErrDeletedVideoNotRestorable) {
+		t.Fatalf("restore duplicate local upload error = %v, want ErrDeletedVideoNotRestorable", err)
 	}
 
 	seedVideo("canonical-video", "remote", "canonical", "Canonical title")
@@ -293,11 +319,124 @@ func TestBlacklistRestorePolicies(t *testing.T) {
 		t.Fatalf("restore duplicate error = %v, want ErrDeletedVideoNotRestorable", err)
 	}
 
-	for _, id := range []string{"local-upload-video", "duplicate-video"} {
+	for _, id := range []string{"local-upload-duplicate", "duplicate-video"} {
 		deleted, err := cat.IsVideoDeleted(ctx, id)
 		if err != nil || !deleted {
 			t.Fatalf("non-restorable tombstone %s was removed: deleted=%v err=%v", id, deleted, err)
 		}
+	}
+}
+
+// 取消拉黑本地上传时记录当场重建，且标题、作者、标签这些用户数据都要跟着回来
+// ——墓碑里存的是完整的 restore payload。派生资源（封面/预览/转码产物）在拉黑
+// 时已被删除，必须重置为待生成，否则会指向不存在的文件。
+func TestRemoveDeletedVideoDirectRestoresLocalUploadLosslessly(t *testing.T) {
+	ctx := context.Background()
+	cat, err := Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+
+	now := time.Now()
+	if err := cat.UpsertVideo(ctx, &Video{
+		ID: "local-upload-rich", DriveID: "local-upload", FileID: "rich.mp4",
+		FileName: "rich.mp4", Title: "用户起的标题", Author: "上传者",
+		Tags: []string{"标签一", "标签二"}, Description: "简介", DurationSeconds: 42,
+		Size: 4096, Ext: "mp4", Quality: "HD",
+		ThumbnailURL: "/p/thumb/local-upload-rich", PreviewLocal: "/data/previews/local-upload-rich.mp4",
+		PreviewStatus: "ready", TranscodeStatus: "ready", TranscodedFileID: "transcoded.mp4",
+		TranscodedSize: 2048, Views: 7, Likes: 3,
+		PublishedAt: now, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed video: %v", err)
+	}
+	if err := cat.DeleteVideoWithTombstone(ctx, "local-upload-rich"); err != nil {
+		t.Fatalf("tombstone video: %v", err)
+	}
+	if _, err := cat.GetVideo(ctx, "local-upload-rich"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("video lookup after tombstone = %v, want sql.ErrNoRows", err)
+	}
+
+	if err := cat.RemoveDeletedVideo(ctx, "local-upload-rich"); err != nil {
+		t.Fatalf("remove blacklist: %v", err)
+	}
+
+	restored, err := cat.GetVideo(ctx, "local-upload-rich")
+	if err != nil {
+		t.Fatalf("get restored video: %v", err)
+	}
+	if restored.Title != "用户起的标题" || restored.Author != "上传者" ||
+		restored.Description != "简介" || restored.DurationSeconds != 42 {
+		t.Fatalf("user metadata lost: %#v", restored)
+	}
+	if len(restored.Tags) != 2 || restored.Tags[0] != "标签一" || restored.Tags[1] != "标签二" {
+		t.Fatalf("tags = %#v, want both restored", restored.Tags)
+	}
+	if restored.DriveID != "local-upload" || restored.FileID != "rich.mp4" || restored.Size != 4096 {
+		t.Fatalf("source identity lost: %#v", restored)
+	}
+	if restored.Hidden {
+		t.Fatalf("restored video must not be hidden")
+	}
+	if restored.ThumbnailURL != "" || restored.PreviewLocal != "" ||
+		restored.PreviewStatus != "pending" {
+		t.Fatalf("derived assets not reset: thumb=%q preview=%q status=%q",
+			restored.ThumbnailURL, restored.PreviewLocal, restored.PreviewStatus)
+	}
+	if restored.TranscodeStatus != "" || restored.TranscodedFileID != "" || restored.TranscodedSize != 0 {
+		t.Fatalf("transcode state not reset: %#v", restored)
+	}
+	if deleted, err := cat.IsVideoDeleted(ctx, "local-upload-rich"); err != nil || deleted {
+		t.Fatalf("tombstone still present after restore: deleted=%v err=%v", deleted, err)
+	}
+	current, blacklisted, err := cat.VideoManagementCounts(ctx)
+	if err != nil {
+		t.Fatalf("counts: %v", err)
+	}
+	if current != 1 || blacklisted != 0 {
+		t.Fatalf("counts = current %d blacklisted %d, want 1/0", current, blacklisted)
+	}
+}
+
+// 墓碑是老版本写的、restore_payload 为空时，仍然要能恢复出一条可用记录：
+// 标题从文件名兜底，大小取墓碑里的值。
+func TestRemoveDeletedVideoDirectRestoresWithoutPayload(t *testing.T) {
+	ctx := context.Background()
+	cat, err := Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+
+	now := time.Now()
+	if err := cat.UpsertVideo(ctx, &Video{
+		ID: "legacy-upload", DriveID: "local-upload", FileID: "legacy.mp4",
+		FileName: "我的视频.mp4", Title: "旧标题", Size: 512,
+		PublishedAt: now, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed video: %v", err)
+	}
+	if err := cat.DeleteVideoWithTombstone(ctx, "legacy-upload"); err != nil {
+		t.Fatalf("tombstone video: %v", err)
+	}
+	if _, err := cat.db.ExecContext(ctx,
+		`UPDATE deleted_videos SET restore_payload = '' WHERE id = ?`, "legacy-upload"); err != nil {
+		t.Fatalf("clear restore payload: %v", err)
+	}
+
+	if err := cat.RemoveDeletedVideo(ctx, "legacy-upload"); err != nil {
+		t.Fatalf("remove blacklist: %v", err)
+	}
+	restored, err := cat.GetVideo(ctx, "legacy-upload")
+	if err != nil {
+		t.Fatalf("get restored video: %v", err)
+	}
+	if restored.FileName != "我的视频.mp4" || restored.Title != "我的视频" {
+		t.Fatalf("fallback identity = file %q title %q", restored.FileName, restored.Title)
+	}
+	if restored.FileID != "legacy.mp4" || restored.Size != 512 {
+		t.Fatalf("fallback source = file %q size %d", restored.FileID, restored.Size)
 	}
 }
 

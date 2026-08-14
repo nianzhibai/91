@@ -341,6 +341,37 @@ func (a *App) removeVideoSourceFile(ctx context.Context, v *catalog.Video) (bool
 	return true, nil
 }
 
+// verifyRestorableSource 确认 direct 恢复策略的源文件仍然存在。这类来源（本地
+// 上传）不会被任何扫盘或爬取重新发现，取消拉黑等于当场重建记录，因此文件已经
+// 不在时必须拒绝，否则库里会多出一条点开就播放失败的视频。
+func (a *App) verifyRestorableSource(ctx context.Context, driveID, fileID string) error {
+	driveID = strings.TrimSpace(driveID)
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return fmt.Errorf("restore from drive %s: empty file id", driveID)
+	}
+	if a == nil || a.registry == nil {
+		return fmt.Errorf("restore from drive %s: drive registry unavailable: %w", driveID, drives.ErrNotSupported)
+	}
+	if _, ok := a.registry.Get(driveID); !ok {
+		if err := a.ensureDriveAttached(ctx, driveID); err != nil {
+			return fmt.Errorf("restore from drive %s: attach drive: %w", driveID, err)
+		}
+	}
+	drv, ok := a.registry.Get(driveID)
+	if !ok {
+		return fmt.Errorf("restore from drive %s: drive not attached: %w", driveID, drives.ErrNotSupported)
+	}
+	entry, err := drv.Stat(ctx, fileID)
+	if err != nil {
+		return fmt.Errorf("restore from drive %s: stat %s: %w", driveID, fileID, err)
+	}
+	if entry == nil || entry.IsDir {
+		return fmt.Errorf("restore from drive %s: %s is not a regular file", driveID, fileID)
+	}
+	return nil
+}
+
 func (a *App) cleanupDriveVideosForDelete(ctx context.Context, driveID string) (int, error) {
 	if a == nil || a.cat == nil {
 		return 0, nil

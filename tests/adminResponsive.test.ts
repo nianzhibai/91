@@ -876,6 +876,21 @@ test("blacklist cancel action uses ordinary button styling", () => {
   assert.match(unavailable, /color\s*:\s*var\(--text-faint\)/);
 });
 
+// 本地上传的源文件被保留，但这个盘不支持枚举，扫盘和爬虫都不会重新发现它，
+// 所以取消拉黑是当场恢复，文案不能再说「等下次扫盘」。
+test("local upload blacklist entries restore immediately instead of waiting for a scan", () => {
+  assert.match(apiSource, /restorePolicy: "none" \| "scan" \| "crawler" \| "direct"/);
+  assert.match(videosPageSource, /target\.restorePolicy === "direct"[\s\S]*?已取消拉黑，视频已恢复到媒体库/);
+  assert.match(
+    videosPageSource,
+    /removeTarget\.restorePolicy === "direct"[\s\S]*?视频将立即恢复到媒体库，封面和预览会重新生成。/
+  );
+  // 恢复按钮对 direct 一样要出现：判断条件是「不等于 none」而不是白名单。
+  assert.match(videosPageSource, /v\.restorePolicy !== "none"/);
+  // 「不可自动恢复」这个中间态没有了：现在要么能恢复，要么就是真的不可恢复。
+  assert.doesNotMatch(videosPageSource, /不可自动恢复/);
+});
+
 test("blacklist duplicate reason renders as a compact pill", () => {
   const pill = ruleBody(adminCss, ".admin-blacklist-reason-pill");
 

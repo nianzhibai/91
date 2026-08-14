@@ -411,6 +411,9 @@ func main() {
 		GetBlacklistSourceDeleteStatus: func() api.BlacklistSourceDeleteStatus {
 			return app.blacklistSourceDeleteStatus()
 		},
+		OnVerifyRestorableSource: func(reqCtx context.Context, driveID, fileID string) error {
+			return app.verifyRestorableSource(reqCtx, driveID, fileID)
+		},
 		OnStartTagRetag: func() bool {
 			return app.startTagRetag(ctx)
 		},

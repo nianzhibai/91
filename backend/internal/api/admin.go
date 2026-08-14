@@ -66,6 +66,10 @@ type AdminServer struct {
 	OnDeleteVideo                  func(ctx context.Context, videoID string, deleteSource bool) (DeleteVideoResult, error)
 	OnStartBlacklistSourceDelete   func(BlacklistSourceDeleteRequest) bool
 	GetBlacklistSourceDeleteStatus func() BlacklistSourceDeleteStatus
+	// OnVerifyRestorableSource 校验 direct 恢复策略的源文件是否还在。这类来源
+	// 不会被任何扫盘或爬取重新发现，取消拉黑就是立刻重建记录，所以必须先确认
+	// 文件仍然存在，否则会放出一条点开就播放失败的视频。未注入时跳过校验。
+	OnVerifyRestorableSource func(ctx context.Context, driveID, fileID string) error
 	OnStartTagRetag                func() bool
 	// OnTagsChanged invalidates read-side tag caches after a catalog mutation.
 	OnTagsChanged                func()

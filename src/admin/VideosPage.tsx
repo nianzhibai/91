@@ -1062,9 +1062,11 @@ function BlacklistTab({
         return next;
       });
       show(
-        target.restorePolicy === "crawler"
-          ? "已取消拉黑，将在下次爬虫任务时生效"
-          : "已取消拉黑，将在下次手动或定时扫盘时生效",
+        target.restorePolicy === "direct"
+          ? "已取消拉黑，视频已恢复到媒体库"
+          : target.restorePolicy === "crawler"
+            ? "已取消拉黑，将在下次爬虫任务时生效"
+            : "已取消拉黑，将在下次手动或定时扫盘时生效",
         "success"
       );
       if (list.length === 1 && page > 1) {
@@ -1308,7 +1310,7 @@ function BlacklistTab({
                         ) : null
                       ) : (
                         <span className="admin-blacklist-unavailable">
-                          {v.driveId === "local-upload" ? "不可自动恢复" : "不可恢复"}
+                          不可恢复
                         </span>
                       )}
                       {sourceDeletable && (
@@ -1392,9 +1394,11 @@ function BlacklistTab({
         title="取消拉黑"
         message={
           removeTarget
-            ? removeTarget.restorePolicy === "crawler"
-              ? `确定取消拉黑「${removeTarget.fileName || removeTarget.id}」吗？此操作不会立即运行爬虫，将在下次爬虫任务时生效。`
-              : `确定取消拉黑「${removeTarget.fileName || removeTarget.id}」吗？视频将在下次扫盘时恢复`
+            ? removeTarget.restorePolicy === "direct"
+              ? `确定取消拉黑「${removeTarget.fileName || removeTarget.id}」吗？视频将立即恢复到媒体库，封面和预览会重新生成。`
+              : removeTarget.restorePolicy === "crawler"
+                ? `确定取消拉黑「${removeTarget.fileName || removeTarget.id}」吗？此操作不会立即运行爬虫，将在下次爬虫任务时生效。`
+                : `确定取消拉黑「${removeTarget.fileName || removeTarget.id}」吗？视频将在下次扫盘时恢复`
             : ""
         }
         confirmText="取消拉黑"

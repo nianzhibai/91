@@ -1074,7 +1074,8 @@ export type AdminDeletedVideo = {
   sourceDeleted: boolean;
   canonicalVideoId?: string;
   canonicalTitle?: string;
-  restorePolicy: "none" | "scan" | "crawler";
+  // direct：本地上传这类无法被扫盘/爬取重新发现的来源，取消拉黑时当场重建记录。
+  restorePolicy: "none" | "scan" | "crawler" | "direct";
   deletedAt: number;
 };
 
