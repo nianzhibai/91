@@ -1002,12 +1002,10 @@ function BlacklistTab({
           timer = window.setTimeout(poll, 2000);
           return;
         }
-        show(
-          status.failed > 0
-            ? `源文件删除完成：成功 ${status.deleted}，失败 ${status.failed}`
-            : `源文件删除完成：成功 ${status.deleted}`,
-          status.failed > 0 ? "info" : "success"
-        );
+        const summary = [`成功 ${status.deleted}`];
+        if (status.skipped > 0) summary.push(`跳过 ${status.skipped}`);
+        if (status.failed > 0) summary.push(`失败 ${status.failed}`);
+        show(`源文件删除完成：${summary.join("，")}`, status.failed > 0 ? "info" : "success");
         setSelectedIds(new Set());
         void refresh();
       } catch {
@@ -1279,9 +1277,6 @@ function BlacklistTab({
                     <div className="admin-blacklist-filecell">
                       <span className="admin-blacklist-filename" title={v.fileName || undefined}>{v.fileName || <span className="admin-text-faint">（无文件名）</span>}</span>
                       {v.reason === "duplicate" && <span className="admin-blacklist-reason-pill">重复文件</span>}
-                      {v.driveId === "local-upload" && (
-                        <span className="admin-blacklist-reason-pill">本地上传</span>
-                      )}
                     </div>
                   </td>
                   <td data-label="来源" className="admin-mono-cell admin-blacklist-source-cell">
@@ -1294,7 +1289,8 @@ function BlacklistTab({
                           type="button"
                           className="admin-btn"
                           onClick={() => setRemoveTarget(v)}
-                          title="取消拉黑"
+                          disabled={sourceDeleteRunning}
+                          title={sourceDeleteRunning ? "源文件删除任务运行中" : "取消拉黑"}
                         >
                           取消拉黑
                         </button>
@@ -1394,14 +1390,10 @@ function BlacklistTab({
         title="取消拉黑"
         message={
           removeTarget
-            ? removeTarget.restorePolicy === "direct"
-              ? `确定取消拉黑「${removeTarget.fileName || removeTarget.id}」吗？视频将立即恢复到媒体库，封面和预览会重新生成。`
-              : removeTarget.restorePolicy === "crawler"
-                ? `确定取消拉黑「${removeTarget.fileName || removeTarget.id}」吗？此操作不会立即运行爬虫，将在下次爬虫任务时生效。`
-                : `确定取消拉黑「${removeTarget.fileName || removeTarget.id}」吗？视频将在下次扫盘时恢复`
+            ? `确定取消拉黑「${removeTarget.fileName || removeTarget.id}」吗？`
             : ""
         }
-        confirmText="取消拉黑"
+        confirmText="确认"
         centerMessage
         loading={removing}
         onCancel={() => {

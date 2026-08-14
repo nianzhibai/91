@@ -352,9 +352,12 @@ func TestHandleRemoveBlacklistRestoresLocalUploadImmediately(t *testing.T) {
 	verified := ""
 	server := &AdminServer{
 		Catalog: cat,
-		OnVerifyRestorableSource: func(_ context.Context, driveID, fileID string) error {
-			verified = driveID + "/" + fileID
-			return nil
+		OnRemoveBlacklist: func(ctx context.Context, id string) error {
+			_, err := cat.RestoreDeletedVideo(ctx, id, func(driveID, fileID string) (catalog.DeletedVideoSourceInfo, error) {
+				verified = driveID + "/" + fileID
+				return catalog.DeletedVideoSourceInfo{Size: 1024, ModTime: now}, nil
+			})
+			return err
 		},
 	}
 
@@ -402,8 +405,11 @@ func TestHandleRemoveBlacklistRejectsDirectRestoreWhenSourceMissing(t *testing.T
 
 	server := &AdminServer{
 		Catalog: cat,
-		OnVerifyRestorableSource: func(context.Context, string, string) error {
-			return errors.New("stat upload.mp4: no such file")
+		OnRemoveBlacklist: func(ctx context.Context, id string) error {
+			_, err := cat.RestoreDeletedVideo(ctx, id, func(string, string) (catalog.DeletedVideoSourceInfo, error) {
+				return catalog.DeletedVideoSourceInfo{}, errors.New("stat upload.mp4: no such file")
+			})
+			return err
 		},
 	}
 
@@ -449,9 +455,12 @@ func TestHandleRemoveBlacklistSkipsSourceCheckForScannableDrive(t *testing.T) {
 
 	server := &AdminServer{
 		Catalog: cat,
-		OnVerifyRestorableSource: func(context.Context, string, string) error {
-			t.Fatalf("scannable drive must not be source-checked")
-			return nil
+		OnRemoveBlacklist: func(ctx context.Context, id string) error {
+			_, err := cat.RestoreDeletedVideo(ctx, id, func(string, string) (catalog.DeletedVideoSourceInfo, error) {
+				t.Fatalf("scannable drive must not be source-checked")
+				return catalog.DeletedVideoSourceInfo{}, nil
+			})
+			return err
 		},
 	}
 

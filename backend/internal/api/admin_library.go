@@ -290,18 +290,19 @@ func (a *AdminServer) blacklistSourceDeleteStatus(ctx context.Context) Blacklist
 // 重建记录，因此先校验保留下来的源文件还在。不可恢复的来源仍然返回 409。
 func (a *AdminServer) handleRemoveBlacklist(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	var verifySource func(driveID, fileID string) error
-	if a.OnVerifyRestorableSource != nil {
-		verifySource = func(driveID, fileID string) error {
-			return a.OnVerifyRestorableSource(r.Context(), driveID, fileID)
-		}
+	var err error
+	if a.OnRemoveBlacklist != nil {
+		err = a.OnRemoveBlacklist(r.Context(), id)
+	} else {
+		err = a.Catalog.RemoveDeletedVideo(r.Context(), id)
 	}
-	if err := a.Catalog.RemoveDeletedVideoWithSourceCheck(r.Context(), id, verifySource); err != nil {
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeErr(w, http.StatusNotFound, err)
 			return
 		}
 		if errors.Is(err, catalog.ErrDeletedVideoNotRestorable) ||
+			errors.Is(err, catalog.ErrDeletedVideoSourceCheckRequired) ||
 			errors.Is(err, catalog.ErrDeletedVideoSourceMissing) {
 			writeErr(w, http.StatusConflict, err)
 			return

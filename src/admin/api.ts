@@ -1112,6 +1112,7 @@ export type BlacklistSourceDeleteStatus = {
   total: number;
   processed: number;
   deleted: number;
+  skipped: number;
   failed: number;
   currentFile?: string;
   lastError?: string;
