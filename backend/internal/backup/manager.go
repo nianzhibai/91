@@ -1124,17 +1124,13 @@ func writeJSONAtomic(filePath string, value any, mode os.FileMode) error {
 		return err
 	}
 	removeTemporary = false
-	directoryHandle, err := os.Open(directory)
-	if err != nil {
-		return err
-	}
-	syncErr := directoryHandle.Sync()
-	closeErr := directoryHandle.Close()
-	if syncErr != nil {
-		return syncErr
-	}
-	if closeErr != nil {
-		return closeErr
+	// Directory Sync is best-effort because several supported filesystems (and
+	// Windows) reject syncing directory handles. The rename has already committed
+	// at this point, so returning an error would falsely tell callers that the
+	// write failed even though the file was replaced.
+	if directoryHandle, err := os.Open(directory); err == nil {
+		_ = directoryHandle.Sync()
+		_ = directoryHandle.Close()
 	}
 	return nil
 }
