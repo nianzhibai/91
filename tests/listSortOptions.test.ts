@@ -18,6 +18,10 @@ const searchPanelSource = readFileSync(
   new URL("../src/components/SearchPanel.tsx", import.meta.url),
   "utf8"
 );
+const homePageSource = readFileSync(
+  new URL("../src/pages/HomePage.tsx", import.meta.url),
+  "utf8"
+);
 const listingQuerySource = readFileSync(
   new URL("../src/lib/useListingQuery.ts", import.meta.url),
   "utf8"
@@ -69,11 +73,16 @@ test("listing page keeps the public discovery layout and empty semantics", () =>
 
 test("public listing query control state is restored from the URL", () => {
   assert.match(listingPageSource, /const sort = readListingSort\(params\)/);
-  assert.match(listingPageSource, /const page = readListingPage\(params\)/);
   assert.match(listingPageSource, /const view = readListingView\(params\)/);
   assert.match(listingPageSource, /withListingNavigation\(params, \{ sort: nextSort, page: 1 \}\)/);
-  assert.match(listingPageSource, /withListingPage\(params, nextPage\)/);
   assert.match(listingPageSource, /withListingView\(params, nextView\)/);
+  // 列表页改为无限滚动后没有页码，旧链接里的 page 参数会被清掉。
+  assert.match(listingPageSource, /if \(!params\.has\("page"\)\) return;/);
+  assert.match(
+    listingPageSource,
+    /withListingPage\(current, 1\), \{ replace: true \}/
+  );
+  assert.doesNotMatch(listingPageSource, /<Pagination/);
   assert.doesNotMatch(listingPageSource, /sessionStorage|localStorage/);
 });
 
@@ -106,20 +115,20 @@ test("list search updates the shared listing query instead of rebuilding it", ()
   assert.doesNotMatch(searchPanelSource, /const sp = new URLSearchParams\(\)/);
 });
 
-test("public video lists use fourteen mobile and twenty desktop items per page", () => {
+test("public video lists use fourteen mobile and twenty desktop items per batch", () => {
   assert.match(responsiveSource, /export const MOBILE_VIDEO_PAGE_SIZE = 14;/);
   assert.match(listingPageSource, /const DESKTOP_PAGE_SIZE = 20;/);
   assert.match(listingPageSource, /const pageSize = isMobile \? MOBILE_VIDEO_PAGE_SIZE : DESKTOP_PAGE_SIZE;/);
-  assert.match(listingPageSource, /useListingQuery\(\{[\s\S]*?page,[\s\S]*?pageSize/);
+  assert.match(listingPageSource, /useInfiniteListing\(\{[\s\S]*?pageSize,/);
   assert.match(listingPageSource, /skeletonCount=\{pageSize\}/);
 });
 
-test("listing page uses one shared stale-while-revalidate query contract", () => {
-  assert.match(listingPageSource, /import \{ useListingQuery \} from "@\/lib\/useListingQuery"/);
-  assert.match(listingPageSource, /refreshMode=\{[\s\S]*?result\.transitioning[\s\S]*?"blocking"[\s\S]*?result\.revalidating[\s\S]*?"background"/);
-  assert.match(listingPageSource, /disabled=\{result\.transitioning\}/);
-  assert.match(listingPageSource, /<ListingLoadError[\s\S]*?displayedPage=\{displayedPage\}/);
-  assert.match(listingPageSource, /snapshot\?\.query\.page \?\? page/);
+test("home search keeps the shared stale-while-revalidate query contract", () => {
+  assert.match(homePageSource, /import \{ useListingQuery \} from "@\/lib\/useListingQuery"/);
+  assert.match(homePageSource, /refreshMode=\{[\s\S]*?searchResult\.transitioning[\s\S]*?"blocking"[\s\S]*?searchResult\.revalidating[\s\S]*?"background"/);
+  assert.match(homePageSource, /disabled=\{searchResult\.transitioning\}/);
+  assert.match(homePageSource, /<ListingLoadError[\s\S]*?displayedPage=\{displayedSearchPage\}/);
+  assert.match(homePageSource, /searchSnapshot\?\.query\.page \?\? searchPage/);
   assert.match(listingQuerySource, /const LISTING_CACHE_TTL_MS = 60_000/);
   assert.match(listingQuerySource, /const LISTING_CACHE_MAX_ENTRIES = 20/);
   assert.match(listingQuerySource, /function peekListingCache/);

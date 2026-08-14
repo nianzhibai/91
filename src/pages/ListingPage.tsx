@@ -1,16 +1,19 @@
-import { useEffect, useRef } from "react";
-import { useSearchParams } from "react-router";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useLocation, useSearchParams } from "react-router";
 import { AdminEmptyVisual } from "@/admin/AdminEmptyVisual";
 import { AppShell } from "@/components/AppShell";
 import { ListingLoadError } from "@/components/ListingLoadError";
-import { Pagination } from "@/components/Pagination";
 import { PromoStrip } from "@/components/PromoStrip";
 import { SearchPanel } from "@/components/SearchPanel";
 import { SortToolbar } from "@/components/SortToolbar";
 import { TagCloud } from "@/components/TagCloud";
 import { VideoGrid } from "@/components/VideoGrid";
 import {
-  readListingPage,
+  VirtualVideoGrid,
+  type VirtualGridRange,
+} from "@/components/VirtualVideoGrid";
+import { infiniteListingKey } from "@/lib/infiniteListing";
+import {
   readListingSort,
   readListingView,
   withListingNavigation,
@@ -18,37 +21,63 @@ import {
   withListingView,
 } from "@/lib/listingSearchParams";
 import { MOBILE_VIDEO_PAGE_SIZE, useIsMobile } from "@/lib/responsive";
-import { useListingQuery } from "@/lib/useListingQuery";
+import { useInfiniteListing } from "@/lib/useInfiniteListing";
+import {
+  useListingRestoreTarget,
+  useListingScrollRestore,
+} from "@/lib/useListingScrollRestore";
+import { shouldLoadMore } from "@/lib/virtualGrid";
 
 const DESKTOP_PAGE_SIZE = 20;
 
+// 距列表尾部还有两行时就续下一批，滚动到底之前数据已经在路上。
+const PREFETCH_ROWS = 2;
+
+const EMPTY_RANGE: VirtualGridRange = {
+  startIndex: 0,
+  endIndex: 0,
+  columns: 1,
+};
+
 export default function ListingPage() {
   const [params, setParams] = useSearchParams();
+  const location = useLocation();
   const keyword = params.get("q") ?? "";
   const tag = params.get("tag") ?? "";
   const sort = readListingSort(params);
-  const page = readListingPage(params);
   const view = readListingView(params);
   const isMobile = useIsMobile();
   const pageSize = isMobile ? MOBILE_VIDEO_PAGE_SIZE : DESKTOP_PAGE_SIZE;
-  const result = useListingQuery({
+  const queryKey = infiniteListingKey({ q: keyword, tag, sort, pageSize });
+
+  const restoreTarget = useListingRestoreTarget({
+    historyKey: location.key,
+    queryKey,
+    pageSize,
+  });
+  const listing = useInfiniteListing({
     q: keyword,
     tag,
     sort,
-    page,
     pageSize,
+    restoreCount: restoreTarget.count,
   });
-  const snapshot = result.snapshot;
-  const items = snapshot?.items ?? [];
+  useListingScrollRestore({
+    target: restoreTarget,
+    queryKey,
+    requestedCount: listing.requestedCount,
+    itemCount: listing.items.length,
+  });
+
+  const items = listing.items;
   const hasContent = items.length > 0;
-  const showSkeleton =
-    result.initialLoading || (result.transitioning && !hasContent);
-  const showContentError = result.phase === "error" && hasContent;
-  const showEmptyError = result.phase === "error" && !hasContent;
+  const showSkeleton = listing.initialLoading && !hasContent;
+  const showEmptyError = listing.failed && !hasContent;
+  const showTailError = listing.failed && hasContent;
   const hasActiveFilter = keyword.trim().length > 0 || tag.trim().length > 0;
   const eagerCount = isMobile ? 2 : 4;
-  const scrollOnCommitRef = useRef(false);
-  const previousPageSizeRef = useRef(pageSize);
+  const [range, setRange] = useState<VirtualGridRange>(EMPTY_RANGE);
+  const previousQueryKeyRef = useRef(queryKey);
 
   useEffect(() => {
     document.title = keyword
@@ -58,27 +87,45 @@ export default function ListingPage() {
       : "视频列表";
   }, [keyword, tag]);
 
+  // 无限滚动没有页码，旧链接里的 page 参数只会让 URL 与实际内容不符。
   useEffect(() => {
-    if (previousPageSizeRef.current === pageSize) return;
-    previousPageSizeRef.current = pageSize;
-    if (page === 1) return;
+    if (!params.has("page")) return;
     setParams((current) => withListingPage(current, 1), { replace: true });
-  }, [page, pageSize, setParams]);
+  }, [params, setParams]);
 
+  // 换排序/换标签是一次全新的列表，回到顶部再开始累积。平滑滚动会被虚拟
+  // 列表的行高补偿打断而停在半路，所以直接落到顶部。
+  useEffect(() => {
+    if (previousQueryKeyRef.current === queryKey) return;
+    previousQueryKeyRef.current = queryKey;
+    window.scrollTo({ top: 0, behavior: "auto" });
+  }, [queryKey]);
+
+  const handleRangeChange = useCallback((next: VirtualGridRange) => {
+    setRange((current) =>
+      current.startIndex === next.startIndex &&
+      current.endIndex === next.endIndex &&
+      current.columns === next.columns
+        ? current
+        : next
+    );
+  }, []);
+
+  const { loadMore, loadingMore, hasMore } = listing;
   useEffect(() => {
     if (
-      !scrollOnCommitRef.current ||
-      snapshot?.key !== result.key
+      shouldLoadMore({
+        endIndex: range.endIndex,
+        itemCount: items.length,
+        columns: range.columns,
+        hasMore,
+        loading: loadingMore,
+        prefetchRows: PREFETCH_ROWS,
+      })
     ) {
-      return;
+      loadMore();
     }
-    scrollOnCommitRef.current = false;
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  }, [result.key, snapshot?.key]);
-
-  const displayedSort =
-    result.phase === "error" && snapshot ? snapshot.query.sort : sort;
-  const displayedPage = snapshot?.query.page ?? page;
+  }, [hasMore, items.length, loadMore, loadingMore, range]);
 
   return (
     <AppShell>
@@ -94,11 +141,10 @@ export default function ListingPage() {
 
       <div className="container page-section listing-primary-section">
         <SortToolbar
-          sort={displayedSort}
+          sort={sort}
           view={view}
-          sortDisabled={result.initialLoading || result.transitioning}
+          sortDisabled={listing.initialLoading}
           onSortChange={(nextSort) => {
-            scrollOnCommitRef.current = true;
             setParams(
               withListingNavigation(params, { sort: nextSort, page: 1 }),
               { replace: true }
@@ -119,10 +165,10 @@ export default function ListingPage() {
         ) : showEmptyError ? (
           <ListingLoadError
             hasContent={false}
-            onRetry={result.retry}
+            onRetry={listing.retry}
             emptyClassName="admin-empty-state admin-empty-state--plain listing-empty-state"
           />
-        ) : snapshot && items.length === 0 ? (
+        ) : !hasContent ? (
           <AdminEmptyVisual
             variant={hasActiveFilter ? "no-results" : "empty"}
             text={hasActiveFilter ? "未查询到" : "当前库中没有视频"}
@@ -130,41 +176,34 @@ export default function ListingPage() {
           />
         ) : (
           <>
-            {showContentError && (
-              <ListingLoadError
-                hasContent
-                displayedPage={displayedPage}
-                onRetry={result.retry}
-              />
-            )}
-            <VideoGrid
+            <VirtualVideoGrid
               videos={items}
               compact={view === "compact"}
-              refreshMode={
-                result.transitioning
-                  ? "blocking"
-                  : result.revalidating
-                  ? "background"
-                  : undefined
-              }
               eagerCount={eagerCount}
               highPriorityCount={1}
+              onRangeChange={handleRangeChange}
             />
-          </>
-        )}
 
-        {snapshot && (
-          <Pagination
-            page={displayedPage}
-            pageSize={snapshot.query.pageSize}
-            total={snapshot.total}
-            disabled={result.transitioning}
-            pendingPage={result.transitioning ? page : undefined}
-            onChange={(nextPage) => {
-              scrollOnCommitRef.current = true;
-              setParams(withListingPage(params, nextPage));
-            }}
-          />
+            {showTailError ? (
+              <ListingLoadError hasContent onRetry={listing.retry} />
+            ) : loadingMore ? (
+              <div
+                className="listing-infinite-status"
+                role="status"
+                aria-live="polite"
+              >
+                <span
+                  className="video-grid-refresh-overlay__spinner"
+                  aria-hidden="true"
+                />
+                <span>正在加载更多</span>
+              </div>
+            ) : listing.exhausted ? (
+              <div className="listing-infinite-status listing-infinite-status--end">
+                没有更多了
+              </div>
+            ) : null}
+          </>
         )}
       </div>
     </AppShell>

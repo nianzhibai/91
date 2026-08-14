@@ -57,6 +57,22 @@
   padding: 72px 16px 24px;
 }
 
+/* 无限滚动列表尾部的加载中 / 到底提示 */
+.listing-infinite-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: 56px;
+  padding: var(--space-4) 0;
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+}
+
+.listing-infinite-status--end {
+  color: var(--text-faint);
+}
+
 /* =========================================================
  * Section header
  * ========================================================= */

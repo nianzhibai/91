@@ -20,6 +20,26 @@
   }
 }
 
+/* ----- 虚拟滚动 ----- */
+/* 占位容器撑出完整列表的高度，行在其中按测量位置绝对定位。 */
+.video-grid-virtual-canvas {
+  position: relative;
+  width: 100%;
+}
+
+.video-grid--virtual-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  /* 行之间的间距由行自身的下内边距提供，这样测到的行高已经含间距。 */
+  padding-bottom: var(--space-4);
+}
+
+.video-grid--virtual-row.is-compact {
+  padding-bottom: var(--space-2);
+}
+
 /* ----- Compact 列表视图 ----- */
 .video-grid.is-compact {
   display: flex;
@@ -848,6 +868,10 @@
   .video-grid.is-compact .video-card__link {
     grid-template-columns: 130px minmax(0, 1fr);
     gap: 4px var(--space-2);
+  }
+
+  .video-grid--virtual-row:not(.is-compact) {
+    padding-bottom: 10px;
   }
 
   .video-grid-loading.is-compact .skeleton-card {
