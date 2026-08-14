@@ -166,6 +166,7 @@ test("the list stops loading on a short page and on a reached total", () => {
   assert.equal(
     isListingExhausted({
       received: 20,
+      added: 20,
       batchSize: 20,
       requestedCount: 40,
       total: 0,
@@ -187,22 +188,63 @@ test("a failed batch keeps the loaded items and stops auto-loading", () => {
   assert.equal(infiniteListingHasMore(failed), false);
 });
 
-test("the next request continues on a page boundary derived from requested count", () => {
-  assert.deepEqual(nextListingRequest(loaded()), { page: 2, size: 20 });
-  assert.deepEqual(
-    nextListingRequest(loaded({ requestedCount: 120 })),
-    { page: 7, size: 20 },
-    "恢复现场后的大请求也必须落在页边界上"
-  );
-  assert.equal(
-    nextListingRequest(loaded({ requestedCount: 25 })),
-    null,
-    "偏移量不是页大小整数倍时无法用 page/size 表达"
-  );
+test("the next request continues from the requested count", () => {
+  assert.deepEqual(nextListingRequest(loaded()), { offset: 20, size: 20 });
+  assert.deepEqual(nextListingRequest(loaded({ requestedCount: 120 })), {
+    offset: 120,
+    size: 20,
+  });
   assert.equal(nextListingRequest(loaded({ pageSize: 0 })), null);
-  assert.deepEqual(
-    nextListingRequest(emptyInfiniteListingState(KEY, 14)),
-    { page: 1, size: 14 }
+  assert.equal(
+    nextListingRequest(loaded({ exhausted: true })),
+    null,
+    "收尾之后不再有下一批"
+  );
+  assert.deepEqual(nextListingRequest(emptyInfiniteListingState(KEY, 14)), {
+    offset: 0,
+    size: 14,
+  });
+});
+
+test("a rotating feed stops once a whole batch is already on screen", () => {
+  const rotating = loaded({ total: 0 });
+  const repeated = infiniteListingReducer(rotating, {
+    type: "load-success",
+    requestID: 1,
+    offset: 20,
+    batchSize: 20,
+    items: videos(0, 20),
+    total: 0,
+    receivedAt: 2_000,
+    stopOnDuplicateBatch: true,
+  });
+
+  assert.equal(repeated.items.length, 20, "整批都是重复内容，列表没有增长");
+  assert.equal(repeated.exhausted, true);
+
+  // 分页 feed 的页边界会随新入库内容移动，重复一整页不代表到底了。
+  const pagedRepeat = infiniteListingReducer(rotating, {
+    type: "load-success",
+    requestID: 1,
+    offset: 20,
+    batchSize: 20,
+    items: videos(0, 20),
+    total: 0,
+    receivedAt: 2_000,
+  });
+  assert.equal(pagedRepeat.exhausted, false);
+
+  assert.equal(
+    isListingExhausted({
+      received: 20,
+      added: 5,
+      batchSize: 20,
+      requestedCount: 40,
+      total: 0,
+      stopOnDuplicateBatch: true,
+    }),
+    false,
+    "还有新内容就继续转"
   );
 });
 

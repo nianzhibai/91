@@ -59,6 +59,8 @@ export type InfiniteListingAction =
       items: VideoItem[];
       total: number;
       receivedAt: number;
+      /** 服务端轮换 feed 没有终点，整批都是重复内容时就收尾。 */
+      stopOnDuplicateBatch?: boolean;
     }
   | { type: "load-failure"; requestID: number; error: Error };
 
@@ -157,9 +159,11 @@ export function infiniteListingReducer(
         requestedCount,
         exhausted: isListingExhausted({
           received: action.items.length,
+          added: items.length - state.items.length,
           batchSize: action.batchSize,
           requestedCount,
           total: action.total,
+          stopOnDuplicateBatch: action.stopOnDuplicateBatch,
         }),
         status: "ready",
         error: null,
@@ -178,28 +182,29 @@ export function infiniteListingReducer(
  */
 export function isListingExhausted(input: {
   received: number;
+  /** 去重后真正新增的条数。 */
+  added: number;
   batchSize: number;
   requestedCount: number;
   total: number;
+  /** 轮换 feed 没有 total，也永远返回满批，只能靠"整批都重复"收尾。 */
+  stopOnDuplicateBatch?: boolean;
 }): boolean {
   if (input.received < input.batchSize) return true;
+  if (input.stopOnDuplicateBatch && input.added === 0) return true;
   return input.total > 0 && input.requestedCount >= input.total;
 }
 
-export type InfiniteListingRequest = { page: number; size: number };
+export type InfiniteListingRequest = { offset: number; size: number };
 
-/**
- * 下一批的分页参数。偏移量必须是页大小的整数倍，否则 page/size 接口无法
- * 表达这个区间——恢复现场时的大请求也因此被约束成页大小的整数倍。
- */
+/** 下一批要取的区间；具体怎么翻页由各个 feed source 自己决定。 */
 export function nextListingRequest(
   state: InfiniteListingState
 ): InfiniteListingRequest | null {
   if (state.exhausted) return null;
-  const pageSize = state.pageSize;
-  if (!Number.isInteger(pageSize) || pageSize <= 0) return null;
-  if (state.requestedCount % pageSize !== 0) return null;
-  return { page: state.requestedCount / pageSize + 1, size: pageSize };
+  const size = state.pageSize;
+  if (!Number.isInteger(size) || size <= 0) return null;
+  return { offset: state.requestedCount, size };
 }
 
 export function infiniteListingHasMore(state: InfiniteListingState): boolean {

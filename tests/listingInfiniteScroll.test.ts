@@ -145,16 +145,21 @@ test("the infinite listing hook keeps one in-flight batch per query", () => {
   );
   assert.match(
     infiniteListingHookSource,
-    /if \(!options\.force && current\.status === "error"\) return;/
+    /if \(!batchOptions\.force && current\.status === "error"\) return;/
   );
   // 首屏失败整段重来，尾部失败只重试失败的那一批。
   assert.match(
     infiniteListingHookSource,
-    /if \(stateRef\.current\.items\.length === 0\) \{\s*setRetryVersion\(\(version\) => version \+ 1\);\s*return;\s*\}\s*requestBatch\(\{ force: true \}\);/
+    /if \(stateRef\.current\.items\.length === 0\) \{\s*reload\(\);\s*return;\s*\}\s*requestBatch\(\{ force: true \}\);/
+  );
+  // 轮换 feed 的游标在服务端且不幂等，补回来的不是原来那批视频。
+  assert.match(
+    infiniteListingHookSource,
+    /const restoreCount = sourceRef\.current\.supportsRestore\s*\? restoreCountRef\.current\s*:\s*0;/
   );
   assert.match(
     infiniteListingHookSource,
-    /initialBatchSize\(restoreCountRef\.current, query\.pageSize\)/
+    /size: initialBatchSize\(restoreCount, batchSize\),/
   );
 });
 

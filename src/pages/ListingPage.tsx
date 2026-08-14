@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useSearchParams } from "react-router";
 import { AdminEmptyVisual } from "@/admin/AdminEmptyVisual";
 import { AppShell } from "@/components/AppShell";
@@ -12,7 +12,7 @@ import {
   VirtualVideoGrid,
   type VirtualGridRange,
 } from "@/components/VirtualVideoGrid";
-import { infiniteListingKey } from "@/lib/infiniteListing";
+import { listingFeedSource } from "@/lib/infiniteFeedSource";
 import {
   readListingSort,
   readListingView,
@@ -48,18 +48,18 @@ export default function ListingPage() {
   const view = readListingView(params);
   const isMobile = useIsMobile();
   const pageSize = isMobile ? MOBILE_VIDEO_PAGE_SIZE : DESKTOP_PAGE_SIZE;
-  const queryKey = infiniteListingKey({ q: keyword, tag, sort, pageSize });
+  const source = useMemo(
+    () => listingFeedSource({ q: keyword, tag, sort, pageSize }),
+    [keyword, tag, sort, pageSize]
+  );
+  const queryKey = source.key;
 
   const restoreTarget = useListingRestoreTarget({
     historyKey: location.key,
     queryKey,
     pageSize,
   });
-  const listing = useInfiniteListing({
-    q: keyword,
-    tag,
-    sort,
-    pageSize,
+  const listing = useInfiniteListing(source, {
     restoreCount: restoreTarget.count,
   });
   useListingScrollRestore({

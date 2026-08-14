@@ -40,17 +40,26 @@ function ruleBody(css: string, selector: string): string {
 
 test("home page refresh button shares back-to-top slot until back-to-top is visible", () => {
   assert.match(homePageSource, /import \{ RefreshCw \} from "lucide-react"/);
-  assert.match(homePageSource, /let cachedLatest: VideoItem\[\] \| null = null;/);
-  assert.match(homePageSource, /const refreshHome = useCallback\(async \(\) =>/);
-  assert.match(homePageSource, /fetchHomeVideos\(DESKTOP_COUNT\)/);
-  assert.match(homePageSource, /fetchLatestHomeVideos\(displayCountRef\.current\)/);
-  assert.match(homePageSource, /const DESKTOP_COUNT = 12;/);
-  assert.match(homePageSource, /const MOBILE_COUNT = 8;/);
+  // 刷新只对随机推荐有意义：最新视频是时间序，重抽一轮没有区别。
+  assert.match(
+    homePageSource,
+    /const showRefresh = !hasActiveFilter && feed === "recommend";/
+  );
+  assert.match(homePageSource, /const refreshing = showRefresh && homeFeed\.initialLoading;/);
+  assert.match(homePageSource, /\{showRefresh && \(/);
+  assert.match(
+    homePageSource,
+    /const refreshHome = useCallback\(\(\) => \{\s*window\.scrollTo\(\{ top: 0, behavior: "auto" \}\);\s*reloadFeed\(\);/
+  );
   assert.match(homePageSource, /const HOME_SEARCH_DESKTOP_PAGE_SIZE = 20;/);
-  assert.match(homePageSource, /const displayCount = isMobile \? MOBILE_COUNT : DESKTOP_COUNT;/);
-  assert.match(homePageSource, /const displayCountRef = useRef\(displayCount\);/);
-  assert.match(homePageSource, /const previousDisplayCountRef = useRef\(displayCount\);/);
-  assert.match(homePageSource, /cachedLatest\.length < displayCountRef\.current/);
+  assert.match(homePageSource, /const HOME_FEED_DESKTOP_BATCH_SIZE = 20;/);
+  assert.match(
+    homePageSource,
+    /const feedBatchSize = isMobile\s*\? MOBILE_VIDEO_PAGE_SIZE\s*:\s*HOME_FEED_DESKTOP_BATCH_SIZE;/
+  );
+  // 推荐流的取数和缓存都收敛到共享的无限滚动 hook 里。
+  assert.doesNotMatch(homePageSource, /cachedRanking|cachedLatest/);
+  assert.doesNotMatch(homePageSource, /fetchHomeVideos|fetchLatestHomeVideos/);
   assert.doesNotMatch(homePageSource, /LATEST_POOL_SIZE|HOME_LATEST_CURSOR_KEY/);
   assert.doesNotMatch(homePageSource, /fetchListing\(1,\s*96/);
   assert.doesNotMatch(homePageSource, /HOME_RECENT_KEY/);
@@ -77,31 +86,16 @@ test("home page refresh button shares back-to-top slot until back-to-top is visi
   assert.match(backToTopSource, /onVisibilityChange\?\.\(nextVisible\)/);
 });
 
-test("home page reuses the cached latest batch when returning from detail", () => {
-  assert.match(homePageSource, /const \[latestVideos,\s*setLatestVideos\] = useState<VideoItem\[\]>\(cachedLatest \?\? \[\]\)/);
-  assert.match(homePageSource, /const \[latestLoading,\s*setLatestLoading\] = useState\(cachedLatest === null\)/);
-  assert.match(homePageSource, /if \(cachedRanking === null\) \{\s*void loadRanking\(false\);/);
-  assert.match(homePageSource, /if \(cachedLatest === null\) \{\s*void loadLatest\(false\);/);
-  assert.match(homePageSource, /else if \(cachedLatest\.length < displayCountRef\.current\) \{\s*void loadLatest\(true\);/);
-  assert.match(homePageSource, /setLatestVideos\(cachedLatest\)/);
+test("home page keeps its recommendation state in the shared feed session", () => {
+  // 返回首页时的续播、去重、中断过期请求都由 useInfiniteListing 负责，
+  // 页面自己不再维护模块级缓存和请求版本号。
+  assert.match(homePageSource, /const homeFeed = useInfiniteListing\(feedSource, \{/);
+  assert.match(homePageSource, /enabled: !hasActiveFilter,/);
+  assert.match(homePageSource, /restoreCount: restoreTarget\.count,/);
+  assert.doesNotMatch(homePageSource, /rankingRequestVersion|latestRequestVersion|homeRequestVersion/);
+  assert.doesNotMatch(homePageSource, /loadRanking|loadLatest|refreshLatest/);
   assert.doesNotMatch(homePageSource, /HOME_CACHE_TTL_MS|cacheIsFresh|cachedRankingAt|cachedLatestAt/);
   assert.doesNotMatch(homePageSource, /localStorage/);
-});
-
-test("widening the viewport refills only the latest section", () => {
-  const effectStart = homePageSource.indexOf(
-    "const previousCount = previousDisplayCountRef.current;"
-  );
-  const effectEnd = homePageSource.indexOf("  useEffect(() => {", effectStart);
-  assert.ok(effectStart >= 0 && effectEnd > effectStart);
-  const wideningEffect = homePageSource.slice(effectStart, effectEnd);
-
-  assert.match(homePageSource, /const rankingRequestVersion = useRef\(0\)/);
-  assert.match(homePageSource, /const latestRequestVersion = useRef\(0\)/);
-  assert.match(homePageSource, /const refreshLatest = useCallback\(\(\) => loadLatest\(true\), \[loadLatest\]\)/);
-  assert.match(wideningEffect, /latestLoading \|\| latestRevalidating/);
-  assert.match(wideningEffect, /void refreshLatest\(\)/);
-  assert.doesNotMatch(wideningEffect, /refreshHome|loadRanking|fetchHomeVideos/);
 });
 
 test("home page reserves tag cloud space while tags load and uses one empty library state", () => {
@@ -219,7 +213,6 @@ test("home page reserves tag cloud space while tags load and uses one empty libr
   assert.doesNotMatch(searchCss, /\.search-panel--uiverse \.search-panel__reset\.is-visible/);
   assert.doesNotMatch(searchCss, /\.search-panel--uiverse \.search-panel__submit\s*\{/);
 
-  assert.match(homePageSource, /const homeLoading = rankingLoading \|\| latestLoading/);
   assert.match(homePageSource, /import \{ AdminEmptyVisual \} from "@\/admin\/AdminEmptyVisual"/);
   assert.doesNotMatch(homePageSource, /const \[searchQuery, setSearchQuery\] = useState\(""\)/);
   assert.match(homePageSource, /const \[searchParams, setSearchParams\] = useSearchParams\(\)/);
@@ -247,17 +240,14 @@ test("home page reserves tag cloud space while tags load and uses one empty libr
   assert.match(homePageSource, /<Pagination[\s\S]*?page=\{displayedSearchPage\}[\s\S]*?pageSize=\{searchSnapshot\.query\.pageSize\}/);
   assert.match(homePageSource, /refreshMode=\{[\s\S]*?searchResult\.transitioning[\s\S]*?"blocking"[\s\S]*?searchResult\.revalidating[\s\S]*?"background"/);
   assert.match(homePageSource, /<ListingLoadError[\s\S]*?displayedPage=\{displayedSearchPage\}/);
-  assert.match(homePageSource, /const hasAnyVideos = ranking\.length > 0 \|\| latest\.length > 0/);
-  assert.match(homePageSource, /const \[latestError, setLatestError\] = useState\(false\)/);
-  assert.match(homePageSource, /const hasHomeError = rankingError \|\| latestError/);
-  assert.match(homePageSource, /const showEmptyHome = !homeLoading && !hasHomeError && !hasAnyVideos/);
-  assert.match(homePageSource, /const homeRequestVersion = useRef\(0\)/);
-  assert.match(homePageSource, /if \(requestVersion !== homeRequestVersion\.current\) return/);
-  assert.match(homePageSource, /emptyText=\{latestError \? "最新视频加载失败，请刷新重试" : undefined\}/);
-  assert.doesNotMatch(homePageSource, /cachedRanking = null;\s*setRankingVideos\(\[\]\);\s*setRankingError\(true\)/);
-  assert.match(homePageSource, /\{hasAnyVideos \|\| hasActiveFilter \? \([\s\S]*?<TagCloud linkBasePath="\/" \/>[\s\S]*?<div className="tag-cloud-container is-reserved" aria-hidden="true" \/>/);
-  assert.match(homePageSource, /<SectionHeader title="随机推荐" \/>/);
-  assert.match(homePageSource, /<SectionHeader title="最新视频" \/>/);
+  assert.match(homePageSource, /const feedHasContent = feedItems\.length > 0/);
+  assert.match(
+    homePageSource,
+    /\{feedHasContent \|\| hasActiveFilter \? \([\s\S]*?<TagCloud linkBasePath="\/" \/>[\s\S]*?<div className="tag-cloud-container is-reserved" aria-hidden="true" \/>/
+  );
+  // 两个推荐列表改成一个 tab 栏，不再各占一个 section。
+  assert.match(homePageSource, /<HomeFeedTabs\s+feed=\{feed\}/);
+  assert.doesNotMatch(homePageSource, /<SectionHeader/);
   assert.doesNotMatch(homePageSource, /随机展示/);
   assert.doesNotMatch(homePageSource, /共 \$\{latest\.length\} 个/);
   assert.match(homePageSource, /className="container page-section home-discovery-section"/);

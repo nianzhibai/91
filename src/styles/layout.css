@@ -57,6 +57,55 @@
   padding: 72px 16px 24px;
 }
 
+/* 首页推荐/最新的 tab 栏 */
+.home-feed-tabs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  margin: var(--space-3) 0 var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.home-feed-tabs__tab {
+  position: relative;
+  padding: 0 2px 10px;
+  background: transparent;
+  font-size: var(--font-lg);
+  font-weight: var(--weight-semibold);
+  color: var(--text-muted);
+  transition: color var(--transition-fast);
+}
+
+.home-feed-tabs__tab:hover {
+  color: var(--text-strong);
+}
+
+.home-feed-tabs__tab.is-active {
+  color: var(--text-strong);
+}
+
+.home-feed-tabs__tab.is-active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent-gradient);
+}
+
+@media (max-width: 640px) {
+  .home-feed-tabs {
+    gap: var(--space-4);
+    margin-top: var(--space-2);
+  }
+
+  .home-feed-tabs__tab {
+    font-size: var(--font-md);
+  }
+}
+
 /* 无限滚动列表尾部的加载中 / 到底提示 */
 .listing-infinite-status {
   display: flex;

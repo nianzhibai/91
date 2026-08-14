@@ -56,11 +56,15 @@ test("only likely first-viewport thumbnails receive eager and high priority hint
   assert.match(thumbnailSource, /alt=""/);
   assert.match(gridSource, /eager=\{index < eagerCount\}/);
   assert.match(gridSource, /highPriority=\{index < highPriorityCount\}/);
-  assert.match(homeSource, /<SectionHeader title="随机推荐"[\s\S]*?eagerCount=\{eagerCount\}[\s\S]*?highPriorityCount=\{1\}/);
-  assert.match(homeSource, /<SectionHeader title="最新视频"[\s\S]*?<VideoGrid[\s\S]*?videos=\{latest\}[\s\S]*?skeletonCount=\{displayCount\}/);
-  assert.doesNotMatch(
-    homeSource.match(/<SectionHeader title="最新视频"[\s\S]*?<\/div>/)?.[0] ?? "",
-    /eagerCount|highPriorityCount/
+  // 首页两个 tab 共用一个虚拟网格，优先级提示只给首屏那几张。
+  assert.match(
+    homeSource,
+    /<VirtualVideoGrid\s+videos=\{feedItems\}\s+eagerCount=\{eagerCount\}\s+highPriorityCount=\{1\}/
+  );
+  assert.match(homeSource, /const eagerCount = isMobile \? 2 : 4;/);
+  assert.match(
+    homeSource,
+    /<VideoGrid videos=\{\[\]\} loading skeletonCount=\{feedBatchSize\} \/>/
   );
 });
 

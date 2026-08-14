@@ -119,7 +119,10 @@ test("public video lists use fourteen mobile and twenty desktop items per batch"
   assert.match(responsiveSource, /export const MOBILE_VIDEO_PAGE_SIZE = 14;/);
   assert.match(listingPageSource, /const DESKTOP_PAGE_SIZE = 20;/);
   assert.match(listingPageSource, /const pageSize = isMobile \? MOBILE_VIDEO_PAGE_SIZE : DESKTOP_PAGE_SIZE;/);
-  assert.match(listingPageSource, /useInfiniteListing\(\{[\s\S]*?pageSize,/);
+  assert.match(
+    listingPageSource,
+    /listingFeedSource\(\{ q: keyword, tag, sort, pageSize \}\)/
+  );
   assert.match(listingPageSource, /skeletonCount=\{pageSize\}/);
 });
 

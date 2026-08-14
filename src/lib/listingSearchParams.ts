@@ -72,6 +72,26 @@ export function withListingView(
   return next;
 }
 
+export type HomeFeedKey = "recommend" | "latest";
+
+/** 首页推荐/最新两个 tab 记在 URL 里，前进后退才能回到原来那个 tab。 */
+export function readHomeFeed(params: URLSearchParams): HomeFeedKey {
+  return params.get("feed") === "latest" ? "latest" : "recommend";
+}
+
+export function withHomeFeed(
+  params: URLSearchParams,
+  feed: HomeFeedKey
+): URLSearchParams {
+  const next = new URLSearchParams(params);
+  if (feed === "latest") {
+    next.set("feed", "latest");
+  } else {
+    next.delete("feed");
+  }
+  return next;
+}
+
 export function withListingNavigation(
   params: URLSearchParams,
   patch: ListingNavigationPatch
