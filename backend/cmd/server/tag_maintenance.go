@@ -286,14 +286,14 @@ func collectTagTitleClusters(videos []*catalog.Video) [][]*catalog.Video {
 		if len(keys) == 0 {
 			continue
 		}
-		buckets := titlePrefixBuckets(keys, 12)
+		buckets := mediasim.TitlePrefixBuckets(keys, 12)
 		if len(buckets) == 0 {
 			continue
 		}
 		candidates = append(candidates, tagClusterCandidate{
 			video:   video,
 			keys:    keys,
-			qgrams:  titleQGrams(keys, 4),
+			qgrams:  mediasim.TitleQGrams(keys, 4),
 			buckets: buckets,
 		})
 	}
@@ -304,13 +304,13 @@ func collectTagTitleClusters(videos []*catalog.Video) [][]*catalog.Video {
 		return candidates[i].video.ID < candidates[j].video.ID
 	})
 
-	sets := newVideoMaintenanceDisjointSet(len(candidates))
+	sets := newTagClusterDisjointSet(len(candidates))
 	bucketIndex := make(map[string][]int)
 	seenPairs := make(map[uint64]struct{})
 	for i, right := range candidates {
 		for _, bucket := range right.buckets {
 			for _, j := range bucketIndex[bucket] {
-				pairKey := videoMaintenancePairKey(i, j)
+				pairKey := tagClusterPairKey(i, j)
 				if _, ok := seenPairs[pairKey]; ok {
 					continue
 				}
@@ -349,10 +349,10 @@ func collectTagTitleClusters(videos []*catalog.Video) [][]*catalog.Video {
 }
 
 func tagClusterTitlePrefilter(left, right tagClusterCandidate) bool {
-	if !titleLengthCouldReachThreshold(left.keys, right.keys, tagClusterTitleThreshold) {
+	if !mediasim.TitleLengthCouldReachThreshold(left.keys, right.keys, tagClusterTitleThreshold) {
 		return false
 	}
-	return qGramContainment(left.qgrams, right.qgrams) >= 0.45
+	return mediasim.QGramContainment(left.qgrams, right.qgrams) >= 0.45
 }
 
 func (a *App) propagateTagsAcrossTitleClusters(ctx context.Context) (int, error) {

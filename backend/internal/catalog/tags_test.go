@@ -1072,6 +1072,52 @@ func TestMigrateDoesNotRewriteAlreadySyncedVideoTags(t *testing.T) {
 	}
 }
 
+func TestMigrateRemovesRetiredVideoQuality(t *testing.T) {
+	ctx := context.Background()
+	path := t.TempDir() + "/catalog.db"
+	cat, err := Open(path)
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	now := time.Now()
+	if err := cat.UpsertVideo(ctx, &Video{
+		ID:          "video-quality",
+		DriveID:     "drive",
+		FileID:      "file-quality",
+		Title:       "retired quality video",
+		PublishedAt: now,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatalf("seed video: %v", err)
+	}
+	if _, err := cat.db.ExecContext(ctx, `ALTER TABLE videos ADD COLUMN quality TEXT`); err != nil {
+		t.Fatalf("add retired quality column: %v", err)
+	}
+	if _, err := cat.db.ExecContext(ctx, `UPDATE videos SET quality = 'HD' WHERE id = 'video-quality'`); err != nil {
+		t.Fatalf("seed retired quality: %v", err)
+	}
+	if err := cat.Close(); err != nil {
+		t.Fatalf("close catalog: %v", err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if hasColumn(t, reopened, "videos", "quality") {
+		t.Fatal("retired quality column was not dropped")
+	}
+	got, err := reopened.GetVideo(ctx, "video-quality")
+	if err != nil {
+		t.Fatalf("get migrated video: %v", err)
+	}
+	if got.Title != "retired quality video" {
+		t.Fatalf("migrated video lost data: %#v", got)
+	}
+}
+
 func TestMigrateRemovesRetiredLLMTaggingArtifacts(t *testing.T) {
 	ctx := context.Background()
 	path := t.TempDir() + "/catalog.db"
@@ -1256,6 +1302,9 @@ INSERT INTO videos (
 	}
 	if hasColumn(t, cat, "videos", "category") {
 		t.Fatal("legacy category column was not dropped")
+	}
+	if hasColumn(t, cat, "videos", "quality") {
+		t.Fatal("retired quality column was not dropped")
 	}
 	if indexExists(t, cat, "idx_legacy_videos_category") {
 		t.Fatal("legacy category index was not dropped")

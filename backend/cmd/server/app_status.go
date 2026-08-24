@@ -31,7 +31,7 @@ import (
 // 其它 drive 读 catalog 失败时退化成 false（不生成）：比 "默认开" 更安全 —— 读不到
 // 状态时倾向不消耗 ffmpeg；调用方会记日志，运维能立刻看到问题。
 func (a *App) teaserEnabledForDrive(ctx context.Context, driveID string) bool {
-	d, err := a.cat.GetDrive(ctx, driveID)
+	d, err := a.activeDriveConfig(ctx, driveID)
 	if err != nil {
 		if driveID == localupload.DriveID && errors.Is(err, sql.ErrNoRows) {
 			return true
@@ -260,17 +260,6 @@ func (a *App) clearCrawlerUploadProgress(driveID string) bool {
 	return ok
 }
 
-func (a *App) clearAllCrawlerUploadProgress() []string {
-	a.uploadProgressMu.Lock()
-	ids := make([]string, 0, len(a.uploadProgress))
-	for id := range a.uploadProgress {
-		ids = append(ids, id)
-	}
-	a.uploadProgress = nil
-	a.uploadProgressMu.Unlock()
-	return ids
-}
-
 func generationStatusFromPreview(status preview.TaskStatus) api.GenerationStatus {
 	state := status.State
 	if state == "" {
@@ -331,6 +320,20 @@ func (a *App) startDriveTranscode(ctx context.Context, driveID string) (bool, st
 	if driveID == "" {
 		return false, "缺少存储 ID"
 	}
+	// Admission must precede every runtime/registry snapshot. Otherwise a
+	// concurrent save can remount the drive between Get and task registration,
+	// leaving this worker uploading through a retired provider instance.
+	taskCtx, done, admitted := a.registerDriveTaskContext(ctx, driveID, 0)
+	if !admitted {
+		return false, "该存储有配置等待生效，请稍后重试"
+	}
+	taskOwned := true
+	defer func() {
+		if taskOwned {
+			done()
+		}
+	}()
+
 	drv, ok := a.registry.Get(driveID)
 	if !ok {
 		return false, "存储未挂载或不可用"
@@ -357,22 +360,27 @@ func (a *App) startDriveTranscode(ctx context.Context, driveID string) (bool, st
 		FFprobePath: a.cfg.Preview.FFprobePath,
 		WorkDir:     workDir,
 	}, a.cat, drv)
-	taskCtx, done := a.registerDriveTaskContext(ctx, driveID)
 	runCtx, cancel := context.WithCancel(taskCtx)
 	a.transcodeWorkers[driveID] = worker
 	a.transcodeCancels[driveID] = cancel
 	a.transcodeMu.Unlock()
+	taskOwned = false
 
 	go func() {
 		defer func() {
 			cancel()
-			done()
 			a.transcodeMu.Lock()
 			if a.transcodeWorkers[driveID] == worker {
 				delete(a.transcodeWorkers, driveID)
 				delete(a.transcodeCancels, driveID)
 			}
 			a.transcodeMu.Unlock()
+			done()
+			// Transcode may atomically add its output directory to skip_dir_ids.
+			// Refresh only after releasing this task, and recheck the gate after
+			// reading the catalog so a concurrent config transition keeps its old
+			// generation snapshot immutable.
+			a.refreshActiveDriveConfigIfStable(driveID)
 		}()
 		candidates, err := a.cat.ListTranscodeCandidates(runCtx, driveID, 0)
 		if err != nil {
@@ -387,23 +395,6 @@ func (a *App) startDriveTranscode(ctx context.Context, driveID string) (bool, st
 		worker.Run(runCtx, candidates)
 	}()
 	return true, ""
-}
-
-// stopAllDriveTranscodes 停掉所有盘的转码任务，返回被停的 driveID 列表。
-func (a *App) stopAllDriveTranscodes() []string {
-	a.transcodeMu.Lock()
-	cancels := a.transcodeCancels
-	a.transcodeCancels = nil
-	a.transcodeWorkers = nil
-	a.transcodeMu.Unlock()
-	ids := make([]string, 0, len(cancels))
-	for id, cancel := range cancels {
-		if cancel != nil {
-			cancel()
-		}
-		ids = append(ids, id)
-	}
-	return ids
 }
 
 // stopDriveTranscode 手动停止某盘的转码任务。返回是否有任务被停。

@@ -4,6 +4,7 @@ type Props = {
   src: string;
   eager?: boolean;
   highPriority?: boolean;
+  enabled?: boolean;
 };
 
 type ThumbnailState = "loading" | "retrying" | "ready" | "failed";
@@ -14,7 +15,18 @@ export function VideoThumbnail({
   src,
   eager = false,
   highPriority = false,
+  enabled = true,
 }: Props) {
+  if (!enabled) {
+    return (
+      <span
+        className="thumb-placeholder"
+        data-state="deferred"
+        aria-hidden="true"
+      />
+    );
+  }
+
   // One component instance owns exactly one source lifecycle. This makes a src
   // change synchronous instead of resetting state later in an effect, which can
   // otherwise overwrite an already-fired load event from the browser cache.

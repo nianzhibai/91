@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -205,8 +206,26 @@ func (a *AdminServer) handleUpsertCrawler(w http.ResponseWriter, r *http.Request
 	id := strings.TrimSpace(body.ID)
 	creds := map[string]string{}
 	var existing *catalog.Drive
+	var configLease DriveConfigUpdateLease
 	if id != "" {
-		existing, _ = a.Catalog.GetDrive(r.Context(), id)
+		var ok bool
+		configLease, ok = a.beginDriveConfigUpdate(w, id)
+		if !ok {
+			return
+		}
+		if configLease != nil {
+			defer configLease.Release()
+		}
+		existingDrive, err := a.Catalog.GetDrive(r.Context(), id)
+		switch {
+		case err == nil:
+			existing = existingDrive
+		case errors.Is(err, sql.ErrNoRows):
+			// Explicit ID for a new crawler.
+		default:
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
 	}
 	if existing != nil {
 		for k, v := range existing.Credentials {
@@ -238,6 +257,22 @@ func (a *AdminServer) handleUpsertCrawler(w http.ResponseWriter, r *http.Request
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Existing crawler saves patch only user-owned configuration keys. Runtime
+	// state such as last_crawl_at may be updated by the still-running old task
+	// after this request loaded its snapshot and must never be replaced wholesale.
+	persistedCredentials := merged
+	if existing != nil {
+		persistedCredentials = map[string]string{
+			"script_path":       merged["script_path"],
+			"script_source_url": merged["script_source_url"],
+			"proxy":             merged["proxy"],
+			"target_new":        merged["target_new"],
+			"upload_drive_id":   merged["upload_drive_id"],
+		}
+		if body.UploadProxy != nil {
+			persistedCredentials["upload_proxy"] = merged["upload_proxy"]
+		}
+	}
 	meta, err := scriptcrawler.ReadMetadata(merged["script_path"])
 	if err != nil {
 		http.Error(w, "脚本元信息无效："+err.Error(), http.StatusBadRequest)
@@ -258,30 +293,68 @@ func (a *AdminServer) handleUpsertCrawler(w http.ResponseWriter, r *http.Request
 			return
 		}
 		id = generatedID
+		var ok bool
+		configLease, ok = a.beginDriveConfigUpdate(w, id)
+		if !ok {
+			return
+		}
+		if configLease != nil {
+			defer configLease.Release()
+		}
+	}
+	updateScope := DriveConfigUpdateRuntime
+	teaserChanged := existing != nil && existing.TeaserEnabled != teaserEnabled
+	if teaserChanged {
+		updateScope |= DriveConfigUpdatePreview
+	}
+	if !authorizeDriveConfigUpdate(w, configLease, updateScope) {
+		return
 	}
 	d := &catalog.Drive{
 		ID:            id,
 		Kind:          scriptcrawler.Kind,
 		Name:          name,
 		RootID:        "/",
-		Credentials:   merged,
+		Credentials:   persistedCredentials,
 		Status:        "disconnected",
 		TeaserEnabled: teaserEnabled,
 	}
-	if err := a.Catalog.UpsertDrive(r.Context(), d); err != nil {
+	if err := a.Catalog.UpsertDriveWithOptions(r.Context(), d, catalog.DriveUpsertOptions{
+		ReplaceTeaserEnabled: body.TeaserEnabled != nil,
+		PatchCredentials:     existing != nil,
+	}); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	if existing != nil && existing.TeaserEnabled != teaserEnabled && a.OnTeaserEnabledChanged != nil {
-		a.OnTeaserEnabledChanged(id, teaserEnabled)
-	}
-	if a.OnDriveSaved != nil {
-		if err := a.OnDriveSaved(id); err != nil {
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id, "warning": err.Error()})
-			return
+	// A script can be overwritten in place while script_path stays unchanged;
+	// every crawler save must therefore rebuild its runtime configuration.
+	deferred, runtimeErr := commitDriveConfigUpdate(configLease, DriveConfigUpdateRuntime, func() error {
+		if a.OnDriveRuntimeConfigChanged == nil {
+			return nil
+		}
+		return a.OnDriveRuntimeConfigChanged(id)
+	})
+	if teaserChanged {
+		previewDeferred, applyErr := commitDriveConfigUpdate(configLease, DriveConfigUpdatePreview, func() error {
+			if a.OnTeaserEnabledChanged != nil {
+				a.OnTeaserEnabledChanged(id, teaserEnabled)
+			}
+			return nil
+		})
+		deferred = deferred || previewDeferred
+		if runtimeErr == nil {
+			runtimeErr = applyErr
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id})
+	resp := map[string]any{"ok": true, "id": id}
+	if deferred {
+		resp["deferred"] = true
+		resp["message"] = driveConfigDeferredMessage
+	}
+	if runtimeErr != nil {
+		resp["warning"] = runtimeErr.Error()
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (a *AdminServer) generateCrawlerID(ctx context.Context, name string) (string, error) {
@@ -294,7 +367,7 @@ func (a *AdminServer) generateCrawlerID(ctx context.Context, name string) (strin
 		if d == nil {
 			continue
 		}
-		if isCrawlerDriveKind(d.Kind) && strings.TrimSpace(d.Credentials["script_path"]) == "" {
+		if isCrawlerDriveKind(d.Kind) && !scriptcrawler.IsConfigured(d.Credentials) {
 			continue
 		}
 		used[d.ID] = true
@@ -632,7 +705,7 @@ func safeCrawlerScriptFileName(raw string) (string, error) {
 func (a *AdminServer) handleRunCrawler(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	d, err := a.Catalog.GetDrive(r.Context(), id)
-	if err != nil || d == nil || !isCrawlerDriveKind(d.Kind) || d.Credentials == nil || strings.TrimSpace(d.Credentials["script_path"]) == "" {
+	if err != nil || d == nil || !isCrawlerDriveKind(d.Kind) || !scriptcrawler.IsConfigured(d.Credentials) {
 		http.Error(w, "crawler not found", http.StatusNotFound)
 		return
 	}
@@ -669,11 +742,19 @@ func (a *AdminServer) handleSetCrawlerPaused(w http.ResponseWriter, r *http.Requ
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if d.Credentials == nil {
-		d.Credentials = map[string]string{}
+	configLease, ok := a.beginDriveConfigUpdate(w, id)
+	if !ok {
+		return
 	}
-	d.Credentials["paused"] = strconv.FormatBool(body.Paused)
-	if err := a.Catalog.UpsertDrive(r.Context(), d); err != nil {
+	if configLease != nil {
+		defer configLease.Release()
+	}
+	if !authorizeDriveConfigUpdate(w, configLease, 0) {
+		return
+	}
+	if err := a.Catalog.PatchDriveCredentials(r.Context(), id, map[string]string{
+		"paused": strconv.FormatBool(body.Paused),
+	}); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -784,6 +865,13 @@ func (a *AdminServer) handleStopCrawlerTasks(w http.ResponseWriter, r *http.Requ
 
 func (a *AdminServer) handleDeleteCrawler(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	configLease, ok := a.beginDriveConfigUpdate(w, id)
+	if !ok {
+		return
+	}
+	if configLease != nil {
+		defer configLease.Release()
+	}
 	d, err := a.Catalog.GetDrive(r.Context(), id)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, err)
@@ -793,8 +881,12 @@ func (a *AdminServer) handleDeleteCrawler(w http.ResponseWriter, r *http.Request
 		http.Error(w, "crawler not found", http.StatusNotFound)
 		return
 	}
-	if a.OnStopDriveTasks != nil {
-		a.OnStopDriveTasks(id)
+	if !authorizeDriveConfigUpdate(w, configLease, DriveConfigUpdateDestructive) {
+		return
+	}
+	if err := a.prepareDriveDelete(r.Context(), id); err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("stop crawler tasks before delete: %w", err))
+		return
 	}
 	if a.OnDriveDeleteCleanup == nil {
 		http.Error(w, "crawler video cleanup is not available", http.StatusInternalServerError)
@@ -816,6 +908,10 @@ func (a *AdminServer) handleDeleteCrawler(w http.ResponseWriter, r *http.Request
 	}
 	if a.OnDriveRemoved != nil {
 		a.OnDriveRemoved(id)
+	}
+	if err := completeDriveDelete(configLease); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
 	}
 	resp := map[string]any{
 		"ok":            true,

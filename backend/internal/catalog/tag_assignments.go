@@ -29,7 +29,7 @@ func (c *Catalog) getTagByID(ctx context.Context, id int64) (Tag, error) {
 	return scanTag(row)
 }
 
-// classifyTag 用单个标签的规则对全库做"只增"分类（新建/编辑标签后调用）。
+// classifyTag 用单个标签的规则对全库做“只增”分类（新建标签或显式补分类时调用）。
 func (c *Catalog) classifyTag(ctx context.Context, tag Tag) (int, error) {
 	matcher := tagging.NewMatcher([]tagging.TagRule{
 		{Label: tag.Label, Rule: effectiveRule(tag.Label, tag.Aliases, tag.MatchRules)},
@@ -86,6 +86,194 @@ FROM videos`)
 		}
 	}
 	return changedCount, nil
+}
+
+type tagAssignmentMutationAction uint8
+
+const (
+	tagAssignmentInsert tagAssignmentMutationAction = iota + 1
+	tagAssignmentUpdate
+	tagAssignmentDelete
+)
+
+type tagAssignmentMutation struct {
+	videoID           string
+	tagID             int64
+	action            tagAssignmentMutationAction
+	evidence          string
+	membershipChanged bool
+}
+
+// reconcileTagAssignments evaluates one edited tag against all unlocked videos
+// and changes only that tag's engine-owned assignment. Other tag definitions and
+// assignments are deliberately outside this operation.
+func (c *Catalog) reconcileTagAssignments(ctx context.Context, tag Tag) (int, error) {
+	matcher := tagging.NewMatcher([]tagging.TagRule{
+		{Label: tag.Label, Rule: effectiveRule(tag.Label, tag.Aliases, tag.MatchRules)},
+	})
+	rows, err := c.db.QueryContext(ctx, `
+SELECT v.id,
+       v.title,
+       COALESCE(v.author, ''),
+       COALESCE(v.file_name, ''),
+       COALESCE(v.dir_name, ''),
+       COALESCE(v.tags_manual, 0),
+       CASE WHEN vt.tag_id IS NULL THEN 0 ELSE 1 END,
+       COALESCE(vt.source, ''),
+       COALESCE(vt.evidence, '')
+  FROM videos v
+  LEFT JOIN video_tags vt
+    ON vt.video_id = v.id
+   AND vt.tag_id = ?
+ ORDER BY v.id ASC`, tag.ID)
+	if err != nil {
+		return 0, err
+	}
+
+	var mutations []tagAssignmentMutation
+	for rows.Next() {
+		var videoID, title, author, fileName, dirName string
+		var manual, assigned int
+		var source, evidence string
+		if err := rows.Scan(
+			&videoID,
+			&title,
+			&author,
+			&fileName,
+			&dirName,
+			&manual,
+			&assigned,
+			&source,
+			&evidence,
+		); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		if manual == 1 {
+			continue
+		}
+
+		matches := matcher.Match(matchFields(title, fileName, author, dirName)...)
+		if len(matches) == 0 {
+			normalizedSource := strings.ToLower(strings.TrimSpace(source))
+			if assigned == 1 && (normalizedSource == "auto" || normalizedSource == "legacy") {
+				mutations = append(mutations, tagAssignmentMutation{
+					videoID:           videoID,
+					tagID:             tag.ID,
+					action:            tagAssignmentDelete,
+					membershipChanged: true,
+				})
+			}
+			continue
+		}
+
+		nextEvidence := matches[0].Evidence()
+		if assigned == 0 {
+			mutations = append(mutations, tagAssignmentMutation{
+				videoID:           videoID,
+				tagID:             tag.ID,
+				action:            tagAssignmentInsert,
+				evidence:          nextEvidence,
+				membershipChanged: true,
+			})
+			continue
+		}
+		if !shouldReplaceVideoTagAssignment(source, "auto") {
+			continue
+		}
+		if normalizeVideoTagSource(source) == "auto" && evidence == nextEvidence {
+			continue
+		}
+		mutations = append(mutations, tagAssignmentMutation{
+			videoID:  videoID,
+			tagID:    tag.ID,
+			action:   tagAssignmentUpdate,
+			evidence: nextEvidence,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if len(mutations) == 0 {
+		return 0, nil
+	}
+
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	changedCount, membershipChanged, err := applyTagAssignmentMutationsTx(ctx, tx, mutations)
+	if err != nil {
+		return 0, err
+	}
+	for _, videoID := range membershipChanged {
+		if err := syncVideoTagsJSONTx(ctx, tx, videoID, false); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return changedCount, nil
+}
+
+func applyTagAssignmentMutationsTx(ctx context.Context, tx *sql.Tx, mutations []tagAssignmentMutation) (int, []string, error) {
+	changedCount := 0
+	createdAt := time.Now().UnixMilli()
+	membershipChanged := make([]string, 0, len(mutations))
+	membershipSeen := make(map[string]struct{}, len(mutations))
+	for _, mutation := range mutations {
+		var result sql.Result
+		var err error
+		switch mutation.action {
+		case tagAssignmentInsert:
+			result, err = tx.ExecContext(ctx, `
+INSERT OR IGNORE INTO video_tags (video_id, tag_id, source, evidence, created_at)
+VALUES (?, ?, 'auto', ?, ?)`, mutation.videoID, mutation.tagID, mutation.evidence, createdAt)
+		case tagAssignmentUpdate:
+			result, err = tx.ExecContext(ctx, `
+UPDATE video_tags
+   SET source = 'auto', evidence = ?
+ WHERE video_id = ?
+   AND tag_id = ?
+   AND lower(trim(COALESCE(source, ''))) IN ('', 'auto', 'legacy', 'propagated')`,
+				mutation.evidence, mutation.videoID, mutation.tagID)
+		case tagAssignmentDelete:
+			result, err = tx.ExecContext(ctx, `
+DELETE FROM video_tags
+ WHERE video_id = ?
+   AND tag_id = ?
+   AND lower(trim(COALESCE(source, ''))) IN ('auto', 'legacy')`, mutation.videoID, mutation.tagID)
+		default:
+			continue
+		}
+		if err != nil {
+			return 0, nil, err
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return 0, nil, err
+		}
+		if changed == 0 {
+			continue
+		}
+		changedCount++
+		if !mutation.membershipChanged {
+			continue
+		}
+		if _, ok := membershipSeen[mutation.videoID]; ok {
+			continue
+		}
+		membershipSeen[mutation.videoID] = struct{}{}
+		membershipChanged = append(membershipChanged, mutation.videoID)
+	}
+	return changedCount, membershipChanged, nil
 }
 
 func (c *Catalog) replaceVideoTags(ctx context.Context, videoID string, labels []string, source string, manual bool, createMissing bool) error {

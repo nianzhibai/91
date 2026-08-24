@@ -850,6 +850,107 @@ func TestRunSkipsConfiguredDirIDsAndDoesNotRecurse(t *testing.T) {
 	}
 }
 
+func TestDiscoverDoesNotWriteCatalogBeforeReconcile(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+
+	drv := &discoveryTestSource{entries: map[string][]drives.Entry{
+		"root": {{ID: "file-1", Name: "clip.mp4", Size: 123}},
+	}}
+	scan := New(cat, drv, []string{".mp4"}, nil, nil)
+	snapshot, stats, err := scan.Discover(ctx, "")
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if !snapshot.FullDriveScan || !snapshot.Complete() {
+		t.Fatalf("snapshot = full:%v complete:%v, want both true", snapshot.FullDriveScan, snapshot.Complete())
+	}
+	if stats.Scanned != 1 || len(snapshot.Files) != 1 {
+		t.Fatalf("discovery candidates = stats:%d files:%d, want 1", stats.Scanned, len(snapshot.Files))
+	}
+	if _, err := cat.GetVideo(ctx, "fake-drive-file-1"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("discover wrote catalog, lookup error = %v", err)
+	}
+
+	result, err := scan.Reconcile(ctx, snapshot)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if result.Stats.Added != 1 || len(result.NewVideos) != 1 {
+		t.Fatalf("reconcile result = added:%d new:%d, want 1", result.Stats.Added, len(result.NewVideos))
+	}
+	if _, err := cat.GetVideo(ctx, "fake-drive-file-1"); err != nil {
+		t.Fatalf("reconciled video missing: %v", err)
+	}
+}
+
+func TestScanNestedRateLimitDoesNotPartiallyReconcile(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+
+	drv := &discoveryTestSource{
+		entries: map[string][]drives.Entry{
+			"root": {
+				{ID: "file-before-error", Name: "clip.mp4", Size: 123},
+				{ID: "limited-dir", Name: "Limited", IsDir: true},
+			},
+		},
+		errors: map[string]error{
+			"limited-dir": &drives.RateLimitError{Provider: "fake", RetryAfter: time.Second},
+		},
+	}
+	result, err := New(cat, drv, []string{".mp4"}, nil, nil).Scan(ctx, "")
+	if _, ok := drives.RateLimitRetryAfter(err); !ok {
+		t.Fatalf("scan error = %v, want rate limit", err)
+	}
+	if result.Stats.Scanned != 1 || result.Stats.Added != 0 {
+		t.Fatalf("partial result = scanned:%d added:%d, want 1/0", result.Stats.Scanned, result.Stats.Added)
+	}
+	if _, err := cat.GetVideo(ctx, "fake-drive-file-before-error"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("fatal discovery partially reconciled catalog, lookup error = %v", err)
+	}
+}
+
+func TestScanReportsRecoverableDirectoryIssueSeparately(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+
+	drv := &discoveryTestSource{
+		entries: map[string][]drives.Entry{
+			"root": {
+				{ID: "broken-dir", Name: "Broken", IsDir: true},
+				{ID: "live-file", Name: "live.mp4", Size: 123},
+			},
+		},
+		errors: map[string]error{"broken-dir": errors.New("temporary list failure")},
+	}
+	result, err := New(cat, drv, []string{".mp4"}, nil, nil).Scan(ctx, "")
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if result.Snapshot.Complete() {
+		t.Fatal("snapshot with a failed directory reported complete")
+	}
+	if len(result.Snapshot.Issues) != 1 || result.Snapshot.Issues[0].Stage != IssueDiscovery {
+		t.Fatalf("discovery issues = %#v, want one discovery issue", result.Snapshot.Issues)
+	}
+	if result.Stats.Added != 1 || result.Stats.Errors != 1 {
+		t.Fatalf("result = added:%d errors:%d, want 1/1", result.Stats.Added, result.Stats.Errors)
+	}
+}
+
 // TestRunDoesNotEnforceLegacyMaxDepth 校验扫描会一直递归直到没有子目录，
 // 不再受旧的 max_depth 上限限制。构造 7 层嵌套（旧 default=5 时第 6+ 层会被截断），
 // 确保最深层的视频也能被入库。
@@ -894,6 +995,53 @@ func TestRunDoesNotEnforceLegacyMaxDepth(t *testing.T) {
 	}
 	if _, err := cat.GetVideo(ctx, "fake-drive-deep-file"); err != nil {
 		t.Fatalf("deepest video not added (legacy max_depth still enforced?): %v", err)
+	}
+}
+
+func TestRunSynchronizesExistingVideoDirectoryIdentity(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+
+	now := time.Now()
+	if err := cat.UpsertVideo(ctx, &catalog.Video{
+		ID:          "fake-drive-file-1",
+		DriveID:     "drive",
+		FileID:      "file-1",
+		FileName:    "episode.mp4",
+		ParentID:    "old-folder",
+		DirName:     "Old Series",
+		Title:       "episode",
+		Size:        123,
+		PublishedAt: now,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatalf("seed video: %v", err)
+	}
+
+	drv := &scannerTreeFakeDrive{entries: map[string][]drives.Entry{
+		"root": {{ID: "new-folder", Name: "New Series", IsDir: true}},
+		"new-folder": {{
+			ID:       "file-1",
+			ParentID: "incorrect-provider-parent",
+			Name:     "episode.mp4",
+			Size:     123,
+		}},
+	}}
+	if _, err := New(cat, drv, []string{".mp4"}, nil, nil).Run(ctx, ""); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+
+	got, err := cat.GetVideo(ctx, "fake-drive-file-1")
+	if err != nil {
+		t.Fatalf("get video: %v", err)
+	}
+	if got.ParentID != "new-folder" || got.DirName != "New Series" {
+		t.Fatalf("directory = parent %q name %q, want new-folder / New Series", got.ParentID, got.DirName)
 	}
 }
 
@@ -960,6 +1108,21 @@ func (d *scannerTreeFakeDrive) EnsureDir(context.Context, string) (string, error
 	return "", drives.ErrNotSupported
 }
 func (d *scannerTreeFakeDrive) RootID() string { return "root" }
+
+type discoveryTestSource struct {
+	entries map[string][]drives.Entry
+	errors  map[string]error
+}
+
+func (d *discoveryTestSource) Kind() string { return "fake" }
+func (d *discoveryTestSource) ID() string   { return "drive" }
+func (d *discoveryTestSource) List(_ context.Context, dirID string) ([]drives.Entry, error) {
+	if err := d.errors[dirID]; err != nil {
+		return nil, err
+	}
+	return d.entries[dirID], nil
+}
+func (d *discoveryTestSource) RootID() string { return "root" }
 
 // captureLog 把 log 包默认输出引到一个 bytes.Buffer，便于断言进度日志被打印；
 // 测试结束自动恢复。

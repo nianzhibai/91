@@ -409,16 +409,7 @@ func (w *Worker) ensureTargetDir(ctx context.Context) (string, error) {
 }
 
 func (w *Worker) addDirToSkipList(ctx context.Context, dirID string) error {
-	d, err := w.cat.GetDrive(ctx, w.drv.ID())
-	if err != nil {
-		return err
-	}
-	for _, existing := range d.SkipDirIDs {
-		if existing == dirID {
-			return nil
-		}
-	}
-	return w.cat.SetDriveSkipDirIDs(ctx, w.drv.ID(), append(d.SkipDirIDs, dirID))
+	return w.cat.EnsureDriveSkipDirID(ctx, w.drv.ID(), dirID)
 }
 
 // transcodedName includes a stable video-ID suffix. Basename alone is not a

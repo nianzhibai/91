@@ -286,15 +286,24 @@ func (a *AdminServer) blacklistSourceDeleteStatus(ctx context.Context) Blacklist
 }
 
 // handleRemoveBlacklist 允许视频在后续手动/定时任务中重新入库，不会立即触发
-// 扫盘或爬取。不可重新发现的来源会返回 409。
+// 扫盘或爬取。direct 策略的来源（本地上传）没有任何重新发现的途径，改为当场
+// 重建记录，因此先校验保留下来的源文件还在。不可恢复的来源仍然返回 409。
 func (a *AdminServer) handleRemoveBlacklist(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if err := a.Catalog.RemoveDeletedVideo(r.Context(), id); err != nil {
+	var err error
+	if a.OnRemoveBlacklist != nil {
+		err = a.OnRemoveBlacklist(r.Context(), id)
+	} else {
+		err = a.Catalog.RemoveDeletedVideo(r.Context(), id)
+	}
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeErr(w, http.StatusNotFound, err)
 			return
 		}
-		if errors.Is(err, catalog.ErrDeletedVideoNotRestorable) {
+		if errors.Is(err, catalog.ErrDeletedVideoNotRestorable) ||
+			errors.Is(err, catalog.ErrDeletedVideoSourceCheckRequired) ||
+			errors.Is(err, catalog.ErrDeletedVideoSourceMissing) {
 			writeErr(w, http.StatusConflict, err)
 			return
 		}

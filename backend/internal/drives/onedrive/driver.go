@@ -30,6 +30,8 @@ const (
 	defaultRenewAPIURL         = "https://api.oplist.org/onedrive/renewapi"
 	onedriveListCooldown       = 5 * time.Minute
 	onedriveListInterval       = 1 * time.Second
+	authModeOpenListAPI        = "openlist_api"
+	authModeCustomApp          = "custom_app"
 )
 
 var (
@@ -43,12 +45,23 @@ type Driver struct {
 	region        string
 	accessToken   string
 	refreshToken  string
+	authMode      string
+	clientID      string
+	clientSecret  string
 	isSharePoint  bool
 	siteID        string
 	apiBaseURL    string
 	renewAPIURL   string
+	oauthURL      string
 	client        *resty.Client
 	onTokenUpdate func(access, refresh string)
+
+	// tokenMu protects request snapshots while refreshMu makes refresh-token
+	// rotation single-flight. OAuth providers may invalidate a refresh token as
+	// soon as it is exchanged, so concurrent refreshes cannot be allowed.
+	tokenMu         sync.RWMutex
+	refreshMu       sync.Mutex
+	tokenGeneration uint64
 
 	listMu       sync.Mutex
 	lastListAt   time.Time
@@ -62,11 +75,15 @@ type Config struct {
 	Region        string
 	AccessToken   string
 	RefreshToken  string
+	AuthMode      string
+	ClientID      string
+	ClientSecret  string
 	IsSharePoint  bool
 	SiteID        string
 	OnTokenUpdate func(access, refresh string)
 
 	RenewAPIURL string
+	OAuthURL    string
 	APIBaseURL  string
 }
 
@@ -91,17 +108,36 @@ func New(c Config) *Driver {
 	if renewAPIURL == "" {
 		renewAPIURL = defaultRenewAPIURL
 	}
+	oauthURL := strings.TrimSpace(c.OAuthURL)
+	if oauthURL == "" {
+		oauthURL = strings.TrimRight(h.oauth, "/") + "/common/oauth2/v2.0/token"
+	}
+	clientID := strings.TrimSpace(c.ClientID)
+	clientSecret := strings.TrimSpace(c.ClientSecret)
+	authMode := strings.ToLower(strings.TrimSpace(c.AuthMode))
+	if authMode == "" {
+		if clientID != "" || clientSecret != "" {
+			authMode = authModeCustomApp
+		} else {
+			authMode = authModeOpenListAPI
+		}
+	}
 	return &Driver{
-		id:            c.ID,
-		rootID:        rootID,
-		region:        region,
-		accessToken:   strings.TrimSpace(c.AccessToken),
-		refreshToken:  strings.TrimSpace(c.RefreshToken),
-		isSharePoint:  c.IsSharePoint,
-		siteID:        strings.TrimSpace(c.SiteID),
-		apiBaseURL:    apiBaseURL,
-		renewAPIURL:   renewAPIURL,
-		onTokenUpdate: c.OnTokenUpdate,
+		id:              c.ID,
+		rootID:          rootID,
+		region:          region,
+		accessToken:     strings.TrimSpace(c.AccessToken),
+		refreshToken:    strings.TrimSpace(c.RefreshToken),
+		authMode:        authMode,
+		clientID:        clientID,
+		clientSecret:    clientSecret,
+		isSharePoint:    c.IsSharePoint,
+		siteID:          strings.TrimSpace(c.SiteID),
+		apiBaseURL:      apiBaseURL,
+		renewAPIURL:     renewAPIURL,
+		oauthURL:        oauthURL,
+		onTokenUpdate:   c.OnTokenUpdate,
+		tokenGeneration: 1,
 		client: resty.New().
 			SetTransport(scopedproxy.NewTransport(nil)).
 			SetTimeout(30*time.Second).
@@ -116,7 +152,7 @@ func (d *Driver) ID() string     { return d.id }
 func (d *Driver) RootID() string { return d.rootID }
 
 func (d *Driver) Init(ctx context.Context) error {
-	if d.refreshToken == "" {
+	if d.tokenSnapshot().refresh == "" {
 		return errors.New("onedrive init: refresh_token is required")
 	}
 	if d.isSharePoint && d.siteID == "" {
@@ -520,9 +556,10 @@ func (d *Driver) request(ctx context.Context, rawURL, method string, configure f
 }
 
 func (d *Driver) requestOnce(ctx context.Context, rawURL, method string, configure func(*resty.Request), out any, retry bool) error {
+	tokens := d.tokenSnapshot()
 	req := d.client.R().
 		SetContext(ctx).
-		SetHeader("Authorization", "Bearer "+d.accessToken)
+		SetHeader("Authorization", "Bearer "+tokens.access)
 	if configure != nil {
 		configure(req)
 	}
@@ -540,7 +577,7 @@ func (d *Driver) requestOnce(ctx context.Context, rawURL, method string, configu
 	}
 	if graphErr.Error.Code != "" {
 		if graphErr.Error.Code == "InvalidAuthenticationToken" && retry {
-			if err := d.refresh(ctx); err != nil {
+			if err := d.refresh(ctx, tokens); err != nil {
 				return err
 			}
 			return d.requestOnce(ctx, rawURL, method, configure, out, false)
@@ -556,12 +593,76 @@ func (d *Driver) requestOnce(ctx context.Context, rawURL, method string, configu
 	return nil
 }
 
-func (d *Driver) refresh(ctx context.Context) error {
+type tokenSnapshot struct {
+	access     string
+	refresh    string
+	generation uint64
+}
+
+func (d *Driver) tokenSnapshot() tokenSnapshot {
+	d.tokenMu.RLock()
+	defer d.tokenMu.RUnlock()
+	return tokenSnapshot{
+		access:     d.accessToken,
+		refresh:    d.refreshToken,
+		generation: d.tokenGeneration,
+	}
+}
+
+func (d *Driver) refresh(ctx context.Context, rejected ...tokenSnapshot) error {
+	d.refreshMu.Lock()
+	defer d.refreshMu.Unlock()
+
+	current := d.tokenSnapshot()
+	if len(rejected) > 0 &&
+		(current.generation != rejected[0].generation || current.access != rejected[0].access) {
+		// Another request already advanced the token while this caller waited.
+		return nil
+	}
+	if current.refresh == "" {
+		return errors.New("onedrive refresh token: refresh_token is required")
+	}
+
+	out, err := d.exchangeRefreshToken(ctx, current.refresh)
+	if err != nil {
+		return err
+	}
+	accessToken := strings.TrimSpace(out.AccessToken)
+	refreshToken := strings.TrimSpace(out.RefreshToken)
+	if accessToken == "" {
+		return errors.New("onedrive refresh token: empty access token")
+	}
+	if refreshToken == "" {
+		refreshToken = current.refresh
+	}
+	d.tokenMu.Lock()
+	d.accessToken = accessToken
+	d.refreshToken = refreshToken
+	d.tokenGeneration++
+	d.tokenMu.Unlock()
+	if d.onTokenUpdate != nil {
+		d.onTokenUpdate(accessToken, refreshToken)
+	}
+	return nil
+}
+
+func (d *Driver) exchangeRefreshToken(ctx context.Context, refreshToken string) (tokenResp, error) {
+	switch d.authMode {
+	case authModeCustomApp:
+		return d.exchangeCustomOAuthToken(ctx, refreshToken)
+	case authModeOpenListAPI:
+		return d.exchangeOpenListToken(ctx, refreshToken)
+	default:
+		return tokenResp{}, fmt.Errorf("onedrive refresh token: unsupported auth_mode %q", d.authMode)
+	}
+}
+
+func (d *Driver) exchangeOpenListToken(ctx context.Context, refreshToken string) (tokenResp, error) {
 	var out tokenResp
 	res, err := d.client.R().
 		SetContext(ctx).
 		SetQueryParams(map[string]string{
-			"refresh_ui": d.refreshToken,
+			"refresh_ui": refreshToken,
 			"server_use": "true",
 			"driver_txt": "onedrive_pr",
 		}).
@@ -569,32 +670,66 @@ func (d *Driver) refresh(ctx context.Context) error {
 		SetError(&out).
 		Get(d.renewAPIURL)
 	if err != nil {
-		return fmt.Errorf("onedrive refresh token: %w", err)
+		return tokenResp{}, fmt.Errorf("onedrive refresh token: %w", err)
 	}
 	if res.StatusCode() == http.StatusTooManyRequests {
-		return onedriveRateLimitError(res, "token refresh throttled")
+		return tokenResp{}, onedriveRateLimitError(res, "token refresh throttled")
 	}
 	if out.Text != "" {
-		return fmt.Errorf("onedrive refresh token: %s", out.Text)
+		return tokenResp{}, fmt.Errorf("onedrive refresh token: %s", out.Text)
 	}
 	if out.Error != "" {
 		if out.Description != "" {
-			return fmt.Errorf("onedrive refresh token: %s", out.Description)
+			return tokenResp{}, fmt.Errorf("onedrive refresh token: %s", out.Description)
 		}
-		return fmt.Errorf("onedrive refresh token: %s", out.Error)
+		return tokenResp{}, fmt.Errorf("onedrive refresh token: %s", out.Error)
 	}
 	if res.IsError() {
-		return fmt.Errorf("onedrive refresh token: status=%d body=%s", res.StatusCode(), strings.TrimSpace(res.String()))
+		return tokenResp{}, fmt.Errorf("onedrive refresh token: status=%d body=%s", res.StatusCode(), strings.TrimSpace(res.String()))
 	}
-	if out.AccessToken == "" || out.RefreshToken == "" {
-		return errors.New("onedrive refresh token: empty token")
+	if strings.TrimSpace(out.AccessToken) == "" || strings.TrimSpace(out.RefreshToken) == "" {
+		return tokenResp{}, errors.New("onedrive refresh token: empty token")
 	}
-	d.accessToken = out.AccessToken
-	d.refreshToken = out.RefreshToken
-	if d.onTokenUpdate != nil {
-		d.onTokenUpdate(out.AccessToken, out.RefreshToken)
+	return out, nil
+}
+
+func (d *Driver) exchangeCustomOAuthToken(ctx context.Context, refreshToken string) (tokenResp, error) {
+	if d.clientID == "" || d.clientSecret == "" {
+		return tokenResp{}, errors.New("onedrive refresh token: client_id and client_secret must be provided together")
 	}
-	return nil
+
+	var out tokenResp
+	res, err := d.client.R().
+		SetContext(ctx).
+		SetFormData(map[string]string{
+			"grant_type":    "refresh_token",
+			"client_id":     d.clientID,
+			"client_secret": d.clientSecret,
+			"refresh_token": refreshToken,
+		}).
+		SetResult(&out).
+		SetError(&out).
+		Post(d.oauthURL)
+	if err != nil {
+		return tokenResp{}, fmt.Errorf("onedrive refresh token: %w", err)
+	}
+	if res.StatusCode() == http.StatusTooManyRequests {
+		message := strings.TrimSpace(out.Description)
+		if message == "" {
+			message = "token refresh throttled"
+		}
+		return tokenResp{}, onedriveRateLimitError(res, message)
+	}
+	if out.Error != "" {
+		if out.Description != "" {
+			return tokenResp{}, fmt.Errorf("onedrive refresh token: %s", out.Description)
+		}
+		return tokenResp{}, fmt.Errorf("onedrive refresh token: %s", out.Error)
+	}
+	if res.IsError() {
+		return tokenResp{}, fmt.Errorf("onedrive refresh token: status=%d body=%s", res.StatusCode(), strings.TrimSpace(res.String()))
+	}
+	return out, nil
 }
 
 func isRateLimitResponse(res *resty.Response, code, _ string) bool {

@@ -1,17 +1,32 @@
-import { Suspense, lazy, useEffect, type ReactNode } from "react";
-import { Navigate, Route, Routes, useLocation } from "react-router";
+import {
+  Suspense,
+  lazy,
+  useEffect,
+  useLayoutEffect,
+  type ReactNode,
+} from "react";
+import {
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+  useNavigationType,
+} from "react-router";
 import { SkyStarfield } from "@/components/SkyStarfield";
+import { VideoDetailLoading } from "@/components/VideoDetailLoading";
 import { CrawlersPageLoading } from "@/admin/CrawlersPageLoading";
 import { DrivesPageLoading } from "@/admin/DrivesPageLoading";
+import { useAuth } from "@/admin/AuthContext";
 import { RequireAuth } from "@/admin/RequireAuth";
 import { RequireAdmin } from "@/admin/RequireAdmin";
+import { loadVideoDetailPage } from "@/lib/videoDetailRoute";
 import { rememberVideoReturnPath, routeToPath } from "@/lib/videoReturnPath";
 
 const HomePage = lazy(() => import("@/pages/HomePage"));
 const ListingPage = lazy(() => import("@/pages/ListingPage"));
 const ShortsPage = lazy(() => import("@/pages/ShortsPage"));
 const UploadPage = lazy(() => import("@/pages/UploadPage"));
-const VideoDetailPage = lazy(() => import("@/pages/VideoDetailPage"));
+const VideoDetailPage = lazy(loadVideoDetailPage);
 const SharedVideoPage = lazy(() => import("@/pages/SharedVideoPage"));
 
 const AdminLayout = lazy(() =>
@@ -69,6 +84,22 @@ function VideoReturnPathRecorder() {
   }, [location.pathname, location.search, location.hash]);
 
   return null;
+}
+
+function VideoDetailRouteFallback() {
+  const { isAdmin } = useAuth();
+  const navigationType = useNavigationType();
+
+  // The detail component normally owns this scroll reset, but its module may
+  // still be loading. Reset before the fallback paints so a click made far down
+  // a listing cannot land below the visible skeleton.
+  useLayoutEffect(() => {
+    if (navigationType !== "POP") {
+      window.scrollTo({ top: 0, behavior: "auto" });
+    }
+  }, [navigationType]);
+
+  return <VideoDetailLoading isAdmin={isAdmin} />;
 }
 
 export default function App() {
@@ -144,7 +175,7 @@ export default function App() {
           path="/video/:id"
           element={
             <RequireAuth>
-              <PageSuspense>
+              <PageSuspense fallback={<VideoDetailRouteFallback />}>
                 <VideoDetailPage />
               </PageSuspense>
             </RequireAuth>

@@ -74,6 +74,7 @@ type Driver struct {
 	uploadTempDir string
 
 	tokenMu sync.RWMutex
+	loginMu sync.Mutex
 
 	listMu     sync.Mutex
 	lastListAt time.Time
@@ -712,12 +713,13 @@ func (d *Driver) request(ctx context.Context, endpoint, method string, configure
 
 	rawURL := d.mainAPIBase + endpoint
 	for attempt := 0; attempt < 2; attempt++ {
+		accessToken := d.currentToken()
 		req := d.client.R().
 			SetContext(ctx).
 			SetHeaders(map[string]string{
 				"origin":        "https://www.123pan.com",
 				"referer":       d.referer,
-				"authorization": "Bearer " + d.currentToken(),
+				"authorization": "Bearer " + accessToken,
 				"user-agent":    d.userAgent,
 				"platform":      d.platform,
 				"app-version":   defaultAppVersion,
@@ -748,7 +750,7 @@ func (d *Driver) request(ctx context.Context, endpoint, method string, configure
 			return body, nil
 		}
 		if env.Code == 401 && attempt == 0 {
-			if err := d.login(ctx); err != nil {
+			if err := d.login(ctx, accessToken); err != nil {
 				return nil, err
 			}
 			continue
@@ -836,7 +838,15 @@ func parseRetryAfterHeader(raw string) time.Duration {
 	return 0
 }
 
-func (d *Driver) login(ctx context.Context) error {
+func (d *Driver) login(ctx context.Context, rejectedToken ...string) error {
+	d.loginMu.Lock()
+	defer d.loginMu.Unlock()
+	current := d.currentToken()
+	if (len(rejectedToken) > 0 && current != rejectedToken[0]) ||
+		(len(rejectedToken) == 0 && current != "") {
+		// A concurrent request already supplied or replaced the needed token.
+		return nil
+	}
 	if d.username == "" || d.password == "" {
 		return errors.New("123pan login: username and password are required")
 	}

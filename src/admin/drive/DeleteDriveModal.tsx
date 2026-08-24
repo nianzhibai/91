@@ -35,7 +35,7 @@ export function DeleteDriveModal({
     >
       <div className="admin-confirm is-message-centered">
         <div className="admin-confirm__content">
-          <p className="admin-confirm__message">{`确定要删除「${name}」吗？`}</p>
+          <p className="admin-confirm__message">{`确定要删除「${name}」吗？正在运行的任务将先自动停止，完全退出后再删除。`}</p>
         </div>
       </div>
     </Modal>

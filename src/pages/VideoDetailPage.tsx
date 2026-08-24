@@ -6,12 +6,15 @@ import {
   useParams,
 } from "react-router";
 import { AppShell } from "@/components/AppShell";
+import { VideoDetailLoading } from "@/components/VideoDetailLoading";
 import { VideoPlayer } from "@/components/VideoPlayer";
 import { VideoActions } from "@/components/VideoActions";
 import { VideoMetaHeader } from "@/components/VideoMetaHeader";
 import { VideoInfoPanel } from "@/components/VideoInfoPanel";
+import { MobileVideoCollection } from "@/components/MobileVideoCollection";
 import { RecommendedRail } from "@/components/RecommendedRail";
 import {
+  consumePrefetchedVideoDetail,
   deleteVideo,
   fetchTags,
   fetchVideoDetail,
@@ -123,7 +126,12 @@ function VideoDetailContent({ id }: { id?: string }) {
 
     // 命中快照时保留当前画面，在后台静默校验最新详情和标签。
     // 字幕只在用户打开播放器的字幕菜单后请求。
-    Promise.all([fetchVideoDetail(id), fetchTags()]).then(
+    const prefetchedDetail = consumePrefetchedVideoDetail(id);
+    const detailRequest = prefetchedDetail
+      ? prefetchedDetail.then((value) => value ?? fetchVideoDetail(id))
+      : fetchVideoDetail(id);
+
+    Promise.all([detailRequest, fetchTags()]).then(
       ([d, tagList]) => {
         if (!active) return;
         let stableDetail = withStableRelatedVideos(d);
@@ -238,75 +246,7 @@ function VideoDetailContent({ id }: { id?: string }) {
   }, [id]);
 
   if (loading) {
-    return (
-      <AppShell mobileAutoHideNav>
-        <div className="vd-page">
-          <div className="vd-ambient" aria-hidden="true" />
-          <div className="container vd-page__inner">
-            <div
-              className="vd-layout vd-skeleton"
-              aria-busy="true"
-              aria-label="视频详情加载中"
-            >
-              <div className="vd-main">
-                <div className="vd-skeleton__player" />
-
-                <div className="vd-skeleton__summary">
-                  <div className="vd-skeleton__chips">
-                    <span className="vd-skeleton__chip vd-skeleton__chip--source" />
-                    <span className="vd-skeleton__chip" />
-                    <span className="vd-skeleton__chip vd-skeleton__chip--plain" />
-                    <span className="vd-skeleton__chip vd-skeleton__chip--plain" />
-                  </div>
-                  <div className="vd-skeleton__title" />
-                  <div className="vd-skeleton__actions">
-                    <span className="vd-skeleton__action--like" />
-                    <span className="vd-skeleton__action--dislike" />
-                    <span className="vd-skeleton__action--share" />
-                    {isAdmin && (
-                      <span className="vd-skeleton__action--delete" />
-                    )}
-                  </div>
-                </div>
-
-                <div className="vd-skeleton__info">
-                  <span className="vd-skeleton__section-head" />
-                  <span className="vd-skeleton__line" />
-                  <span className="vd-skeleton__line vd-skeleton__line--short" />
-                  <div className="vd-skeleton__tag-row">
-                    <span />
-                    <span />
-                    <span />
-                  </div>
-                </div>
-              </div>
-
-              <aside className="vd-rail vd-skeleton__rail">
-                <div className="vd-rail__head">
-                  <span className="vd-rail__head-icon" aria-hidden="true">
-                    <span />
-                    <span />
-                  </span>
-                  <span className="vd-skeleton__rail-head" />
-                </div>
-                <ul className="vd-rail__list vd-skeleton__rail-list">
-                  {Array.from({ length: 6 }).map((_, index) => (
-                    <li key={index} className="vd-skeleton__rail-item">
-                      <span className="vd-skeleton__rail-thumb" />
-                      <span className="vd-skeleton__rail-body">
-                        <span className="vd-skeleton__rail-title" />
-                        <span className="vd-skeleton__rail-title vd-skeleton__rail-title--short" />
-                        <span className="vd-skeleton__rail-meta" />
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </aside>
-            </div>
-          </div>
-        </div>
-      </AppShell>
-    );
+    return <VideoDetailLoading isAdmin={isAdmin} />;
   }
 
   if (!detail) {
@@ -353,27 +293,40 @@ function VideoDetailContent({ id }: { id?: string }) {
                 </div>
               </div>
 
-              <section className="vd-summary" aria-label="当前视频">
-                <VideoMetaHeader video={detail} />
+              <div className="vd-detail-panels">
+                <section className="vd-summary" aria-label="当前视频">
+                  <VideoMetaHeader video={detail} />
 
-                <VideoActions
+                  <VideoActions
+                    video={detail}
+                    onDeleteVideo={handleOpenDelete}
+                    deleteSaving={deleteSaving}
+                    canDelete={isAdmin}
+                    onReactionCountsChange={handleReactionCountsChange}
+                  />
+                </section>
+
+                {detail.collection && detail.collection.total > 1 && (
+                  <MobileVideoCollection
+                    videoId={detail.id}
+                    collection={detail.collection}
+                  />
+                )}
+
+                <VideoInfoPanel
                   video={detail}
-                  onDeleteVideo={handleOpenDelete}
-                  deleteSaving={deleteSaving}
-                  canDelete={isAdmin}
-                  onReactionCountsChange={handleReactionCountsChange}
+                  availableTags={tags}
+                  tagSaving={tagSaving}
+                  onTagsChange={isAdmin ? handleTagsChange : undefined}
                 />
-              </section>
-
-              <VideoInfoPanel
-                video={detail}
-                availableTags={tags}
-                tagSaving={tagSaving}
-                onTagsChange={isAdmin ? handleTagsChange : undefined}
-              />
+              </div>
             </div>
 
-            <RecommendedRail videos={detail.relatedVideos} />
+            <RecommendedRail
+              videos={detail.relatedVideos}
+              videoId={detail.id}
+              collection={detail.collection}
+            />
           </div>
         </div>
       </div>

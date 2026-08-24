@@ -35,6 +35,9 @@ test("video thumbnails hide failed images behind a stable lifecycle placeholder"
   assert.match(css, /\.thumb-image\s*\{[^}]*opacity:\s*0/s);
   assert.match(css, /\.thumb-image\.is-ready\s*\{[^}]*opacity:\s*1/s);
   assert.match(thumbnailSource, /className="thumb-placeholder"/);
+  const placeholderRule = css.match(/\.thumb-placeholder\s*\{[^}]*\}/s)?.[0] ?? "";
+  assert.match(placeholderRule, /background:\s*linear-gradient\(145deg/);
+  assert.doesNotMatch(placeholderRule, /radial-gradient|accent-softer/);
   assert.doesNotMatch(thumbnailSource, /thumb-placeholder__mark/);
   assert.doesNotMatch(css, /\.thumb-placeholder__mark/);
 });
@@ -47,6 +50,15 @@ test("cached thumbnails reconcile completion before they can remain hidden", () 
   assert.match(thumbnailSource, /else \{\s*handleError\(\)/);
   assert.match(thumbnailSource, /ref=\{imageRef\}/);
   assert.doesNotMatch(thumbnailSource, /setState\(src \? "loading" : "failed"\)/);
+});
+
+test("deferred thumbnails do not create an image resource", () => {
+  assert.match(thumbnailSource, /enabled\?: boolean/);
+  assert.match(thumbnailSource, /enabled = true/);
+  assert.match(
+    thumbnailSource,
+    /if \(!enabled\) \{[\s\S]*?className="thumb-placeholder"[\s\S]*?data-state="deferred"[\s\S]*?return \(\s*<ThumbnailResource/
+  );
 });
 
 test("only likely first-viewport thumbnails receive eager and high priority hints", () => {

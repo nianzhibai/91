@@ -54,6 +54,12 @@ type Driver struct {
 	httpClient    *http.Client
 	onTokenUpdate func(access, refresh string)
 
+	// OAuth refresh tokens can rotate. Keep request snapshots race-free and
+	// collapse simultaneous 401 recovery into one exchange.
+	tokenMu         sync.RWMutex
+	refreshMu       sync.Mutex
+	tokenGeneration uint64
+
 	listMu       sync.Mutex
 	lastListAt   time.Time
 	listInterval time.Duration
@@ -96,16 +102,17 @@ func New(c Config) *Driver {
 		uploadBaseURL = deriveUploadBaseURL(apiBaseURL)
 	}
 	return &Driver{
-		id:            c.ID,
-		rootID:        rootID,
-		refreshToken:  strings.TrimSpace(c.RefreshToken),
-		accessToken:   strings.TrimSpace(c.AccessToken),
-		clientID:      strings.TrimSpace(c.ClientID),
-		clientSecret:  strings.TrimSpace(c.ClientSecret),
-		oauthURL:      oauthURL,
-		apiBaseURL:    apiBaseURL,
-		uploadBaseURL: uploadBaseURL,
-		onTokenUpdate: c.OnTokenUpdate,
+		id:              c.ID,
+		rootID:          rootID,
+		refreshToken:    strings.TrimSpace(c.RefreshToken),
+		accessToken:     strings.TrimSpace(c.AccessToken),
+		clientID:        strings.TrimSpace(c.ClientID),
+		clientSecret:    strings.TrimSpace(c.ClientSecret),
+		oauthURL:        oauthURL,
+		apiBaseURL:      apiBaseURL,
+		uploadBaseURL:   uploadBaseURL,
+		onTokenUpdate:   c.OnTokenUpdate,
+		tokenGeneration: 1,
 		client: resty.New().
 			SetTransport(scopedproxy.NewTransport(nil)).
 			SetTimeout(30*time.Second).
@@ -139,7 +146,7 @@ func (d *Driver) ID() string     { return d.id }
 func (d *Driver) RootID() string { return d.rootID }
 
 func (d *Driver) Init(ctx context.Context) error {
-	if d.refreshToken == "" {
+	if d.tokenSnapshot().refresh == "" {
 		return errors.New("googledrive init: refresh_token is required")
 	}
 	return d.refresh(ctx)
@@ -256,10 +263,11 @@ func (d *Driver) StreamURL(ctx context.Context, fileID string) (*drives.StreamLi
 		return nil, err
 	}
 	u := d.fileURL(fileID) + "?alt=media&acknowledgeAbuse=true&supportsAllDrives=true"
+	tokens := d.tokenSnapshot()
 	return &drives.StreamLink{
 		URL: u,
 		Headers: http.Header{
-			"Authorization": []string{"Bearer " + d.accessToken},
+			"Authorization": []string{"Bearer " + tokens.access},
 		},
 		Expires: time.Now().Add(30 * time.Minute),
 	}, nil
@@ -401,10 +409,11 @@ func (d *Driver) createUploadSession(ctx context.Context, parentID, name string,
 }
 
 func (d *Driver) createUploadSessionOnce(ctx context.Context, parentID, name string, size int64, retry bool) (string, error) {
+	tokens := d.tokenSnapshot()
 	var apiErr apiErrorResp
 	res, err := d.client.R().
 		SetContext(ctx).
-		SetHeader("Authorization", "Bearer "+d.accessToken).
+		SetHeader("Authorization", "Bearer "+tokens.access).
 		SetHeader("X-Upload-Content-Type", mimeType(driveFile{Name: name})).
 		SetHeader("X-Upload-Content-Length", strconv.FormatInt(size, 10)).
 		SetQueryParams(map[string]string{
@@ -426,7 +435,7 @@ func (d *Driver) createUploadSessionOnce(ctx context.Context, parentID, name str
 	}
 	if apiErr.Error.Code != 0 {
 		if apiErr.Error.Code == http.StatusUnauthorized && retry {
-			if err := d.refresh(ctx); err != nil {
+			if err := d.refresh(ctx, tokens); err != nil {
 				return "", err
 			}
 			return d.createUploadSessionOnce(ctx, parentID, name, size, false)
@@ -466,12 +475,13 @@ func (d *Driver) putUploadSessionChunkWithRetry(ctx context.Context, uploadURL s
 }
 
 func (d *Driver) putUploadSessionChunk(ctx context.Context, uploadURL string, start, total int64, data []byte) (*driveFile, bool, error) {
+	tokens := d.tokenSnapshot()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadURL, bytes.NewReader(data))
 	if err != nil {
 		return nil, false, err
 	}
 	req.ContentLength = int64(len(data))
-	req.Header.Set("Authorization", "Bearer "+d.accessToken)
+	req.Header.Set("Authorization", "Bearer "+tokens.access)
 	req.Header.Set("Content-Length", strconv.Itoa(len(data)))
 	if total == 0 {
 		req.Header.Set("Content-Range", "bytes */0")
@@ -499,7 +509,7 @@ func (d *Driver) putUploadSessionChunk(ctx context.Context, uploadURL string, st
 	case http.StatusPermanentRedirect:
 		return nil, false, nil
 	case http.StatusUnauthorized:
-		if err := d.refresh(ctx); err != nil {
+		if err := d.refresh(ctx, tokens); err != nil {
 			return nil, false, err
 		}
 		return nil, true, fmt.Errorf("googledrive upload session: unauthorized")
@@ -657,17 +667,45 @@ func googleUploadRateLimitError(status int, header http.Header, body []byte, mes
 	}
 }
 
-func (d *Driver) refresh(ctx context.Context) error {
+type tokenSnapshot struct {
+	access     string
+	refresh    string
+	generation uint64
+}
+
+func (d *Driver) tokenSnapshot() tokenSnapshot {
+	d.tokenMu.RLock()
+	defer d.tokenMu.RUnlock()
+	return tokenSnapshot{
+		access:     d.accessToken,
+		refresh:    d.refreshToken,
+		generation: d.tokenGeneration,
+	}
+}
+
+func (d *Driver) refresh(ctx context.Context, rejected ...tokenSnapshot) error {
 	if d.clientID == "" || d.clientSecret == "" {
 		return errors.New("googledrive refresh token: client_id and client_secret are required")
 	}
+	d.refreshMu.Lock()
+	defer d.refreshMu.Unlock()
+
+	current := d.tokenSnapshot()
+	if len(rejected) > 0 &&
+		(current.generation != rejected[0].generation || current.access != rejected[0].access) {
+		return nil
+	}
+	if current.refresh == "" {
+		return errors.New("googledrive refresh token: refresh_token is required")
+	}
+
 	var out tokenResp
 	res, err := d.client.R().
 		SetContext(ctx).
 		SetFormData(map[string]string{
 			"client_id":     d.clientID,
 			"client_secret": d.clientSecret,
-			"refresh_token": d.refreshToken,
+			"refresh_token": current.refresh,
 			"grant_type":    "refresh_token",
 		}).
 		SetResult(&out).
@@ -679,17 +717,23 @@ func (d *Driver) refresh(ctx context.Context) error {
 	if err := tokenResponseError("googledrive refresh token", res, out); err != nil {
 		return err
 	}
-	d.applyToken(out)
+	d.applyToken(out, current.refresh)
 	return nil
 }
 
-func (d *Driver) applyToken(out tokenResp) {
-	d.accessToken = out.AccessToken
-	if strings.TrimSpace(out.RefreshToken) != "" {
-		d.refreshToken = out.RefreshToken
+func (d *Driver) applyToken(out tokenResp, previousRefresh string) {
+	accessToken := strings.TrimSpace(out.AccessToken)
+	refreshToken := strings.TrimSpace(out.RefreshToken)
+	if refreshToken == "" {
+		refreshToken = previousRefresh
 	}
+	d.tokenMu.Lock()
+	d.accessToken = accessToken
+	d.refreshToken = refreshToken
+	d.tokenGeneration++
+	d.tokenMu.Unlock()
 	if d.onTokenUpdate != nil {
-		d.onTokenUpdate(d.accessToken, d.refreshToken)
+		d.onTokenUpdate(accessToken, refreshToken)
 	}
 }
 
@@ -726,7 +770,7 @@ func tokenResponseError(prefix string, res *resty.Response, out tokenResp) error
 	if res != nil && res.IsError() {
 		return fmt.Errorf("%s: status=%d body=%s", prefix, res.StatusCode(), strings.TrimSpace(res.String()))
 	}
-	if out.AccessToken == "" {
+	if strings.TrimSpace(out.AccessToken) == "" {
 		return fmt.Errorf("%s: empty token", prefix)
 	}
 	return nil
@@ -737,9 +781,10 @@ func (d *Driver) request(ctx context.Context, rawURL, method string, configure f
 }
 
 func (d *Driver) requestOnce(ctx context.Context, rawURL, method string, configure func(*resty.Request), out any, retry bool) error {
+	tokens := d.tokenSnapshot()
 	req := d.client.R().
 		SetContext(ctx).
-		SetHeader("Authorization", "Bearer "+d.accessToken).
+		SetHeader("Authorization", "Bearer "+tokens.access).
 		SetQueryParam("includeItemsFromAllDrives", "true").
 		SetQueryParam("supportsAllDrives", "true")
 	if configure != nil {
@@ -759,7 +804,7 @@ func (d *Driver) requestOnce(ctx context.Context, rawURL, method string, configu
 	}
 	if apiErr.Error.Code != 0 {
 		if apiErr.Error.Code == http.StatusUnauthorized && retry {
-			if err := d.refresh(ctx); err != nil {
+			if err := d.refresh(ctx, tokens); err != nil {
 				return err
 			}
 			return d.requestOnce(ctx, rawURL, method, configure, out, false)

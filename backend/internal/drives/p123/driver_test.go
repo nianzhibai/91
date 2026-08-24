@@ -14,6 +14,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -124,6 +126,78 @@ func TestStreamURLResolvesDownloadInfoRedirect(t *testing.T) {
 	}
 	if downloadReferer != defaultReferer {
 		t.Fatalf("resolve Referer = %q, want %q", downloadReferer, defaultReferer)
+	}
+}
+
+func TestConcurrentUnauthorizedRequestsShareOnePasswordLogin(t *testing.T) {
+	var oldRequests atomic.Int32
+	var logins atomic.Int32
+	var persisted atomic.Int32
+	var releaseOld sync.Once
+	bothOldRequestsArrived := make(chan struct{})
+
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/user/sign_in":
+			logins.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code": 200,
+				"data": map[string]string{"token": "new-token"},
+			})
+		case "/b/api/user/info":
+			if r.Header.Get("Authorization") == "Bearer old-token" {
+				if oldRequests.Add(1) == 2 {
+					releaseOld.Do(func() { close(bothOldRequestsArrived) })
+				}
+				<-bothOldRequestsArrived
+				_ = json.NewEncoder(w).Encode(map[string]any{"code": 401, "message": "expired"})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer api.Close()
+
+	d := New(Config{
+		ID:              "123-main",
+		Username:        "user@example.com",
+		Password:        "secret",
+		AccessToken:     "old-token",
+		MainAPIBaseURL:  api.URL + "/b/api",
+		LoginAPIBaseURL: api.URL + "/api",
+		OnTokenUpdate: func(string) {
+			persisted.Add(1)
+		},
+	})
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := d.request(context.Background(), endpointUserInfo, http.MethodGet, nil, nil)
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent request: %v", err)
+		}
+	}
+	if got := logins.Load(); got != 1 {
+		t.Fatalf("password logins = %d, want 1", got)
+	}
+	if got := persisted.Load(); got != 1 {
+		t.Fatalf("token persistence callbacks = %d, want 1", got)
+	}
+	if got := d.currentToken(); got != "new-token" {
+		t.Fatalf("access token = %q, want new-token", got)
 	}
 }
 

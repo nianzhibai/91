@@ -253,26 +253,17 @@ body.shorts-document-scroll::before {
   filter: drop-shadow(0 20px 50px rgba(0, 0, 0, 0.95));
 }
 
-/* 视频加载/卡顿缓冲磨砂提示圈 */
+/* 视频加载/卡顿缓冲提示圈 */
 .shorts-slide__buffering {
   position: absolute;
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  width: 68px;
-  height: 68px;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: rgba(255, 255, 255, 0.9);
   z-index: 12;
   pointer-events: none;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
 }
 
 .shorts-slide__loading-spinner {
@@ -296,8 +287,6 @@ body.shorts-document-scroll::before {
 @media (max-width: 640px) {
   .shorts-slide__buffering {
     --shorts-spinner-size: 24px;
-    width: 56px;
-    height: 56px;
   }
 
   .shorts-slide__buffering .shorts-slide__loading-spinner {

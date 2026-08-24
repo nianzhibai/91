@@ -10,13 +10,12 @@ type Props = {
  * 详情页标题块。
  *
  * 视觉：
- * - meta：一组小胶囊（来源、画质、时长、观看数、发布时间）
+ * - meta：一组小胶囊（来源、时长、观看数、发布时间）
  *   每个胶囊有自己的语义色彩，避免传统 "·" 分隔列表的列表感。
  * - 标题：大、粗、最高两行，位于 meta 下方
  */
 export function VideoMetaHeader({ video }: Props) {
   const source = (video.sourceLabel ?? "").trim();
-  const quality = (video.quality ?? "").trim();
   const duration = (video.duration ?? "").trim();
   const published = (video.publishedAt ?? "").trim();
   const sourceKind = sourceKindFromLabel(source);
@@ -28,14 +27,6 @@ export function VideoMetaHeader({ video }: Props) {
           {source && (
             <li className="vd-meta__chip" data-tone={sourceKind || "neutral"}>
               {source}
-            </li>
-          )}
-          {quality && (
-            <li
-              className="vd-meta__chip"
-              data-tone={quality.toUpperCase() === "HD" ? "accent" : "neutral"}
-            >
-              {quality}
             </li>
           )}
           {duration && (

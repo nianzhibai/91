@@ -8,7 +8,7 @@ const AUTO_SAVE_DELAY_MS = 300;
 const AUTO_SAVE_RETRY_BASE_MS = 1000;
 const AUTO_SAVE_RETRY_MAX_MS = 8000;
 
-type SaveStatus = "idle" | "pending" | "saving" | "saved" | "error";
+type SaveStatus = "idle" | "pending" | "saving" | "saved" | "deferred" | "error";
 
 function normalizeDirIds(ids: Iterable<string>): string[] {
   return Array.from(
@@ -58,7 +58,7 @@ export function SkipDirsPanel({ drive, onSaved }: SkipDirsPanelProps) {
       const requestIds = normalizeDirIds(selectedRef.current);
       if (mountedRef.current) setSaveStatus("saving");
 
-      let response: { skipDirIds: string[] };
+      let response: api.DriveConfigSaveResult & { skipDirIds: string[] };
       try {
         response = await api.setDriveSkipDirIds(driveId, requestIds);
       } catch (error) {
@@ -103,7 +103,7 @@ export function SkipDirsPanel({ drive, onSaved }: SkipDirsPanelProps) {
         savedRevisionRef.current = requestRevision;
         if (mountedRef.current) {
           setSelected(next);
-          setSaveStatus("saved");
+          setSaveStatus(response.deferred ? "deferred" : "saved");
         }
         return;
       }
@@ -113,7 +113,9 @@ export function SkipDirsPanel({ drive, onSaved }: SkipDirsPanelProps) {
       // is already durable; otherwise its debounce timer/queued save wins.
       if (currentKey === savedKey) {
         savedRevisionRef.current = draftRevisionRef.current;
-        if (mountedRef.current) setSaveStatus("saved");
+        if (mountedRef.current) {
+          setSaveStatus(response.deferred ? "deferred" : "saved");
+        }
       } else if (mountedRef.current) {
         setSaveStatus("pending");
       }
@@ -186,13 +188,14 @@ export function SkipDirsPanel({ drive, onSaved }: SkipDirsPanelProps) {
       : {
           pending: "保存中…",
           saving: "保存中…",
-          saved: "已自动保存",
+          saved: "已自动保存并生效",
+          deferred: "已保存，任务结束后生效",
           error: "保存失败，正在重试…",
         }[saveStatus];
   const saveStatusClass =
     saveStatus === "error"
       ? "is-error"
-      : saveStatus === "saved"
+      : saveStatus === "saved" || saveStatus === "deferred"
         ? "is-saved"
         : saveStatus === "pending" || saveStatus === "saving"
           ? "is-saving"
@@ -226,6 +229,7 @@ export function SkipDirsPanel({ drive, onSaved }: SkipDirsPanelProps) {
           ancestorSkipped={false}
           selected={selected}
           onToggle={toggle}
+          disabled={false}
         />
       </div>
     </div>
@@ -241,6 +245,7 @@ type DirTreeNodeProps = {
   ancestorSkipped: boolean;
   selected: Set<string>;
   onToggle: (id: string) => void;
+  disabled: boolean;
 };
 
 function DirTreeNode({
@@ -252,6 +257,7 @@ function DirTreeNode({
   ancestorSkipped,
   selected,
   onToggle,
+  disabled,
 }: DirTreeNodeProps) {
   const [open, setOpen] = useState(!!initiallyOpen);
   const [loading, setLoading] = useState(false);
@@ -310,6 +316,7 @@ function DirTreeNode({
             className="admin-skipdirs-checkbox"
             checked={isSelected}
             onChange={() => onToggle(id)}
+            disabled={disabled}
             aria-label={`跳过目录 ${name}`}
           />
 
@@ -336,6 +343,7 @@ function DirTreeNode({
               ancestorSkipped={ancestorSkipped || isSelected}
               selected={selected}
               onToggle={onToggle}
+              disabled={disabled}
             />
           ))}
         </div>

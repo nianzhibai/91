@@ -14,6 +14,14 @@ const detailPageSource = readFileSync(
   new URL("../src/pages/VideoDetailPage.tsx", import.meta.url),
   "utf8"
 );
+const detailLoadingSource = readFileSync(
+  new URL("../src/components/VideoDetailLoading.tsx", import.meta.url),
+  "utf8"
+);
+const railSkeletonSource = readFileSync(
+  new URL("../src/components/VideoRailSkeleton.tsx", import.meta.url),
+  "utf8"
+);
 
 test("detail player poster uses full-frame contain scaling", () => {
   assert.match(
@@ -263,12 +271,16 @@ test("detail player previews held arrow-key seeks and commits once on release", 
 });
 
 test("detail loading skeleton matches current desktop video page layout", () => {
-  assert.match(detailPageSource, /className="vd-layout vd-skeleton"/);
-  assert.match(detailPageSource, /className="vd-skeleton__summary"/);
-  assert.match(detailPageSource, /className="vd-skeleton__info"/);
-  assert.match(detailPageSource, /className="vd-rail vd-skeleton__rail"/);
-  assert.match(detailPageSource, /Array\.from\(\{ length: 6 \}\)/);
-  assert.doesNotMatch(detailPageSource, /className="vd-skeleton__meta"/);
+  assert.match(detailPageSource, /<VideoDetailLoading isAdmin=\{isAdmin\} \/>/);
+  assert.match(detailLoadingSource, /className="vd-layout vd-skeleton"/);
+  assert.match(detailLoadingSource, /className="vd-skeleton__summary"/);
+  assert.match(detailLoadingSource, /className="vd-skeleton__info"/);
+  assert.match(detailLoadingSource, /<VideoRailSkeleton \/>/);
+  assert.match(
+    railSkeletonSource,
+    /function VideoRailSkeleton[\s\S]*?>\s*推荐视频\s*<[\s\S]*?>相关合集<[\s\S]*?Array\.from\(\{ length: 6 \}\)/
+  );
+  assert.doesNotMatch(detailLoadingSource, /className="vd-skeleton__meta"/);
   assert.match(
     detailCss,
     /\.vd-skeleton__player\s*\{[^}]*aspect-ratio:\s*16 \/ 9[^}]*border-radius:\s*0/s
@@ -279,12 +291,45 @@ test("detail loading skeleton matches current desktop video page layout", () => 
   );
   assert.match(
     detailCss,
-    /\.vd-skeleton__rail-item\s*\{[^}]*grid-template-columns:\s*150px minmax\(0,\s*1fr\)/s
+    /\.vd-rail__loading-row\s*\{[^}]*grid-template-columns:\s*148px minmax\(0,\s*1fr\)/s
   );
   assert.doesNotMatch(
     detailCss,
     /\.vd-skeleton__player\s*\{[^}]*box-shadow:\s*var\(--shadow-lg\)/s
   );
+});
+
+test("detail loading skeleton keeps metadata bars uniform and concise", () => {
+  const chipMatches =
+    detailLoadingSource.match(
+      /<span className="vd-skeleton__chip(?: [^"]+)?" \/>/g
+    ) ?? [];
+  assert.equal(chipMatches.length, 4);
+  assert.match(
+    detailLoadingSource,
+    /vd-skeleton__chip vd-skeleton__chip--mobile-hidden/
+  );
+  assert.doesNotMatch(
+    detailLoadingSource,
+    /vd-skeleton__chip--(?:source|plain)/
+  );
+  assert.match(
+    detailCss,
+    /\.vd-skeleton__chip\s*\{[^}]*width:\s*88px;[^}]*height:\s*18px;[^}]*border-radius:\s*var\(--radius-sm\)/s
+  );
+  assert.match(
+    detailCss,
+    /@media \(max-width:\s*480px\)\s*\{[\s\S]*?\.vd-skeleton__chip--mobile-hidden\s*\{[^}]*display:\s*none/s
+  );
+});
+
+test("detail info skeleton omits the two description lines", () => {
+  assert.match(
+    detailLoadingSource,
+    /className="vd-skeleton__info"[\s\S]*?vd-skeleton__section-head[\s\S]*?vd-skeleton__tag-row/
+  );
+  assert.doesNotMatch(detailLoadingSource, /vd-skeleton__line/);
+  assert.doesNotMatch(detailCss, /\.vd-skeleton__line/);
 });
 
 test("detail loading skeleton actions stay inside mobile viewport", () => {
@@ -299,11 +344,11 @@ test("detail loading skeleton actions stay inside mobile viewport", () => {
 });
 
 test("detail loading skeleton mirrors the desktop action toolbar", () => {
-  assert.match(detailPageSource, /vd-skeleton__action--like/);
-  assert.match(detailPageSource, /vd-skeleton__action--dislike/);
-  assert.match(detailPageSource, /vd-skeleton__action--share/);
+  assert.match(detailLoadingSource, /vd-skeleton__action--like/);
+  assert.match(detailLoadingSource, /vd-skeleton__action--dislike/);
+  assert.match(detailLoadingSource, /vd-skeleton__action--share/);
   assert.match(
-    detailPageSource,
+    detailLoadingSource,
     /\{isAdmin && \([\s\S]*?vd-skeleton__action--delete/
   );
   assert.match(

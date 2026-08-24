@@ -60,17 +60,13 @@ func (a *AdminServer) handleUpdateTag(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	tag, err := a.Catalog.UpdateTag(r.Context(), id, body.MatchRules)
+	tag, _, err := a.Catalog.UpdateTagAndReconcile(r.Context(), id, body.MatchRules)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeErr(w, http.StatusNotFound, err)
 		} else {
 			writeErr(w, http.StatusBadRequest, err)
 		}
-		return
-	}
-	if err := a.Catalog.RunPostStartupTagMaintenance(r.Context()); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	if a.OnTagsChanged != nil {

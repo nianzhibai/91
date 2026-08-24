@@ -125,7 +125,6 @@ type VideoDTO struct {
 	PreviewStrategy string   `json:"previewStrategy"`
 	Duration        string   `json:"duration"`
 	Badges          []string `json:"badges"`
-	Quality         string   `json:"quality,omitempty"`
 	SourceLabel     string   `json:"sourceLabel,omitempty"`
 	Author          string   `json:"author"`
 	Views           int      `json:"views"`
@@ -145,15 +144,41 @@ type TagDTO struct {
 
 type VideoDetailDTO struct {
 	VideoDTO
-	VideoSrc      string        `json:"videoSrc"`
-	MediaType     string        `json:"mediaType,omitempty"`
-	Poster        string        `json:"poster"`
-	Description   string        `json:"description"`
-	EmbedURL      string        `json:"embedUrl"`
-	Points        int           `json:"points,omitempty"`
-	AuthorProfile AuthorProfile `json:"authorProfile"`
-	RelatedVideos []VideoDTO    `json:"relatedVideos"`
-	CommentsList  []Comment     `json:"commentsList"`
+	VideoSrc      string                  `json:"videoSrc"`
+	MediaType     string                  `json:"mediaType,omitempty"`
+	Poster        string                  `json:"poster"`
+	Description   string                  `json:"description"`
+	EmbedURL      string                  `json:"embedUrl"`
+	Points        int                     `json:"points,omitempty"`
+	AuthorProfile AuthorProfile           `json:"authorProfile"`
+	Collection    *VideoCollectionSummary `json:"collection,omitempty"`
+	RelatedVideos []VideoDTO              `json:"relatedVideos"`
+	CommentsList  []Comment               `json:"commentsList"`
+}
+
+type VideoCollectionSummary struct {
+	Name         string `json:"name"`
+	Total        int    `json:"total"`
+	CurrentIndex int    `json:"currentIndex"`
+}
+
+type VideoCollectionDTO struct {
+	VideoCollectionSummary
+	Items []VideoCollectionItemDTO `json:"items"`
+}
+
+// VideoCollectionItemDTO stays compact for the mobile sheet. Desktop callers
+// can explicitly request PreviewSrc without pulling reactions, tags, badges or
+// the rest of VideoDTO for every item in a large provider directory.
+type VideoCollectionItemDTO struct {
+	ID          string `json:"id"`
+	Href        string `json:"href"`
+	Title       string `json:"title"`
+	Thumbnail   string `json:"thumbnail"`
+	PreviewSrc  string `json:"previewSrc,omitempty"`
+	Duration    string `json:"duration"`
+	Views       int    `json:"views"`
+	PublishedAt string `json:"publishedAt"`
 }
 
 type SubtitleDTO struct {
@@ -203,6 +228,7 @@ func (s *Server) RegisterRoutes(r chi.Router, a *auth.Authenticator) {
 		r.Get("/api/home/latest", s.handleHomeLatest)
 		r.Get("/api/list", s.handleList)
 		r.Get("/api/video/{id}", s.handleVideoDetail)
+		r.Get("/api/video/{id}/collection", s.handleVideoCollection)
 		r.Get("/api/video/{id}/subtitles", s.handleVideoSubtitles)
 		r.Post("/api/video/{id}/share", s.handleCreateVideoShare)
 		r.Put("/api/video/{id}/reaction", s.handleSetVideoReaction)
@@ -363,6 +389,7 @@ func (s *Server) handleVideoDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	related := s.pickRelatedVideos(r.Context(), v, 6)
+	collection, _, _ := s.videoCollection(r.Context(), v)
 	dto := mapVideo(v)
 	if d, err := s.Catalog.GetDrive(r.Context(), v.DriveID); err == nil {
 		dto.SourceLabel = driveKindLabel(d.Kind)
@@ -381,12 +408,177 @@ func (s *Server) handleVideoDetail(w http.ResponseWriter, r *http.Request) {
 			Href:   "/author/" + v.Author,
 			Badges: []string{},
 		},
+		Collection:    collection,
 		RelatedVideos: mapVideos(related),
 		CommentsList:  []Comment{},
 	}
 	// 推荐每次随机生成，禁止浏览器和中间层缓存详情响应
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, detail)
+}
+
+func (s *Server) handleVideoCollection(w http.ResponseWriter, r *http.Request) {
+	v, err := s.availableVideo(r.Context(), routeParam(r, "id"))
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	summary, items, err := s.videoCollection(r.Context(), v)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if summary == nil {
+		summary = &VideoCollectionSummary{}
+		items = []*catalog.Video{}
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, VideoCollectionDTO{
+		VideoCollectionSummary: *summary,
+		Items: mapVideoCollectionItems(
+			items,
+			r.URL.Query().Get("preview") == "1",
+		),
+	})
+}
+
+// videoCollection builds a directory-backed collection in one canonical order.
+// The detail response keeps only its lightweight summary; the full item list is
+// loaded through /collection when either collection UI is opened.
+func (s *Server) videoCollection(ctx context.Context, current *catalog.Video) (*VideoCollectionSummary, []*catalog.Video, error) {
+	if current == nil || strings.TrimSpace(current.ParentID) == "" {
+		return nil, nil, nil
+	}
+	items, err := s.Catalog.ListVisibleVideosByDirectory(ctx, current.DriveID, current.ParentID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(items) < 2 {
+		return nil, items, nil
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return naturalVideoCollectionLess(items[i], items[j])
+	})
+	currentIndex := 0
+	for index, item := range items {
+		if item != nil && item.ID == current.ID {
+			currentIndex = index + 1
+			break
+		}
+	}
+	if currentIndex == 0 {
+		return nil, items, nil
+	}
+	name := strings.TrimSpace(current.DirName)
+	if name == "" {
+		for _, item := range items {
+			if item != nil && strings.TrimSpace(item.DirName) != "" {
+				name = strings.TrimSpace(item.DirName)
+				break
+			}
+		}
+	}
+	if name == "" {
+		name = "同目录视频"
+	}
+	return &VideoCollectionSummary{
+		Name:         name,
+		Total:        len(items),
+		CurrentIndex: currentIndex,
+	}, items, nil
+}
+
+func naturalVideoCollectionLess(left, right *catalog.Video) bool {
+	if left == nil || right == nil {
+		return left != nil
+	}
+	leftName := firstNonEmptyString(left.FileName, left.Title, left.ID)
+	rightName := firstNonEmptyString(right.FileName, right.Title, right.ID)
+	if compared := naturalCompare(leftName, rightName); compared != 0 {
+		return compared < 0
+	}
+	if !left.CreatedAt.Equal(right.CreatedAt) {
+		return left.CreatedAt.Before(right.CreatedAt)
+	}
+	return left.ID < right.ID
+}
+
+// naturalCompare compares ASCII digit runs numerically while keeping all other
+// Unicode runes in a deterministic case-insensitive order (episode 2 < 10).
+func naturalCompare(left, right string) int {
+	leftRunes := []rune(strings.ToLower(strings.TrimSpace(left)))
+	rightRunes := []rune(strings.ToLower(strings.TrimSpace(right)))
+	for li, ri := 0, 0; li < len(leftRunes) && ri < len(rightRunes); {
+		if isASCIIDigit(leftRunes[li]) && isASCIIDigit(rightRunes[ri]) {
+			leftEnd, rightEnd := li, ri
+			for leftEnd < len(leftRunes) && isASCIIDigit(leftRunes[leftEnd]) {
+				leftEnd++
+			}
+			for rightEnd < len(rightRunes) && isASCIIDigit(rightRunes[rightEnd]) {
+				rightEnd++
+			}
+			leftSignificant, rightSignificant := li, ri
+			for leftSignificant < leftEnd-1 && leftRunes[leftSignificant] == '0' {
+				leftSignificant++
+			}
+			for rightSignificant < rightEnd-1 && rightRunes[rightSignificant] == '0' {
+				rightSignificant++
+			}
+			leftDigits := leftRunes[leftSignificant:leftEnd]
+			rightDigits := rightRunes[rightSignificant:rightEnd]
+			if len(leftDigits) != len(rightDigits) {
+				if len(leftDigits) < len(rightDigits) {
+					return -1
+				}
+				return 1
+			}
+			for index := range leftDigits {
+				if leftDigits[index] < rightDigits[index] {
+					return -1
+				}
+				if leftDigits[index] > rightDigits[index] {
+					return 1
+				}
+			}
+			// Numerically equal runs use the shorter spelling first: 2 before 02.
+			if leftEnd-li != rightEnd-ri {
+				if leftEnd-li < rightEnd-ri {
+					return -1
+				}
+				return 1
+			}
+			li, ri = leftEnd, rightEnd
+			continue
+		}
+		if leftRunes[li] < rightRunes[ri] {
+			return -1
+		}
+		if leftRunes[li] > rightRunes[ri] {
+			return 1
+		}
+		li++
+		ri++
+	}
+	if len(leftRunes) < len(rightRunes) {
+		return -1
+	}
+	if len(leftRunes) > len(rightRunes) {
+		return 1
+	}
+	return 0
+}
+
+func isASCIIDigit(value rune) bool {
+	return value >= '0' && value <= '9'
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // pickRelatedVideos 选 total 个推荐视频。
@@ -960,7 +1152,6 @@ func mapVideo(v *catalog.Video) VideoDTO {
 		PreviewStrategy: "teaser-file",
 		Duration:        formatDuration(v.DurationSeconds),
 		Badges:          badges,
-		Quality:         v.Quality,
 		Author:          v.Author,
 		Views:           v.Views,
 		Favorites:       v.Favorites,
@@ -1544,6 +1735,29 @@ func mapVideos(vs []*catalog.Video) []VideoDTO {
 		out = append(out, mapVideo(v))
 	}
 	return out
+}
+
+func mapVideoCollectionItems(videos []*catalog.Video, includePreview bool) []VideoCollectionItemDTO {
+	items := make([]VideoCollectionItemDTO, 0, len(videos))
+	for _, video := range videos {
+		if video == nil {
+			continue
+		}
+		item := VideoCollectionItemDTO{
+			ID:          video.ID,
+			Href:        "/video/" + pathSegment(video.ID),
+			Title:       video.Title,
+			Thumbnail:   thumbnailURL(video),
+			Duration:    formatDuration(video.DurationSeconds),
+			Views:       video.Views,
+			PublishedAt: video.PublishedAt.Format("2006-01-02"),
+		}
+		if includePreview {
+			item.PreviewSrc = previewURL(video)
+		}
+		items = append(items, item)
+	}
+	return items
 }
 
 func formatDuration(sec int) string {

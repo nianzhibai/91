@@ -15,6 +15,7 @@ import {
   rootIdPlaceholder,
   usesRootDirectoryID,
 } from "./constants";
+import { ONEDRIVE_AUTH_MODE_OPENLIST_API } from "./onedriveAuth";
 
 type DriveOption = {
   kind: Kind;
@@ -51,12 +52,31 @@ export function DriveForm({
   const [step, setStep] = useState<"type" | "form">(isEdit ? "form" : "type");
   const nameId = `${idPrefix}-drive-name`;
   const rootId = `${idPrefix}-drive-root`;
+  const visibleFields = fields.filter((field) => {
+    const condition = field.visibleWhen;
+    if (!condition) return true;
+    const controllingField = fields.find(
+      (candidate) => candidate.key === condition.key
+    );
+    const controllingValue =
+      form.creds[condition.key] ?? controllingField?.defaultValue ?? "";
+    return controllingValue === condition.value;
+  });
 
   function set<K extends keyof FormState>(k: K, v: FormState[K]) {
     onChange({ ...form, [k]: v });
   }
   function setCred(k: string, v: string) {
-    onChange({ ...form, creds: { ...form.creds, [k]: v } });
+    const creds = { ...form.creds, [k]: v };
+    if (
+      form.kind === "onedrive" &&
+      k === "auth_mode" &&
+      v === ONEDRIVE_AUTH_MODE_OPENLIST_API
+    ) {
+      creds.client_id = "";
+      creds.client_secret = "";
+    }
+    onChange({ ...form, creds });
   }
   function setKind(v: Kind) {
     onChange({
@@ -196,7 +216,7 @@ export function DriveForm({
             />
           )}
 
-          {fields.map((f) => (
+          {visibleFields.map((f) => (
             <Fragment key={f.key}>
               {f.methodLabel && (
                 <div className="admin-form__method-label">{f.methodLabel}</div>

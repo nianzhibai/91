@@ -135,9 +135,7 @@
   inset: 0;
   z-index: 0;
   overflow: hidden;
-  background:
-    radial-gradient(circle at 50% 38%, var(--accent-softer), transparent 52%),
-    linear-gradient(145deg, var(--bg-elevated), var(--bg-sunken));
+  background: linear-gradient(145deg, var(--bg-elevated), var(--bg-sunken));
 }
 
 .thumb-placeholder::after {
@@ -278,11 +276,6 @@
   letter-spacing: 0.04em;
   text-transform: uppercase;
   backdrop-filter: blur(6px);
-}
-
-.video-badge.is-hd {
-  background: var(--accent);
-  color: var(--text-on-accent);
 }
 
 /* ----- 来源网盘徽标（右上） ----- */
@@ -713,15 +706,15 @@
 
 .skeleton-card__title {
   margin-top: 10px;
-  width: 70%;
-  height: 12px;
+  width: 100%;
+  height: 10px;
   border-radius: 0;
 }
 
 .skeleton-card__meta {
-  margin-top: 8px;
-  width: 42%;
-  height: 8px;
+  margin-top: 6px;
+  width: 100%;
+  height: 10px;
   border-radius: 0;
 }
 

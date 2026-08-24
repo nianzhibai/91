@@ -350,6 +350,29 @@ func thumbnailVideoFilter(width int) string {
 	return fmt.Sprintf("scale=%d:-2:out_range=pc,format=yuvj420p", width)
 }
 
+func teaserSegmentVideoFilter(width int, fade bool, eachSec float64) string {
+	parts := []string{
+		fmt.Sprintf("scale=%d:-2", width),
+		"setsar=1",
+		// Input seeking against remote/VFR media can leave the decoded segment with
+		// the source file's original PTS. The sequential generator later concat-copies
+		// individually encoded segments, so every segment file must start at zero;
+		// otherwise players fill the timestamp gap with black frames.
+		"setpts=PTS-STARTPTS",
+	}
+	if fade {
+		fadeOutStart := eachSec - 0.2
+		if fadeOutStart < 0 {
+			fadeOutStart = 0
+		}
+		parts = append(parts,
+			"fade=t=in:st=0:d=0.20",
+			fmt.Sprintf("fade=t=out:st=%.2f:d=0.2", fadeOutStart),
+		)
+	}
+	return strings.Join(parts, ",")
+}
+
 func thumbnailOffsetFallbackAllowed(err error) bool {
 	if err == nil {
 		return false
@@ -477,7 +500,7 @@ func (g *Generator) generate(ctx context.Context, duration float64, linkForInput
 		// 单段：无需 concat，直接缩放 + 无音
 		args = append(args,
 			"-an",
-			"-vf", fmt.Sprintf("scale=%d:-2,setsar=1", g.cfg.Width),
+			"-vf", teaserSegmentVideoFilter(g.cfg.Width, false, eachSec),
 			"-c:v", "libx264",
 			"-preset", "veryfast",
 			"-crf", "28",
@@ -486,20 +509,15 @@ func (g *Generator) generate(ctx context.Context, duration float64, linkForInput
 		)
 	} else {
 		// 多段：各段缩放 + 0.2s 黑场淡入淡出，concat 拼接
-		// filter_complex: [0:v]scale,fade=in:0:5,fade=out:start=eachSec-0.2:d=0.2[v0]; ...; [v0][v1][v2]concat=n=3:v=1:a=0[v]
-		fadeIn := 0.2
-		fadeOutStart := eachSec - 0.2
-		if fadeOutStart < 0 {
-			fadeOutStart = 0
-		}
+		// filter_complex: [0:v]scale,setpts,fade... [v0]; ...; [v0][v1][v2]concat=n=3:v=1:a=0[v]
 		var filter strings.Builder
 		for i := range starts {
 			if i > 0 {
 				filter.WriteString(";")
 			}
 			fmt.Fprintf(&filter,
-				"[%d:v]scale=%d:-2,setsar=1,fade=t=in:st=0:d=%.2f,fade=t=out:st=%.2f:d=0.2[v%d]",
-				i, g.cfg.Width, fadeIn, fadeOutStart, i)
+				"[%d:v]%s[v%d]",
+				i, teaserSegmentVideoFilter(g.cfg.Width, true, eachSec), i)
 		}
 		filter.WriteString(";")
 		for i := range starts {
@@ -692,12 +710,7 @@ func (g *Generator) generateSingleSegment(ctx context.Context, index int, start,
 	segPath := seg.Name()
 	seg.Close()
 
-	fadeIn := 0.2
-	fadeOutStart := eachSec - 0.2
-	if fadeOutStart < 0 {
-		fadeOutStart = 0
-	}
-	filter := fmt.Sprintf("scale=%d:-2,setsar=1,fade=t=in:st=0:d=%.2f,fade=t=out:st=%.2f:d=0.2", g.cfg.Width, fadeIn, fadeOutStart)
+	filter := teaserSegmentVideoFilter(g.cfg.Width, true, eachSec)
 
 	args := []string{
 		"-hide_banner",
@@ -763,7 +776,8 @@ type localMediaProbe struct {
 		Duration  string `json:"duration"`
 	} `json:"streams"`
 	Format struct {
-		Duration string `json:"duration"`
+		Duration  string `json:"duration"`
+		StartTime string `json:"start_time"`
 	} `json:"format"`
 }
 
@@ -780,7 +794,7 @@ func (g *Generator) validateGeneratedTeaser(ctx context.Context, path string) er
 	defer cancel()
 	args := []string{
 		"-v", "error",
-		"-show_entries", "stream=codec_type,duration:format=duration",
+		"-show_entries", "stream=codec_type,duration:format=start_time,duration",
 		"-of", "json",
 		path,
 	}
@@ -792,6 +806,11 @@ func (g *Generator) validateGeneratedTeaser(ctx context.Context, path string) er
 	var probe localMediaProbe
 	if err := json.Unmarshal(out, &probe); err != nil {
 		return fmt.Errorf("ffprobe teaser output: %w", err)
+	}
+
+	startTime := parseProbeDuration(probe.Format.StartTime)
+	if startTime > 0.5 {
+		return fmt.Errorf("generated teaser starts too late %.3fs", startTime)
 	}
 
 	duration := parseProbeDuration(probe.Format.Duration)
@@ -984,8 +1003,12 @@ type Worker struct {
 	Gen     TeaserGenerator
 	Catalog *catalog.Catalog
 	Drive   drives.Drive
-	ch      chan *catalog.Video
-	queue   videoQueue
+	// TaskGuard holds application-level task admission for the complete provider
+	// operation. A nil release means this worker belongs to a retired runtime
+	// generation and the queued item must remain pending for its replacement.
+	TaskGuard func() func()
+	ch        chan *catalog.Video
+	queue     videoQueue
 
 	RateLimitCooldown time.Duration
 	rateLimit         rateLimitState
@@ -1034,11 +1057,12 @@ func (w *Worker) EnqueueBlocking(ctx context.Context, v *catalog.Video) bool {
 }
 
 type ThumbWorker struct {
-	Gen     ThumbnailGenerator
-	Catalog *catalog.Catalog
-	Drive   drives.Drive
-	ch      chan *catalog.Video
-	queue   videoQueue
+	Gen       ThumbnailGenerator
+	Catalog   *catalog.Catalog
+	Drive     drives.Drive
+	TaskGuard func() func()
+	ch        chan *catalog.Video
+	queue     videoQueue
 
 	RateLimitCooldown time.Duration
 	rateLimit         rateLimitState
@@ -1361,8 +1385,23 @@ func (w *ThumbWorker) Run(ctx context.Context) {
 }
 
 func (w *Worker) processQueued(ctx context.Context, v *catalog.Video) {
+	if v == nil {
+		return
+	}
+	if w.Catalog == nil || v.ID == "" {
+		w.queue.release(v)
+		return
+	}
+	if w.TaskGuard != nil {
+		release := w.TaskGuard()
+		if release == nil {
+			w.queue.release(v)
+			return
+		}
+		defer release()
+	}
 	defer w.queue.release(v)
-	if w.Catalog == nil || v == nil || v.ID == "" {
+	if err := ctx.Err(); err != nil {
 		return
 	}
 	current, err := w.Catalog.GetVideo(ctx, v.ID)
@@ -1378,16 +1417,31 @@ func (w *Worker) processQueued(ctx context.Context, v *catalog.Video) {
 }
 
 func (w *ThumbWorker) processQueued(ctx context.Context, v *catalog.Video) {
+	if w.TaskGuard != nil {
+		release := w.TaskGuard()
+		if release == nil {
+			w.queue.release(v)
+			return
+		}
+		defer release()
+	}
+	if err := ctx.Err(); err != nil {
+		w.queue.release(v)
+		return
+	}
 	w.activity.start(v)
 	retry := false
 	if waitForRateLimitCooldown(ctx, &w.rateLimit, "thumb", w.Drive) {
 		retry = w.process(ctx, v)
 	}
-	w.activity.done()
+	// Keep activity non-idle across release-and-requeue. Configuration admission
+	// checks worker status while holding its queue gate; an idle gap here could
+	// otherwise let a runtime update start just before this retry is queued.
 	w.queue.release(v)
 	if retry && ctx.Err() == nil {
 		w.EnqueueBlocking(ctx, v)
 	}
+	w.activity.done()
 }
 
 func waitForRateLimitCooldown(ctx context.Context, state *rateLimitState, label string, drive drives.Drive) bool {

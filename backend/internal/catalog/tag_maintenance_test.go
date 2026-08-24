@@ -408,6 +408,181 @@ func TestAVCodesGenerateSeriesTagsWhileAVEnabled(t *testing.T) {
 	}
 }
 
+func TestUpdateAVTagAndReconcileOnlyChangesAVScope(t *testing.T) {
+	cat, ctx := openTagMaintenanceTestCatalog(t)
+	seedTagMaintenanceVideo(t, cat, "old-av-prefix", "OBA-334456", "OBA-334456.mp4")
+	seedTagMaintenanceVideo(t, cat, "new-av-prefix", "FHD-78824", "FHD-78824.mp4")
+
+	assignments, err := cat.MatchTagAssignments(ctx, "OBA-334456", "OBA-334456.mp4", "", "")
+	if err != nil {
+		t.Fatalf("match old AV prefix: %v", err)
+	}
+	if !sameStrings(assignmentLabels(assignments), []string{"AV", "OBA"}) {
+		t.Fatalf("old AV assignments = %#v", assignments)
+	}
+	if _, err := cat.ReplaceAutoVideoTags(ctx, "old-av-prefix", assignments); err != nil {
+		t.Fatalf("seed old AV assignments: %v", err)
+	}
+	if _, err := cat.EnsureTag(ctx, "unrelated-tag", "user"); err != nil {
+		t.Fatalf("ensure unrelated tag: %v", err)
+	}
+	if _, err := cat.AddVideoTagAssignments(ctx, "old-av-prefix", []TagAssignment{{
+		Label: "unrelated-tag", Source: "auto", Evidence: "must survive AV reconcile",
+	}}); err != nil {
+		t.Fatalf("seed unrelated assignment: %v", err)
+	}
+	orphan, err := cat.ensureTagWithRulesInternal(ctx, "unrelated-generated", nil, tagging.Rule{}, "generated", false)
+	if err != nil {
+		t.Fatalf("ensure unrelated generated tag: %v", err)
+	}
+
+	av := mustTagByLabel(t, ctx, cat, avTagLabel)
+	prefixes := make([]string, 0, len(av.MatchRules.AVCodePrefixes)+1)
+	for _, prefix := range av.MatchRules.AVCodePrefixes {
+		if prefix != "OBA" {
+			prefixes = append(prefixes, prefix)
+		}
+	}
+	prefixes = append(prefixes, "FHD")
+	updated, changed, err := cat.UpdateTagAndReconcile(ctx, av.ID, tagging.Rule{
+		MatchAVCode: true, AVCodePrefixes: prefixes,
+	})
+	if err != nil {
+		t.Fatalf("update and reconcile AV prefixes: %v", err)
+	}
+	if changed < 4 || stringSliceContains(updated.MatchRules.AVCodePrefixes, "OBA") || !stringSliceContains(updated.MatchRules.AVCodePrefixes, "FHD") {
+		t.Fatalf("updated AV = %#v, changed = %d", updated, changed)
+	}
+
+	oldVideo, err := cat.GetVideo(ctx, "old-av-prefix")
+	if err != nil {
+		t.Fatalf("get old-prefix video: %v", err)
+	}
+	if !sameStrings(oldVideo.Tags, []string{"unrelated-tag"}) {
+		t.Fatalf("old-prefix tags = %#v, want unrelated tag only", oldVideo.Tags)
+	}
+	newVideo, err := cat.GetVideo(ctx, "new-av-prefix")
+	if err != nil {
+		t.Fatalf("get new-prefix video: %v", err)
+	}
+	if !sameStrings(newVideo.Tags, []string{"AV", "FHD"}) {
+		t.Fatalf("new-prefix tags = %#v, want AV + FHD", newVideo.Tags)
+	}
+	if _, err := cat.getTagByLabel(ctx, "OBA"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("removed AV series OBA still exists: %v", err)
+	}
+	fhd := mustTagByLabel(t, ctx, cat, "FHD")
+	var origin string
+	if err := cat.db.QueryRowContext(ctx, `SELECT COALESCE(origin, '') FROM tags WHERE id = ?`, fhd.ID).Scan(&origin); err != nil {
+		t.Fatalf("read FHD origin: %v", err)
+	}
+	if fhd.Source != "generated" || origin != avSeriesOrigin {
+		t.Fatalf("FHD source/origin = %q/%q", fhd.Source, origin)
+	}
+	if _, err := cat.getTagByID(ctx, orphan.ID); err != nil {
+		t.Fatalf("AV reconcile removed unrelated generated tag: %v", err)
+	}
+	metadata, err := cat.ListVideoTagMetadata(ctx, []string{"old-av-prefix", "new-av-prefix"})
+	if err != nil {
+		t.Fatalf("list reconciled metadata: %v", err)
+	}
+	if got := metadata["old-av-prefix"]["unrelated-tag"]; got.Source != "auto" || got.Evidence != "must survive AV reconcile" {
+		t.Fatalf("unrelated metadata = %#v", got)
+	}
+	if got := metadata["new-av-prefix"]["FHD"]; got.Source != "auto" || got.Evidence != "标题:FHD-78824" {
+		t.Fatalf("FHD metadata = %#v", got)
+	}
+}
+
+func TestUpdateAVTagAndReconcileCanDisableAllPrefixes(t *testing.T) {
+	cat, ctx := openTagMaintenanceTestCatalog(t)
+	seedTagMaintenanceVideo(t, cat, "disable-av-prefixes", "SSNI-001", "SSNI-001.mp4")
+	assignments, err := cat.MatchTagAssignments(ctx, "SSNI-001", "SSNI-001.mp4", "", "")
+	if err != nil {
+		t.Fatalf("match AV before disabling: %v", err)
+	}
+	if _, err := cat.ReplaceAutoVideoTags(ctx, "disable-av-prefixes", assignments); err != nil {
+		t.Fatalf("seed AV assignments: %v", err)
+	}
+
+	av := mustTagByLabel(t, ctx, cat, avTagLabel)
+	updated, _, err := cat.UpdateTagAndReconcile(ctx, av.ID, tagging.Rule{})
+	if err != nil {
+		t.Fatalf("disable all AV prefixes: %v", err)
+	}
+	if !updated.MatchRules.IsEmpty() {
+		t.Fatalf("disabled AV rule = %#v, want empty", updated.MatchRules)
+	}
+	video, err := cat.GetVideo(ctx, "disable-av-prefixes")
+	if err != nil {
+		t.Fatalf("get video after disabling AV: %v", err)
+	}
+	if len(video.Tags) != 0 {
+		t.Fatalf("disabled AV video tags = %#v", video.Tags)
+	}
+	if _, err := cat.getTagByLabel(ctx, "SSNI"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("disabled AV retained SSNI series: %v", err)
+	}
+	if assignments, err := cat.MatchTagAssignments(ctx, "SSNI-001", "SSNI-001.mp4", "", ""); err != nil || len(assignments) != 0 {
+		t.Fatalf("disabled AV assignments = %#v, %v", assignments, err)
+	}
+}
+
+func TestUpdateAVTagAndReconcileHandlesUserTagSeriesCollision(t *testing.T) {
+	cat, ctx := openTagMaintenanceTestCatalog(t)
+	oba, err := cat.EnsureTag(ctx, "OBA", "user")
+	if err != nil {
+		t.Fatalf("ensure user OBA tag: %v", err)
+	}
+	if _, err := cat.UpdateTag(ctx, oba.ID, tagging.Rule{Keywords: []string{"keep-oba-tag"}}); err != nil {
+		t.Fatalf("set user OBA rule: %v", err)
+	}
+	seedTagMaintenanceVideo(t, cat, "oba-code", "OBA-334456", "OBA-334456.mp4")
+	seedTagMaintenanceVideo(t, cat, "oba-ordinary", "keep-oba-tag", "ordinary.mp4")
+	if _, err := cat.ClassifyTagByID(ctx, oba.ID); err != nil {
+		t.Fatalf("classify user OBA tag: %v", err)
+	}
+	assignments, err := cat.MatchTagAssignments(ctx, "OBA-334456", "OBA-334456.mp4", "", "")
+	if err != nil {
+		t.Fatalf("match colliding AV series: %v", err)
+	}
+	if _, err := cat.ReplaceAutoVideoTags(ctx, "oba-code", assignments); err != nil {
+		t.Fatalf("seed colliding AV assignments: %v", err)
+	}
+
+	av := mustTagByLabel(t, ctx, cat, avTagLabel)
+	prefixes := make([]string, 0, len(av.MatchRules.AVCodePrefixes))
+	for _, prefix := range av.MatchRules.AVCodePrefixes {
+		if prefix != "OBA" {
+			prefixes = append(prefixes, prefix)
+		}
+	}
+	if _, _, err := cat.UpdateTagAndReconcile(ctx, av.ID, tagging.Rule{
+		MatchAVCode: true, AVCodePrefixes: prefixes,
+	}); err != nil {
+		t.Fatalf("remove colliding AV prefix: %v", err)
+	}
+
+	codeVideo, err := cat.GetVideo(ctx, "oba-code")
+	if err != nil {
+		t.Fatalf("get OBA code video: %v", err)
+	}
+	if len(codeVideo.Tags) != 0 {
+		t.Fatalf("code video retained stale collision tags: %#v", codeVideo.Tags)
+	}
+	ordinaryVideo, err := cat.GetVideo(ctx, "oba-ordinary")
+	if err != nil {
+		t.Fatalf("get ordinary OBA video: %v", err)
+	}
+	if !sameStrings(ordinaryVideo.Tags, []string{"OBA"}) {
+		t.Fatalf("ordinary OBA tags = %#v", ordinaryVideo.Tags)
+	}
+	remaining := mustTagByLabel(t, ctx, cat, "OBA")
+	if remaining.ID != oba.ID || remaining.Source != "user" {
+		t.Fatalf("user OBA tag changed = %#v", remaining)
+	}
+}
+
 func TestDeletingAVTagDisablesAVCodeSeriesGeneration(t *testing.T) {
 	cat, ctx := openTagMaintenanceTestCatalog(t)
 	seedTagMaintenanceVideo(t, cat, "disabled-av", "FC2PPV-4162750", "FC2PPV-4162750.mp4")
@@ -528,6 +703,65 @@ func TestDuplicatePropagationAndClearAreReversible(t *testing.T) {
 	origin, _ := cat.GetVideo(ctx, "dup-a")
 	if !sameStrings(origin.Tags, []string{"origin-tag"}) {
 		t.Fatalf("origin tag was cleared: %#v", origin.Tags)
+	}
+}
+
+func TestUpdateTagAndReconcileOnlyChangesEditedTag(t *testing.T) {
+	cat, ctx := openTagMaintenanceTestCatalog(t)
+	seedTagMaintenanceVideo(t, cat, "rule-target", "special phrase", "target.mp4")
+
+	target, err := cat.EnsureTag(ctx, "display-label", "user")
+	if err != nil {
+		t.Fatalf("ensure target tag: %v", err)
+	}
+	if _, err := cat.EnsureTag(ctx, "other-label", "user"); err != nil {
+		t.Fatalf("ensure unrelated tag: %v", err)
+	}
+	if _, err := cat.AddVideoTagAssignments(ctx, "rule-target", []TagAssignment{{
+		Label: "other-label", Source: "auto", Evidence: "existing",
+	}}); err != nil {
+		t.Fatalf("seed unrelated assignment: %v", err)
+	}
+	orphan, err := cat.ensureTagWithRulesInternal(ctx, "unrelated-generated", nil, tagging.Rule{}, "generated", false)
+	if err != nil {
+		t.Fatalf("ensure unrelated generated tag: %v", err)
+	}
+
+	updated, changed, err := cat.UpdateTagAndReconcile(ctx, target.ID, tagging.Rule{
+		Keywords: []string{"special phrase"},
+	})
+	if err != nil {
+		t.Fatalf("update and reconcile target tag: %v", err)
+	}
+	if changed != 1 || !sameStrings(updated.MatchRules.Keywords, []string{"special phrase"}) {
+		t.Fatalf("updated tag = %#v, changed = %d", updated, changed)
+	}
+	video, err := cat.GetVideo(ctx, "rule-target")
+	if err != nil {
+		t.Fatalf("get matched video: %v", err)
+	}
+	if !sameStrings(video.Tags, []string{"display-label", "other-label"}) {
+		t.Fatalf("matched video tags = %#v", video.Tags)
+	}
+	if _, err := cat.getTagByID(ctx, orphan.ID); err != nil {
+		t.Fatalf("targeted reconcile pruned unrelated tag: %v", err)
+	}
+
+	_, changed, err = cat.UpdateTagAndReconcile(ctx, target.ID, tagging.Rule{
+		Keywords: []string{"other phrase"},
+	})
+	if err != nil {
+		t.Fatalf("remove stale target match: %v", err)
+	}
+	if changed != 1 {
+		t.Fatalf("removed assignment count = %d, want 1", changed)
+	}
+	video, err = cat.GetVideo(ctx, "rule-target")
+	if err != nil {
+		t.Fatalf("get unmatched video: %v", err)
+	}
+	if !sameStrings(video.Tags, []string{"other-label"}) {
+		t.Fatalf("targeted reconcile changed unrelated assignments: %#v", video.Tags)
 	}
 }
 

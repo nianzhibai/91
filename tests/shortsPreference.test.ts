@@ -501,10 +501,18 @@ test("shorts loading spinner covers video buffering and initial feed loading", (
     /@keyframes shorts-spinner-rotate\s*\{[\s\S]*to\s*\{\s*transform:\s*rotate\(360deg\);/
   );
   assert.match(shortsCssSource, /\.shorts-loading \.shorts-slide__loading-spinner\s*\{/);
-  assert.match(
-    shortsCssSource,
-    /@media \(max-width:\s*640px\)\s*\{[\s\S]*\.shorts-slide__buffering\s*\{[\s\S]*--shorts-spinner-size:\s*24px;[\s\S]*width:\s*56px;[\s\S]*height:\s*56px;/
+  const bufferingRule =
+    shortsCssSource.match(/\.shorts-slide__buffering\s*\{[^}]*\}/s)?.[0] ?? "";
+  assert.doesNotMatch(
+    bufferingRule,
+    /background:|backdrop-filter:|box-shadow:|border:|border-radius:|width:|height:/
   );
+  const mobileBufferingRule =
+    shortsCssSource.match(
+      /@media \(max-width:\s*640px\)\s*\{[\s\S]*?\.shorts-slide__buffering\s*\{[^}]*\}/
+    )?.[0] ?? "";
+  assert.match(mobileBufferingRule, /--shorts-spinner-size:\s*24px;/);
+  assert.doesNotMatch(mobileBufferingRule, /width:\s*56px|height:\s*56px/);
 });
 
 test("shorts preloads the next two original videos only after the active video has comfortable buffer", () => {

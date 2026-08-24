@@ -35,7 +35,8 @@ scanner:
   # 现在所有定时任务统一由 nightly 调度器控制（默认每天 01:00 跑一条完整流水线）。
   # 字段保留仅为兼容旧 yaml，运行时被忽略。
   interval_seconds: 0
-  # 单次扫描每家网盘目录递归层数上限
+  # 已废弃：扫描会递归到叶子目录，不限制目录深度。
+  # 字段保留仅为兼容旧 yaml，运行时被忽略。
   max_depth: 5
   # 被扫描的扩展名
   video_extensions: [".mp4", ".mkv", ".mov", ".webm", ".avi", ".strm"]

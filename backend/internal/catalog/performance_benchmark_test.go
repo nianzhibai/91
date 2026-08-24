@@ -234,11 +234,11 @@ VALUES ('benchmark', '[]', '{}', 'user', ?, ?)
 INSERT INTO videos (
   id, drive_id, file_id, file_name, content_hash, sampled_sha256,
   fingerprint_status, title, author, tags, duration_seconds, size_bytes,
-  ext, quality, thumbnail_url, thumbnail_updated_at, thumbnail_status,
+  ext, thumbnail_url, thumbnail_updated_at, thumbnail_status,
   preview_status, published_at, created_at, updated_at
 )
 VALUES (?, 'benchmark-drive', ?, ?, ?, ?, 'ready', ?, 'benchmark', ?, 600, ?,
-        'mp4', 'HD', ?, ?, 'ready', 'pending', ?, ?, ?)
+        'mp4', ?, ?, 'ready', 'pending', ?, ?, ?)
 `)
 	if err != nil {
 		b.Fatal(err)

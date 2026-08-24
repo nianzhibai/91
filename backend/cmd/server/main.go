@@ -192,6 +192,7 @@ func main() {
 	app.crawlerUploader = crawlerupload.New(crawlerupload.Config{
 		Catalog:          cat,
 		Registry:         app.registry,
+		GetDrive:         app.activeDriveConfig,
 		CommonThumbDir:   app.commonThumbsDir(),
 		OnUploadProgress: app.updateCrawlerUploadProgress,
 	})
@@ -208,6 +209,21 @@ func main() {
 
 	if _, err := app.normalizeLegacyThumbnailFiles(ctx); err != nil {
 		log.Printf("[thumbnail-maintenance] migration failed: %v", err)
+	}
+	legacyCrawlerStats, err := app.cleanupLegacyDeletedCrawlers(ctx)
+	if err != nil {
+		log.Printf(
+			"[scriptcrawler-maintenance] cleanup incomplete removed_crawlers=%d removed_videos=%d: %v",
+			legacyCrawlerStats.RemovedCrawlers,
+			legacyCrawlerStats.RemovedVideos,
+			err,
+		)
+	} else if legacyCrawlerStats.RemovedCrawlers > 0 {
+		log.Printf(
+			"[scriptcrawler-maintenance] removed legacy deleted crawlers=%d videos=%d",
+			legacyCrawlerStats.RemovedCrawlers,
+			legacyCrawlerStats.RemovedVideos,
+		)
 	}
 	app.loadTheme(ctx)
 	if removed, err := app.cleanupOrphanDriveVideos(ctx); err != nil {
@@ -351,9 +367,14 @@ func main() {
 			setupRequired = false
 			return nil
 		},
-		LocalPreviewDir: cfg.Storage.LocalPreviewDir,
-		OnDriveSaved: func(driveID string) error {
-			return app.reloadSavedDrive(ctx, driveID)
+		LocalPreviewDir:        cfg.Storage.LocalPreviewDir,
+		BeginDriveConfigUpdate: app.beginDriveConfigUpdate,
+		OnDriveRuntimeConfigChanged: func(driveID string) error {
+			return app.reloadDriveRuntime(ctx, driveID)
+		},
+		OnPrepareDriveDelete: func(deleteCtx context.Context, driveID string) error {
+			app.stopDriveTasks(ctx, driveID)
+			return app.waitDriveTasksStopped(deleteCtx, driveID)
 		},
 		OnDriveDeleteCleanup: func(cleanupCtx context.Context, driveID string) (int, error) {
 			return app.cleanupDriveVideosForDelete(cleanupCtx, driveID)
@@ -411,6 +432,9 @@ func main() {
 		GetBlacklistSourceDeleteStatus: func() api.BlacklistSourceDeleteStatus {
 			return app.blacklistSourceDeleteStatus()
 		},
+		OnRemoveBlacklist: func(reqCtx context.Context, videoID string) error {
+			return app.restoreDeletedVideo(reqCtx, videoID)
+		},
 		OnStartTagRetag: func() bool {
 			return app.startTagRetag(ctx)
 		},
@@ -434,7 +458,7 @@ func main() {
 			worker := app.workers[driveID]
 			thumbWorker := app.thumbWorkers[driveID]
 			app.mu.Unlock()
-			go app.enqueueDriveGeneration(ctx, driveID, worker, thumbWorker)
+			app.scheduleDriveGenerationEnqueue(ctx, driveID, worker, thumbWorker)
 		},
 		GetTheme: func() string { return app.Theme() },
 		SetTheme: func(theme string) error {
@@ -470,7 +494,7 @@ func main() {
 	mountFrontend(r)
 
 	// 凌晨流水线：每天按后台可热更新的 HH:mm + IANA 时区触发一次，串行跑
-	//   Phase 1 扫所有非爬虫 / localupload 网盘 + 删除检测 + 入队封面/预览视频
+	//   Phase 1 扫所有非爬虫 / localupload 网盘 + 连续缺失确认清理 + 入队封面/预览视频
 	//   Phase 2 脚本爬虫 + 入队预览视频
 	//   Phase 3 爬虫本地视频 → 云盘上传
 	//   Phase 4 扫描爬虫本地目录并恢复已取消拉黑的视频
@@ -488,7 +512,7 @@ func main() {
 		ListCrawlerDrives:     app.listCrawlerDriveIDs,
 		RunCrawlerCrawl:       app.runScriptCrawlerCrawl,
 		WaitPreviewQueuesIdle: app.waitAllPreviewQueuesIdle,
-		RunMigration:          app.crawlerUploader.RunOnce,
+		RunMigration:          app.runCrawlerUploadMigration,
 		RestoreCrawlerVideos:  app.restoreScriptCrawlerVideos,
 		RunDedupeAssetCleanup: app.cleanupDuplicateVideoAssets,
 	})

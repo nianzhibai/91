@@ -178,12 +178,21 @@ export function CrawlersPage() {
     setTogglingTeasers(true);
     setList((prev) => prev.map((item) => ({ ...item, teaserEnabled: next })));
     try {
+      let deferred = false;
       for (const crawler of previous) {
         if (crawler.teaserEnabled !== next) {
-          await api.setDriveTeaserEnabled(crawler.id, next);
+          const resp = await api.setDriveTeaserEnabled(crawler.id, next);
+          deferred = deferred || Boolean(resp.deferred);
         }
       }
-      show(next ? "已开启所有爬虫预览视频生成" : "已关闭所有爬虫预览视频生成", "success");
+      show(
+        deferred
+          ? "已保存，相关爬虫任务结束后生效"
+          : next
+            ? "已开启所有爬虫预览视频生成"
+            : "已关闭所有爬虫预览视频生成",
+        "success"
+      );
       await refresh(true);
     } catch (e) {
       setList(previous);
@@ -323,7 +332,7 @@ export function CrawlersPage() {
       <ConfirmModal
         open={deleteTarget !== null}
         title="删除爬虫"
-        message={`确定删除爬虫「${deleteTarget?.name ?? ""}」？本地保留的视频、封面、预览和抓取文件将一并删除；已迁移到网盘的视频不受影响。`}
+        message={`确定删除爬虫「${deleteTarget?.name ?? ""}」？正在运行的任务将先自动停止；退出后，本地保留的视频、封面、预览和抓取文件将一并删除，已迁移到网盘的视频不受影响。`}
         plainConfirm
         hideIcon
         loading={deleting}
@@ -760,8 +769,10 @@ function CrawlerEditorModal({
       });
       if (resp.warning) {
         show(`已保存，但初始化失败：${resp.warning}`, "error");
+      } else if (resp.deferred) {
+        show(resp.message || "已保存，将在当前爬虫任务结束后生效", "success");
       } else {
-        show("已保存", "success");
+        show("已保存并生效", "success");
       }
       onSaved();
     } catch (e) {

@@ -239,6 +239,34 @@ func TestThumbnailVideoFilterUsesFullRangeJPEGPixelFormat(t *testing.T) {
 	}
 }
 
+func TestTeaserSegmentVideoFilterResetsTimestampsBeforeConcat(t *testing.T) {
+	got := teaserSegmentVideoFilter(480, true, 3)
+	if !strings.Contains(got, "setpts=PTS-STARTPTS") {
+		t.Fatalf("teaser filter = %q, want timestamp reset", got)
+	}
+	if !strings.Contains(got, "fade=t=in") || !strings.Contains(got, "fade=t=out:st=2.80") {
+		t.Fatalf("teaser filter = %q, want segment fades", got)
+	}
+}
+
+func TestValidateGeneratedTeaserRejectsNonZeroStartTime(t *testing.T) {
+	dir := t.TempDir()
+	ffprobe := filepath.Join(dir, "ffprobe")
+	probeScript := "#!/bin/sh\n" +
+		`printf '%s' '{"streams":[{"codec_type":"video","duration":"3.0"}],"format":{"start_time":"5.366016","duration":"8.366016"}}'` + "\n"
+	if err := os.WriteFile(ffprobe, []byte(probeScript), 0o755); err != nil {
+		t.Fatalf("write ffprobe stub: %v", err)
+	}
+	path := filepath.Join(dir, "teaser.mp4")
+	if err := os.WriteFile(path, []byte("not-empty"), 0o644); err != nil {
+		t.Fatalf("write teaser: %v", err)
+	}
+	gen := New(Config{FFprobePath: ffprobe})
+	if err := gen.validateGeneratedTeaser(context.Background(), path); err == nil || !strings.Contains(err.Error(), "starts too late") {
+		t.Fatalf("validate error = %v, want late-start rejection", err)
+	}
+}
+
 func TestThumbnailOffsetFallbackAllowedForEmptyOutputAndTimeouts(t *testing.T) {
 	for _, err := range []error{
 		errors.New("ffmpeg thumb produced empty file, stderr: "),

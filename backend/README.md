@@ -36,7 +36,7 @@ internal/
   catalog/                  SQLite 元数据与标签
   config/                   YAML 配置
   drives/                   网盘抽象 + 12 个驱动（含 Python 爬虫、站内上传）
-  scanner/                  扫盘落库、文件名解析
+  scanner/                  扫盘发现快照、Catalog 对账、文件名解析
   preview/                  ffmpeg 抽封面、生成预览视频
   proxy/                    播放直链代理与 302 策略
   fingerprint/              跨盘去重指纹
@@ -59,6 +59,7 @@ cmd/
     app.go app_status.go    应用状态、按盘的预览开关
     http.go                 chi 路由、CORS、真实 IP 解析
     drives.go               按 kind 构造并挂载网盘
+    scan.go                 扫盘准入及发现、对账、清理、派生任务编排
     crawlers.go             脚本爬虫任务调度与凭证
     generation.go           封面 / 预览视频的重生入口
     blacklist.go            历史「隐藏」视频迁移为黑名单墓碑
@@ -102,7 +103,11 @@ internal/
       metadata.go           CRAWLER_NAME / CRAWLER_PROTOCOL 解析
       dryrun*.go            后台「测试脚本」，含跨平台进程组终止
       neardupe.go           入库前的近重复判定
-  scanner/                  扫目录 → 落库；filename.go 从文件名解析标题和作者
+  scanner/
+    scanner.go types.go     扫描入口、进度及 Snapshot / Result / Issue 模型
+    discovery.go            只读遍历网盘并生成文件存在性快照
+    reconcile.go            快照与 Catalog 对账、去重、标签及墓碑处理
+    filename.go             从文件名解析标题和作者
   preview/                  ffmpeg 抽封面、生成多段预览视频，含 worker 队列与限流冷却
   fingerprint/              采样 SHA256 指纹 worker，用于跨盘的文件级去重
   transcode/                探测是否需要转码 + 转码 worker
@@ -149,14 +154,14 @@ data/crawler-scripts/       后台导入的爬虫 .py 脚本
 ```mermaid
 flowchart TB
     subgraph TRIG["触发源"]
-        BOOT["进程启动"]
+        BOOT["进程启动<br/>挂载网盘并恢复 pending 任务"]
         CRON["nightly 每日配置时间"]
         ADMIN["管理后台操作"]
         USER["前台用户请求"]
     end
 
     subgraph INGEST["入库：视频从哪来"]
-        SCAN["scanner 扫盘<br/>列目录 → 解析文件名 → 落库"]
+        SCAN["scanner 扫盘<br/>发现快照 → Catalog 对账 → 缺失确认"]
         CRAWL["scriptcrawler 爬虫<br/>Python 子进程 → JSON Lines 事件"]
         UPLOAD["localupload 站内上传"]
     end
@@ -182,7 +187,9 @@ flowchart TB
     MIG["crawlerupload<br/>爬虫产物迁移到目标网盘"]
     DEDUP["夜间去重维护<br/>全库硬去重（docs/DEDUP.md）"]
 
-    BOOT --> SCAN
+    BOOT --> THUMB
+    BOOT --> PREV
+    BOOT --> FP
     CRON --> SCAN
     CRON --> CRAWL
     CRON --> MIG
@@ -233,12 +240,19 @@ flowchart TB
 
 | 路径 | 触发 | 关键行为 |
 |---|---|---|
-| 扫盘 | 夜间流水线、后台「重新扫描」 | 递归列目录，按扩展名过滤，`videoname` 解析标题/作者，`UpsertVideo` 落库 |
+| 扫盘 | 夜间流水线、后台「重新扫描」 | 先只读递归生成存在性快照，再与 Catalog 对账，完成缺失确认，最后投递派生资产任务 |
 | 爬虫 | 夜间流水线、后台「重新扫描」（爬虫盘等同触发爬取） | 启动 Python 子进程，读 stdout 的 JSON Lines 事件流，逐条下载入库 |
 | 上传 | 前台 `POST /api/upload` | 落到 `data/uploads/`，直接入库并立即排生成队列 |
 | 视频直链 | 上传页 `POST /api/upload/remote` | 持久化后台下载，校验视频流后落到 `data/uploads/`，复用上传生成队列 |
 
-扫盘结束后还有一步**删除检测**：本轮见到的 `file_id` 集合之外、且父目录在本轮走过的视频，判定为已从网盘删除。若本轮有目录报错（`stats.Errors > 0`）则整轮跳过检测 —— 宁可漏删，不可把「暂时列不出来」误判成「用户删了」。爬虫盘和站内上传不参与这个检测，它们有自己的生命周期。
+扫盘明确分为四个阶段：
+
+1. **发现**：只读递归网盘，按扩展名和大小过滤，生成包含候选文件、已见 `file_id`、已访问目录及排除目录的 `Snapshot`，此阶段不写 Catalog。
+2. **对账**：解析标题/作者和自动标签，按 `(drive_id, file_id)` 更新已有记录，执行墓碑及重复检查，并写入新视频。单文件写库失败记录为结构化 `Issue`，不会改变该文件已在快照中出现的事实。
+3. **缺失确认与清理**：只有目录发现完整时才推进缺失计数；任何目录列举错误都会跳过本轮清理。取消、超时或深层限流属于致命发现错误，会在任何对账写入前终止本轮扫描。
+4. **派生任务投递**：清理完成后，将本轮新增视频统一交给封面、指纹和预览任务；pending 补扫仍负责进程中断后的兜底。
+
+缺失确认是跨扫描任务持久化的：第一次完整成功扫描未见文件只把连续缺失计数记为 1；下一次独立的完整成功扫描仍未见时，计数达到 2，才删除视频记录和本地生成的预览、封面及帧签名。任一后续扫描重新见到文件会立即清零计数。局部扫描只确认父目录处于本次访问范围内的记录；从网盘根目录开始的完整扫描则以整个盘为管理范围，因此后来被配置为跳过的目录不会进入快照，其中历史视频也会在连续两次确认后退出媒体库。此清理不删除网盘源文件。爬虫盘和站内上传不参与该流程，它们有自己的生命周期。
 
 #### 视频直链后台任务
 
@@ -295,12 +309,12 @@ sequenceDiagram
 
 ### 4. 异步生成
 
-新视频入库即入队，队列按 video ID 去重，避免同一视频重复排队；每处理完一条 worker 休眠 500ms 节流。
+上传和爬虫产生的新视频会在入库后直接投递；扫盘产生的新视频则在整轮对账及缺失清理完成后，通过 `Result.NewVideos` 统一投递。队列按 video ID 去重，避免同一视频重复排队；每处理完一条 worker 休眠 500ms 节流。
 
 - **封面**：`ffprobe` 探时长 → `ffmpeg` 抽帧。
 - **Shorts 背景封面**：第一次请求 `/p/thumb/{videoID}?variant=shorts-bg` 时，从普通封面按需生成最长边 96px、预先模糊的 JPEG，后续直接复用；普通封面更新后会自动刷新。它计入封面存储占用，并随视频或网盘删除一起清理。
 - **预览视频**：30 秒以下最多 3 段、30 秒及以上固定 4 段，每段 3 秒。取点区间按时长分档：10 分钟以上在 20%–80% 之间均匀取，30 秒到 10 分钟避开片头片尾（5% 或 3 秒起、85% 前结束），30 秒以下从 10% 起。拼接后校验确有视频流；段数不足时只有在明确的降级路径下才接受 2 段，并留日志。⚠️ **选段起点只由时长决定**——这是内容级去重（[docs/DEDUP.md](docs/DEDUP.md)）帧对齐的正确性依赖，改选段算法必须同步评估那边。
-- **指纹**：读少量 Range 片段算 `sampled_sha256`，用于跨盘去重。除入库即时入队外，还有每分钟一次的补扫协程捞 `pending`。
+- **指纹**：读少量 Range 片段算 `sampled_sha256`，用于跨盘去重。上传和爬虫在入库后投递，扫盘在完成本轮清理后投递；此外还有每分钟一次的补扫协程捞 `pending`。
 - **转码**：不自动跑，由后台按盘手动启动。候选按扩展名圈定：webm（规范上只装浏览器必播编码）和 strm（远程引用）除外都算候选——mp4/m4v 容器兼容但可能装着 MPEG-4 Part 2 / HEVC 等浏览器解不了的视频轨（表现为黑屏有声音）。云盘候选先用 `ffprobe` 远程探测直链（Range 只读容器元数据，MB 级流量），编码兼容的直接标 `skipped` 零下载跳过，需要转码的才整文件下载；mp4/m4v 远程探测失败标 `failed` 等重试，不做整文件下载兜底，避免系统性探测失败时把全库 mp4 拉一遍。单条视频可用 `go run ./cmd/transcode-one <videoID>` 立即处理（走同一流程，目前仅支持 p115）。
 
 **限流冷却**是这一层的横切设计：上游返回 429 / 403 / `activityLimitReached` 这类信号时，整盘进入冷却期，任务保留 `pending` 等下轮，而不是标记失败。联通和光鸭默认冷却 10 分钟。115 的签名链接被提前拒绝时会刷新一次直链重试。
@@ -311,7 +325,7 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-    P1["Phase 1<br/>扫所有云盘<br/>+ 删除检测"] --> W1{{"等封面/预览/指纹队列排空"}}
+    P1["Phase 1<br/>扫所有云盘<br/>+ 连续缺失确认清理"] --> W1{{"等封面/预览/指纹队列排空"}}
     W1 --> P2["Phase 2<br/>跑脚本爬虫"]
     P2 --> W2{{"等封面/预览/指纹队列排空"}}
     W2 --> P3["Phase 3<br/>爬虫产物上传到目标网盘"]

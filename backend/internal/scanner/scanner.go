@@ -2,88 +2,140 @@ package scanner
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"log"
-	"path"
 	"strings"
 	"time"
 
 	"github.com/video-site/backend/internal/catalog"
 	"github.com/video-site/backend/internal/drives"
-	"github.com/video-site/backend/internal/videoid"
-	"github.com/video-site/backend/internal/videoname"
 )
+
+// Source is the read-only subset of a drive needed by a scan. Keeping this
+// interface narrow prevents catalog discovery from depending on playback,
+// upload, or authentication capabilities.
+type Source interface {
+	Kind() string
+	ID() string
+	List(ctx context.Context, dirID string) ([]drives.Entry, error)
+	RootID() string
+}
 
 type Scanner struct {
 	Catalog *catalog.Catalog
-	Drive   drives.Drive
+	Drive   Source
 	Exts    map[string]bool
-	// SkipDirIDs 是用户在 admin 后台配置的"扫描跳过目录"集合（drive 侧的目录 fileID）。
-	// 命中其中任意一个时 scanner 直接 continue —— 不递归、不收集文件、不计入
-	// SeenFileIDs / VisitedDirIDs，自然也不会被后续 cleanupMissingDriveVideos 当
-	// 成"消失了"误删。替代旧版硬编码 p115 "影视" 目录例外分支。
-	//
-	// nil / 空集合 → 行为等同于不跳过任何目录。
+
+	// SkipDirIDs contains directory IDs excluded from discovery. During a scan
+	// rooted at Drive.RootID, existing catalog rows below these directories are
+	// intentionally absent from the snapshot and therefore age out through the
+	// normal consecutive-miss cleanup policy.
 	SkipDirIDs map[string]struct{}
-	// 回调：新视频被加入后触发预览视频生成
+
+	// OnNewVideo is retained for callers using Run directly. Application-level
+	// orchestration should prefer Scan and dispatch Result.NewVideos explicitly.
 	OnNewVideo func(v *catalog.Video)
-	// OnProgress 在扫描进度变化时触发。回调只应读取 Stats 里的计数，不应修改 map 字段。
+	// OnProgress receives an immutable-by-convention copy of the current counts.
 	OnProgress func(stats Stats)
-	// ProgressInterval 控制扫描内部 heartbeat 的最小输出间隔。
-	// 0 → 默认 30s；< 0 → 关闭 heartbeat（仅留外层 start / done 两行）。
-	// heartbeat 单行格式：
-	//   [scanner] drive=X progress: scanned=N added=K errors=E dirs=M elapsed=Ts at=<dir>
+	// ProgressInterval controls heartbeat logging. Zero uses the default; a
+	// negative duration disables heartbeat logs.
 	ProgressInterval time.Duration
 }
 
 const defaultScanProgressInterval = 30 * time.Second
 
-// New 构造一个 Scanner。
-//
-// skipDirIDs 是用户为该 drive 配置的"扫描跳过目录"集合（可空）；nil / 空集合
-// 表示不跳过任何目录。被跳过的目录及其全部子目录都不递归。
-func New(cat *catalog.Catalog, drv drives.Drive, exts []string, skipDirIDs []string, onNew func(v *catalog.Video)) *Scanner {
-	m := make(map[string]bool, len(exts))
-	for _, e := range exts {
-		m[strings.ToLower(e)] = true
+// New constructs a scanner. skipDirIDs may be nil or empty.
+func New(cat *catalog.Catalog, drv Source, exts []string, skipDirIDs []string, onNew func(v *catalog.Video)) *Scanner {
+	extensions := make(map[string]bool, len(exts))
+	for _, ext := range exts {
+		extensions[strings.ToLower(ext)] = true
 	}
-	skip := make(map[string]struct{}, len(skipDirIDs))
+	skipped := make(map[string]struct{}, len(skipDirIDs))
 	for _, id := range skipDirIDs {
-		id = strings.TrimSpace(id)
-		if id == "" {
-			continue
+		if id = strings.TrimSpace(id); id != "" {
+			skipped[id] = struct{}{}
 		}
-		skip[id] = struct{}{}
 	}
 	return &Scanner{
 		Catalog:    cat,
 		Drive:      drv,
-		Exts:       m,
-		SkipDirIDs: skip,
+		Exts:       extensions,
+		SkipDirIDs: skipped,
 		OnNewVideo: onNew,
 	}
 }
 
-type Stats struct {
-	Scanned       int
-	Added         int
-	Errors        int
-	SeenFileIDs   map[string]struct{}
-	VisitedDirIDs map[string]struct{}
+// Run preserves the original scanner facade. New orchestration code should use
+// Scan when it needs snapshot completeness or the newly inserted videos.
+func (s *Scanner) Run(ctx context.Context, startDirID string) (Stats, error) {
+	result, err := s.Scan(ctx, startDirID)
+	return result.Stats, err
 }
 
-// Run 从 Drive.RootID 开始扫描
-func (s *Scanner) Run(ctx context.Context, startDirID string) (Stats, error) {
-	if startDirID == "" {
-		startDirID = s.Drive.RootID()
+// Scan executes the explicit discovery -> reconciliation pipeline. Discovery
+// performs no catalog writes, so a fatal traversal error cannot leave a
+// half-reconciled catalog.
+func (s *Scanner) Scan(ctx context.Context, startDirID string) (Result, error) {
+	if err := validateScanner(s); err != nil {
+		return Result{}, err
 	}
-	stats := Stats{
+	stats := newStats()
+	snapshot, err := s.discover(ctx, startDirID, &stats, s.progressReporter(&stats))
+	result := newResult(snapshot, stats)
+	if err != nil {
+		return result, err
+	}
+	if err := s.reconcile(ctx, &result, s.progressReporter(&result.Stats)); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+// Discover builds a read-only representation of the provider state. It is
+// exported so callers and tests can inspect discovery independently of writes.
+func (s *Scanner) Discover(ctx context.Context, startDirID string) (Snapshot, Stats, error) {
+	if err := validateSource(s); err != nil {
+		return Snapshot{}, Stats{}, err
+	}
+	stats := newStats()
+	progress := s.progressReporter(&stats)
+	snapshot, err := s.discover(ctx, startDirID, &stats, progress)
+	return snapshot, stats, err
+}
+
+// Reconcile applies a previously discovered snapshot to the catalog.
+func (s *Scanner) Reconcile(ctx context.Context, snapshot Snapshot) (Result, error) {
+	if err := validateScanner(s); err != nil {
+		return Result{}, err
+	}
+	stats := statsForSnapshot(snapshot)
+	result := newResult(snapshot, stats)
+	progress := s.progressReporter(&result.Stats)
+	if err := s.reconcile(ctx, &result, progress); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func newStats() Stats {
+	return Stats{
 		SeenFileIDs:   make(map[string]struct{}),
 		VisitedDirIDs: make(map[string]struct{}),
 	}
+}
 
-	// heartbeat 闭包：进 / 退每个目录、每处理完一个文件后调一下，用一个时间戳节流。
-	// 闭包持有的状态都是单 goroutine 顺序写读，不需要锁。
+func statsForSnapshot(snapshot Snapshot) Stats {
+	return Stats{
+		Scanned:       len(snapshot.Files),
+		Errors:        len(snapshot.Issues),
+		SeenFileIDs:   snapshot.SeenFileIDs,
+		VisitedDirIDs: snapshot.VisitedDirIDs,
+	}
+}
+
+type progressFunc func(phase, currentDir string)
+
+func (s *Scanner) progressReporter(stats *Stats) progressFunc {
 	interval := s.ProgressInterval
 	if interval == 0 {
 		interval = defaultScanProgressInterval
@@ -94,9 +146,9 @@ func (s *Scanner) Run(ctx context.Context, startDirID string) (Stats, error) {
 	if s.Drive != nil {
 		driveID = s.Drive.ID()
 	}
-	progress := func(currentDir string) {
+	return func(phase, currentDir string) {
 		if s.OnProgress != nil {
-			s.OnProgress(stats)
+			s.OnProgress(*stats)
 		}
 		if interval < 0 {
 			return
@@ -106,233 +158,31 @@ func (s *Scanner) Run(ctx context.Context, startDirID string) (Stats, error) {
 			return
 		}
 		lastBeat = now
-		shown := currentDir
-		if shown == "" {
-			shown = "(root)"
+		if currentDir == "" {
+			currentDir = "(root)"
 		}
-		log.Printf("[scanner] drive=%s progress: scanned=%d added=%d errors=%d dirs=%d elapsed=%s at=%s",
-			driveID, stats.Scanned, stats.Added, stats.Errors, len(stats.VisitedDirIDs),
-			now.Sub(started).Round(time.Second), shown)
+		log.Printf("[scanner] drive=%s progress: phase=%s scanned=%d added=%d errors=%d dirs=%d elapsed=%s at=%s",
+			driveID, phase, stats.Scanned, stats.Added, stats.Errors,
+			len(stats.VisitedDirIDs), now.Sub(started).Round(time.Second), currentDir)
 	}
-
-	if err := s.walk(ctx, startDirID, "", &stats, progress); err != nil {
-		return stats, err
-	}
-	return stats, nil
 }
 
-func (s *Scanner) walk(ctx context.Context, dirID, dirName string, stats *Stats, progress func(string)) error {
-	if err := ctx.Err(); err != nil {
+func validateScanner(s *Scanner) error {
+	if err := validateSource(s); err != nil {
 		return err
 	}
-	stats.VisitedDirIDs[dirID] = struct{}{}
-	progress(dirName) // 心跳：进入新目录前后是天然的节流点
-
-	entries, err := s.Drive.List(ctx, dirID)
-	if err != nil {
-		return fmt.Errorf("list %s: %w", dirID, err)
-	}
-
-	for _, e := range entries {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if e.IsDir {
-			// 跳过 previews 目录，避免扫到自己生成的预览视频
-			if strings.EqualFold(e.Name, "previews") {
-				continue
-			}
-			// 用户在 admin 配置的跳过目录：直接 continue，不递归、不收集文件。
-			if _, skip := s.SkipDirIDs[e.ID]; skip {
-				continue
-			}
-			if err := s.walk(ctx, e.ID, e.Name, stats, progress); err != nil {
-				if ctxErr := ctx.Err(); ctxErr != nil {
-					return ctxErr
-				}
-				stats.Errors++
-				log.Printf("[scanner] walk %s error: %v", e.Name, err)
-			}
-			continue
-		}
-
-		ext := strings.ToLower(path.Ext(e.Name))
-		if !s.Exts[ext] {
-			continue
-		}
-		if e.Size <= 0 {
-			continue
-		}
-		stats.Scanned++
-		progress(dirName)
-		stats.SeenFileIDs[e.ID] = struct{}{}
-
-		id := videoid.ForDrive(s.Drive.Kind(), s.Drive.ID(), e.ID)
-		if deleted, err := s.Catalog.IsDeletedVideoCandidate(ctx, id, s.Drive.ID(), e.ID, e.Hash, e.Name, e.Size); err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return ctxErr
-			}
-			stats.Errors++
-			log.Printf("[scanner] check deleted video %s error: %v", id, err)
-			continue
-		} else if deleted {
-			continue
-		}
-
-		parsed := Parse(e.Name)
-		displayTitle := videoname.TitleFromFileName(e.Name)
-		if displayTitle == "" {
-			displayTitle = strings.TrimSpace(e.Name)
-		}
-		assignments, err := s.Catalog.MatchTagAssignments(ctx, parsed.Title, e.Name, parsed.Author, dirName)
-		if err != nil {
-			assignments = nil
-		}
-		tags := make([]string, 0, len(assignments))
-		for _, a := range assignments {
-			tags = append(tags, a.Label)
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-
-		existing, _ := s.Catalog.FindVideoByDriveFileID(ctx, s.Drive.ID(), e.ID)
-		if existing == nil {
-			existing, _ = s.Catalog.GetVideo(ctx, id)
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if existing != nil {
-			recordID := existing.ID
-			patch := catalog.VideoMetaPatch{}
-			if e.Hash != "" && existing.ContentHash == "" {
-				patch.ContentHash = e.Hash
-				existing.ContentHash = e.Hash
-			}
-			if dirName != "" && existing.DirName != dirName {
-				patch.DirName = dirName
-				existing.DirName = dirName
-			}
-			if e.Name != "" && existing.FileName != e.Name {
-				patch.FileName = e.Name
-				existing.FileName = e.Name
-				patch.Author = parsed.Author
-				patch.AuthorSet = true
-			}
-			if existing.Title != displayTitle {
-				patch.Title = displayTitle
-				patch.TitleSet = true
-				existing.Title = displayTitle
-			}
-			if patch.ContentHash != "" || patch.FileName != "" || patch.DirName != "" || patch.TitleSet || patch.AuthorSet {
-				_ = s.Catalog.UpdateVideoMeta(ctx, recordID, patch)
-				if err := ctx.Err(); err != nil {
-					return err
-				}
-			}
-			if dup := s.findDuplicate(ctx, e.Hash, e.Name, e.Size, recordID); dup != nil {
-				continue
-			}
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			if _, err := s.Catalog.ReplaceAutoVideoTags(ctx, recordID, assignments); err != nil {
-				log.Printf("[scanner] retag %s error: %v", recordID, err)
-			}
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			continue
-		}
-
-		if dup := s.findDuplicate(ctx, e.Hash, e.Name, e.Size, id); dup != nil {
-			continue
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-
-		now := time.Now()
-		v := &catalog.Video{
-			ID:            id,
-			DriveID:       s.Drive.ID(),
-			FileID:        e.ID,
-			FileName:      e.Name,
-			ContentHash:   e.Hash,
-			ParentID:      e.ParentID,
-			DirName:       dirName,
-			Title:         displayTitle,
-			Author:        parsed.Author,
-			Ext:           strings.TrimPrefix(ext, "."),
-			Quality:       "HD",
-			Size:          e.Size,
-			PreviewStatus: "pending",
-			PublishedAt:   now,
-			CreatedAt:     now,
-			UpdatedAt:     now,
-		}
-		if err := s.Catalog.UpsertVideo(ctx, v); err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return ctxErr
-			}
-			log.Printf("[scanner] upsert %s error: %v", v.Title, err)
-			continue
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if len(assignments) > 0 {
-			if _, err := s.Catalog.ReplaceAutoVideoTags(ctx, v.ID, assignments); err != nil {
-				log.Printf("[scanner] tag %s error: %v", v.ID, err)
-			}
-			v.Tags = tags
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		stats.Added++
-		progress(dirName)
-		if s.OnNewVideo != nil {
-			s.OnNewVideo(v)
-		}
-		// 兜底：如果某个目录里挤了几千个文件，仅靠"进目录心跳"会很久不响一下；
-		// 在每条文件处理完之后再 ping 一次，progress 内部的 30s 节流会把绝大多数
-		// 调用变成廉价的时间比较。
-		progress(dirName)
+	if s.Catalog == nil {
+		return errors.New("scanner catalog is nil")
 	}
 	return nil
 }
 
-func (s *Scanner) findDuplicate(ctx context.Context, hash, fileName string, size int64, currentID string) *catalog.Video {
-	if dup := s.findDuplicateByHash(ctx, hash, currentID); dup != nil {
-		return dup
+func validateSource(s *Scanner) error {
+	if s == nil {
+		return errors.New("scanner is nil")
 	}
-	return s.findDuplicateByFileSignature(ctx, fileName, size, currentID)
-}
-
-func (s *Scanner) findDuplicateByHash(ctx context.Context, hash, currentID string) *catalog.Video {
-	if hash == "" {
-		return nil
+	if s.Drive == nil {
+		return errors.New("scanner drive is nil")
 	}
-	dup, err := s.Catalog.FindVideoByContentHash(ctx, hash)
-	if err != nil || dup == nil || dup.ID == currentID {
-		return nil
-	}
-	return dup
-}
-
-func (s *Scanner) findDuplicateByFileSignature(ctx context.Context, fileName string, size int64, currentID string) *catalog.Video {
-	if fileName == "" || size <= 0 {
-		return nil
-	}
-	dup, err := s.Catalog.FindVideoByFileSignature(ctx, fileName, size)
-	if err != nil || dup == nil || dup.ID == currentID {
-		return nil
-	}
-	return dup
-}
-
-func videoIDFilePart(fileID string) string {
-	return videoid.FilePart(fileID)
+	return nil
 }

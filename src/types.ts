@@ -8,7 +8,6 @@ export type VideoItem = {
   previewStrategy: "teaser-file" | "sprite-frames";
   duration: string;
   badges: string[];
-  quality?: "SD" | "HD";
   sourceLabel?: string;
   author: string;
   views: number;
@@ -43,6 +42,25 @@ export type CommentItem = {
   likes?: number;
 };
 
+export type VideoCollectionSummary = {
+  name: string;
+  total: number;
+  /** One-based position in the canonical ascending directory order. */
+  currentIndex: number;
+};
+
+export type VideoCollectionItem = Pick<
+  VideoItem,
+  "id" | "href" | "title" | "thumbnail" | "duration" | "views" | "publishedAt"
+> & {
+  /** Present only when the desktop collection requests preview metadata. */
+  previewSrc?: string;
+};
+
+export type VideoCollection = VideoCollectionSummary & {
+  items: VideoCollectionItem[];
+};
+
 export type VideoDetail = VideoItem & {
   videoSrc: string;
   /** 实际交给浏览器播放的资源 MIME；后端无法确认时省略。 */
@@ -52,6 +70,7 @@ export type VideoDetail = VideoItem & {
   embedUrl: string;
   points?: number;
   authorProfile: AuthorProfile;
+  collection?: VideoCollectionSummary;
   relatedVideos: VideoItem[];
   commentsList: CommentItem[];
 };

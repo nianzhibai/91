@@ -15,7 +15,7 @@
 //	         honored within this call)
 //	Phase 4: scan crawler local directories and restore user-requested videos
 //	Phase 5: full-library duplicate video maintenance:
-//	         exact size+sampled_sha256 dedupe, then title/duration/thumbnail dedupe
+//	         exact size+sampled_sha256, title/duration/thumbnail, then content-frame dedupe
 //
 // The pipeline runs until all phases finish, the process exits, or an admin
 // stop request cancels the run. Provider cooldowns may make a single phase take

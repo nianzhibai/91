@@ -1,4 +1,6 @@
+import { useEffect } from "react";
 import type { VideoItem } from "@/types";
+import { scheduleVideoDetailPagePreload } from "@/lib/videoDetailRoute";
 import { VideoCard } from "./VideoCard";
 
 type Props = {
@@ -22,6 +24,10 @@ export function VideoGrid({
   highPriorityCount = 0,
   skeletonCount = 8,
 }: Props) {
+  useEffect(() => {
+    scheduleVideoDetailPagePreload();
+  }, []);
+
   const blockingRefresh = refreshMode === "blocking";
   const backgroundRefresh = refreshMode === "background";
 

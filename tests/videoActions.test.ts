@@ -124,7 +124,7 @@ test("detail history navigation renders cached content before background refresh
   );
   assert.match(
     detailPageSource,
-    /Promise\.all\(\[fetchVideoDetail\(id\), fetchTags\(\)\]\)/
+    /const detailRequest = prefetchedDetail[\s\S]*?Promise\.all\(\[detailRequest, fetchTags\(\)\]\)/
   );
   assert.match(detailPageSource, /if \(!stableDetail && initialSnapshot\)/);
   assert.match(detailPageSource, /if \(navigationType !== "POP"\)/);

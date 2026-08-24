@@ -1,4 +1,9 @@
-import type { VideoDetail, VideoItem, VideoSubtitle } from "@/types";
+import type {
+  VideoCollection,
+  VideoDetail,
+  VideoItem,
+  VideoSubtitle,
+} from "@/types";
 import type {
   VideoReaction,
   VideoReactionCounts,
@@ -68,6 +73,115 @@ export function fetchVideoDetail(id: string): Promise<VideoDetail | null> {
   return apiGet<VideoDetail>(`/api/video/${encodeURIComponent(id)}`).catch(
     () => null
   );
+}
+
+const VIDEO_DETAIL_PREFETCH_TTL_MS = 30_000;
+const VIDEO_DETAIL_PREFETCH_LIMIT = 20;
+
+type PrefetchedVideoDetail = {
+  expiresAt: number;
+  request: Promise<VideoDetail | null>;
+};
+
+const prefetchedVideoDetailsByID = new Map<string, PrefetchedVideoDetail>();
+
+/**
+ * Start the small detail JSON request from the card's pointer-down event. The
+ * route module can load at the same time and consume this request after mount.
+ */
+export function prefetchVideoDetail(id: string): Promise<VideoDetail | null> {
+  const now = Date.now();
+  pruneVideoDetailPrefetches(now);
+  const existing = prefetchedVideoDetailsByID.get(id);
+  if (existing && existing.expiresAt > now) return existing.request;
+
+  const request = fetchVideoDetail(id);
+  const entry = {
+    expiresAt: now + VIDEO_DETAIL_PREFETCH_TTL_MS,
+    request,
+  };
+  prefetchedVideoDetailsByID.set(id, entry);
+  trimVideoDetailPrefetches();
+
+  void request.then((detail) => {
+    if (
+      detail === null &&
+      prefetchedVideoDetailsByID.get(id)?.request === request
+    ) {
+      prefetchedVideoDetailsByID.delete(id);
+    }
+  });
+  return request;
+}
+
+/**
+ * A prefetched response is navigation-scoped rather than a second long-lived
+ * detail cache. Consume it once so later background validation still reaches
+ * the server and can observe edits.
+ */
+export function consumePrefetchedVideoDetail(
+  id: string
+): Promise<VideoDetail | null> | null {
+  const entry = prefetchedVideoDetailsByID.get(id);
+  prefetchedVideoDetailsByID.delete(id);
+  if (!entry || entry.expiresAt <= Date.now()) return null;
+  return entry.request;
+}
+
+function pruneVideoDetailPrefetches(now: number) {
+  for (const [id, entry] of prefetchedVideoDetailsByID) {
+    if (entry.expiresAt <= now) prefetchedVideoDetailsByID.delete(id);
+  }
+}
+
+function trimVideoDetailPrefetches() {
+  while (prefetchedVideoDetailsByID.size > VIDEO_DETAIL_PREFETCH_LIMIT) {
+    const oldestID = prefetchedVideoDetailsByID.keys().next().value;
+    if (!oldestID) return;
+    prefetchedVideoDetailsByID.delete(oldestID);
+  }
+}
+
+export async function fetchVideoCollection(
+  id: string,
+  options: { signal?: AbortSignal; includePreview?: boolean } = {}
+): Promise<VideoCollection> {
+  const previewQuery = options.includePreview ? "?preview=1" : "";
+  const collection = await apiGet<VideoCollection>(
+    `/api/video/${encodeURIComponent(id)}/collection${previewQuery}`,
+    options
+  );
+  if (
+    !collection ||
+    typeof collection.name !== "string" ||
+    !Number.isInteger(collection.total) ||
+    collection.total < 0 ||
+    !Number.isInteger(collection.currentIndex) ||
+    collection.currentIndex < 0 ||
+    !Array.isArray(collection.items) ||
+    collection.total !== collection.items.length ||
+    collection.items.some(
+      (item) =>
+        !item ||
+        typeof item.id !== "string" ||
+        typeof item.href !== "string" ||
+        typeof item.title !== "string" ||
+        typeof item.thumbnail !== "string" ||
+        typeof item.duration !== "string" ||
+        (item.previewSrc !== undefined &&
+          typeof item.previewSrc !== "string") ||
+        (options.includePreview && typeof item.previewSrc !== "string") ||
+        !Number.isInteger(item.views) ||
+        item.views < 0 ||
+        typeof item.publishedAt !== "string"
+    ) ||
+    (collection.total > 0 &&
+      (collection.currentIndex < 1 ||
+        collection.currentIndex > collection.total))
+  ) {
+    throw new Error("Invalid video collection response");
+  }
+  return collection;
 }
 
 export function fetchVideoSubtitles(id: string): Promise<VideoSubtitle[]> {

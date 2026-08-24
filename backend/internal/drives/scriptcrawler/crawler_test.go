@@ -102,6 +102,20 @@ func writeScriptCrawlerWebP(t *testing.T, path string) {
 	}
 }
 
+func TestCrawlerPreviewDisabledUsesTaskConfigurationSnapshot(t *testing.T) {
+	drv := New(Config{ID: "crawler-main", RootDir: t.TempDir()})
+	crawler := NewCrawler(CrawlerConfig{
+		Driver:         drv,
+		DisablePreview: true,
+		GetDriveConfig: func(context.Context, string) (*catalog.Drive, error) {
+			return &catalog.Drive{ID: "crawler-main", TeaserEnabled: true}, nil
+		},
+	})
+	if crawler.previewDisabled(context.Background()) {
+		t.Fatal("previewDisabled used stale constructor setting instead of task snapshot")
+	}
+}
+
 func TestCrawlerRunOnceImportsLocalFileAndSkipsExisting(t *testing.T) {
 	ctx := context.Background()
 	tmp := t.TempDir()

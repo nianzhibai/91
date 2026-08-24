@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -455,6 +456,87 @@ func TestInitFallsBackToLoginWhenRefreshReturnsCaptchaInvalid(t *testing.T) {
 	if d.accessToken != "login-access" || d.refreshToken != "login-refresh" || d.captchaToken != "files-captcha" {
 		t.Errorf("driver tokens = (%q, %q, %q), want login/files tokens", d.accessToken, d.refreshToken, d.captchaToken)
 	}
+}
+
+func TestConcurrentExpiredAccessTokensShareOneRefresh(t *testing.T) {
+	var oldRequests atomic.Int32
+	var refreshes atomic.Int32
+	var persisted atomic.Int32
+	var releaseOld sync.Once
+	bothOldRequestsArrived := make(chan struct{})
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/auth/token", func(w http.ResponseWriter, r *http.Request) {
+		refreshes.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"access_token": "new-access",
+			"refresh_token": "new-refresh",
+			"sub": "user-1"
+		}`))
+	})
+	mux.HandleFunc("/drive/v1/files/file-a", func(w http.ResponseWriter, r *http.Request) {
+		handleConcurrentPikPakStat(w, r, &oldRequests, &releaseOld, bothOldRequestsArrived)
+	})
+	mux.HandleFunc("/drive/v1/files/file-b", func(w http.ResponseWriter, r *http.Request) {
+		handleConcurrentPikPakStat(w, r, &oldRequests, &releaseOld, bothOldRequestsArrived)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	d := newTestDriver(t, server)
+	d.onTokenUpdate = func(_, _, _, _ string) { persisted.Add(1) }
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for _, fileID := range []string{"file-a", "file-b"} {
+		wg.Add(1)
+		go func(fileID string) {
+			defer wg.Done()
+			_, err := d.Stat(context.Background(), fileID)
+			errs <- err
+		}(fileID)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent stat: %v", err)
+		}
+	}
+	if got := refreshes.Load(); got != 1 {
+		t.Fatalf("token refreshes = %d, want 1", got)
+	}
+	if got := persisted.Load(); got != 1 {
+		t.Fatalf("token persistence callbacks = %d, want 1", got)
+	}
+	auth := d.authSnapshot()
+	if auth.accessToken != "new-access" || auth.refreshToken != "new-refresh" {
+		t.Fatalf("auth = %#v, want refreshed token pair", auth)
+	}
+}
+
+func handleConcurrentPikPakStat(
+	w http.ResponseWriter,
+	r *http.Request,
+	oldRequests *atomic.Int32,
+	releaseOld *sync.Once,
+	bothOldRequestsArrived chan struct{},
+) {
+	if r.Header.Get("Authorization") == "Bearer test-access-token" {
+		if oldRequests.Add(1) == 2 {
+			releaseOld.Do(func() { close(bothOldRequestsArrived) })
+		}
+		<-bothOldRequestsArrived
+		writeErrorJSON(w, `{
+			"error_code": 4122,
+			"error": "unauthenticated",
+			"error_description": "access token expired"
+		}`)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = fmt.Fprintf(w, `{"id":%q,"name":"clip.mp4","kind":"drive#file","size":"1"}`, strings.TrimPrefix(r.URL.Path, "/drive/v1/files/"))
 }
 
 // TestRequestOnceRecoversFrom4002OnAPICall 验证一个普通 API 调用收到 4002

@@ -149,6 +149,19 @@ func TestVideoURLsEscapePathSegments(t *testing.T) {
 	}
 }
 
+func TestVideoDTOOmitsRetiredQualityMetadata(t *testing.T) {
+	encoded, err := json.Marshal(mapVideo(&catalog.Video{
+		ID:    "video-1",
+		Title: "Video",
+	}))
+	if err != nil {
+		t.Fatalf("marshal video DTO: %v", err)
+	}
+	if bytes.Contains(encoded, []byte(`"quality"`)) {
+		t.Fatalf("video DTO still contains retired quality metadata: %s", encoded)
+	}
+}
+
 func TestThumbnailURLRewritesStoredLocalURLForUnsafeVideoID(t *testing.T) {
 	got := thumbnailURL(&catalog.Video{
 		ID:                 "wopan-drive-fid/with space",

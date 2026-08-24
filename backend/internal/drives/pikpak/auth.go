@@ -86,7 +86,7 @@ func (d *Driver) login(ctx context.Context) error {
 		return fmt.Errorf("pikpak username or password is empty")
 	}
 	action := getAction(http.MethodPost, signinURL)
-	if d.captchaToken == "" {
+	if d.authSnapshot().captchaToken == "" {
 		if err := d.refreshCaptchaTokenInLogin(ctx, action, d.username); err != nil {
 			return err
 		}
@@ -111,6 +111,7 @@ func (d *Driver) login(ctx context.Context) error {
 }
 
 func (d *Driver) signinOnce(ctx context.Context) error {
+	auth := d.authSnapshot()
 	var out authResp
 	var e errResp
 	res, err := d.client.R().
@@ -119,7 +120,7 @@ func (d *Driver) signinOnce(ctx context.Context) error {
 		SetResult(&out).
 		SetQueryParam("client_id", d.clientID).
 		SetBody(map[string]any{
-			"captcha_token": d.captchaToken,
+			"captcha_token": auth.captchaToken,
 			"client_id":     d.clientID,
 			"client_secret": d.clientSecret,
 			"username":      d.username,
@@ -138,12 +139,23 @@ func (d *Driver) signinOnce(ctx context.Context) error {
 	if res.IsError() {
 		return fmt.Errorf("pikpak signin http %d: %s", res.StatusCode(), string(res.Body()))
 	}
+	if strings.TrimSpace(out.AccessToken) == "" || strings.TrimSpace(out.RefreshToken) == "" {
+		return fmt.Errorf("pikpak signin: empty access_token or refresh_token")
+	}
 	d.applyAuth(out)
 	return nil
 }
 
-func (d *Driver) refresh(ctx context.Context, refreshToken string) error {
-	if refreshToken == "" {
+func (d *Driver) refresh(ctx context.Context, rejected ...authStateSnapshot) error {
+	d.refreshMu.Lock()
+	defer d.refreshMu.Unlock()
+
+	auth := d.authSnapshot()
+	if len(rejected) > 0 &&
+		(auth.tokenGeneration != rejected[0].tokenGeneration || auth.accessToken != rejected[0].accessToken) {
+		return nil
+	}
+	if auth.refreshToken == "" {
 		return fmt.Errorf("pikpak refresh_token is empty")
 	}
 	var out authResp
@@ -158,7 +170,7 @@ func (d *Driver) refresh(ctx context.Context, refreshToken string) error {
 			"client_id":     d.clientID,
 			"client_secret": d.clientSecret,
 			"grant_type":    "refresh_token",
-			"refresh_token": refreshToken,
+			"refresh_token": auth.refreshToken,
 		}).
 		Post(tokenURL)
 	if err != nil {
@@ -173,43 +185,98 @@ func (d *Driver) refresh(ctx context.Context, refreshToken string) error {
 	if res.IsError() {
 		return fmt.Errorf("pikpak refresh http %d: %s", res.StatusCode(), string(res.Body()))
 	}
+	if strings.TrimSpace(out.AccessToken) == "" || strings.TrimSpace(out.RefreshToken) == "" {
+		return fmt.Errorf("pikpak refresh: empty access_token or refresh_token")
+	}
 	d.applyAuth(out)
 	return nil
 }
 
 func (d *Driver) applyAuth(out authResp) {
-	d.accessToken = out.AccessToken
-	d.refreshToken = out.RefreshToken
-	d.userID = out.Sub
+	d.authUpdateMu.Lock()
+	defer d.authUpdateMu.Unlock()
+
+	d.authMu.Lock()
+	d.accessToken = strings.TrimSpace(out.AccessToken)
+	d.refreshToken = strings.TrimSpace(out.RefreshToken)
+	d.userID = strings.TrimSpace(out.Sub)
+	d.tokenGeneration++
 	if d.platform == "android" {
 		d.userAgent = buildAndroidUserAgent(d.deviceID, d.clientID, d.packageName, "2.0.6.206003", d.clientVersion, d.packageName, d.userID)
 	}
-	d.persistTokens()
+	auth := d.authSnapshotLocked()
+	d.authMu.Unlock()
+	d.persistAuthSnapshot(auth)
 }
 
 func (d *Driver) persistTokens() {
+	d.authUpdateMu.Lock()
+	defer d.authUpdateMu.Unlock()
+	d.persistAuthSnapshot(d.authSnapshot())
+}
+
+func (d *Driver) persistAuthSnapshot(auth authStateSnapshot) {
 	if d.onTokenUpdate != nil {
-		d.onTokenUpdate(d.accessToken, d.refreshToken, d.captchaToken, d.deviceID)
+		d.onTokenUpdate(auth.accessToken, auth.refreshToken, auth.captchaToken, d.deviceID)
 	}
 }
 
 func (d *Driver) clearCaptchaToken() {
+	d.authUpdateMu.Lock()
+	defer d.authUpdateMu.Unlock()
+
+	d.authMu.Lock()
 	if d.captchaToken == "" {
+		d.authMu.Unlock()
 		return
 	}
 	d.captchaToken = ""
-	d.persistTokens()
+	auth := d.authSnapshotLocked()
+	d.authMu.Unlock()
+	d.persistAuthSnapshot(auth)
+}
+
+func (d *Driver) setCaptchaToken(token string) {
+	d.authUpdateMu.Lock()
+	defer d.authUpdateMu.Unlock()
+
+	d.authMu.Lock()
+	d.captchaToken = strings.TrimSpace(token)
+	auth := d.authSnapshotLocked()
+	d.authMu.Unlock()
+	d.persistAuthSnapshot(auth)
 }
 
 func (d *Driver) refreshCaptchaTokenAtLogin(ctx context.Context, action, userID string) error {
+	return d.refreshCaptchaToken(ctx, action, d.captchaTokenAtLoginMeta(userID))
+}
+
+func (d *Driver) recoverCaptchaTokenAtLogin(ctx context.Context, action, userID, rejectedToken string) error {
+	d.captchaMu.Lock()
+	defer d.captchaMu.Unlock()
+
+	current := d.authSnapshot()
+	if current.captchaToken != rejectedToken {
+		return nil
+	}
+	if current.captchaToken != "" {
+		d.clearCaptchaToken()
+	}
+	if current.userID != "" {
+		userID = current.userID
+	}
+	return d.refreshCaptchaTokenOnce(ctx, action, d.captchaTokenAtLoginMeta(userID), true)
+}
+
+func (d *Driver) captchaTokenAtLoginMeta(userID string) map[string]string {
 	timestamp, sign := d.captchaSign()
-	return d.refreshCaptchaToken(ctx, action, map[string]string{
+	return map[string]string{
 		"client_version": d.clientVersion,
 		"package_name":   d.packageName,
 		"user_id":        userID,
 		"timestamp":      timestamp,
 		"captcha_sign":   sign,
-	})
+	}
 }
 
 func (d *Driver) refreshCaptchaTokenInLogin(ctx context.Context, action, username string) error {
@@ -225,6 +292,8 @@ func (d *Driver) refreshCaptchaTokenInLogin(ctx context.Context, action, usernam
 }
 
 func (d *Driver) refreshCaptchaToken(ctx context.Context, action string, meta map[string]string) error {
+	d.captchaMu.Lock()
+	defer d.captchaMu.Unlock()
 	return d.refreshCaptchaTokenOnce(ctx, action, meta, true)
 }
 
@@ -235,33 +304,34 @@ func (d *Driver) refreshCaptchaToken(ctx context.Context, action string, meta ma
 // driver 重启后 Init() 用持久化的旧 captcha_token 调 captcha init 失败的
 // 场景。
 func (d *Driver) refreshCaptchaTokenOnce(ctx context.Context, action string, meta map[string]string, retry bool) error {
+	auth := d.authSnapshot()
 	var e errResp
 	var out captchaTokenResponse
 	req := d.client.R().
 		SetContext(ctx).
-		SetHeader("User-Agent", d.userAgent).
+		SetHeader("User-Agent", auth.userAgent).
 		SetHeader("X-Device-ID", d.deviceID).
 		SetError(&e).
 		SetResult(&out).
 		SetQueryParam("client_id", d.clientID).
 		SetBody(captchaTokenRequest{
 			Action:       action,
-			CaptchaToken: d.captchaToken,
+			CaptchaToken: auth.captchaToken,
 			ClientID:     d.clientID,
 			DeviceID:     d.deviceID,
 			Meta:         meta,
 			RedirectURI:  "xlaccsdk01://xbase.cloud/callback?state=harbor",
 		})
-	if d.accessToken != "" {
-		req.SetHeader("Authorization", "Bearer "+d.accessToken)
+	if auth.accessToken != "" {
+		req.SetHeader("Authorization", "Bearer "+auth.accessToken)
 	}
 	res, err := req.Post(captchaInitURL)
 	if err != nil {
 		return err
 	}
 	if e.isError() {
-		if retry && isCaptchaTokenRejectedCode(e.ErrorCode) && d.captchaToken != "" {
-			d.captchaToken = ""
+		if retry && isCaptchaTokenRejectedCode(e.ErrorCode) && auth.captchaToken != "" {
+			d.clearCaptchaToken()
 			return d.refreshCaptchaTokenOnce(ctx, action, meta, false)
 		}
 		return &e
@@ -272,8 +342,7 @@ func (d *Driver) refreshCaptchaTokenOnce(ctx context.Context, action string, met
 	if out.URL != "" {
 		return fmt.Errorf("pikpak captcha verification required: %s", out.URL)
 	}
-	d.captchaToken = out.CaptchaToken
-	d.persistTokens()
+	d.setCaptchaToken(out.CaptchaToken)
 	return nil
 }
 

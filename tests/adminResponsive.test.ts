@@ -866,14 +866,39 @@ test("blacklist cancel action uses ordinary button styling", () => {
   assert.match(videosPageSource, /v\.restorePolicy !== "none"/);
   assert.match(videosPageSource, /取消拉黑/);
   assert.doesNotMatch(videosPageSource, /重新入库/);
-  assert.match(videosPageSource, /视频将在下次扫盘时恢复/);
-  assert.doesNotMatch(videosPageSource, /此操作不会立即扫盘/);
-  assert.match(videosPageSource, /此操作不会立即运行爬虫/);
+  assert.match(
+    videosPageSource,
+    /open=\{removeTarget !== null\}[\s\S]*?确定取消拉黑「\$\{removeTarget\.fileName \|\| removeTarget\.id\}」吗？/
+  );
+  assert.doesNotMatch(videosPageSource, /视频将在下次扫盘时恢复/);
+  assert.doesNotMatch(videosPageSource, /此操作不会立即运行爬虫/);
   assert.match(videosPageSource, /v\.sourceDeleted/);
-  assert.match(videosPageSource, /v\.driveId === "local-upload"/);
+  assert.doesNotMatch(
+    videosPageSource,
+    /<span className="admin-blacklist-reason-pill">本地上传<\/span>/
+  );
   assert.doesNotMatch(videosPageSource, /被删除和被隐藏的视频会进入黑名单/);
   assert.doesNotMatch(videosPageSource, /原始记录、封面、预览已删除/);
   assert.match(unavailable, /color\s*:\s*var\(--text-faint\)/);
+});
+
+// 本地上传的源文件被保留，但这个盘不支持枚举，扫盘和爬虫都不会重新发现它，
+// 所以取消拉黑是当场恢复，文案不能再说「等下次扫盘」。
+test("local upload blacklist entries restore immediately instead of waiting for a scan", () => {
+  assert.match(apiSource, /restorePolicy: "none" \| "scan" \| "crawler" \| "direct"/);
+  assert.match(videosPageSource, /target\.restorePolicy === "direct"[\s\S]*?已取消拉黑，视频已恢复到媒体库/);
+  assert.match(videosPageSource, /open=\{removeTarget !== null\}[\s\S]*?confirmText="确认"/);
+  assert.doesNotMatch(videosPageSource, /视频将立即恢复到媒体库，封面和预览会重新生成。/);
+  // 恢复按钮对 direct 一样要出现：判断条件是「不等于 none」而不是白名单。
+  assert.match(videosPageSource, /v\.restorePolicy !== "none"/);
+  assert.match(videosPageSource, /v\.restorePolicy !== "none"[\s\S]*?disabled=\{sourceDeleteRunning\}/);
+  // 「不可自动恢复」这个中间态没有了：现在要么能恢复，要么就是真的不可恢复。
+  assert.doesNotMatch(videosPageSource, /不可自动恢复/);
+});
+
+test("blacklist source deletion reports tombstones skipped after restore", () => {
+  assert.match(apiSource, /skipped: number/);
+  assert.match(videosPageSource, /status\.skipped > 0[\s\S]*?跳过 \$\{status\.skipped\}/);
 });
 
 test("blacklist duplicate reason renders as a compact pill", () => {
@@ -936,7 +961,14 @@ test("blacklist source files can be deleted by one serialized background task", 
   assert.doesNotMatch(blacklistSource, /selectMode|toggleSelectMode|批量选择|退出选择|admin-videos-bulk-actions__mobile-exit/);
   assert.doesNotMatch(blacklistSource, /className="admin-btn is-danger admin-videos-bulk-actions__btn"|<Trash2 size=\{13\} \/> 批量删除/);
   assert.match(videosPageSource, /title="删除源文件"/);
-  assert.equal(Array.from(blacklistSource.matchAll(/confirmText="确认"/g)).length, 3);
+  assert.equal(
+    Array.from(
+      blacklistSource.matchAll(
+        /confirmText="确认"[\s\S]{0,200}?modalClassName="admin-modal--delete-confirm admin-modal--source-delete-flat"/g
+      )
+    ).length,
+    3
+  );
   assert.doesNotMatch(videosPageSource, /confirmText="删除全部"|confirmText="删除"/);
   assert.doesNotMatch(videosPageSource, /<DeleteSourceNotice|function DeleteSourceNotice/);
   assert.doesNotMatch(adminCss, /admin-delete-source-option--notice/);

@@ -2,7 +2,7 @@
 
 去重不是某一个步骤，而是分布在视频生命周期四个时机的一套体系。设计思路：**有哈希或采样指纹时优先使用字节证据**（快、误判风险最低），**字节不同的转码/水印副本使用内容信号**（teaser 对齐帧）。原生哈希缺失或未命中时，扫描和实时软过滤还保留 `file_name + size_bytes` 弱兜底；它不是内容证明，存在同名同大小碰撞风险。
 
-以下路径均相对 `backend/`：`internal/scanner`（扫描入库）、`internal/drives/scriptcrawler/neardupe.go`（爬虫导入）、`internal/catalog`（软过滤 `uniqueVideoWhereSQL`、墓碑）、`cmd/server/video_maintenance*.go`（夜间 Phase 5）、`internal/mediasim`（全部相似度算法与阈值常量）。
+以下路径均相对 `backend/`：`internal/scanner`（扫描入库）、`internal/drives/scriptcrawler/neardupe.go`（爬虫导入）、`internal/dedupe`（硬去重 Planner）、`internal/catalog`（软过滤 `uniqueVideoWhereSQL`、墓碑与计划事务）、`cmd/server/video_maintenance*.go`（夜间 Phase 5 适配/执行）、`internal/mediasim`（全部相似度算法与阈值常量）。
 
 ```mermaid
 flowchart LR
@@ -17,7 +17,7 @@ flowchart LR
 |------|--------|-----------|-----------|
 | `(drive_id, file_id)` | 视频恒等 ID | 同盘同文件的重复扫描（upsert 同一行） | 一切副本 |
 | `content_hash` | 网盘原生哈希（115 SHA1、pikpak GCID 等，格式因盘而异） | 同类盘内完全相同的文件 | 跨盘、转码副本 |
-| `sampled_sha256` | `size + 采样字节` 的统一指纹，fingerprint worker 后台计算 | **跨盘**完全相同的文件 | 转码/水印副本 |
+| `sampled_sha256` | `size + 采样字节` 的统一指纹，fingerprint worker 后台计算 | **跨盘**字节采样一致的文件 | 转码/水印副本 |
 | `file_name + size_bytes` | 原生哈希缺失或未命中时的弱兜底 | 常见的同名同大小副本 | 改名副本；也可能碰撞不同内容 |
 | 标题相似度 + 封面 SSIM | 归一化 Levenshtein（含核心段变体）+ 96×96 亮度 SSIM | 同源重发（标题几乎一样） | 改名重发、跨源转码 |
 | teaser 帧签名 | teaser 按 1fps 抽 12 帧 96×96 灰度 | **跨源不同压制**（标题、封面全对不上也能抓） | 时长差 >2 秒的剪辑版 |
@@ -52,35 +52,43 @@ flowchart TD
     F -- 未命中 --> G{"内容通道（≥120s）：<br/>按候选 teaser 选段时间戳<br/>从本地新视频抽帧比对"}
     G -- 命中 --> H
     G -- 未命中 --> J["正常入库 + 挂标签<br/>标记 imported"]
-    H -- 是 --> K["删库内旧的（重复墓碑）<br/>换新视频入库"]
+    H -- 是 --> K["同一事务：新视频入库<br/>旧视频打重复墓碑"]
     H -- 否 --> L["删本地文件<br/>标记 duplicate 已见"]
 ```
 
 标记过 `crawler_seen_sources` 的源永远不会再下载，即使对应视频后来被夜间维护删掉——这保证"删重复"不会引起"再爬回来"的循环。
 
+较大的新视频替换库内旧视频时，Catalog 在一个事务里完成新行写入、历史 canonical 引用重定向、旧行墓碑和 `crawler_seen_sources` 更新；事务提交后再清理旧视频的本地生成资产。任一步数据库操作失败都会回滚，旧视频仍留在库内。
+
 **③ 前台展示（实时软过滤）**——`content_hash`、`size_bytes + sampled_sha256` 或弱兜底 `file_name + size_bytes` 相同的视频，前台列表和封面/预览生成队列只认最早入库的那条（`uniqueVideoWhereSQL`）。行还在库里，作用是在夜间硬去重跑到之前不给用户看重复、不给副本白白生成资产。
 
-**④ 夜间 Phase 5（`cmd/server/video_maintenance*.go`）**——全库硬去重，三个通道串行，前一通道删掉的不进下一通道：
+**④ 夜间 Phase 5（`internal/dedupe` + `cmd/server/video_maintenance*.go`）**——全库硬去重。Planner 只读计算完整计划，三个通道串行，前一通道的逻辑删除项不进下一通道：
 
 ```mermaid
 flowchart TD
-    S["全库视频（hidden 除外）"] --> E1["① 精确通道<br/>size + sampled_sha256 相同分组"]
-    E1 --> E2["② 标题/封面通道<br/>时长 ±2s + 前缀桶/q-gram 预过滤<br/>标题 ≥0.90 且封面 SSIM ≥0.95"]
-    E2 --> E3["③ 内容通道<br/>≥120s、时长 ±2s 滑动窗口<br/>帧签名（framesigs/ 磁盘缓存）"]
+    S["全库视频（hidden 除外）"] --> E1["① 精确分组并选 canonical<br/>size + sampled_sha256"]
+    E1 --> E2["② 剩余项按标题/封面分组并选 canonical<br/>时长 ±2s + 前缀桶/q-gram 预过滤<br/>标题 ≥0.90 且封面 SSIM ≥0.95"]
+    E2 --> E3["③ 剩余项按内容分组并选 canonical<br/>≥120s、时长 ±2s 滑动窗口<br/>帧签名（framesigs/ 磁盘缓存）"]
     E3 --> R1{"对齐中位数 ≥0.80？"}
     R1 -- 是 --> DUP["并查集成组"]
     R1 -- 否 --> CR{"时长精确相等<br/>且交叉匹配命中？"}
     CR -- 是 --> DUP
     CR -- 否 --> PASS["不是重复"]
-    DUP --> CANON["每组选保留项"]
-    CANON --> DEL["其余打 duplicate 墓碑<br/>清理本地资产（teaser/封面及派生图/帧签名）"]
+    DUP --> CANON["并查集连通组内选保留项"]
+    CANON --> FINAL["解析跨通道 canonical 链<br/>全部指向最终存活项"]
+    FINAL --> TX["一次 SQLite 事务<br/>重定向引用 + 墓碑 + 删行 + 清理任务"]
+    TX --> DEL["提交后幂等清理本地资产<br/>teaser/封面及派生图/帧签名"]
 ```
 
-保留项怎么选：精确通道按 **本地资产完整度 > 入库早**（组内文件本来一样大）；标题/封面与内容通道按 **体积大 > 资产完整度 > 入库早**——优先留原版画质。
+每个通道都从该通道形成的重复组内部选择 canonical，而不是从全库另找视频。精确通道按 **本地资产完整度 > 入库早**（组内文件本来一样大）；标题/封面与内容通道按 **体积大 > 资产完整度 > 入库早**——优先留原版画质。重复关系按传递闭包成组：A 命中 B、B 命中 C 时，A/B/C 属于同一个重复组。
 
-删除语义（所有通道一致）：打 `reason=duplicate` 墓碑并记录指向保留项的 `canonical_video_id`；清理本地 teaser、普通封面、Shorts 背景封面和帧签名缓存；**不删网盘源文件**；墓碑同时阻止后续扫描重新入库；后台黑名单页可见、可恢复。
+Planner 跑完全部通道后会压缩 canonical 链。例如精确通道先得到 `B → A`，内容通道又得到 `A → C`，最终事务写成 `B → C`、`A → C`，不会留下指向中间删除项的引用。
+
+提交前会校验删除项和最终 canonical 的视频修订；规划期间若任一相关行发生变化，整个事务回滚并基于最新数据重新规划（最多三次），不会拿过期计划继续删除。
+
+删除语义（所有通道一致）：打 `reason=duplicate` 墓碑并记录指向最终保留项的 `canonical_video_id`；**不删网盘源文件**；墓碑阻止后续扫描重新入库，恢复策略为 `none`，不能从后台恢复。数据库事务提交时同时登记 `duplicate_asset_cleanup_jobs`，随后幂等清理本地 teaser、普通封面、Shorts 背景封面和帧签名缓存；进程中断或文件系统临时失败时由下一轮维护重试。
 
 ## 性能与工具
 
 - 帧签名按 `(teaser size, mtime)` 缓存在 `previews/framesigs/`（约 110KB/视频），teaser 重新生成自动失效，视频删除同步清理。全库冷跑约 7.5 分钟（一次性），之后每晚增量 ≈ 新视频数 × 0.2 秒抽帧 + 秒级比对。
-- `go run ./cmd/dedupe-dryrun` 只读预演内容通道会删什么；加 `-apply` 按同一套逻辑真正执行（与夜间同款墓碑和本地资产清理路径）。
+- `go run ./cmd/dedupe-dryrun` 只读预演内容通道会删什么；它与夜间维护共用 `internal/dedupe` 生成 Plan。加 `-apply` 后一次提交该 Plan，并走同一套 Catalog 墓碑事务和提交后资产清理路径。

@@ -16,7 +16,6 @@ CREATE TABLE IF NOT EXISTS videos (
     duration_seconds INTEGER DEFAULT 0,
     size_bytes       INTEGER DEFAULT 0,
     ext              TEXT,
-    quality          TEXT,                      -- HD / SD
     thumbnail_url    TEXT,
     thumbnail_updated_at INTEGER DEFAULT 0,     -- thumbnail-only revision; unrelated metadata must not invalidate image caches
     thumbnail_status TEXT DEFAULT 'pending',    -- pending / ready / failed / skipped
@@ -188,6 +187,20 @@ CREATE INDEX IF NOT EXISTS idx_crawler_seen_sources_drive
     ON crawler_seen_sources(kind, drive_id, status);
 CREATE INDEX IF NOT EXISTS idx_crawler_seen_sources_video
     ON crawler_seen_sources(kind, drive_id, status, canonical_video_id);
+
+-- 去重事务提交后待清理的本地生成资产。数据库状态先原子落地，文件清理
+-- 随后幂等执行；进程中断或文件系统临时失败时由下一轮维护继续处理。
+CREATE TABLE IF NOT EXISTS duplicate_asset_cleanup_jobs (
+    video_id      TEXT PRIMARY KEY,
+    preview_local TEXT NOT NULL DEFAULT '',
+    attempts      INTEGER NOT NULL DEFAULT 0,
+    last_error    TEXT NOT NULL DEFAULT '',
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_duplicate_asset_cleanup_jobs_updated
+    ON duplicate_asset_cleanup_jobs(updated_at, video_id);
 
 -- 网盘账户
 CREATE TABLE IF NOT EXISTS drives (

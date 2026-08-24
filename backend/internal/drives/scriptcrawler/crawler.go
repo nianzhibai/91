@@ -51,9 +51,12 @@ const (
 )
 
 type CrawlerConfig struct {
-	Driver      *Driver
-	Catalog     *catalog.Catalog
-	CrawlerName string
+	Driver  *Driver
+	Catalog *catalog.Catalog
+	// GetDriveConfig can supply the task-generation snapshot while a newer
+	// desired configuration is waiting for the current crawl to finish.
+	GetDriveConfig func(context.Context, string) (*catalog.Drive, error)
+	CrawlerName    string
 	// Protocol is the protocol to start from. Every run re-reads it from the
 	// script itself, so this is the value used before the first run and
 	// whenever SkipProtocolRefresh keeps the script from being consulted.
@@ -232,7 +235,6 @@ type Event struct {
 	DetailURL          string            `json:"detail_url,omitempty"`
 	Author             string            `json:"author,omitempty"`
 	Tags               []string          `json:"tags,omitempty"`
-	Quality            string            `json:"quality,omitempty"`
 	DurationSeconds    int               `json:"duration_seconds,omitempty"`
 	Description        string            `json:"description,omitempty"`
 	Headers            map[string]string `json:"headers,omitempty"`
@@ -254,7 +256,6 @@ type Item struct {
 	DetailURL          string            `json:"detail_url,omitempty"`
 	Author             string            `json:"author,omitempty"`
 	Tags               []string          `json:"tags,omitempty"`
-	Quality            string            `json:"quality,omitempty"`
 	DurationSeconds    int               `json:"duration_seconds,omitempty"`
 	Description        string            `json:"description,omitempty"`
 	Headers            map[string]string `json:"headers,omitempty"`
@@ -298,9 +299,6 @@ func (e Event) normalizedItem() Item {
 	}
 	if len(item.Tags) == 0 && len(e.Tags) > 0 {
 		item.Tags = e.Tags
-	}
-	if strings.TrimSpace(item.Quality) == "" {
-		item.Quality = e.Quality
 	}
 	if item.DurationSeconds == 0 {
 		item.DurationSeconds = e.DurationSeconds
@@ -726,10 +724,6 @@ func (c *Crawler) processItem(ctx context.Context, item Item) (bool, error) {
 		}
 	}
 	crawlerTagLabel = c.crawlerTagName()
-	quality := strings.TrimSpace(item.Quality)
-	if quality == "" {
-		quality = "HD"
-	}
 	previewStatus := "pending"
 	if c.previewDisabled(ctx) {
 		previewStatus = "disabled"
@@ -744,7 +738,6 @@ func (c *Crawler) processItem(ctx context.Context, item Item) (bool, error) {
 		DurationSeconds: item.DurationSeconds,
 		Size:            size,
 		Ext:             strings.TrimPrefix(videoExt, "."),
-		Quality:         quality,
 		Description:     strings.TrimSpace(item.Description),
 		PreviewStatus:   previewStatus,
 		PublishedAt:     now,
@@ -812,11 +805,17 @@ func (c *Crawler) processItem(ctx context.Context, item Item) (bool, error) {
 	// Coordinate only the final file/catalog cleanup and publication.
 	persistence.RLock()
 	defer persistence.RUnlock()
+	publishedByReplacement := false
 	if duplicate != nil && duplicate.video != nil {
 		if v.Size > duplicate.video.Size {
-			if err := c.cfg.Catalog.DeleteVideoWithTombstoneOptions(ctx, duplicate.video.ID, catalog.DeleteVideoTombstoneOptions{
-				Reason:           catalog.DeletedVideoReasonDuplicate,
-				CanonicalVideoID: v.ID,
+			if err := c.cfg.Catalog.ReplaceDuplicateVideo(ctx, catalog.DuplicateVideoReplacement{
+				NewVideo:                  v,
+				ReplacedVideoID:           duplicate.video.ID,
+				ExpectedReplacedUpdatedAt: duplicate.video.UpdatedAt.UnixMilli(),
+				CrawlerSource: &catalog.CrawlerSourceSeen{
+					Kind: Kind, DriveID: c.cfg.Driver.ID(), SourceID: sourceID,
+					Status: "imported", SampledSHA256: sampled, Size: size,
+				},
 			}); err != nil {
 				_ = os.Remove(videoPath)
 				if thumbPath != "" {
@@ -825,8 +824,10 @@ func (c *Crawler) processItem(ctx context.Context, item Item) (bool, error) {
 				if commonThumbPath != "" {
 					_ = os.Remove(commonThumbPath)
 				}
-				return false, fmt.Errorf("delete smaller near duplicate %s: %w", duplicate.video.ID, err)
+				return false, fmt.Errorf("replace smaller near duplicate %s: %w", duplicate.video.ID, err)
 			}
+			publishedByReplacement = true
+			c.cleanupReplacedDuplicateAssets(ctx, duplicate.video)
 			log.Printf("[scriptcrawler] drive=%s source_id=%s replacing_smaller_near_duplicate=%s old_size=%d new_size=%d title_similarity=%.3f thumbnail_ssim=%.3f content_ssim=%.3f title=%q duration=%d", c.cfg.Driver.ID(), sourceID, duplicate.video.ID, duplicate.video.Size, v.Size, duplicate.titleSimilarity, duplicate.thumbnailSSIM, duplicate.contentSSIM, title, v.DurationSeconds)
 		} else {
 			_ = os.Remove(videoPath)
@@ -843,9 +844,11 @@ func (c *Crawler) processItem(ctx context.Context, item Item) (bool, error) {
 			return false, nil
 		}
 	}
-	if err := c.cfg.Catalog.UpsertVideo(ctx, v); err != nil {
-		_ = os.Remove(videoPath)
-		return false, err
+	if !publishedByReplacement {
+		if err := c.cfg.Catalog.UpsertVideo(ctx, v); err != nil {
+			_ = os.Remove(videoPath)
+			return false, err
+		}
 	}
 	if len(tagAssignments) > 0 {
 		if _, err := c.cfg.Catalog.AddVideoTagAssignments(ctx, v.ID, tagAssignments); err != nil {
@@ -872,11 +875,30 @@ func (c *Crawler) processItem(ctx context.Context, item Item) (bool, error) {
 			}
 		}
 	}
-	if err := c.cfg.Catalog.MarkCrawlerSourceSeen(ctx, Kind, c.cfg.Driver.ID(), sourceID, "imported", v.ID, sampled, size); err != nil {
-		log.Printf("[scriptcrawler] drive=%s source_id=%s mark imported seen: %v", c.cfg.Driver.ID(), sourceID, err)
+	if !publishedByReplacement {
+		if err := c.cfg.Catalog.MarkCrawlerSourceSeen(ctx, Kind, c.cfg.Driver.ID(), sourceID, "imported", v.ID, sampled, size); err != nil {
+			log.Printf("[scriptcrawler] drive=%s source_id=%s mark imported seen: %v", c.cfg.Driver.ID(), sourceID, err)
+		}
 	}
 	log.Printf("[scriptcrawler] drive=%s source_id=%s ok title=%q size=%d", c.cfg.Driver.ID(), sourceID, title, size)
 	return true, nil
+}
+
+func (c *Crawler) cleanupReplacedDuplicateAssets(ctx context.Context, video *catalog.Video) {
+	if c == nil || c.cfg.Catalog == nil || video == nil || strings.TrimSpace(c.cfg.CommonThumbDir) == "" {
+		return
+	}
+	localDir := filepath.Dir(strings.TrimSpace(c.cfg.CommonThumbDir))
+	if err := mediaasset.RemoveGeneratedVideoAssets(localDir, video.ID, video.PreviewLocal); err != nil {
+		if markErr := c.cfg.Catalog.FailDuplicateAssetCleanupJob(ctx, video.ID, err); markErr != nil {
+			log.Printf("[scriptcrawler] record duplicate asset cleanup failure video=%s: %v", video.ID, markErr)
+		}
+		log.Printf("[scriptcrawler] duplicate asset cleanup video=%s: %v", video.ID, err)
+		return
+	}
+	if err := c.cfg.Catalog.CompleteDuplicateAssetCleanupJob(ctx, video.ID); err != nil {
+		log.Printf("[scriptcrawler] complete duplicate asset cleanup video=%s: %v", video.ID, err)
+	}
 }
 
 // RestoreRequestedVideos scans the crawler's retained local video directory
@@ -1019,9 +1041,15 @@ func (c *Crawler) previewDisabled(ctx context.Context) bool {
 	if c == nil {
 		return false
 	}
-	if c.cfg.Catalog != nil && c.cfg.Driver != nil {
-		if d, err := c.cfg.Catalog.GetDrive(ctx, c.cfg.Driver.ID()); err == nil && d != nil {
-			return !d.TeaserEnabled
+	if c.cfg.Driver != nil {
+		if c.cfg.GetDriveConfig != nil {
+			if d, err := c.cfg.GetDriveConfig(ctx, c.cfg.Driver.ID()); err == nil && d != nil {
+				return !d.TeaserEnabled
+			}
+		} else if c.cfg.Catalog != nil {
+			if d, err := c.cfg.Catalog.GetDrive(ctx, c.cfg.Driver.ID()); err == nil && d != nil {
+				return !d.TeaserEnabled
+			}
 		}
 	}
 	return c.cfg.DisablePreview
@@ -1375,7 +1403,6 @@ func normalizeItemForImport(item Item) (Item, string, error) {
 	}
 	item.DetailURL = strings.TrimSpace(item.DetailURL)
 	item.Author = strings.TrimSpace(item.Author)
-	item.Quality = strings.TrimSpace(item.Quality)
 	item.Description = strings.TrimSpace(item.Description)
 	item.MediaURL = strings.TrimSpace(item.MediaURL)
 	item.MediaLocalFile = strings.TrimSpace(item.MediaLocalFile)

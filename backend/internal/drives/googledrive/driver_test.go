@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -57,6 +59,75 @@ func TestInitUsesCustomOAuthClient(t *testing.T) {
 	}
 	if savedAccess != "new-access" || savedRefresh != "old-refresh" {
 		t.Fatalf("tokens not persisted: access=%q refresh=%q", savedAccess, savedRefresh)
+	}
+}
+
+func TestConcurrentUnauthorizedRequestsShareOneTokenRefresh(t *testing.T) {
+	var oldRequests atomic.Int32
+	var refreshes atomic.Int32
+	var releaseOld sync.Once
+	bothOldRequestsArrived := make(chan struct{})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/token":
+			refreshes.Add(1)
+			writeTestJSON(w, tokenResp{AccessToken: "new-access"})
+		case strings.HasPrefix(r.URL.Path, "/drive/v3/files/"):
+			if r.Header.Get("Authorization") == "Bearer old-access" {
+				if oldRequests.Add(1) == 2 {
+					releaseOld.Do(func() { close(bothOldRequestsArrived) })
+				}
+				<-bothOldRequestsArrived
+				writeTestJSONStatus(w, http.StatusUnauthorized, apiErrorResp{Error: apiErrorBody{Code: http.StatusUnauthorized, Message: "expired"}})
+				return
+			}
+			writeTestJSON(w, driveFile{ID: strings.TrimPrefix(r.URL.Path, "/drive/v3/files/")})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	var persisted atomic.Int32
+	d := New(Config{
+		ID:           "google-main",
+		AccessToken:  "old-access",
+		RefreshToken: "old-refresh",
+		ClientID:     "client-id",
+		ClientSecret: "client-secret",
+		OAuthURL:     srv.URL + "/token",
+		APIBaseURL:   srv.URL + "/drive/v3",
+		OnTokenUpdate: func(_, _ string) {
+			persisted.Add(1)
+		},
+	})
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for _, fileID := range []string{"file-a", "file-b"} {
+		wg.Add(1)
+		go func(fileID string) {
+			defer wg.Done()
+			_, err := d.Stat(context.Background(), fileID)
+			errs <- err
+		}(fileID)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent stat: %v", err)
+		}
+	}
+	if got := refreshes.Load(); got != 1 {
+		t.Fatalf("token refreshes = %d, want 1", got)
+	}
+	if got := persisted.Load(); got != 1 {
+		t.Fatalf("token persistence callbacks = %d, want 1", got)
+	}
+	if got := d.tokenSnapshot(); got.access != "new-access" || got.refresh != "old-refresh" {
+		t.Fatalf("tokens = %#v, want refreshed access with retained refresh token", got)
 	}
 }
 

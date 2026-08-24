@@ -41,7 +41,8 @@ import { DriveDetailLoading, DriveListSkeleton } from "./DrivesPageLoading";
 import { DriveForm } from "./drive/DriveForm";
 import {
   changedCredentialValues,
-  newDriveCredentialError,
+  driveCredentialsForForm,
+  driveCredentialError,
 } from "./drive/credentials";
 import { DeleteDriveModal } from "./drive/DeleteDriveModal";
 import { SkipDirsPanel } from "./drive/SkipDirsPanel";
@@ -219,7 +220,10 @@ export function DrivesPage() {
     setEditingCredentialsId(d.id);
     try {
       const result = await api.getDriveCredentials(d.id);
-      const creds = { ...(result.credentials ?? {}) };
+      const creds = driveCredentialsForForm(
+        d.kind,
+        result.credentials ?? {}
+      );
       if (d.kind === "localstorage" && !("strm_allow_outside_root" in creds)) {
         creds.strm_allow_outside_root = (d.strmAllowOutsideRoot ?? false) ? "true" : "false";
       }
@@ -272,12 +276,12 @@ export function DrivesPage() {
       show("请填写网盘名称", "error");
       return;
     }
+    const credentialError = driveCredentialError(form.kind, form.creds, !form.id);
+    if (credentialError) {
+      show(credentialError, "error");
+      return;
+    }
     if (!form.id) {
-      const credentialError = newDriveCredentialError(form.kind, form.creds);
-      if (credentialError) {
-        show(credentialError, "error");
-        return;
-      }
       const missingField = credentialFields(form.kind).find(
         (field) =>
           field.required &&
@@ -292,11 +296,15 @@ export function DrivesPage() {
     const driveID = existing
       ? form.id
       : makeUniqueDriveId(form.kind, name, list);
-    const credentials = existing && form.kind === "pikpak"
+    const editableCredentialKeys = credentialFields(form.kind).map((field) => field.key);
+    // QR login writes a few values that do not have a standalone input field.
+    if (form.kind === "p123") editableCredentialKeys.push("access_token");
+    if (form.kind === "wopan") editableCredentialKeys.push("family_id");
+    const credentials = existing
       ? changedCredentialValues(
           form.creds,
           initialForm.creds,
-          credentialFields(form.kind).map((field) => field.key)
+          editableCredentialKeys
         )
       : form.creds;
     const rootId = usesRootDirectoryID(form.kind)
@@ -314,8 +322,10 @@ export function DrivesPage() {
 
       if (resp.warning) {
         show(`已保存，但 driver 初始化失败：${resp.warning}`, "error");
+      } else if (resp.deferred) {
+        show(resp.message || "已保存，将在当前网盘任务结束后生效", "success");
       } else {
-        show("已保存", "success");
+        show("已保存并生效", "success");
       }
       setModalOpen(false);
       setInitialForm(form);
@@ -493,9 +503,11 @@ export function DrivesPage() {
     try {
       const resp = await api.setDriveTeaserEnabled(d.id, next);
       show(
-        resp.teaserEnabled
-          ? `已开启「${d.name || d.id}」的预览视频生成`
-          : `已关闭「${d.name || d.id}」的预览视频生成`,
+        resp.deferred
+          ? resp.message || "已保存，将在当前网盘任务结束后生效"
+          : resp.teaserEnabled
+            ? `已开启「${d.name || d.id}」的预览视频生成`
+            : `已关闭「${d.name || d.id}」的预览视频生成`,
         "success"
       );
       setList((prev) =>

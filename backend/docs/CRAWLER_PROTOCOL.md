@@ -171,7 +171,6 @@ Optional fields:
 - `tags`
 - `duration_seconds`
 - `description`
-- `quality`
 
 Import timestamps are owned by the backend. Scripts must not emit
 `published_at`; the backend always sets both `published_at` and `created_at` to

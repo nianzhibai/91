@@ -34,6 +34,17 @@ type App struct {
 	// 串行化可以避免启动后台挂载和手动扫盘按需挂载同一个 drive 时重复创建 worker。
 	driveAttachMu sync.Mutex
 
+	// driveOperationGates coordinate task generations with configuration writes.
+	// Desired settings are saved immediately; active tasks keep an immutable old
+	// snapshot and the latest pending settings are applied once that generation drains.
+	driveOperationGatesMu sync.Mutex
+	driveOperationGates   map[string]*driveOperationGate
+
+	// driveCredentialStates 给每次挂载签发一代凭证写入租约。旧 driver 的请求可能
+	// 在重挂载甚至删除后才完成；租约让这些迟到回调不能覆盖新实例刚轮换的 token。
+	driveCredentialStatesMu sync.Mutex
+	driveCredentialStates   map[string]*driveCredentialState
+
 	// 全站主题（"dark" | "pink" | "sky"），从 DB 读
 	theme string
 
@@ -90,6 +101,9 @@ type App struct {
 	// the catalog and purges each one after a successful provider delete.
 	blacklistSourceDeleteMu    sync.Mutex
 	blacklistSourceDeleteState api.BlacklistSourceDeleteStatus
+	// blacklistVideoLocks serializes restore and source deletion for the same
+	// tombstone without making unrelated videos wait on a slow provider call.
+	blacklistVideoLocks videoOperationLocks
 
 	// tagJobMu protects the admin-visible tag job status. tagMaintenanceMu
 	// serializes bulk writes to video_tags across startup, manual, and nightly
@@ -97,6 +111,41 @@ type App struct {
 	tagJobMu         sync.Mutex
 	tagMaintenanceMu sync.Mutex
 	tagJobState      api.TagJobStatus
+}
+
+type videoOperationLocks struct {
+	mu    sync.Mutex
+	items map[string]*videoOperationLock
+}
+
+type videoOperationLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+func (locks *videoOperationLocks) lock(videoID string) func() {
+	locks.mu.Lock()
+	if locks.items == nil {
+		locks.items = make(map[string]*videoOperationLock)
+	}
+	item := locks.items[videoID]
+	if item == nil {
+		item = &videoOperationLock{}
+		locks.items[videoID] = item
+	}
+	item.refs++
+	locks.mu.Unlock()
+
+	item.mu.Lock()
+	return func() {
+		item.mu.Unlock()
+		locks.mu.Lock()
+		item.refs--
+		if item.refs == 0 {
+			delete(locks.items, videoID)
+		}
+		locks.mu.Unlock()
+	}
 }
 
 type driveScanProgress struct {
@@ -115,5 +164,6 @@ type driveUploadProgress struct {
 
 type crawlerUploadRunner interface {
 	RunOnce(ctx context.Context) error
+	RunDrives(ctx context.Context, driveIDs []string) error
 	StartDrive(ctx context.Context, driveID string) (<-chan error, bool)
 }

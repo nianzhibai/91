@@ -18,6 +18,11 @@ func (a *App) enqueueUploadedVideo(ctx context.Context, v *catalog.Video) {
 	if v == nil {
 		return
 	}
+	release, _, admitted := a.driveOperationGate(v.DriveID).beginTask(ctx, driveTaskScopePreview)
+	if !admitted {
+		return
+	}
+	defer release()
 	a.mu.Lock()
 	worker := a.workers[v.DriveID]
 	thumbWorker := a.thumbWorkers[v.DriveID]
@@ -40,7 +45,10 @@ func (a *App) regenPreview(ctx context.Context, videoID string) {
 	if err != nil {
 		return
 	}
-	taskCtx, done := a.registerDriveTaskContext(ctx, v.DriveID)
+	taskCtx, done, admitted := a.registerDriveTaskContext(ctx, v.DriveID, driveTaskScopePreview)
+	if !admitted {
+		return
+	}
 	defer done()
 	a.mu.Lock()
 	worker := a.workers[v.DriveID]
@@ -58,10 +66,34 @@ func (a *App) regenAllPreviews(ctx context.Context) {
 	}
 	log.Printf("[preview] enqueue all visible videos for regen count=%d total=%d", len(items), total)
 	queued := 0
+	type driveAdmission struct {
+		ctx  context.Context
+		done func()
+	}
+	admissions := make(map[string]driveAdmission)
+	rejected := make(map[string]bool)
+	defer func() {
+		for _, admission := range admissions {
+			admission.done()
+		}
+	}()
 	for _, v := range items {
 		if err := ctx.Err(); err != nil {
 			log.Printf("[preview] enqueue all canceled after %d videos: %v", queued, err)
 			return
+		}
+		if rejected[v.DriveID] {
+			continue
+		}
+		admission, ok := admissions[v.DriveID]
+		if !ok {
+			taskCtx, done, taskAdmitted := a.registerDriveTaskContext(ctx, v.DriveID, driveTaskScopePreview)
+			if !taskAdmitted {
+				rejected[v.DriveID] = true
+				continue
+			}
+			admission = driveAdmission{ctx: taskCtx, done: done}
+			admissions[v.DriveID] = admission
 		}
 		a.mu.Lock()
 		worker := a.workers[v.DriveID]
@@ -69,9 +101,12 @@ func (a *App) regenAllPreviews(ctx context.Context) {
 		if worker == nil {
 			continue
 		}
-		if !worker.EnqueueBlocking(ctx, v) {
-			log.Printf("[preview] enqueue all canceled after %d videos", queued)
-			return
+		if !worker.EnqueueBlocking(admission.ctx, v) {
+			log.Printf("[preview] enqueue all canceled for drive=%s after %d videos", v.DriveID, queued)
+			admission.done()
+			delete(admissions, v.DriveID)
+			rejected[v.DriveID] = true
+			continue
 		}
 		queued++
 	}
@@ -79,7 +114,10 @@ func (a *App) regenAllPreviews(ctx context.Context) {
 }
 
 func (a *App) regenFailedPreviews(ctx context.Context, driveID string) {
-	taskCtx, done := a.registerDriveTaskContext(ctx, driveID)
+	taskCtx, done, admitted := a.registerDriveTaskContext(ctx, driveID, driveTaskScopePreview)
+	if !admitted {
+		return
+	}
 	defer done()
 	failed, err := a.cat.ListVideosByPreviewStatus(taskCtx, driveID, "failed", 0)
 	if err != nil {
@@ -133,7 +171,10 @@ func (a *App) regenFailedPreviews(ctx context.Context, driveID string) {
 // 操作不会触发已生成失败的视频重新去网盘取流 —— 只是把 catalog 的状态翻到 pending
 // 并入队；真正的取链 / ffmpeg 在 thumb worker 里执行。
 func (a *App) regenFailedThumbnails(ctx context.Context, driveID string) {
-	taskCtx, done := a.registerDriveTaskContext(ctx, driveID)
+	taskCtx, done, admitted := a.registerDriveTaskContext(ctx, driveID, 0)
+	if !admitted {
+		return
+	}
 	defer done()
 	failed, err := a.cat.ListVideosByThumbnailStatus(taskCtx, driveID, "failed", 0)
 	if err != nil {
@@ -188,7 +229,10 @@ func (a *App) regenFailedThumbnails(ctx context.Context, driveID string) {
 }
 
 func (a *App) regenFailedFingerprints(ctx context.Context, driveID string) {
-	taskCtx, done := a.registerDriveTaskContext(ctx, driveID)
+	taskCtx, done, admitted := a.registerDriveTaskContext(ctx, driveID, 0)
+	if !admitted {
+		return
+	}
 	defer done()
 	failed, err := a.cat.ListVideosByFingerprintStatus(taskCtx, driveID, "failed", 0)
 	if err != nil {
@@ -263,7 +307,7 @@ func (a *App) listCrawlerDriveIDs(ctx context.Context) []string {
 	}
 	out := make([]string, 0, len(all))
 	for _, d := range all {
-		if d == nil || d.Kind != scriptcrawler.Kind || strings.TrimSpace(d.Credentials["script_path"]) == "" {
+		if d == nil || d.Kind != scriptcrawler.Kind || !scriptcrawler.IsConfigured(d.Credentials) {
 			continue
 		}
 		if parseBoolDefault(strings.TrimSpace(d.Credentials["paused"]), false) {

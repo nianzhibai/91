@@ -36,9 +36,10 @@ type Config struct {
 }
 
 type Worker struct {
-	Catalog *catalog.Catalog
-	Drive   drives.Drive
-	Config  Config
+	Catalog   *catalog.Catalog
+	Drive     drives.Drive
+	Config    Config
+	TaskGuard func() func()
 
 	ch       chan *catalog.Video
 	queue    videoQueue
@@ -173,8 +174,23 @@ func (w *Worker) WaitIdle(ctx context.Context) error {
 }
 
 func (w *Worker) processQueued(ctx context.Context, v *catalog.Video) {
+	if v == nil {
+		return
+	}
+	if w.Catalog == nil || w.Drive == nil || v.ID == "" {
+		w.queue.release(v.ID)
+		return
+	}
+	if w.TaskGuard != nil {
+		release := w.TaskGuard()
+		if release == nil {
+			w.queue.release(v.ID)
+			return
+		}
+		defer release()
+	}
 	defer w.queue.release(v.ID)
-	if w.Catalog == nil || w.Drive == nil || v == nil || v.ID == "" {
+	if err := ctx.Err(); err != nil {
 		return
 	}
 	current, err := w.Catalog.GetVideo(ctx, v.ID)

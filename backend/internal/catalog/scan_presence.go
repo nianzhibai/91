@@ -17,7 +17,10 @@ type scanPresenceVideo struct {
 // ConfirmMissingDriveFiles advances the durable missing counter for files that
 // were eligible for this successful scan but were not observed. A live file
 // clears its counter immediately. Only file IDs reaching threshold in this
-// snapshot are returned to the caller for destructive cleanup.
+// snapshot are returned to the caller for destructive cleanup. For a full-drive
+// scan every catalog row is eligible, including rows below directories that the
+// current scan policy excludes; excluding a directory therefore removes its old
+// rows from management after the normal confirmation threshold.
 func (c *Catalog) ConfirmMissingDriveFiles(
 	ctx context.Context,
 	driveID string,

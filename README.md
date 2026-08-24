@@ -107,6 +107,6 @@ docker compose logs -f                        # 查看日志
 
 ## 致谢
 
-- [OpenList](https://github.com/OpenListTeam/OpenList) — 优秀的开源项目
-- [LinuxDo](https://linux.do/) — 学 AI 上 L 站
-- [NodeSeek](https://nodeseek.com/) — MJJ 上 N 站
+- [Cli-Proxy-API-Management-Center](https://github.com/router-for-me/Cli-Proxy-API-Management-Center) — 参考其页面设计
+- [ArtPlayer](https://github.com/zhw2590582/ArtPlayer) — 当前项目使用的视频播放器
+- [OpenList](https://github.com/OpenListTeam/OpenList) — 参考其网盘接口

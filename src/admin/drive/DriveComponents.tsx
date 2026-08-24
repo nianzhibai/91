@@ -186,7 +186,11 @@ export function DriveGenerationPanel({
             role="switch"
             aria-checked={d.teaserEnabled}
             aria-label="生成预览视频"
-            title={d.teaserEnabled ? "关闭预览视频生成" : "开启预览视频生成"}
+            title={
+              d.teaserEnabled
+                ? "关闭预览视频生成"
+                : "开启预览视频生成"
+            }
           >
             <span className="toggle-switch__dot" />
           </button>

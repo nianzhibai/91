@@ -8,6 +8,10 @@ import pikpakIcon from "./icons/pikpak.png";
 import quarkIcon from "./icons/quark.png";
 import webdavIcon from "./icons/webdav.png";
 import wopanIcon from "./icons/wopan.png";
+import {
+  ONEDRIVE_AUTH_MODE_CUSTOM_APP,
+  ONEDRIVE_AUTH_MODE_OPENLIST_API,
+} from "./onedriveAuth";
 
 export type Kind = "quark" | "p115" | "p123" | "pikpak" | "wopan" | "guangyapan" | "onedrive" | "googledrive" | "webdav" | "localstorage";
 
@@ -185,6 +189,7 @@ export type CredentialField = {
   multiline?: boolean;
   required?: boolean;
   defaultValue?: string;
+  visibleWhen?: { key: string; value: string };
 };
 
 export function credentialFields(kind: Kind): CredentialField[] {
@@ -278,9 +283,44 @@ export function credentialFields(kind: Kind): CredentialField[] {
     case "onedrive":
       return [
         {
+          key: "auth_mode",
+          label: "认证方式",
+          placeholder: "",
+          type: "select",
+          defaultValue: ONEDRIVE_AUTH_MODE_OPENLIST_API,
+          options: [
+            {
+              value: ONEDRIVE_AUTH_MODE_OPENLIST_API,
+              label: "OpenList API",
+            },
+            {
+              value: ONEDRIVE_AUTH_MODE_CUSTOM_APP,
+              label: "自建应用",
+            },
+          ],
+        },
+        {
+          key: "client_id",
+          label: "客户端 ID",
+          placeholder: "Microsoft Entra 应用程序（客户端）ID",
+          visibleWhen: {
+            key: "auth_mode",
+            value: ONEDRIVE_AUTH_MODE_CUSTOM_APP,
+          },
+        },
+        {
+          key: "client_secret",
+          label: "客户端密钥",
+          placeholder: "请填写客户端密钥值，不是密钥 ID",
+          visibleWhen: {
+            key: "auth_mode",
+            value: ONEDRIVE_AUTH_MODE_CUSTOM_APP,
+          },
+        },
+        {
           key: "refresh_token",
           label: "refresh_token",
-          placeholder: "OpenList OneDrive refresh_token",
+          placeholder: "与所用应用匹配的 OneDrive refresh_token",
           multiline: true,
           required: true,
         },

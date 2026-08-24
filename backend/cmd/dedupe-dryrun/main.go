@@ -1,9 +1,8 @@
 // dedupe-dryrun：预演/执行夜间维护的内容级查重通道（Phase 5 content channel）。
-// 按与生产完全相同的判定规则（mediasim 阈值常量）打印将被合并的重复分组、
-// 保留/删除决策。原人工复核区间现已并入自动重复判定。
+// 分组、传递闭包、canonical 选择和最终删除计划与生产共用 internal/dedupe。
 //
-// 默认只读，不写库、不删文件；加 -apply 后真正执行：删除项按重复墓碑落库并
-// 清理本地资产（与夜间维护同一条路径）。
+// 默认只读，不写库、不删文件；加 -apply 后一次性提交完整计划，再幂等清理
+// 本地生成资产。原始媒体源始终不在清理范围内。
 //
 // 用法：在 backend 目录下运行
 //
@@ -12,6 +11,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -23,16 +23,13 @@ import (
 	"time"
 
 	"github.com/video-site/backend/internal/catalog"
+	"github.com/video-site/backend/internal/dedupe"
+	"github.com/video-site/backend/internal/localpath"
 	"github.com/video-site/backend/internal/mediaasset"
 	"github.com/video-site/backend/internal/mediasim"
 )
 
 const durationToleranceSeconds = mediasim.NearDuplicateDurationToleranceSeconds
-
-type candidate struct {
-	video      *catalog.Video
-	teaserPath string
-}
 
 func main() {
 	dbPath := flag.String("db", "data/video-site.db", "sqlite path")
@@ -50,49 +47,85 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
 	defer cancel()
-
 	videos, err := cat.ListVideoMaintenanceCandidates(ctx)
 	if err != nil {
 		log.Fatalf("list videos: %v", err)
 	}
-
 	localAbs, err := filepath.Abs(*localDir)
 	if err != nil {
 		log.Fatalf("local dir: %v", err)
 	}
-	var candidates []candidate
-	for _, v := range videos {
-		if v == nil || v.DurationSeconds < mediasim.ContentDuplicateMinDurationSeconds {
+
+	candidates, videosByID := contentCandidates(localAbs, videos)
+	fmt.Fprintf(os.Stderr, "videos=%d content_candidates=%d\n", len(videos), len(candidates))
+	signatures := extractSignatures(ctx, localAbs, *ffmpegPath, *workers, *apply, candidates)
+
+	plan, err := dedupe.Build(ctx, candidates, dedupe.Options{
+		Channels: dedupe.ChannelContent,
+		LoadContentSignature: func(_ context.Context, candidate dedupe.Candidate) (*mediasim.FrameSignature, error) {
+			return signatures[candidate.ID], nil
+		},
+	})
+	if err != nil {
+		log.Fatalf("build content dedupe plan: %v", err)
+	}
+	printPlan(plan, videosByID)
+	if !*apply {
+		fmt.Printf("\n将删除 %d 个视频（只读预演，加 -apply 执行）。\n", len(plan.Actions))
+		return
+	}
+	if err := applyPlan(ctx, cat, localAbs, plan); err != nil {
+		log.Fatalf("apply content dedupe plan: %v", err)
+	}
+	fmt.Printf("\n已删除 %d 个视频。\n", len(plan.Actions))
+	if dropped, err := cat.DropLegacyDuplicateReviewTable(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "移除旧复核队列表失败: %v\n", err)
+	} else if dropped {
+		fmt.Println("旧复核队列表已在自动去重完成后移除。")
+	}
+}
+
+func contentCandidates(localDir string, videos []*catalog.Video) ([]dedupe.Candidate, map[string]*catalog.Video) {
+	candidates := make([]dedupe.Candidate, 0, len(videos))
+	videosByID := make(map[string]*catalog.Video, len(videos))
+	for _, video := range videos {
+		if video == nil || video.DurationSeconds < mediasim.ContentDuplicateMinDurationSeconds || strings.TrimSpace(video.PreviewStatus) != "ready" {
 			continue
 		}
-		if strings.TrimSpace(v.PreviewStatus) != "ready" || strings.TrimSpace(v.PreviewLocal) == "" {
+		teaserPath, ok := existingPreviewPath(localDir, video.PreviewLocal)
+		if !ok {
 			continue
 		}
-		pathAbs, err := filepath.Abs(v.PreviewLocal)
-		if err != nil {
-			continue
-		}
-		if rel, err := filepath.Rel(localAbs, pathAbs); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-			continue
-		}
-		if info, err := os.Stat(pathAbs); err != nil || !info.Mode().IsRegular() {
-			continue
-		}
-		candidates = append(candidates, candidate{video: v, teaserPath: pathAbs})
+		candidates = append(candidates, dedupe.Candidate{
+			ID:                video.ID,
+			Title:             video.Title,
+			DurationSeconds:   video.DurationSeconds,
+			Size:              video.Size,
+			SampledSHA256:     video.SampledSHA256,
+			AssetScore:        assetScore(localDir, video),
+			CreatedAt:         video.CreatedAt,
+			ExpectedUpdatedAt: video.UpdatedAt.UnixMilli(),
+			TeaserPath:        teaserPath,
+		})
+		videosByID[video.ID] = video
 	}
 	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].video.DurationSeconds != candidates[j].video.DurationSeconds {
-			return candidates[i].video.DurationSeconds < candidates[j].video.DurationSeconds
+		if candidates[i].DurationSeconds != candidates[j].DurationSeconds {
+			return candidates[i].DurationSeconds < candidates[j].DurationSeconds
 		}
-		return candidates[i].video.ID < candidates[j].video.ID
+		if !candidates[i].CreatedAt.Equal(candidates[j].CreatedAt) {
+			return candidates[i].CreatedAt.Before(candidates[j].CreatedAt)
+		}
+		return candidates[i].ID < candidates[j].ID
 	})
-	fmt.Fprintf(os.Stderr, "videos=%d content_candidates=%d\n", len(videos), len(candidates))
+	return candidates, videosByID
+}
 
-	// 找出参与 ±tolerance 配对的视频，先并发提取签名。
+func extractSignatures(ctx context.Context, localDir, ffmpegPath string, workers int, storeCache bool, candidates []dedupe.Candidate) map[string]*mediasim.FrameSignature {
 	involved := make(map[int]struct{})
 	for i := range candidates {
 		for j := i + 1; j < len(candidates); j++ {
-			if candidates[j].video.DurationSeconds-candidates[i].video.DurationSeconds > durationToleranceSeconds {
+			if candidates[j].DurationSeconds-candidates[i].DurationSeconds > durationToleranceSeconds {
 				break
 			}
 			involved[i] = struct{}{}
@@ -100,11 +133,14 @@ func main() {
 		}
 	}
 	fmt.Fprintf(os.Stderr, "involved_in_pairs=%d, extracting signatures...\n", len(involved))
+	if workers <= 0 {
+		workers = 1
+	}
 
-	sigs := make(map[int]*mediasim.FrameSignature)
+	signatures := make(map[string]*mediasim.FrameSignature)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, *workers)
+	sem := make(chan struct{}, workers)
 	done := 0
 	cacheHits := 0
 	for i := range involved {
@@ -113,17 +149,19 @@ func main() {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			cachePath := mediaasset.FrameSignaturePath(localAbs, candidates[i].video.ID)
-			sig, cached := mediasim.LoadCachedTeaserSignature(cachePath, candidates[i].teaserPath)
+			candidate := candidates[i]
+			cachePath := mediaasset.FrameSignaturePath(localDir, candidate.ID)
+			signature, cached := mediasim.LoadCachedTeaserSignature(cachePath, candidate.TeaserPath)
 			var err error
 			if !cached {
-				sig, err = mediasim.ExtractTeaserFrameSignature(ctx, *ffmpegPath, candidates[i].teaserPath)
-				if err == nil && *apply {
-					if storeErr := mediasim.StoreCachedTeaserSignature(cachePath, candidates[i].teaserPath, sig); storeErr != nil {
-						fmt.Fprintf(os.Stderr, "  cache write failed id=%s: %v\n", candidates[i].video.ID, storeErr)
+				signature, err = mediasim.ExtractTeaserFrameSignature(ctx, ffmpegPath, candidate.TeaserPath)
+				if err == nil && signature != nil && storeCache {
+					if storeErr := mediasim.StoreCachedTeaserSignature(cachePath, candidate.TeaserPath, signature); storeErr != nil {
+						fmt.Fprintf(os.Stderr, "  cache write failed id=%s: %v\n", candidate.ID, storeErr)
 					}
 				}
 			}
+
 			mu.Lock()
 			defer mu.Unlock()
 			done++
@@ -134,216 +172,170 @@ func main() {
 				fmt.Fprintf(os.Stderr, "  %d/%d (cache hits %d)\n", done, len(involved), cacheHits)
 			}
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "  extract failed id=%s: %v\n", candidates[i].video.ID, err)
+				fmt.Fprintf(os.Stderr, "  extract failed id=%s: %v\n", candidate.ID, err)
 				return
 			}
-			if sig.InformativeFrames() < mediasim.ContentDuplicateMinComparisons {
+			if signature == nil || signature.InformativeFrames() < mediasim.ContentDuplicateMinComparisons {
 				return
 			}
-			sigs[i] = sig
+			signatures[candidate.ID] = signature
 		}(i)
 	}
 	wg.Wait()
-	fmt.Fprintf(os.Stderr, "signatures=%d cache_hits=%d\n", len(sigs), cacheHits)
+	fmt.Fprintf(os.Stderr, "signatures=%d cache_hits=%d\n", len(signatures), cacheHits)
+	return signatures
+}
 
-	parent := make([]int, len(candidates))
-	for i := range parent {
-		parent[i] = i
-	}
-	var find func(int) int
-	find = func(x int) int {
-		if parent[x] != x {
-			parent[x] = find(parent[x])
-		}
-		return parent[x]
-	}
-	union := func(a, b int) { parent[find(a)] = find(b) }
-
-	matched := 0
-	crossMatched := 0
-	for i := range candidates {
-		if sigs[i] == nil {
+func printPlan(plan dedupe.Plan, videosByID map[string]*catalog.Video) {
+	alignedMatches := 0
+	for _, match := range plan.Matches {
+		if match.Stage != dedupe.StageContent {
 			continue
 		}
-		for j := i + 1; j < len(candidates); j++ {
-			if candidates[j].video.DurationSeconds-candidates[i].video.DurationSeconds > durationToleranceSeconds {
-				break
-			}
-			if sigs[j] == nil {
-				continue
-			}
-			cmp := mediasim.CompareFrameSignatures(sigs[i], sigs[j])
-			if cmp.IsContentDuplicate() {
-				union(i, j)
-				matched++
-				continue
-			}
-			if candidates[i].video.DurationSeconds == candidates[j].video.DurationSeconds {
-				if cross := mediasim.CompareFrameSignaturesCross(sigs[i], sigs[j]); cross.IsContentDuplicate() {
-					union(i, j)
-					crossMatched++
-					fmt.Printf("[交叉命中] %s (%q) <-> %s (%q) strong=%d/%d,%d/%d median_best=%.3f dur=%d\n",
-						candidates[i].video.ID, candidates[i].video.Title, candidates[j].video.ID, candidates[j].video.Title,
-						cross.LeftStrong, cross.LeftFrames, cross.RightStrong, cross.RightFrames, cross.MedianBest, candidates[i].video.DurationSeconds)
-					continue
-				}
-			}
-		}
-	}
-
-	groups := make(map[int][]candidate)
-	for i := range candidates {
-		if sigs[i] == nil {
+		if match.Cross {
+			left, right := videosByID[match.LeftID], videosByID[match.RightID]
+			fmt.Printf("[交叉命中] %s (%q) <-> %s (%q) median_best=%.3f\n", match.LeftID, videoTitle(left), match.RightID, videoTitle(right), match.Score)
 			continue
 		}
-		root := find(i)
-		groups[root] = append(groups[root], candidates[i])
+		alignedMatches++
 	}
-	var multi [][]candidate
-	for _, group := range groups {
-		if len(group) > 1 {
-			multi = append(multi, group)
+	groups := make([]dedupe.Group, 0)
+	for _, group := range plan.Groups {
+		if group.Stage == dedupe.StageContent {
+			groups = append(groups, group)
 		}
 	}
-	sort.Slice(multi, func(i, j int) bool { return multi[i][0].video.ID < multi[j][0].video.ID })
-
-	fmt.Printf("\n=== 内容级重复分组：%d 组（对齐命中 %d 次，交叉命中 %d 次）===\n", len(multi), matched, crossMatched)
-	wouldDelete := 0
-	deleted := 0
-	deleteFailed := 0
-	for gi, group := range multi {
-		canonicalIdx := 0
-		for k := 1; k < len(group); k++ {
-			if betterCanonical(*localDir, group[k].video, group[canonicalIdx].video) {
-				canonicalIdx = k
+	fmt.Printf("\n=== 内容级重复分组：%d 组（对齐命中 %d 次，交叉命中 %d 次）===\n", len(groups), alignedMatches, plan.Stats.Content.CrossMatched)
+	for i, group := range groups {
+		duration := 0
+		if len(group.MemberIDs) > 0 && videosByID[group.MemberIDs[0]] != nil {
+			duration = videosByID[group.MemberIDs[0]].DurationSeconds
+		}
+		fmt.Printf("\n组 %d（时长 %ds）：\n", i+1, duration)
+		for _, id := range group.MemberIDs {
+			video := videosByID[id]
+			if video == nil {
+				continue
 			}
-		}
-		fmt.Printf("\n组 %d（时长 %ds）：\n", gi+1, group[0].video.DurationSeconds)
-		for k, c := range group {
 			marker := "删除"
-			if k == canonicalIdx {
+			if id == group.CanonicalVideoID {
 				marker = "保留"
-			} else {
-				wouldDelete++
 			}
-			fmt.Printf("  [%s] %s size=%d drive=%s title=%q\n", marker, c.video.ID, c.video.Size, c.video.DriveID, c.video.Title)
-		}
-		if *apply {
-			canonicalID := group[canonicalIdx].video.ID
-			for k, c := range group {
-				if k == canonicalIdx {
-					continue
-				}
-				if err := deleteDuplicateWithAssets(ctx, cat, localAbs, c.video, canonicalID); err != nil {
-					deleteFailed++
-					fmt.Fprintf(os.Stderr, "  删除失败 id=%s: %v\n", c.video.ID, err)
-					continue
-				}
-				deleted++
-			}
-		}
-	}
-	if *apply {
-		fmt.Printf("\n已删除 %d 个视频（失败 %d）。\n", deleted, deleteFailed)
-	} else {
-		fmt.Printf("\n将删除 %d 个视频（只读预演，加 -apply 执行）。\n", wouldDelete)
-	}
-
-	if *apply && deleteFailed == 0 {
-		if dropped, err := cat.DropLegacyDuplicateReviewTable(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "移除旧复核队列表失败: %v\n", err)
-		} else if dropped {
-			fmt.Println("旧复核队列表已在自动去重完成后移除。")
+			fmt.Printf("  [%s] %s size=%d drive=%s title=%q\n", marker, video.ID, video.Size, video.DriveID, video.Title)
 		}
 	}
 }
 
-// deleteDuplicateWithAssets 与 cmd/server 夜间维护的 deleteDuplicateVideoWithAssets
-// 行为一致：先清本地资产（teaser、封面及其派生图、帧签名缓存），再按重复墓碑
-// 删除 catalog 行；SQLite busy 时退避重试。
-func deleteDuplicateWithAssets(ctx context.Context, cat *catalog.Catalog, localDir string, v *catalog.Video, canonicalID string) error {
-	removeCandidates := []string{v.PreviewLocal}
-	removeCandidates = append(removeCandidates, mediaasset.PreviewPathCandidates(localDir, v.ID)...)
-	removeCandidates = append(removeCandidates, mediaasset.ThumbnailAssetPathCandidates(localDir, v.ID)...)
-	removeCandidates = append(removeCandidates, mediaasset.FrameSignaturePath(localDir, v.ID))
-	seen := map[string]struct{}{}
-	for _, candidate := range removeCandidates {
-		if strings.TrimSpace(candidate) == "" {
-			continue
-		}
-		pathAbs, err := filepath.Abs(candidate)
-		if err != nil {
-			continue
-		}
-		if rel, err := filepath.Rel(localDir, pathAbs); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-			continue
-		}
-		if _, ok := seen[pathAbs]; ok {
-			continue
-		}
-		seen[pathAbs] = struct{}{}
-		if info, err := os.Stat(pathAbs); err != nil || !info.Mode().IsRegular() {
-			continue
-		}
-		if err := os.Remove(pathAbs); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove asset %s: %w", pathAbs, err)
-		}
+func applyPlan(ctx context.Context, cat *catalog.Catalog, localDir string, plan dedupe.Plan) error {
+	deletions := make([]catalog.DuplicateVideoDeletion, 0, len(plan.Actions))
+	for _, action := range plan.Actions {
+		deletions = append(deletions, catalog.DuplicateVideoDeletion{
+			VideoID:                    action.VideoID,
+			CanonicalVideoID:           action.CanonicalVideoID,
+			ExpectedUpdatedAt:          action.ExpectedUpdatedAt,
+			CanonicalExpectedUpdatedAt: action.CanonicalExpectedUpdatedAt,
+		})
 	}
-	var lastErr error
+	var applyErr error
 	for attempt := 0; attempt < 12; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		err := cat.DeleteVideoWithTombstoneOptions(ctx, v.ID, catalog.DeleteVideoTombstoneOptions{
-			Reason:           catalog.DeletedVideoReasonDuplicate,
-			CanonicalVideoID: canonicalID,
-		})
-		if err == nil {
-			return nil
+		applyErr = cat.ApplyDuplicateVideoDeletions(ctx, deletions)
+		if applyErr == nil || !sqliteBusy(applyErr) {
+			break
 		}
-		msg := strings.ToLower(err.Error())
-		if !strings.Contains(msg, "busy") && !strings.Contains(msg, "locked") {
-			return err
-		}
-		lastErr = err
 		time.Sleep(time.Duration(attempt+1) * 250 * time.Millisecond)
 	}
-	return fmt.Errorf("delete %s after retries: %w", v.ID, lastErr)
+	if applyErr != nil {
+		return applyErr
+	}
+	return cleanupPendingAssets(ctx, cat, localDir)
 }
 
-// betterCanonical 与 cmd/server 夜间维护的 betterNearDuplicateCanonical 规则一致：
-// 体积大者优先，其次本地资产完整度，最后入库早者。
-func betterCanonical(localDir string, left, right *catalog.Video) bool {
-	if left.Size != right.Size {
-		return left.Size > right.Size
+func cleanupPendingAssets(ctx context.Context, cat *catalog.Catalog, localDir string) error {
+	jobs, err := cat.ListDuplicateAssetCleanupJobs(ctx, 10000)
+	if err != nil {
+		return err
 	}
-	leftScore, rightScore := assetScore(localDir, left), assetScore(localDir, right)
-	if leftScore != rightScore {
-		return leftScore > rightScore
+	var cleanupErrors []error
+	for _, job := range jobs {
+		if err := mediaasset.RemoveGeneratedVideoAssets(localDir, job.VideoID, job.PreviewLocal); err != nil {
+			_ = cat.FailDuplicateAssetCleanupJob(ctx, job.VideoID, err)
+			cleanupErrors = append(cleanupErrors, err)
+			continue
+		}
+		if err := cat.CompleteDuplicateAssetCleanupJob(ctx, job.VideoID); err != nil {
+			cleanupErrors = append(cleanupErrors, err)
+		}
 	}
-	if !left.CreatedAt.Equal(right.CreatedAt) {
-		return left.CreatedAt.Before(right.CreatedAt)
-	}
-	return left.ID < right.ID
+	return errors.Join(cleanupErrors...)
 }
 
-func assetScore(localDir string, v *catalog.Video) int {
+// deleteDuplicateWithAssets remains a small compatibility seam for the command
+// test; it uses the same transactional deletion and post-commit cleanup as a
+// full plan rather than maintaining a second implementation.
+func deleteDuplicateWithAssets(ctx context.Context, cat *catalog.Catalog, localDir string, video *catalog.Video, canonicalID string) error {
+	if video == nil {
+		return nil
+	}
+	canonical, err := cat.GetVideo(ctx, canonicalID)
+	if err != nil {
+		return err
+	}
+	return applyPlan(ctx, cat, localDir, dedupe.Plan{
+		Actions: []dedupe.DeleteAction{{
+			Stage: dedupe.StageContent, VideoID: video.ID, CanonicalVideoID: canonicalID,
+			ExpectedUpdatedAt: video.UpdatedAt.UnixMilli(), CanonicalExpectedUpdatedAt: canonical.UpdatedAt.UnixMilli(),
+		}},
+		Redirects: map[string]string{video.ID: canonicalID},
+	})
+}
+
+func existingPreviewPath(localDir, path string) (string, bool) {
+	clean, ok := localpath.Within(localDir, path)
+	if !ok {
+		return "", false
+	}
+	info, err := os.Stat(clean)
+	return clean, err == nil && info.Mode().IsRegular()
+}
+
+func assetScore(localDir string, video *catalog.Video) int {
+	if video == nil {
+		return 0
+	}
 	score := 0
-	if strings.TrimSpace(v.PreviewStatus) == "ready" && strings.TrimSpace(v.PreviewLocal) != "" {
-		if info, err := os.Stat(v.PreviewLocal); err == nil && info.Mode().IsRegular() {
+	if strings.TrimSpace(video.PreviewStatus) == "ready" {
+		if _, ok := existingPreviewPath(localDir, video.PreviewLocal); ok {
 			score++
 		}
 	}
-	if strings.TrimSpace(v.ThumbnailURL) == "/p/thumb/"+v.ID {
-		for _, p := range mediaasset.ThumbnailPathCandidates(localDir, v.ID) {
-			if info, err := os.Stat(p); err == nil && info.Mode().IsRegular() {
+	if strings.TrimSpace(video.ThumbnailURL) == "/p/thumb/"+video.ID {
+		for _, path := range mediaasset.ThumbnailPathCandidates(localDir, video.ID) {
+			if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
 				score++
 				break
 			}
 		}
 	}
-	if strings.TrimSpace(v.SampledSHA256) != "" && strings.TrimSpace(v.FingerprintStatus) == "ready" {
+	if strings.TrimSpace(video.SampledSHA256) != "" && strings.TrimSpace(video.FingerprintStatus) == "ready" {
 		score++
 	}
 	return score
+}
+
+func sqliteBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "busy") || strings.Contains(message, "locked")
+}
+
+func videoTitle(video *catalog.Video) string {
+	if video == nil {
+		return ""
+	}
+	return video.Title
 }

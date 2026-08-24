@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/video-site/backend/internal/api"
@@ -26,7 +29,6 @@ import (
 	"github.com/video-site/backend/internal/drives/wopan"
 	"github.com/video-site/backend/internal/fingerprint"
 	"github.com/video-site/backend/internal/preview"
-	"github.com/video-site/backend/internal/scanner"
 )
 
 // guangYaPanLegacyRootPath keeps existing path-based mounts working until the
@@ -41,18 +43,41 @@ func guangYaPanLegacyRootPath(rootID string, credentials map[string]string) stri
 func (a *App) attachDrive(ctx context.Context, d *catalog.Drive) error {
 	a.driveAttachMu.Lock()
 	defer a.driveAttachMu.Unlock()
+	if d != nil && a.driveConfigPending(d.ID) {
+		active, err := a.activeDriveConfig(ctx, d.ID)
+		if err != nil {
+			return err
+		}
+		return a.attachDriveSnapshotUnlocked(ctx, active)
+	}
 	return a.attachDriveUnlocked(ctx, d)
 }
 
-// reloadSavedDrive applies persisted configuration to the runtime. Saving is
-// deliberately not a crawler-upload trigger: uploads are started only by the
-// explicit upload action, successful crawl completion, or the nightly pipeline.
-func (a *App) reloadSavedDrive(ctx context.Context, driveID string) error {
-	d, err := a.cat.GetDrive(ctx, driveID)
+// reloadDriveRuntime applies a persisted Driver configuration change. Pure
+// metadata saves never call this method. Remounting is deliberately not a
+// crawler-upload trigger: uploads start only through their explicit action,
+// successful crawl completion, or the nightly pipeline.
+func (a *App) reloadDriveRuntime(ctx context.Context, driveID string) error {
+	// Serialize the complete registry transition. The per-drive update lease
+	// prevents conflicting tasks/config writes; this lock also orders the shared
+	// registry and worker replacement against lazy/startup attachment.
+	var d *catalog.Drive
+	err := func() error {
+		a.driveAttachMu.Lock()
+		defer a.driveAttachMu.Unlock()
+
+		var err error
+		d, err = a.cat.GetDrive(ctx, driveID)
+		if err != nil {
+			return err
+		}
+
+		// The API holds this drive's exclusive runtime-update lease. Reaching this
+		// point therefore means every tracked task and generation queue is idle;
+		// configuration saves must never stop work implicitly.
+		return a.attachDriveUnlocked(ctx, d)
+	}()
 	if err != nil {
-		return err
-	}
-	if err := a.attachDrive(ctx, d); err != nil {
 		return err
 	}
 
@@ -60,9 +85,15 @@ func (a *App) reloadSavedDrive(ctx context.Context, driveID string) error {
 	// 预览/指纹应自动重试，省得用户再手动点三个"重试失败"按钮。
 	if d.Kind == localstorage.Kind &&
 		parseBoolDefault(strings.TrimSpace(d.Credentials["strm_allow_outside_root"]), false) {
-		go a.regenFailedThumbnails(ctx, driveID)
-		go a.regenFailedPreviews(ctx, driveID)
-		go a.regenFailedFingerprints(ctx, driveID)
+		a.scheduleDriveTaskAfterConfig(ctx, driveID, 0, func(taskCtx context.Context) {
+			a.regenFailedThumbnails(taskCtx, driveID)
+		})
+		a.scheduleDriveTaskAfterConfig(ctx, driveID, driveTaskScopePreview, func(taskCtx context.Context) {
+			a.regenFailedPreviews(taskCtx, driveID)
+		})
+		a.scheduleDriveTaskAfterConfig(ctx, driveID, 0, func(taskCtx context.Context) {
+			a.regenFailedFingerprints(taskCtx, driveID)
+		})
 	}
 	return nil
 }
@@ -76,11 +107,11 @@ func (a *App) ensureDriveAttached(ctx context.Context, driveID string) error {
 	if _, ok := a.registry.Get(driveID); ok {
 		return nil
 	}
-	d, err := a.cat.GetDrive(ctx, driveID)
+	d, err := a.activeDriveConfig(ctx, driveID)
 	if err != nil {
 		return err
 	}
-	return a.attachDriveUnlocked(ctx, d)
+	return a.attachDriveSnapshotUnlocked(ctx, d)
 }
 
 func (a *App) attachExistingDrives(ctx context.Context) {
@@ -117,25 +148,887 @@ func (a *App) recordDriveRuntimeStatus(driveID, status, lastError string) {
 	}
 }
 
-// persistDriveCredentials applies only the credential keys produced by a
-// runtime token/cookie refresh. Driver callbacks can outlive the Drive value
-// used during attachment, so writing that whole value back would risk rolling
-// back independently saved settings such as skip directories or root IDs.
-func (a *App) persistDriveCredentials(driveID string, updates map[string]string) {
-	if a == nil || a.cat == nil || len(updates) == 0 {
+type driveTaskScope uint8
+
+const (
+	driveTaskScopeScan driveTaskScope = 1 << iota
+	driveTaskScopePreview
+)
+
+type driveTaskAdmission struct {
+	gate       *driveOperationGate
+	generation uint64
+}
+
+type driveTaskAdmissionContextKey struct{}
+
+type driveOperationGate struct {
+	// configMu serializes HTTP/config writers. It is deliberately not held while
+	// waiting for an old task generation to drain, so subsequent edits can be
+	// accepted and coalesced into the same pending transition.
+	configMu  sync.Mutex
+	controlMu sync.Mutex
+
+	// generationWorkersMu makes replacing, stopping, and restoring the three
+	// long-lived generation workers one lifecycle operation. A stop performed
+	// while configuration is pending records a restart obligation here; the
+	// pending transition fulfills it before publishing the new configuration.
+	generationWorkersMu          sync.Mutex
+	generationWorkersNeedRestart bool
+	generationWorkersContext     context.Context
+
+	mu         sync.Mutex
+	generation uint64
+	active     int
+	blocked    bool
+	ready      chan struct{}
+	pending    bool
+	applying   bool
+	deleting   bool
+	retired    bool
+
+	applyScheduled bool
+	pendingScopes  api.DriveConfigUpdateScope
+	runtimeApply   func() error
+	previewApply   func() error
+	scanApply      func() error
+	activeConfig   *catalog.Drive
+}
+
+func newDriveOperationGate() *driveOperationGate {
+	return &driveOperationGate{generation: 1}
+}
+
+func (a *App) driveOperationGate(driveID string) *driveOperationGate {
+	driveID = strings.TrimSpace(driveID)
+	a.driveOperationGatesMu.Lock()
+	defer a.driveOperationGatesMu.Unlock()
+	if a.driveOperationGates == nil {
+		a.driveOperationGates = make(map[string]*driveOperationGate)
+	}
+	gate := a.driveOperationGates[driveID]
+	if gate == nil {
+		gate = newDriveOperationGate()
+		a.driveOperationGates[driveID] = gate
+	}
+	return gate
+}
+
+func (a *App) removeDriveOperationGate(driveID string, expected *driveOperationGate) {
+	if a == nil || expected == nil {
+		return
+	}
+	driveID = strings.TrimSpace(driveID)
+	a.driveOperationGatesMu.Lock()
+	if a.driveOperationGates[driveID] == expected {
+		delete(a.driveOperationGates, driveID)
+	}
+	a.driveOperationGatesMu.Unlock()
+}
+
+func driveTaskAdmissionFromContext(ctx context.Context, gate *driveOperationGate) (uint64, bool) {
+	if ctx == nil || gate == nil {
+		return 0, false
+	}
+	admission, ok := ctx.Value(driveTaskAdmissionContextKey{}).(driveTaskAdmission)
+	return admission.generation, ok && admission.gate == gate
+}
+
+func withDriveTaskAdmission(ctx context.Context, gate *driveOperationGate, generation uint64) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, driveTaskAdmissionContextKey{}, driveTaskAdmission{
+		gate:       gate,
+		generation: generation,
+	})
+}
+
+func (g *driveOperationGate) currentGeneration() uint64 {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.generation
+}
+
+func (g *driveOperationGate) beginBlockedLocked() {
+	if g.blocked {
+		return
+	}
+	g.blocked = true
+	g.ready = make(chan struct{})
+}
+
+func (g *driveOperationGate) endBlockedLocked() {
+	if !g.blocked {
+		return
+	}
+	g.blocked = false
+	if g.ready != nil {
+		close(g.ready)
+		g.ready = nil
+	}
+}
+
+// retireLocked permanently rejects work through this gate and wakes callers
+// that were waiting for a configuration transition. A later drive created with
+// the same ID receives a fresh gate after this one is removed from the map.
+func (g *driveOperationGate) retireLocked() {
+	g.retired = true
+	g.deleting = false
+	g.applying = false
+	g.pending = false
+	g.pendingScopes = 0
+	g.runtimeApply = nil
+	g.previewApply = nil
+	g.scanApply = nil
+	g.applyScheduled = false
+	g.blocked = true
+	if g.ready != nil {
+		close(g.ready)
+		g.ready = nil
+	}
+}
+
+func (g *driveOperationGate) admitLocked(generation uint64, inherited bool) (func(), uint64, bool) {
+	if g == nil || g.applying || g.retired {
+		return nil, 0, false
+	}
+	if inherited && generation != g.generation {
+		return nil, 0, false
+	}
+	if g.blocked && !inherited {
+		return nil, 0, false
+	}
+	g.active++
+	admittedGeneration := g.generation
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			g.mu.Lock()
+			if g.active > 0 {
+				g.active--
+			}
+			g.mu.Unlock()
+		})
+	}, admittedGeneration, true
+}
+
+func (g *driveOperationGate) tryBeginTask(ctx context.Context, _ driveTaskScope) (func(), uint64, bool) {
+	generation, inherited := driveTaskAdmissionFromContext(ctx, g)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.admitLocked(generation, inherited)
+}
+
+// tryBeginTaskGeneration is used by long-lived generation workers. A worker
+// belongs to the runtime generation that created it: it may finish already
+// queued work while a change is pending, but it can never run after a runtime
+// remount has advanced the generation.
+func (g *driveOperationGate) tryBeginTaskGeneration(generation uint64) (func(), bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	release, _, ok := g.admitLocked(generation, true)
+	return release, ok
+}
+
+// beginTask waits for a pending configuration transition only for internal
+// producers that must not lose work. Calls nested under an already admitted
+// task inherit its generation and may finish the current task pipeline.
+func (g *driveOperationGate) beginTask(ctx context.Context, scope driveTaskScope) (func(), uint64, bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	generation, inherited := driveTaskAdmissionFromContext(ctx, g)
+	if inherited {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		return g.admitLocked(generation, true)
+	}
+	for {
+		g.mu.Lock()
+		if g.retired {
+			g.mu.Unlock()
+			return nil, 0, false
+		}
+		if !g.blocked && !g.applying {
+			release, admittedGeneration, ok := g.admitLocked(0, false)
+			g.mu.Unlock()
+			return release, admittedGeneration, ok
+		}
+		ready := g.ready
+		g.mu.Unlock()
+		if ready == nil {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return nil, 0, false
+		case <-ready:
+		}
+	}
+}
+
+type driveConfigUpdateLease struct {
+	app     *App
+	driveID string
+	gate    *driveOperationGate
+
+	authorizedScope      api.DriveConfigUpdateScope
+	committedScope       api.DriveConfigUpdateScope
+	deferred             bool
+	createdPending       bool
+	immediate            bool
+	runtimeAdvanced      bool
+	destructive          bool
+	destructiveCommitted bool
+	releaseOnce          sync.Once
+}
+
+func (a *App) beginDriveConfigUpdate(driveID string) (api.DriveConfigUpdateLease, string) {
+	driveID = strings.TrimSpace(driveID)
+	if driveID == "" {
+		return nil, "缺少网盘 ID"
+	}
+	gate := a.driveOperationGate(driveID)
+	if !gate.configMu.TryLock() {
+		return nil, "当前网盘已有配置更新正在进行，请稍后重试"
+	}
+	return &driveConfigUpdateLease{app: a, driveID: driveID, gate: gate}, ""
+}
+
+func (lease *driveConfigUpdateLease) Authorize(scope api.DriveConfigUpdateScope) string {
+	if lease == nil || lease.gate == nil || lease.app == nil {
+		return "网盘配置更新协调器不可用"
+	}
+	lease.authorizedScope = scope
+	if scope == 0 {
+		return ""
+	}
+
+	if scope&api.DriveConfigUpdateDestructive != 0 {
+		lease.gate.mu.Lock()
+		defer lease.gate.mu.Unlock()
+		if lease.gate.retired {
+			return "网盘已删除"
+		}
+		if lease.gate.deleting {
+			return "网盘正在停止任务并删除，请稍后"
+		}
+		// Deletion supersedes a pending configuration transition. Keep its
+		// callbacks intact until deletion succeeds so a failed delete can resume
+		// applying the saved configuration. While deleting, reject all new and
+		// inherited task admissions and let the API stop/drain the old generation.
+		lease.gate.beginBlockedLocked()
+		lease.gate.deleting = true
+		lease.gate.applying = true
+		lease.gate.generation++
+		lease.destructive = true
+		lease.runtimeAdvanced = true
+		lease.immediate = true
+		return ""
+	}
+
+	// Capture the old task-visible row before the API persists its desired
+	// configuration. Existing tasks continue reading this immutable snapshot.
+	if err := lease.app.ensureActiveDriveConfigSnapshot(lease.driveID); err != nil {
+		return "读取当前网盘运行配置失败：" + err.Error()
+	}
+	busy := lease.app.driveHasActiveWork(lease.driveID)
+
+	lease.gate.mu.Lock()
+	defer lease.gate.mu.Unlock()
+	if lease.gate.blocked {
+		if !lease.gate.pending || lease.gate.applying {
+			return "当前网盘配置正在生效，请稍后重试"
+		}
+		lease.deferred = true
+		return ""
+	}
+
+	lease.gate.beginBlockedLocked()
+	if lease.gate.active > 0 || busy {
+		lease.gate.pending = true
+		lease.deferred = true
+		lease.createdPending = true
+		return ""
+	}
+	lease.gate.applying = true
+	lease.immediate = true
+	return ""
+}
+
+func (lease *driveConfigUpdateLease) Commit(scope api.DriveConfigUpdateScope, apply func() error) (bool, error) {
+	if lease == nil || lease.gate == nil || lease.app == nil {
+		return false, errors.New("网盘配置更新协调器不可用")
+	}
+	if scope == 0 {
+		if apply == nil {
+			return false, nil
+		}
+		return false, apply()
+	}
+	allowed := lease.authorizedScope
+	if allowed&api.DriveConfigUpdateRuntime != 0 {
+		allowed |= api.DriveConfigUpdatePreview | api.DriveConfigUpdateScan
+	}
+	if scope&allowed != scope {
+		return false, fmt.Errorf("configuration scope %d was not authorized", scope)
+	}
+	if scope&api.DriveConfigUpdateDestructive != 0 {
+		if scope != api.DriveConfigUpdateDestructive || !lease.destructive {
+			return false, fmt.Errorf("invalid destructive configuration scope %d", scope)
+		}
+		lease.gate.mu.Lock()
+		lease.gate.retireLocked()
+		lease.gate.mu.Unlock()
+		lease.app.removeDriveOperationGate(lease.driveID, lease.gate)
+		lease.destructiveCommitted = true
+		lease.committedScope |= scope
+		return false, nil
+	}
+
+	if lease.deferred {
+		lease.gate.mu.Lock()
+		lease.gate.pendingScopes |= scope
+		if scope&api.DriveConfigUpdateRuntime != 0 {
+			lease.gate.runtimeApply = apply
+			apply = nil
+		}
+		if scope&api.DriveConfigUpdatePreview != 0 {
+			lease.gate.previewApply = apply
+			apply = nil
+		}
+		if scope&api.DriveConfigUpdateScan != 0 {
+			lease.gate.scanApply = apply
+		}
+		lease.gate.mu.Unlock()
+		lease.committedScope |= scope
+		return true, nil
+	}
+
+	lease.gate.controlMu.Lock()
+	defer lease.gate.controlMu.Unlock()
+	if scope&api.DriveConfigUpdateRuntime != 0 && !lease.runtimeAdvanced {
+		lease.gate.mu.Lock()
+		lease.gate.generation++
+		lease.gate.mu.Unlock()
+		lease.runtimeAdvanced = true
+	}
+	var err error
+	if apply != nil {
+		err = apply()
+	}
+	lease.app.refreshActiveDriveConfigAfterApply(lease.driveID)
+	lease.committedScope |= scope
+	return false, err
+}
+
+func (lease *driveConfigUpdateLease) Release() {
+	if lease == nil || lease.gate == nil {
+		return
+	}
+	lease.releaseOnce.Do(func() {
+		startApply := false
+		resumeAfterDrain := false
+		restoreAfterAbortedUpdate := false
+		lease.gate.mu.Lock()
+		switch {
+		case lease.destructive:
+			if !lease.destructiveCommitted {
+				// The delete failed or its request was canceled. Resume a saved
+				// pending configuration, or keep the stop barrier until canceled
+				// tasks have actually returned.
+				if lease.gate.pending && lease.gate.pendingScopes != 0 {
+					lease.gate.deleting = false
+					lease.gate.applying = false
+					if !lease.gate.applyScheduled {
+						lease.gate.applyScheduled = true
+						startApply = true
+					}
+				} else {
+					// Cancellation may have interrupted the HTTP request before the
+					// stopped task actually returned. Keep admissions blocked until its
+					// gate count and observable queues are both idle.
+					resumeAfterDrain = true
+				}
+			}
+		case lease.deferred && lease.committedScope != 0:
+			if !lease.gate.applyScheduled {
+				lease.gate.applyScheduled = true
+				startApply = true
+			}
+		case lease.createdPending && lease.gate.pendingScopes == 0:
+			// Persistence failed before Commit. Keep admissions blocked until any
+			// workers stopped concurrently with the write have been restored, then
+			// let the old generation continue normally.
+			restoreAfterAbortedUpdate = true
+		case lease.immediate:
+			lease.gate.applying = false
+			lease.gate.endBlockedLocked()
+		}
+		lease.gate.mu.Unlock()
+		if restoreAfterAbortedUpdate {
+			lease.gate.controlMu.Lock()
+			lease.app.restoreDriveGenerationWorkers(lease.driveID, lease.gate)
+			lease.gate.mu.Lock()
+			if lease.gate.pending && lease.gate.pendingScopes == 0 &&
+				!lease.gate.deleting && !lease.gate.retired {
+				lease.gate.pending = false
+				lease.gate.applying = false
+				lease.gate.endBlockedLocked()
+			}
+			lease.gate.mu.Unlock()
+			lease.gate.controlMu.Unlock()
+		}
+		lease.gate.configMu.Unlock()
+		if startApply {
+			go lease.app.waitAndApplyPendingDriveConfig(lease.driveID, lease.gate)
+		}
+		if resumeAfterDrain {
+			go lease.app.waitAndReleaseAbortedDriveDelete(lease.driveID, lease.gate)
+		}
+	})
+}
+
+func (a *App) waitAndApplyPendingDriveConfig(driveID string, gate *driveOperationGate) {
+	if a == nil || gate == nil {
+		return
+	}
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		gate.mu.Lock()
+		if gate.retired || !gate.pending || gate.pendingScopes == 0 {
+			gate.applyScheduled = false
+			gate.mu.Unlock()
+			return
+		}
+		active := gate.active
+		blockedByDelete := gate.deleting
+		gate.mu.Unlock()
+		if active == 0 && !blockedByDelete && !a.driveHasActiveWork(driveID) && gate.configMu.TryLock() {
+			gate.controlMu.Lock()
+			// configMu is reserved before publishing applying=true. This prevents a
+			// delete/config writer from acquiring the writer slot while the pending
+			// worker merely waits to enter it.
+			stillIdle := !a.driveHasActiveWork(driveID)
+			gate.mu.Lock()
+			applyNow := stillIdle && gate.pending && gate.pendingScopes != 0 &&
+				gate.active == 0 && !gate.applying && !gate.deleting && !gate.retired
+			if applyNow {
+				gate.applying = true
+				if gate.pendingScopes&api.DriveConfigUpdateRuntime != 0 {
+					gate.generation++
+				}
+			}
+			gate.mu.Unlock()
+			if applyNow {
+				a.applyPendingDriveConfigLocked(driveID, gate)
+			}
+			gate.controlMu.Unlock()
+			gate.configMu.Unlock()
+			if applyNow {
+				return
+			}
+		}
+		<-ticker.C
+	}
+}
+
+func (a *App) waitAndReleaseAbortedDriveDelete(driveID string, gate *driveOperationGate) {
+	if a == nil || gate == nil {
+		return
+	}
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		gate.mu.Lock()
+		active := gate.active
+		waiting := gate.deleting && !gate.retired && !gate.pending
+		gate.mu.Unlock()
+		if !waiting {
+			return
+		}
+		if active == 0 && !a.driveHasActiveWork(driveID) {
+			gate.mu.Lock()
+			if gate.deleting && !gate.retired && !gate.pending && gate.active == 0 {
+				gate.deleting = false
+				gate.applying = false
+				gate.endBlockedLocked()
+			}
+			gate.mu.Unlock()
+			return
+		}
+		<-ticker.C
+	}
+}
+
+// applyPendingDriveConfigLocked runs with configMu and controlMu held.
+func (a *App) applyPendingDriveConfigLocked(driveID string, gate *driveOperationGate) {
+	gate.mu.Lock()
+	scopes := gate.pendingScopes
+	runtimeApply := gate.runtimeApply
+	previewApply := gate.previewApply
+	scanApply := gate.scanApply
+	gate.mu.Unlock()
+
+	if scopes&api.DriveConfigUpdateRuntime != 0 {
+		if err := safelyApplyDriveConfig(runtimeApply); err != nil {
+			log.Printf("[drive %s] apply deferred runtime configuration: %v", driveID, err)
+		}
+	}
+	// At this point the old task generation is fully drained. Publish the latest
+	// persisted snapshot before notifying scope-specific consumers, then restore
+	// workers stopped during the wait. Runtime remounts already replace workers;
+	// the restart marker makes this equally reliable for preview/scan-only saves.
+	a.refreshActiveDriveConfigAfterApply(driveID)
+	a.restoreDriveGenerationWorkers(driveID, gate)
+	if scopes&api.DriveConfigUpdatePreview != 0 {
+		if err := safelyApplyDriveConfig(previewApply); err != nil {
+			log.Printf("[drive %s] apply deferred preview configuration: %v", driveID, err)
+		}
+	}
+	if scopes&api.DriveConfigUpdateScan != 0 {
+		if err := safelyApplyDriveConfig(scanApply); err != nil {
+			log.Printf("[drive %s] apply deferred scan configuration: %v", driveID, err)
+		}
+	}
+
+	gate.mu.Lock()
+	gate.pendingScopes = 0
+	gate.runtimeApply = nil
+	gate.previewApply = nil
+	gate.scanApply = nil
+	gate.pending = false
+	gate.applying = false
+	gate.applyScheduled = false
+	gate.endBlockedLocked()
+	gate.mu.Unlock()
+	log.Printf("[drive %s] deferred configuration is now active", driveID)
+}
+
+func safelyApplyDriveConfig(apply func() error) (err error) {
+	if apply == nil {
+		return nil
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("panic while applying configuration: %v", recovered)
+		}
+	}()
+	return apply()
+}
+
+func (a *App) driveConfigPending(driveID string) bool {
+	if a == nil {
+		return false
+	}
+	gate := a.driveOperationGate(driveID)
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+	return gate.pending
+}
+
+func cloneDriveConfig(d *catalog.Drive) *catalog.Drive {
+	if d == nil {
+		return nil
+	}
+	cloned := *d
+	cloned.Credentials = make(map[string]string, len(d.Credentials))
+	for key, value := range d.Credentials {
+		cloned.Credentials[key] = value
+	}
+	cloned.SkipDirIDs = append([]string(nil), d.SkipDirIDs...)
+	return &cloned
+}
+
+func (a *App) ensureActiveDriveConfigSnapshot(driveID string) error {
+	if a == nil || a.cat == nil {
+		return nil
+	}
+	gate := a.driveOperationGate(driveID)
+	gate.mu.Lock()
+	if gate.pending {
+		hasSnapshot := gate.activeConfig != nil
+		gate.mu.Unlock()
+		if hasSnapshot {
+			return nil
+		}
+		return errors.New("active configuration snapshot is unavailable")
+	}
+	gate.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	d, err := a.cat.GetDrive(ctx, driveID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	gate.mu.Lock()
+	if !gate.pending {
+		gate.activeConfig = cloneDriveConfig(d)
+	}
+	gate.mu.Unlock()
+	return nil
+}
+
+// activeDriveConfig returns the immutable configuration snapshot visible to
+// the currently admitted task generation. The catalog may already contain a
+// newer desired configuration while this snapshot intentionally stays old.
+func (a *App) activeDriveConfig(ctx context.Context, driveID string) (*catalog.Drive, error) {
+	if a == nil || a.cat == nil {
+		return nil, errors.New("drive catalog unavailable")
+	}
+	gate := a.driveOperationGate(driveID)
+	gate.mu.Lock()
+	if gate.pending {
+		if gate.activeConfig != nil {
+			d := cloneDriveConfig(gate.activeConfig)
+			gate.mu.Unlock()
+			return d, nil
+		}
+		gate.mu.Unlock()
+		return nil, errors.New("active drive configuration unavailable during pending update")
+	}
+	gate.mu.Unlock()
+
+	// Without a pending transition the catalog is the active configuration.
+	// Refreshing here also observes internal changes such as the transcode
+	// worker adding its output directory to skip_dir_ids.
+	d, err := a.cat.GetDrive(ctx, driveID)
+	if err != nil {
+		return nil, err
+	}
+	gate.mu.Lock()
+	if !gate.pending {
+		gate.activeConfig = cloneDriveConfig(d)
+	} else if gate.activeConfig != nil {
+		d = cloneDriveConfig(gate.activeConfig)
+	}
+	gate.mu.Unlock()
+	return d, nil
+}
+
+func (a *App) setActiveDriveConfig(d *catalog.Drive) {
+	if a == nil || d == nil {
+		return
+	}
+	gate := a.driveOperationGate(d.ID)
+	gate.mu.Lock()
+	gate.activeConfig = cloneDriveConfig(d)
+	gate.mu.Unlock()
+}
+
+// setActiveDriveConfigIfStable publishes a catalog row only when no
+// configuration transition became active after that row was read. This is the
+// compare-with-gate half of refreshActiveDriveConfigIfStable and prevents a
+// stale background refresh from replacing the immutable old-generation view.
+func (a *App) setActiveDriveConfigIfStable(d *catalog.Drive) bool {
+	if a == nil || d == nil {
+		return false
+	}
+	gate := a.driveOperationGate(d.ID)
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+	if gate.pending || gate.applying || gate.deleting || gate.retired {
+		return false
+	}
+	gate.activeConfig = cloneDriveConfig(d)
+	return true
+}
+
+// refreshActiveDriveConfigAfterApply is the forced publication path owned by
+// a configuration writer after it has drained the old task generation.
+func (a *App) refreshActiveDriveConfigAfterApply(driveID string) {
+	if a == nil || a.cat == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := a.cat.PatchDriveCredentials(ctx, driveID, updates); err != nil {
-		log.Printf("[drive %s] persist refreshed credentials: %v", driveID, err)
+	d, err := a.cat.GetDrive(ctx, driveID)
+	if err != nil {
+		log.Printf("[drive %s] refresh active configuration snapshot: %v", driveID, err)
+		return
+	}
+	a.setActiveDriveConfig(d)
+}
+
+// refreshActiveDriveConfigIfStable is for background/system writers such as a
+// completed transcode. The gate state is checked after the catalog read, which
+// closes the check-then-refresh race with a newly authorized configuration save.
+func (a *App) refreshActiveDriveConfigIfStable(driveID string) {
+	if a == nil || a.cat == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	d, err := a.cat.GetDrive(ctx, driveID)
+	if err != nil {
+		log.Printf("[drive %s] refresh stable configuration snapshot: %v", driveID, err)
+		return
+	}
+	a.setActiveDriveConfigIfStable(d)
+}
+
+type driveCredentialState struct {
+	mu          sync.Mutex
+	generation  uint64
+	kind        string
+	anchorKey   string
+	anchorValue string
+}
+
+type driveCredentialLease struct {
+	driveID    string
+	generation uint64
+	state      *driveCredentialState
+}
+
+func (a *App) driveCredentialState(driveID string) *driveCredentialState {
+	a.driveCredentialStatesMu.Lock()
+	defer a.driveCredentialStatesMu.Unlock()
+	if a.driveCredentialStates == nil {
+		a.driveCredentialStates = make(map[string]*driveCredentialState)
+	}
+	state := a.driveCredentialStates[driveID]
+	if state == nil {
+		state = &driveCredentialState{}
+		a.driveCredentialStates[driveID] = state
+	}
+	return state
+}
+
+// beginDriveCredentialLease invalidates every callback issued to an older
+// instance of the same drive. The state lock also orders the transition after
+// any credential write that already started, so the caller can safely reload
+// the latest row before constructing the replacement driver.
+func (a *App) beginDriveCredentialLease(driveID string) driveCredentialLease {
+	state := a.driveCredentialState(driveID)
+	state.mu.Lock()
+	state.generation++
+	state.kind = ""
+	state.anchorKey = ""
+	state.anchorValue = ""
+	lease := driveCredentialLease{driveID: driveID, generation: state.generation, state: state}
+	state.mu.Unlock()
+	return lease
+}
+
+func configureDriveCredentialLease(lease driveCredentialLease, d *catalog.Drive) {
+	if lease.state == nil || d == nil {
+		return
+	}
+	anchorKey := ""
+	switch d.Kind {
+	case "quark":
+		anchorKey = "cookie"
+	case p123.Kind:
+		anchorKey = "access_token"
+	case "pikpak", "wopan", guangyapan.Kind, "onedrive", googledrive.Kind:
+		anchorKey = "refresh_token"
+	}
+	lease.state.mu.Lock()
+	defer lease.state.mu.Unlock()
+	if lease.generation != lease.state.generation {
+		return
+	}
+	lease.state.kind = d.Kind
+	lease.state.anchorKey = anchorKey
+	lease.state.anchorValue = d.Credentials[anchorKey]
+}
+
+// persistDriveCredentials applies only the credential keys produced by the
+// active runtime instance. Besides avoiding whole-row lost updates, the lease
+// prevents a superseded driver from rolling back credentials after a remount.
+// The credential anchor closes the smaller save-before-remount race: if an
+// administrator has already replaced the refresh token/cookie, a callback
+// derived from its predecessor is rejected atomically by SQLite.
+func (a *App) persistDriveCredentials(lease driveCredentialLease, updates map[string]string) {
+	if a == nil || a.cat == nil || lease.state == nil || len(updates) == 0 {
+		return
+	}
+	lease.state.mu.Lock()
+	defer lease.state.mu.Unlock()
+	if lease.generation != lease.state.generation {
+		return
+	}
+
+	persistCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	applied := true
+	var err error
+	if lease.state.anchorKey == "" {
+		err = a.cat.PatchDriveCredentials(persistCtx, lease.driveID, updates)
+	} else {
+		applied, err = a.cat.PatchDriveCredentialsIfMatch(
+			persistCtx,
+			lease.driveID,
+			lease.state.kind,
+			lease.state.anchorKey,
+			lease.state.anchorValue,
+			updates,
+		)
+	}
+
+	// Stream links may snapshot an Authorization header or a rotated cookie.
+	// Invalidate even on a persistence error so the proxy cannot keep serving a
+	// credential the active provider session has already rejected.
+	if a.proxy != nil {
+		a.proxy.InvalidateDrive(lease.driveID)
+	}
+	if err != nil {
+		log.Printf("[drive %s] persist refreshed credentials: %v", lease.driveID, err)
+		return
+	}
+	if !applied {
+		log.Printf("[drive %s] discard refreshed credentials: persisted %s changed", lease.driveID, lease.state.anchorKey)
+		return
+	}
+	if value, ok := updates[lease.state.anchorKey]; ok {
+		lease.state.anchorValue = value
 	}
 }
 
 func (a *App) attachDriveUnlocked(ctx context.Context, d *catalog.Drive) error {
+	return a.attachDriveConfigUnlocked(ctx, d, true)
+}
+
+func (a *App) attachDriveSnapshotUnlocked(ctx context.Context, d *catalog.Drive) error {
+	return a.attachDriveConfigUnlocked(ctx, d, false)
+}
+
+func (a *App) attachDriveConfigUnlocked(ctx context.Context, d *catalog.Drive, reloadLatest bool) error {
 	if d == nil {
 		return errors.New("nil drive")
 	}
+	credentialLease := a.beginDriveCredentialLease(d.ID)
+	if reloadLatest {
+		// A refresh callback may have completed after the caller loaded d but
+		// before this remount acquired its lease. Reload under the new generation
+		// so the replacement never starts from that stale snapshot.
+		latest, err := a.cat.GetDrive(ctx, d.ID)
+		if err != nil {
+			return err
+		}
+		d = latest
+	} else {
+		// A task admitted before a deferred save must lazily mount exactly the
+		// snapshot it was admitted against, not the newer desired catalog row.
+		d = cloneDriveConfig(d)
+	}
+	a.setActiveDriveConfig(d)
+	configureDriveCredentialLease(credentialLease, d)
+	// A configured drive has exactly one runtime owner. Remove the superseded
+	// instance before initialization so a failed remount cannot silently keep
+	// serving or scanning with credentials the user just replaced.
+	a.retireDriveRuntime(d.ID)
+	if d.Kind == scriptcrawler.Kind && !scriptcrawler.IsConfigured(d.Credentials) {
+		return nil
+	}
+
 	var drv drives.Drive
 	switch d.Kind {
 	case "quark":
@@ -145,13 +1038,7 @@ func (a *App) attachDriveUnlocked(ctx context.Context, d *catalog.Drive) error {
 			RootID:        d.RootID,
 			UploadTempDir: a.uploadWorkDir("quark"),
 			OnCookieUpdate: func(cookie string) {
-				// A cached original link snapshots the old cookie in its Headers.
-				// Invalidate it even if another process already persisted the same
-				// rotated value or this persistence attempt later fails.
-				if a.proxy != nil {
-					a.proxy.InvalidateDrive(d.ID)
-				}
-				a.persistDriveCredentials(d.ID, map[string]string{"cookie": cookie})
+				a.persistDriveCredentials(credentialLease, map[string]string{"cookie": cookie})
 			},
 		})
 	case "p115":
@@ -171,7 +1058,7 @@ func (a *App) attachDriveUnlocked(ctx context.Context, d *catalog.Drive) error {
 			RootID:        d.RootID,
 			UploadTempDir: a.uploadWorkDir(p123.Kind),
 			OnTokenUpdate: func(access string) {
-				a.persistDriveCredentials(d.ID, map[string]string{"access_token": access})
+				a.persistDriveCredentials(credentialLease, map[string]string{"access_token": access})
 			},
 		})
 	case "pikpak":
@@ -188,7 +1075,7 @@ func (a *App) attachDriveUnlocked(ctx context.Context, d *catalog.Drive) error {
 			DisableMediaLink: pikpak.ParseBoolDefault(d.Credentials["disable_media_link"], true),
 			UploadTempDir:    a.uploadWorkDir("pikpak"),
 			OnTokenUpdate: func(access, refresh, captcha, deviceID string) {
-				a.persistDriveCredentials(d.ID, map[string]string{
+				a.persistDriveCredentials(credentialLease, map[string]string{
 					"access_token":  access,
 					"refresh_token": refresh,
 					"captcha_token": captcha,
@@ -205,7 +1092,7 @@ func (a *App) attachDriveUnlocked(ctx context.Context, d *catalog.Drive) error {
 			RootID:        d.RootID,
 			UploadTempDir: a.uploadWorkDir("wopan"),
 			OnTokenUpdate: func(access, refresh string) {
-				a.persistDriveCredentials(d.ID, map[string]string{
+				a.persistDriveCredentials(credentialLease, map[string]string{
 					"access_token":  access,
 					"refresh_token": refresh,
 				})
@@ -232,7 +1119,7 @@ func (a *App) attachDriveUnlocked(ctx context.Context, d *catalog.Drive) error {
 			APIBaseURL:     d.Credentials["api_base_url"],
 			UploadTempDir:  a.uploadWorkDir(guangyapan.Kind),
 			OnCredentialsUpdate: func(updated map[string]string) {
-				a.persistDriveCredentials(d.ID, updated)
+				a.persistDriveCredentials(credentialLease, updated)
 			},
 		})
 	case "onedrive":
@@ -242,11 +1129,14 @@ func (a *App) attachDriveUnlocked(ctx context.Context, d *catalog.Drive) error {
 			Region:       d.Credentials["region"],
 			AccessToken:  d.Credentials["access_token"],
 			RefreshToken: d.Credentials["refresh_token"],
+			AuthMode:     d.Credentials["auth_mode"],
+			ClientID:     d.Credentials["client_id"],
+			ClientSecret: d.Credentials["client_secret"],
 			IsSharePoint: parseBoolDefault(d.Credentials["is_sharepoint"], false),
 			SiteID:       d.Credentials["site_id"],
 			RenewAPIURL:  d.Credentials["api_url_address"],
 			OnTokenUpdate: func(access, refresh string) {
-				a.persistDriveCredentials(d.ID, map[string]string{
+				a.persistDriveCredentials(credentialLease, map[string]string{
 					"access_token":  access,
 					"refresh_token": refresh,
 				})
@@ -263,7 +1153,7 @@ func (a *App) attachDriveUnlocked(ctx context.Context, d *catalog.Drive) error {
 			OAuthURL:     d.Credentials["oauth_url"],
 			APIBaseURL:   d.Credentials["api_base_url"],
 			OnTokenUpdate: func(access, refresh string) {
-				a.persistDriveCredentials(d.ID, map[string]string{
+				a.persistDriveCredentials(credentialLease, map[string]string{
 					"access_token":  access,
 					"refresh_token": refresh,
 				})
@@ -356,7 +1246,32 @@ func (a *App) newDriveGenerationWorkers(drv drives.Drive) (*preview.Worker, *pre
 		previewWorker.RateLimitCooldown = cooldown
 		thumbWorker.RateLimitCooldown = cooldown
 	}
-	return previewWorker, thumbWorker, fingerprint.NewWorker(a.cat, drv, fingerprintConfigForDrive(drv))
+	fingerprintWorker := fingerprint.NewWorker(a.cat, drv, fingerprintConfigForDrive(drv))
+	driveID := drv.ID()
+	gate := a.driveOperationGate(driveID)
+	generation := gate.currentGeneration()
+	previewWorker.TaskGuard = func() func() {
+		release, admitted := gate.tryBeginTaskGeneration(generation)
+		if !admitted {
+			return nil
+		}
+		return release
+	}
+	thumbWorker.TaskGuard = func() func() {
+		release, admitted := gate.tryBeginTaskGeneration(generation)
+		if !admitted {
+			return nil
+		}
+		return release
+	}
+	fingerprintWorker.TaskGuard = func() func() {
+		release, admitted := gate.tryBeginTaskGeneration(generation)
+		if !admitted {
+			return nil
+		}
+		return release
+	}
+	return previewWorker, thumbWorker, fingerprintWorker
 }
 
 func generationCooldownForDrive(drv drives.Drive) time.Duration {
@@ -371,6 +1286,18 @@ func generationCooldownForDrive(drv drives.Drive) time.Duration {
 }
 
 func (a *App) startDriveGenerationWorkers(ctx context.Context, driveID string, drv drives.Drive, enqueue bool) {
+	gate := a.driveOperationGate(driveID)
+	gate.generationWorkersMu.Lock()
+	defer gate.generationWorkersMu.Unlock()
+
+	a.startDriveGenerationWorkersLocked(ctx, driveID, drv, enqueue)
+	gate.generationWorkersNeedRestart = false
+	gate.generationWorkersContext = nil
+}
+
+// startDriveGenerationWorkersLocked replaces the registered worker set while
+// gate.generationWorkersMu is held.
+func (a *App) startDriveGenerationWorkersLocked(ctx context.Context, driveID string, drv drives.Drive, enqueue bool) {
 	worker, thumbWorker, fingerprintWorker := a.newDriveGenerationWorkers(drv)
 	workerCtx, cancel := context.WithCancel(ctx)
 	go worker.Run(workerCtx)
@@ -446,6 +1373,7 @@ func (a *App) attachScriptCrawler(d *catalog.Drive, drv *scriptcrawler.Driver) {
 	c := scriptcrawler.NewCrawler(scriptcrawler.CrawlerConfig{
 		Driver:         drv,
 		Catalog:        a.cat,
+		GetDriveConfig: a.activeDriveConfig,
 		CrawlerName:    d.Name,
 		Protocol:       protocol,
 		PythonPath:     pythonPath,
@@ -541,16 +1469,55 @@ func (a *App) registerPreviewWorkersWithOptions(ctx context.Context, driveID str
 	if !enqueue {
 		return
 	}
-	go a.enqueueDriveGeneration(ctx, driveID, worker, thumbWorker)
+	a.scheduleDriveGenerationEnqueue(ctx, driveID, worker, thumbWorker)
 	if fingerprintWorker != nil {
-		a.scheduleFingerprintBackfill(ctx, driveID, fingerprintWorker)
+		go a.scheduleFingerprintBackfillWaiting(ctx, driveID, fingerprintWorker)
 	}
 }
 
-func (a *App) registerDriveTaskContext(ctx context.Context, driveID string) (context.Context, func()) {
+func (a *App) registerDriveTaskContext(
+	ctx context.Context,
+	driveID string,
+	scope driveTaskScope,
+) (context.Context, func(), bool) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	gate := a.driveOperationGate(driveID)
+	gateRelease, generation, ok := gate.tryBeginTask(ctx, scope)
+	if !ok {
+		return ctx, func() {}, false
+	}
+	taskCtx, done := a.registerDriveTaskContextWithGate(ctx, driveID, gate, generation, gateRelease)
+	return taskCtx, done, true
+}
+
+func (a *App) registerDriveTaskContextWaiting(
+	ctx context.Context,
+	driveID string,
+	scope driveTaskScope,
+) (context.Context, func()) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	gate := a.driveOperationGate(driveID)
+	gateRelease, generation, ok := gate.beginTask(ctx, scope)
+	if !ok {
+		canceledCtx, cancel := context.WithCancel(ctx)
+		cancel()
+		return canceledCtx, func() {}
+	}
+	return a.registerDriveTaskContextWithGate(ctx, driveID, gate, generation, gateRelease)
+}
+
+func (a *App) registerDriveTaskContextWithGate(
+	ctx context.Context,
+	driveID string,
+	gate *driveOperationGate,
+	generation uint64,
+	gateRelease func(),
+) (context.Context, func()) {
+	ctx = withDriveTaskAdmission(ctx, gate, generation)
 	taskCtx, cancel := context.WithCancel(ctx)
 
 	a.taskCancelMu.Lock()
@@ -565,16 +1532,20 @@ func (a *App) registerDriveTaskContext(ctx context.Context, driveID string) (con
 	a.driveTaskCancels[driveID][token] = cancel
 	a.taskCancelMu.Unlock()
 
+	var doneOnce sync.Once
 	done := func() {
-		cancel()
-		a.taskCancelMu.Lock()
-		if cancels := a.driveTaskCancels[driveID]; cancels != nil {
-			delete(cancels, token)
-			if len(cancels) == 0 {
-				delete(a.driveTaskCancels, driveID)
+		doneOnce.Do(func() {
+			cancel()
+			a.taskCancelMu.Lock()
+			if cancels := a.driveTaskCancels[driveID]; cancels != nil {
+				delete(cancels, token)
+				if len(cancels) == 0 {
+					delete(a.driveTaskCancels, driveID)
+				}
 			}
-		}
-		a.taskCancelMu.Unlock()
+			a.taskCancelMu.Unlock()
+			gateRelease()
+		})
 	}
 	return taskCtx, done
 }
@@ -593,24 +1564,6 @@ func (a *App) cancelDriveTaskContexts(driveID string) int {
 	return len(cancelsByToken)
 }
 
-func (a *App) cancelAllDriveTaskContexts() map[string]int {
-	a.taskCancelMu.Lock()
-	all := a.driveTaskCancels
-	a.driveTaskCancels = nil
-	a.taskCancelMu.Unlock()
-
-	out := make(map[string]int, len(all))
-	for driveID, cancelsByToken := range all {
-		out[driveID] = len(cancelsByToken)
-		for _, cancel := range cancelsByToken {
-			if cancel != nil {
-				cancel()
-			}
-		}
-	}
-	return out
-}
-
 func (a *App) clearQueuedDriveTask(driveID string) bool {
 	a.scanQueueMu.Lock()
 	queued := a.scanQueued[driveID]
@@ -620,35 +1573,12 @@ func (a *App) clearQueuedDriveTask(driveID string) bool {
 	return queued
 }
 
-func (a *App) clearAllQueuedDriveTasks() []string {
-	a.scanQueueMu.Lock()
-	ids := make([]string, 0, len(a.scanQueued))
-	for id := range a.scanQueued {
-		ids = append(ids, id)
-	}
-	a.scanQueued = nil
-	a.scanProgress = nil
-	a.scanQueueMu.Unlock()
-	return ids
-}
-
 func (a *App) clearFingerprintQueueing(driveID string) bool {
 	a.fingerprintQueueMu.Lock()
 	queued := a.fingerprintQueueing[driveID]
 	delete(a.fingerprintQueueing, driveID)
 	a.fingerprintQueueMu.Unlock()
 	return queued
-}
-
-func (a *App) clearAllFingerprintQueueing() []string {
-	a.fingerprintQueueMu.Lock()
-	ids := make([]string, 0, len(a.fingerprintQueueing))
-	for id := range a.fingerprintQueueing {
-		ids = append(ids, id)
-	}
-	a.fingerprintQueueing = nil
-	a.fingerprintQueueMu.Unlock()
-	return ids
 }
 
 func (a *App) beginDriveScanOrCrawl(driveID string) bool {
@@ -714,52 +1644,6 @@ func (a *App) updateDriveScanCooldown(driveID string, until time.Time) {
 	a.scanQueueMu.Unlock()
 }
 
-func (a *App) pauseDriveScanForRateLimit(ctx context.Context, driveID string, drv drives.Drive, err error) bool {
-	wait, ok := drives.RateLimitRetryAfter(err)
-	if !ok {
-		return false
-	}
-	if wait <= 0 {
-		wait = scanCooldownForDrive(drv)
-	}
-	if wait <= 0 {
-		wait = 5 * time.Minute
-	}
-	until := time.Now().Add(wait)
-	a.updateDriveScanCooldown(driveID, until)
-	log.Printf("[scan] drive=%s rate limited; cooling until=%s wait=%s: %v", driveID, until.Format(time.RFC3339), wait, err)
-	if !sleepDriveScanCooldown(ctx, wait) {
-		log.Printf("[scan] drive=%s cooldown canceled: %v", driveID, ctx.Err())
-	}
-	return true
-}
-
-func scanCooldownForDrive(drv drives.Drive) time.Duration {
-	if drv == nil {
-		return 5 * time.Minute
-	}
-	switch strings.ToLower(drv.Kind()) {
-	case "guangyapan":
-		return 10 * time.Minute
-	default:
-		return 5 * time.Minute
-	}
-}
-
-func sleepDriveScanCooldown(ctx context.Context, d time.Duration) bool {
-	if d <= 0 {
-		return true
-	}
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
-}
-
 func (a *App) driveHasActiveWork(driveID string) bool {
 	driveID = strings.TrimSpace(driveID)
 	if driveID == "" {
@@ -794,6 +1678,20 @@ func (a *App) driveHasActiveWork(driveID string) bool {
 		return true
 	}
 
+	a.crawlerUploadMu.Lock()
+	crawlerUploading := a.crawlerUploadRunning[driveID]
+	a.crawlerUploadMu.Unlock()
+	if crawlerUploading {
+		return true
+	}
+
+	a.transcodeMu.Lock()
+	transcoding := a.transcodeWorkers[driveID] != nil
+	a.transcodeMu.Unlock()
+	if transcoding {
+		return true
+	}
+
 	a.mu.Lock()
 	previewWorker := a.workers[driveID]
 	thumbWorker := a.thumbWorkers[driveID]
@@ -812,6 +1710,36 @@ func (a *App) driveHasActiveWork(driveID string) bool {
 	return false
 }
 
+// waitDriveTasksStopped waits for cooperative cancellation to reach every
+// tracked task and generation queue. The destructive lease has already blocked
+// admissions, so once both counters are idle no new work can appear.
+func (a *App) waitDriveTasksStopped(ctx context.Context, driveID string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	driveID = strings.TrimSpace(driveID)
+	if driveID == "" {
+		return errors.New("missing drive ID")
+	}
+	gate := a.driveOperationGate(driveID)
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		gate.mu.Lock()
+		active := gate.active
+		retired := gate.retired
+		gate.mu.Unlock()
+		if retired || (active == 0 && !a.driveHasActiveWork(driveID)) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 func previewTaskBusy(status preview.TaskStatus) bool {
 	return status.State != "" && status.State != "idle"
 }
@@ -821,6 +1749,10 @@ func fingerprintTaskBusy(status fingerprint.TaskStatus) bool {
 }
 
 func (a *App) resetDriveGenerationWorkers(ctx context.Context, driveID string) bool {
+	gate := a.driveOperationGate(driveID)
+	gate.generationWorkersMu.Lock()
+	defer gate.generationWorkersMu.Unlock()
+
 	var drv drives.Drive
 	var attached bool
 	if a.registry != nil {
@@ -835,8 +1767,14 @@ func (a *App) resetDriveGenerationWorkers(ctx context.Context, driveID string) b
 	oldCancel := a.cancels[driveID]
 	a.mu.Unlock()
 
-	if attached && drv != nil {
-		a.startDriveGenerationWorkers(ctx, driveID, drv, false)
+	gate.mu.Lock()
+	pending := gate.pending
+	retired := gate.retired
+	gate.mu.Unlock()
+	if attached && drv != nil && !pending && !retired {
+		a.startDriveGenerationWorkersLocked(ctx, driveID, drv, false)
+		gate.generationWorkersNeedRestart = false
+		gate.generationWorkersContext = nil
 		return hadWorkers
 	}
 
@@ -849,59 +1787,52 @@ func (a *App) resetDriveGenerationWorkers(ctx context.Context, driveID string) b
 	delete(a.fingerprintWorkers, driveID)
 	delete(a.cancels, driveID)
 	a.mu.Unlock()
+	if attached && drv != nil && pending && !retired {
+		gate.generationWorkersNeedRestart = true
+		gate.generationWorkersContext = ctx
+	} else {
+		gate.generationWorkersNeedRestart = false
+		gate.generationWorkersContext = nil
+	}
 	return hadWorkers
 }
 
-func (a *App) resetAllDriveGenerationWorkers(ctx context.Context) []string {
-	seen := make(map[string]struct{})
-	if a.registry != nil {
-		for _, drv := range a.registry.All() {
-			if drv == nil {
-				continue
-			}
-			driveID := drv.ID()
-			seen[driveID] = struct{}{}
-			a.startDriveGenerationWorkers(ctx, driveID, drv, false)
-		}
+// restoreDriveGenerationWorkers fulfills a restart obligation recorded by a
+// stop during a pending configuration transition. It runs while admissions are
+// still blocked, so scope callbacks can safely capture the replacement workers
+// before the new configuration is exposed to tasks.
+func (a *App) restoreDriveGenerationWorkers(driveID string, gate *driveOperationGate) {
+	if a == nil || gate == nil {
+		return
+	}
+	gate.generationWorkersMu.Lock()
+	defer gate.generationWorkersMu.Unlock()
+	if !gate.generationWorkersNeedRestart {
+		return
 	}
 
-	a.mu.Lock()
-	stale := make([]string, 0)
-	for id := range a.cancels {
-		if _, ok := seen[id]; !ok {
-			stale = append(stale, id)
-		}
+	gate.mu.Lock()
+	retired := gate.retired
+	gate.mu.Unlock()
+	if retired {
+		gate.generationWorkersNeedRestart = false
+		gate.generationWorkersContext = nil
+		return
 	}
-	for id := range a.workers {
-		if _, ok := seen[id]; !ok {
-			stale = append(stale, id)
-		}
+	if a.registry == nil {
+		return
 	}
-	for id := range a.thumbWorkers {
-		if _, ok := seen[id]; !ok {
-			stale = append(stale, id)
-		}
+	drv, attached := a.registry.Get(driveID)
+	if !attached || drv == nil {
+		return
 	}
-	for id := range a.fingerprintWorkers {
-		if _, ok := seen[id]; !ok {
-			stale = append(stale, id)
-		}
+	workerCtx := gate.generationWorkersContext
+	if workerCtx == nil {
+		workerCtx = context.Background()
 	}
-	a.mu.Unlock()
-
-	for _, id := range stale {
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		a.resetDriveGenerationWorkers(ctx, id)
-	}
-
-	ids := make([]string, 0, len(seen))
-	for id := range seen {
-		ids = append(ids, id)
-	}
-	return ids
+	a.startDriveGenerationWorkersLocked(workerCtx, driveID, drv, false)
+	gate.generationWorkersNeedRestart = false
+	gate.generationWorkersContext = nil
 }
 
 func (a *App) stopDriveTasks(ctx context.Context, driveID string) bool {
@@ -910,12 +1841,18 @@ func (a *App) stopDriveTasks(ctx context.Context, driveID string) bool {
 		return false
 	}
 
+	// Cancellation must remain available while a configuration change is
+	// waiting for these very tasks to drain. Taking ordinary task admission here
+	// would make "stop" wait behind the pending change and create a deadlock.
 	canceled := a.cancelDriveTaskContexts(driveID)
 	queued := a.clearQueuedDriveTask(driveID)
 	fingerprintQueued := a.clearFingerprintQueueing(driveID)
 	uploading := a.clearCrawlerUploadProgress(driveID)
 	transcoding := a.stopDriveTranscode(driveID)
+	gate := a.driveOperationGate(driveID)
+	gate.controlMu.Lock()
 	hadWorkers := a.resetDriveGenerationWorkers(ctx, driveID)
+	gate.controlMu.Unlock()
 	stopped := canceled > 0 || queued || fingerprintQueued || uploading || transcoding || hadWorkers
 	log.Printf("[tasks] stop drive=%s stopped=%v canceled_tasks=%d queued=%v fingerprint_queue=%v uploading=%v transcoding=%v workers=%v",
 		driveID, stopped, canceled, queued, fingerprintQueued, uploading, transcoding, hadWorkers)
@@ -923,33 +1860,114 @@ func (a *App) stopDriveTasks(ctx context.Context, driveID string) bool {
 }
 
 func (a *App) stopAllDriveTasks(ctx context.Context) int {
-	stoppedIDs := make(map[string]struct{})
 	if a.nightlyRunner != nil && a.nightlyRunner.StopCurrent() {
 		log.Printf("[tasks] requested nightly pipeline stop")
 	}
-	for id := range a.cancelAllDriveTaskContexts() {
-		stoppedIDs[id] = struct{}{}
+	stopped := 0
+	for _, driveID := range a.driveTaskIDs() {
+		if a.stopDriveTasks(ctx, driveID) {
+			stopped++
+		}
 	}
-	for _, id := range a.clearAllQueuedDriveTasks() {
-		stoppedIDs[id] = struct{}{}
+	log.Printf("[tasks] stop all drive tasks drives=%d", stopped)
+	return stopped
+}
+
+func (a *App) driveTaskIDs() []string {
+	ids := make(map[string]struct{})
+	if a.registry != nil {
+		for _, drv := range a.registry.All() {
+			if drv != nil {
+				ids[drv.ID()] = struct{}{}
+			}
+		}
 	}
-	for _, id := range a.clearAllFingerprintQueueing() {
-		stoppedIDs[id] = struct{}{}
+	a.taskCancelMu.Lock()
+	for id := range a.driveTaskCancels {
+		ids[id] = struct{}{}
 	}
-	for _, id := range a.clearAllCrawlerUploadProgress() {
-		stoppedIDs[id] = struct{}{}
+	a.taskCancelMu.Unlock()
+	a.scanQueueMu.Lock()
+	for id := range a.scanQueued {
+		ids[id] = struct{}{}
 	}
-	for _, id := range a.stopAllDriveTranscodes() {
-		stoppedIDs[id] = struct{}{}
+	a.scanQueueMu.Unlock()
+	a.fingerprintQueueMu.Lock()
+	for id := range a.fingerprintQueueing {
+		ids[id] = struct{}{}
 	}
-	for _, id := range a.resetAllDriveGenerationWorkers(ctx) {
-		stoppedIDs[id] = struct{}{}
+	a.fingerprintQueueMu.Unlock()
+	a.uploadProgressMu.Lock()
+	for id := range a.uploadProgress {
+		ids[id] = struct{}{}
 	}
-	log.Printf("[tasks] stop all drive tasks drives=%d", len(stoppedIDs))
-	return len(stoppedIDs)
+	a.uploadProgressMu.Unlock()
+	a.transcodeMu.Lock()
+	for id := range a.transcodeWorkers {
+		ids[id] = struct{}{}
+	}
+	a.transcodeMu.Unlock()
+	a.mu.Lock()
+	for id := range a.workers {
+		ids[id] = struct{}{}
+	}
+	for id := range a.thumbWorkers {
+		ids[id] = struct{}{}
+	}
+	for id := range a.fingerprintWorkers {
+		ids[id] = struct{}{}
+	}
+	a.mu.Unlock()
+
+	out := make([]string, 0, len(ids))
+	for id := range ids {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (a *App) scheduleDriveTaskAfterConfig(
+	ctx context.Context,
+	driveID string,
+	scope driveTaskScope,
+	run func(context.Context),
+) {
+	if run == nil {
+		return
+	}
+	go func() {
+		taskCtx, done := a.registerDriveTaskContextWaiting(ctx, driveID, scope)
+		defer done()
+		if err := taskCtx.Err(); err != nil {
+			return
+		}
+		run(taskCtx)
+	}()
+}
+
+func (a *App) scheduleDriveGenerationEnqueue(
+	ctx context.Context,
+	driveID string,
+	worker *preview.Worker,
+	thumbWorker *preview.ThumbWorker,
+) {
+	go func() {
+		taskCtx, done := a.registerDriveTaskContextWaiting(ctx, driveID, driveTaskScopePreview)
+		defer done()
+		if err := taskCtx.Err(); err != nil {
+			return
+		}
+		a.enqueueDriveGeneration(taskCtx, driveID, worker, thumbWorker)
+	}()
 }
 
 func (a *App) enqueuePending(ctx context.Context, driveID string, w *preview.Worker) {
+	release, _, admitted := a.driveOperationGate(driveID).beginTask(ctx, driveTaskScopePreview)
+	if !admitted {
+		return
+	}
+	defer release()
 	pending, err := a.cat.ListVideosByPreviewStatus(ctx, driveID, "pending", 0)
 	if err != nil {
 		log.Printf("[preview] list pending %s: %v", driveID, err)
@@ -981,6 +1999,11 @@ func (a *App) enqueueDriveGeneration(ctx context.Context, driveID string, worker
 }
 
 func (a *App) enqueueThumbnails(ctx context.Context, driveID string, w *preview.ThumbWorker) {
+	release, _, admitted := a.driveOperationGate(driveID).beginTask(ctx, 0)
+	if !admitted {
+		return
+	}
+	defer release()
 	pending, err := a.cat.ListVideosNeedingThumbnail(ctx, driveID, 0)
 	if err != nil {
 		log.Printf("[thumb] list pending %s: %v", driveID, err)
@@ -1027,7 +2050,27 @@ func (a *App) scheduleFingerprintBackfill(ctx context.Context, driveID string, w
 	if w == nil {
 		return
 	}
-	taskCtx, done := a.registerDriveTaskContext(ctx, driveID)
+	taskCtx, done, ok := a.registerDriveTaskContext(ctx, driveID, 0)
+	if !ok {
+		return
+	}
+	a.startFingerprintBackfill(taskCtx, driveID, w, done)
+}
+
+func (a *App) scheduleFingerprintBackfillWaiting(ctx context.Context, driveID string, w *fingerprint.Worker) {
+	if w == nil {
+		return
+	}
+	taskCtx, done := a.registerDriveTaskContextWaiting(ctx, driveID, 0)
+	a.startFingerprintBackfill(taskCtx, driveID, w, done)
+}
+
+func (a *App) startFingerprintBackfill(
+	taskCtx context.Context,
+	driveID string,
+	w *fingerprint.Worker,
+	done func(),
+) {
 	a.fingerprintQueueMu.Lock()
 	if a.fingerprintQueueing == nil {
 		a.fingerprintQueueing = make(map[string]bool)
@@ -1042,10 +2085,10 @@ func (a *App) scheduleFingerprintBackfill(ctx context.Context, driveID string, w
 
 	go func() {
 		defer func() {
-			done()
 			a.fingerprintQueueMu.Lock()
 			delete(a.fingerprintQueueing, driveID)
 			a.fingerprintQueueMu.Unlock()
+			done()
 		}()
 		a.enqueueFingerprints(taskCtx, driveID, w)
 	}()
@@ -1055,6 +2098,11 @@ func (a *App) enqueueFingerprints(ctx context.Context, driveID string, w *finger
 	if w == nil {
 		return
 	}
+	release, _, admitted := a.driveOperationGate(driveID).beginTask(ctx, 0)
+	if !admitted {
+		return
+	}
+	defer release()
 	pending, err := a.cat.ListVideosNeedingFingerprint(ctx, driveID, 0)
 	if err != nil {
 		log.Printf("[fingerprint] list pending %s: %v", driveID, err)
@@ -1073,10 +2121,25 @@ func (a *App) enqueueFingerprints(ctx context.Context, driveID string, w *finger
 }
 
 func (a *App) detachDrive(id string) {
+	// Order deletion after any startup/lazy attach already constructing this
+	// runtime. Without the shared attach lock, a slow Init could publish its
+	// driver after deletion had removed the previously mounted instance.
+	a.driveAttachMu.Lock()
+	defer a.driveAttachMu.Unlock()
+
+	// Revoke the active driver's persistence lease before removing it from the
+	// registry. In-flight provider calls may still invoke their callbacks.
+	a.beginDriveCredentialLease(id)
 	a.cancelDriveTaskContexts(id)
 	a.clearQueuedDriveTask(id)
 	a.clearFingerprintQueueing(id)
-	a.registry.Remove(id)
+	a.retireDriveRuntime(id)
+}
+
+func (a *App) retireDriveRuntime(id string) {
+	if a.registry != nil {
+		a.registry.Remove(id)
+	}
 	if a.proxy != nil {
 		a.proxy.InvalidateDrive(id)
 	}
@@ -1129,6 +2192,12 @@ func (a *App) currentDriveNotAttachedError(ctx context.Context, driveID string) 
 }
 
 func (a *App) listDriveDirChildren(ctx context.Context, driveID, parentID string) (children []api.DriveDirEntry, resultErr error) {
+	taskCtx, done, admitted := a.registerDriveTaskContext(ctx, driveID, 0)
+	if !admitted {
+		return nil, fmt.Errorf("drive %s configuration is waiting to take effect", driveID)
+	}
+	defer done()
+	ctx = taskCtx
 	defer func() {
 		// Closing the directory picker (or navigating away) cancels its request;
 		// that says nothing about the provider's connection state.
@@ -1183,169 +2252,4 @@ func (a *App) listDriveDirChildren(ctx context.Context, driveID, parentID string
 		out = append(out, api.DriveDirEntry{ID: e.ID, Name: e.Name})
 	}
 	return out, nil
-}
-
-// scheduleScan 异步触发某个 drive 的扫盘。
-//
-// 调用立即返回。不同 drive 的扫盘可以并行；同一个 drive 如果已有扫盘、封面、
-// 预览视频或指纹任务在跑，本次请求会被拒绝。
-func (a *App) scheduleScan(ctx context.Context, driveID string) bool {
-	if a.driveHasActiveWork(driveID) {
-		log.Printf("[scan] drive=%s has active work, skip duplicate request", driveID)
-		return false
-	}
-	if !a.beginDriveScanOrCrawl(driveID) {
-		log.Printf("[scan] drive=%s already queued or running, skip duplicate request", driveID)
-		return false
-	}
-	taskCtx, done := a.registerDriveTaskContext(ctx, driveID)
-
-	go func() {
-		defer func() {
-			a.endDriveScanOrCrawl(driveID)
-			done()
-		}()
-		a.runScanWithTaskContext(taskCtx, driveID)
-	}()
-	return true
-}
-
-func (a *App) runScan(ctx context.Context, driveID string) {
-	if !a.beginDriveScanOrCrawl(driveID) {
-		log.Printf("[scan] drive=%s already queued or running, skip direct scan", driveID)
-		return
-	}
-	defer a.endDriveScanOrCrawl(driveID)
-	taskCtx, done := a.registerDriveTaskContext(ctx, driveID)
-	defer done()
-	a.runScanWithTaskContext(taskCtx, driveID)
-}
-
-func (a *App) runScanWithTaskContext(ctx context.Context, driveID string) {
-	if err := ctx.Err(); err != nil {
-		log.Printf("[scan] drive=%s canceled before start: %v", driveID, err)
-		return
-	}
-	if err := a.ensureDriveAttached(ctx, driveID); err != nil {
-		log.Printf("[scan] drive %s attach failed: %v", driveID, err)
-		return
-	}
-	drv, ok := a.registry.Get(driveID)
-	if !ok {
-		log.Printf("[scan] drive %s not attached", driveID)
-		return
-	}
-
-	a.mu.Lock()
-	worker := a.workers[driveID]
-	thumbWorker := a.thumbWorkers[driveID]
-	fingerprintWorker := a.fingerprintWorkers[driveID]
-	a.mu.Unlock()
-
-	onNew := func(v *catalog.Video) {
-		if thumbWorker != nil && v.ThumbnailURL == "" {
-			thumbWorker.Enqueue(v)
-		}
-		if fingerprintWorker != nil {
-			fingerprintWorker.Enqueue(v)
-		}
-	}
-
-	// 扫描入口固定使用 drive 的 root_id；同时把 admin 配置的 SkipDirIDs
-	// 传给 scanner（命中即不递归）。
-	d, err := a.cat.GetDrive(ctx, driveID)
-	if err != nil {
-		log.Printf("[scan] get drive %s: %v", driveID, err)
-		return
-	}
-	sc := scanner.New(a.cat, drv, a.cfg.Scanner.VideoExtensions, d.SkipDirIDs, onNew)
-	sc.OnProgress = func(stats scanner.Stats) {
-		a.updateDriveScanProgress(driveID, stats.Scanned, stats.Added)
-	}
-
-	startID := d.RootID
-
-	log.Printf("[scan] drive=%s start=%s skip_dirs=%d", driveID, startID, len(d.SkipDirIDs))
-	stats, err := sc.Run(ctx, startID)
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			log.Printf("[scan] drive=%s canceled: %v", driveID, err)
-		} else if a.pauseDriveScanForRateLimit(ctx, driveID, drv, err) {
-			return
-		} else {
-			log.Printf("[scan] drive=%s error: %v", driveID, err)
-		}
-		return
-	}
-	if err := ctx.Err(); err != nil {
-		log.Printf("[scan] drive=%s canceled after scan: %v", driveID, err)
-		return
-	}
-	log.Printf("[scan] drive=%s done scanned=%d added=%d errors=%d", driveID, stats.Scanned, stats.Added, stats.Errors)
-	// 删除检测：扫描到的 file_ids 是当前云盘上的真实存在；catalog 里这个 drive
-	// 名下、且其 parent_id 处在本次扫描走过的目录内（或本次是从根扫的）、却
-	// 不在 SeenFileIDs 中的视频 → 视为已被删除。
-	//
-	// scriptcrawler / localupload 走自己的生命周期管理，不应该参与扫描清理；
-	// stats.Errors > 0 时（云盘 API 中途抖动）保守起见跳过这一轮；即使完整
-	// 扫描成功，也要连续两次缺失才删除，避免一次异常空列表破坏 catalog 和
-	// 已生成的本地资产。
-	if drv.Kind() != scriptcrawler.Kind && drv.ID() != localupload.DriveID {
-		if stats.Errors > 0 {
-			log.Printf("[cleanup] skip stale cleanup for drive=%s kind=%s: scan had %d directory errors", driveID, drv.Kind(), stats.Errors)
-		} else {
-			removed, err := a.cleanupMissingDriveVideos(ctx, driveID, stats.SeenFileIDs, stats.VisitedDirIDs, startID == drv.RootID())
-			if err != nil {
-				if ctxErr := ctx.Err(); ctxErr != nil {
-					log.Printf("[cleanup] canceled stale cleanup drive=%s kind=%s: %v", driveID, drv.Kind(), ctxErr)
-					return
-				}
-				log.Printf("[cleanup] stale cleanup drive=%s kind=%s error: %v", driveID, drv.Kind(), err)
-			} else if removed > 0 {
-				log.Printf("[cleanup] removed %d stale videos for drive=%s kind=%s", removed, driveID, drv.Kind())
-			}
-		}
-	}
-	if err := ctx.Err(); err != nil {
-		log.Printf("[scan] drive=%s canceled before enqueue generation: %v", driveID, err)
-		return
-	}
-	a.scheduleFingerprintBackfill(ctx, driveID, fingerprintWorker)
-	a.enqueueDriveGeneration(ctx, driveID, worker, thumbWorker)
-}
-
-func (a *App) cleanupMissingDriveVideos(ctx context.Context, driveID string, liveFileIDs map[string]struct{}, visitedDirIDs map[string]struct{}, fullDriveScan bool) (int, error) {
-	const confirmationThreshold = 2
-	confirmedMissing, err := a.cat.ConfirmMissingDriveFiles(
-		ctx, driveID, liveFileIDs, visitedDirIDs, fullDriveScan, confirmationThreshold,
-	)
-	if err != nil {
-		return 0, fmt.Errorf("confirm missing drive files: %w", err)
-	}
-	if len(confirmedMissing) == 0 {
-		return 0, nil
-	}
-	items, err := a.cat.ListVideosByDrive(ctx, driveID)
-	if err != nil {
-		return 0, err
-	}
-
-	localDir := ""
-	if a.cfg != nil {
-		localDir = a.cfg.Storage.LocalPreviewDir
-	}
-	removed := 0
-	for _, v := range items {
-		if _, ok := confirmedMissing[v.FileID]; !ok {
-			continue
-		}
-		if err := removeLocalVideoAssets(localDir, v); err != nil {
-			return removed, fmt.Errorf("remove local assets for %s: %w", v.ID, err)
-		}
-		if err := a.cat.DeleteVideo(ctx, v.ID); err != nil {
-			return removed, fmt.Errorf("delete catalog video %s: %w", v.ID, err)
-		}
-		removed++
-	}
-	return removed, nil
 }

@@ -60,6 +60,30 @@ func (c *Catalog) UpdateTag(ctx context.Context, tagID int64, rule tagging.Rule)
 	return c.getTagByID(ctx, tagID)
 }
 
+// UpdateTagAndReconcile saves one rule and refreshes only assignments owned by
+// that rule. Ordinary tags use the single-tag keyword reconciler; AV uses its
+// scoped umbrella-and-series reconciler. Neither path runs unrelated tag rules
+// or startup cleanup.
+func (c *Catalog) UpdateTagAndReconcile(ctx context.Context, tagID int64, rule tagging.Rule) (Tag, int, error) {
+	c.tagMaintenanceMu.Lock()
+	defer c.tagMaintenanceMu.Unlock()
+
+	previousTag, err := c.getTagByID(ctx, tagID)
+	if err != nil {
+		return Tag{}, 0, err
+	}
+	tag, err := c.UpdateTag(ctx, tagID, rule)
+	if err != nil {
+		return Tag{}, 0, err
+	}
+	if strings.EqualFold(tag.Label, avTagLabel) {
+		changed, err := c.reconcileAVTagAssignments(ctx, previousTag, tag)
+		return tag, changed, err
+	}
+	changed, err := c.reconcileTagAssignments(ctx, tag)
+	return tag, changed, err
+}
+
 // ClassifyTagByID applies an existing tag's current rule to matching unlocked
 // videos. It never creates new tag definitions.
 func (c *Catalog) ClassifyTagByID(ctx context.Context, tagID int64) (int, error) {

@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Link, useLocation } from "react-router";
 import type { PreviewState, VideoItem } from "@/types";
+import { prefetchVideoDetail } from "@/data/videos";
 import { previewController } from "@/lib/previewController";
 import {
   shouldInterceptPreviewTap,
   shouldStartInstantPreview,
 } from "@/lib/previewIntent";
 import { useInViewport } from "@/lib/useInViewport";
+import { preloadVideoDetailPage } from "@/lib/videoDetailRoute";
 import { formatCount } from "@/lib/format";
 import { isVideoReturnPath, routeToPath } from "@/lib/videoReturnPath";
 import { PreviewVideo } from "./PreviewVideo";
@@ -140,6 +142,7 @@ export function VideoCard({
 
   function handlePointerEnter(event: React.PointerEvent<HTMLElement>) {
     lastPointerTypeRef.current = event.pointerType;
+    preloadVideoDetailPage();
     if (shouldStartInstantPreview({ pointerType: event.pointerType })) return;
     startPreviewIntent();
   }
@@ -151,6 +154,17 @@ export function VideoCard({
 
   function handlePointerDown(event: React.PointerEvent<HTMLElement>) {
     lastPointerTypeRef.current = event.pointerType;
+    prepareDetailNavigation();
+  }
+
+  function prepareDetailNavigation() {
+    preloadVideoDetailPage();
+    void prefetchVideoDetail(video.id);
+  }
+
+  function handleFocus() {
+    preloadVideoDetailPage();
+    startPreviewIntent();
   }
 
   function handleClickCapture(event: React.MouseEvent<HTMLAnchorElement>) {
@@ -162,6 +176,7 @@ export function VideoCard({
         previewActive,
       })
     ) {
+      prepareDetailNavigation();
       return;
     }
     event.preventDefault();
@@ -176,7 +191,7 @@ export function VideoCard({
       onPointerEnter={handlePointerEnter}
       onPointerLeave={handlePointerLeave}
       onPointerDown={handlePointerDown}
-      onFocus={startPreviewIntent}
+      onFocus={handleFocus}
       onBlur={stopPreview}
     >
       <Link
@@ -226,16 +241,15 @@ export function VideoCard({
             </span>
           )}
 
-          <div className="badge-row">
-            {video.quality === "HD" && (
-              <span className="video-badge is-hd">HD</span>
-            )}
-            {(video.badges ?? []).map((badge) => (
-              <span className="video-badge" key={badge}>
-                {badge}
-              </span>
-            ))}
-          </div>
+          {(video.badges ?? []).length > 0 && (
+            <div className="badge-row">
+              {video.badges.map((badge) => (
+                <span className="video-badge" key={badge}>
+                  {badge}
+                </span>
+              ))}
+            </div>
+          )}
 
           {video.sourceLabel && previewState !== "playing" && (
             <span

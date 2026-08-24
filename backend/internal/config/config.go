@@ -256,7 +256,8 @@ func ResolveLoggingPaths(logging Logging, baseDir string) (Logging, error) {
 type Scanner struct {
 	// IntervalSeconds 已废弃。旧版每天 02:00–07:00 窗口内按这个间隔重复扫盘；
 	// 新版统一由 nightly 调度器调度，此字段被忽略，保留仅为兼容旧 yaml。
-	IntervalSeconds int      `yaml:"interval_seconds"`
+	IntervalSeconds int `yaml:"interval_seconds"`
+	// MaxDepth 已废弃。扫描会递归到叶子目录；字段仅用于兼容旧 yaml。
 	MaxDepth        int      `yaml:"max_depth"`
 	VideoExtensions []string `yaml:"video_extensions"`
 }

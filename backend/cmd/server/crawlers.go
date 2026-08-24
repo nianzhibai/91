@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -16,11 +18,16 @@ func (a *App) scheduleScriptCrawlerCrawl(ctx context.Context, driveID string) bo
 		log.Printf("[scriptcrawler] drive=%s has active work, skip duplicate crawl request", driveID)
 		return false
 	}
+	taskCtx, done, admitted := a.registerDriveTaskContext(ctx, driveID, driveTaskScopeScan)
+	if !admitted {
+		log.Printf("[scriptcrawler] drive=%s configuration update in progress, reject crawl", driveID)
+		return false
+	}
 	if !a.beginDriveScanOrCrawl(driveID) {
+		done()
 		log.Printf("[scriptcrawler] drive=%s already queued or running, skip duplicate crawl request", driveID)
 		return false
 	}
-	taskCtx, done := a.registerDriveTaskContext(ctx, driveID)
 
 	go func() {
 		defer func() {
@@ -35,13 +42,17 @@ func (a *App) scheduleScriptCrawlerCrawl(ctx context.Context, driveID string) bo
 }
 
 func (a *App) runScriptCrawlerCrawl(ctx context.Context, driveID string) {
+	taskCtx, done, admitted := a.registerDriveTaskContext(ctx, driveID, driveTaskScopeScan)
+	if !admitted {
+		log.Printf("[scriptcrawler] drive=%s configuration update in progress, reject direct crawl", driveID)
+		return
+	}
+	defer done()
 	if !a.beginDriveScanOrCrawl(driveID) {
 		log.Printf("[scriptcrawler] drive=%s already queued or running, skip direct crawl", driveID)
 		return
 	}
 	defer a.endDriveScanOrCrawl(driveID)
-	taskCtx, done := a.registerDriveTaskContext(ctx, driveID)
-	defer done()
 	a.runScriptCrawlerCrawlWithTaskContext(taskCtx, driveID)
 }
 
@@ -67,9 +78,9 @@ func (a *App) runScriptCrawlerCrawlWithTaskContext(ctx context.Context, driveID 
 		}
 	}
 
-	d, err := a.cat.GetDrive(ctx, driveID)
+	d, err := a.activeDriveConfig(ctx, driveID)
 	if err != nil || d == nil {
-		log.Printf("[scriptcrawler] drive=%s lookup failed: %v", driveID, err)
+		log.Printf("[scriptcrawler] drive=%s active configuration lookup failed: %v", driveID, err)
 		return false
 	}
 	targetNew := crawlerIntCred(d, "target_new", scriptcrawler.DefaultTargetNew)
@@ -105,22 +116,98 @@ func (a *App) runScriptCrawlerCrawlWithTaskContext(ctx context.Context, driveID 
 }
 
 func (a *App) updateScriptCrawlerRunState(ctx context.Context, driveID string, runErr error) error {
-	d, err := a.cat.GetDrive(ctx, driveID)
+	status, lastError := "ok", ""
+	if runErr != nil {
+		status, lastError = "error", runErr.Error()
+	}
+	return a.cat.UpdateDriveRuntimeState(ctx, driveID, scriptcrawler.Kind, status, lastError, map[string]string{
+		"last_crawl_at": strconv.FormatInt(time.Now().Unix(), 10),
+	})
+}
+
+func (a *App) runCrawlerUploadMigration(ctx context.Context) error {
+	if a == nil || a.cat == nil || a.crawlerUploader == nil {
+		return nil
+	}
+	drives, err := a.cat.ListDrives(ctx)
 	if err != nil {
 		return err
 	}
-	if d.Credentials == nil {
-		d.Credentials = make(map[string]string)
+	sourceIDs := make([]string, 0)
+	for _, drive := range drives {
+		if drive != nil && drive.Kind == scriptcrawler.Kind {
+			sourceIDs = append(sourceIDs, drive.ID)
+		}
 	}
-	d.Credentials["last_crawl_at"] = strconv.FormatInt(time.Now().Unix(), 10)
-	if runErr != nil {
-		d.Status = "error"
-		d.LastError = runErr.Error()
-	} else {
-		d.Status = "ok"
-		d.LastError = ""
+	sort.Strings(sourceIDs)
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type registeredTask struct {
+		ctx  context.Context
+		done func()
 	}
-	return a.cat.UpsertDrive(ctx, d)
+	registered := make([]registeredTask, 0, len(sourceIDs))
+	registeredIDs := make(map[string]struct{}, len(sourceIDs))
+	register := func(id string) bool {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return true
+		}
+		if _, exists := registeredIDs[id]; exists {
+			return true
+		}
+		taskCtx, done := a.registerDriveTaskContextWaiting(runCtx, id, 0)
+		if err := taskCtx.Err(); err != nil {
+			done()
+			return false
+		}
+		registeredIDs[id] = struct{}{}
+		registered = append(registered, registeredTask{ctx: taskCtx, done: done})
+		return true
+	}
+	defer func() {
+		for i := len(registered) - 1; i >= 0; i-- {
+			registered[i].done()
+		}
+	}()
+
+	// Lock sources first. Once admitted, their active configuration snapshots
+	// cannot change, so the target set derived below is exactly the set used by
+	// the migrator rather than a stale pre-admission catalog snapshot.
+	for _, sourceID := range sourceIDs {
+		if !register(sourceID) {
+			return runCtx.Err()
+		}
+	}
+	effectiveSources := make([]string, 0, len(sourceIDs))
+	targetIDs := make([]string, 0, len(sourceIDs))
+	for _, sourceID := range sourceIDs {
+		drive, getErr := a.activeDriveConfig(runCtx, sourceID)
+		if getErr != nil || drive == nil || drive.Kind != scriptcrawler.Kind {
+			continue
+		}
+		effectiveSources = append(effectiveSources, sourceID)
+		if targetID := strings.TrimSpace(drive.Credentials["upload_drive_id"]); targetID != "" {
+			targetIDs = append(targetIDs, targetID)
+		}
+	}
+	sort.Strings(targetIDs)
+	for _, targetID := range targetIDs {
+		if !register(targetID) {
+			return runCtx.Err()
+		}
+	}
+	for _, task := range registered {
+		go func(taskCtx context.Context) {
+			select {
+			case <-taskCtx.Done():
+				cancel()
+			case <-runCtx.Done():
+			}
+		}(task.ctx)
+	}
+	return a.crawlerUploader.RunDrives(runCtx, effectiveSources)
 }
 
 func (a *App) scheduleManualCrawlerUploadMigration(ctx context.Context, driveID string) (bool, string) {
@@ -134,7 +221,20 @@ func (a *App) scheduleManualCrawlerUploadMigration(ctx context.Context, driveID 
 	if a.driveHasActiveWork(driveID) {
 		return false, "当前爬虫有正在进行的任务，请稍后重试"
 	}
-	d, err := a.cat.GetDrive(ctx, driveID)
+
+	// Admit the source before reading upload_drive_id or capturing a Driver.
+	// This makes the source snapshot and the target lock describe one generation.
+	taskCtx, done, admitted := a.registerDriveTaskContext(ctx, driveID, 0)
+	if !admitted {
+		return false, "当前爬虫有配置等待生效，请稍后重试"
+	}
+	sourceOwned := true
+	defer func() {
+		if sourceOwned {
+			done()
+		}
+	}()
+	d, err := a.activeDriveConfig(taskCtx, driveID)
 	if err != nil || d == nil || d.Kind != scriptcrawler.Kind {
 		return false, "爬虫不存在"
 	}
@@ -142,7 +242,18 @@ func (a *App) scheduleManualCrawlerUploadMigration(ctx context.Context, driveID 
 	if targetDriveID == "" {
 		return false, "请先配置上传网盘"
 	}
-	assets, err := a.cat.CountCrawlerAssets(ctx, driveID, crawlerCatalogVideoIDPrefixes(d))
+	targetCtx, targetDone, targetAdmitted := a.registerDriveTaskContext(taskCtx, targetDriveID, 0)
+	if !targetAdmitted {
+		return false, "上传目标网盘有配置等待生效，请稍后重试"
+	}
+	targetOwned := true
+	defer func() {
+		if targetOwned {
+			targetDone()
+		}
+	}()
+
+	assets, err := a.cat.CountCrawlerAssets(taskCtx, driveID, crawlerCatalogVideoIDPrefixes(d))
 	if err != nil {
 		log.Printf("[scriptcrawler] drive=%s manual upload count assets: %v", driveID, err)
 		return false, "读取待上传视频失败"
@@ -150,11 +261,11 @@ func (a *App) scheduleManualCrawlerUploadMigration(ctx context.Context, driveID 
 	if reason := crawlerUploadAssetBlockReason(d, assets); reason != "" {
 		return false, reason
 	}
-	if err := a.ensureDriveAttached(ctx, driveID); err != nil {
+	if err := a.ensureDriveAttached(taskCtx, driveID); err != nil {
 		log.Printf("[scriptcrawler] drive=%s manual upload source attach: %v", driveID, err)
 		return false, "爬虫本地存储不可用"
 	}
-	if err := a.ensureDriveAttached(ctx, targetDriveID); err != nil {
+	if err := a.ensureDriveAttached(targetCtx, targetDriveID); err != nil {
 		log.Printf("[scriptcrawler] drive=%s manual upload target=%s attach: %v", driveID, targetDriveID, err)
 		return false, "上传网盘不可用：" + err.Error()
 	}
@@ -170,18 +281,29 @@ func (a *App) scheduleManualCrawlerUploadMigration(ctx context.Context, driveID 
 	a.crawlerUploadRunning[driveID] = true
 	a.crawlerUploadMu.Unlock()
 
-	taskCtx, done := a.registerDriveTaskContext(ctx, driveID)
-	runDone, accepted := a.crawlerUploader.StartDrive(taskCtx, driveID)
+	runCtx, runCancel := context.WithCancel(taskCtx)
+	go func() {
+		select {
+		case <-targetCtx.Done():
+			runCancel()
+		case <-runCtx.Done():
+		}
+	}()
+	runDone, accepted := a.crawlerUploader.StartDrive(runCtx, driveID)
 	if !accepted {
-		done()
+		runCancel()
 		a.crawlerUploadMu.Lock()
 		delete(a.crawlerUploadRunning, driveID)
 		a.crawlerUploadMu.Unlock()
 		return false, "已有其他爬虫上传任务正在运行，请稍后重试"
 	}
+	sourceOwned = false
+	targetOwned = false
 	log.Printf("[scriptcrawler] drive=%s running manual upload migration target=%s", driveID, targetDriveID)
 	go func() {
 		defer func() {
+			runCancel()
+			targetDone()
 			done()
 			a.crawlerUploadMu.Lock()
 			delete(a.crawlerUploadRunning, driveID)
@@ -229,9 +351,9 @@ func (a *App) runCrawlerMigrationAfterManualCrawl(ctx context.Context, driveID s
 		log.Printf("[scriptcrawler] drive=%s skip post-crawl migration: %v", driveID, err)
 		return
 	}
-	d, err := a.cat.GetDrive(ctx, driveID)
+	d, err := a.activeDriveConfig(ctx, driveID)
 	if err != nil || d == nil {
-		log.Printf("[scriptcrawler] drive=%s skip post-crawl migration lookup: %v", driveID, err)
+		log.Printf("[scriptcrawler] drive=%s skip post-crawl migration active configuration lookup: %v", driveID, err)
 		return
 	}
 	targetDriveID := strings.TrimSpace(d.Credentials["upload_drive_id"])
@@ -248,12 +370,29 @@ func (a *App) runCrawlerMigrationAfterManualCrawl(ctx context.Context, driveID s
 		if a.crawlerUploader == nil {
 			log.Printf("[scriptcrawler] drive=%s skip post-crawl migration: migrator not configured", driveID)
 		} else {
-			log.Printf("[scriptcrawler] drive=%s running post-crawl migration target=%s", driveID, targetDriveID)
-			runDone, accepted := a.crawlerUploader.StartDrive(ctx, driveID)
-			if !accepted {
-				log.Printf("[scriptcrawler] drive=%s skip post-crawl migration: another crawler upload is running", driveID)
-			} else if err := <-runDone; err != nil {
-				log.Printf("[scriptcrawler] drive=%s post-crawl migration: %v", driveID, err)
+			targetCtx, targetDone, admitted := a.registerDriveTaskContext(ctx, targetDriveID, 0)
+			if !admitted {
+				log.Printf("[scriptcrawler] drive=%s skip post-crawl migration: target=%s configuration update in progress", driveID, targetDriveID)
+			} else {
+				func() {
+					defer targetDone()
+					runCtx, cancel := context.WithCancel(ctx)
+					defer cancel()
+					go func() {
+						select {
+						case <-targetCtx.Done():
+							cancel()
+						case <-runCtx.Done():
+						}
+					}()
+					log.Printf("[scriptcrawler] drive=%s running post-crawl migration target=%s", driveID, targetDriveID)
+					runDone, accepted := a.crawlerUploader.StartDrive(runCtx, driveID)
+					if !accepted {
+						log.Printf("[scriptcrawler] drive=%s skip post-crawl migration: another crawler upload is running", driveID)
+					} else if err := <-runDone; err != nil {
+						log.Printf("[scriptcrawler] drive=%s post-crawl migration: %v", driveID, err)
+					}
+				}()
 			}
 		}
 	}
@@ -266,6 +405,12 @@ func (a *App) restoreScriptCrawlerVideos(ctx context.Context, driveID string) er
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	taskCtx, done, admitted := a.registerDriveTaskContext(ctx, driveID, 0)
+	if !admitted {
+		return fmt.Errorf("restore crawler drive %s: configuration update in progress", driveID)
+	}
+	defer done()
+	ctx = taskCtx
 	requests, err := a.cat.ListCrawlerRestoreRequests(ctx, driveID)
 	if err != nil || len(requests) == 0 {
 		return err
