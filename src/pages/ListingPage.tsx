@@ -1,17 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useLocation, useSearchParams } from "react-router";
 import { AdminEmptyVisual } from "@/admin/AdminEmptyVisual";
 import { AppShell } from "@/components/AppShell";
+import { InfiniteFeedStatus } from "@/components/InfiniteFeedStatus";
 import { ListingLoadError } from "@/components/ListingLoadError";
 import { PromoStrip } from "@/components/PromoStrip";
 import { SearchPanel } from "@/components/SearchPanel";
-import { SortToolbar } from "@/components/SortToolbar";
+import { SortToolbar, type ViewMode } from "@/components/SortToolbar";
 import { TagCloud } from "@/components/TagCloud";
 import { VideoGrid } from "@/components/VideoGrid";
-import {
-  VirtualVideoGrid,
-  type VirtualGridRange,
-} from "@/components/VirtualVideoGrid";
+import { VirtualVideoGrid } from "@/components/VirtualVideoGrid";
 import { listingFeedSource } from "@/lib/infiniteFeedSource";
 import {
   readListingSort,
@@ -26,18 +24,12 @@ import {
   useListingRestoreTarget,
   useListingScrollRestore,
 } from "@/lib/useListingScrollRestore";
-import { shouldLoadMore } from "@/lib/virtualGrid";
+import type { SortKey } from "@/types";
 
 const DESKTOP_PAGE_SIZE = 20;
 
 // 距列表尾部还有两行时就续下一批，滚动到底之前数据已经在路上。
 const PREFETCH_ROWS = 2;
-
-const EMPTY_RANGE: VirtualGridRange = {
-  startIndex: 0,
-  endIndex: 0,
-  columns: 1,
-};
 
 export default function ListingPage() {
   const [params, setParams] = useSearchParams();
@@ -61,11 +53,13 @@ export default function ListingPage() {
   });
   const listing = useInfiniteListing(source, {
     restoreCount: restoreTarget.count,
+    restoreFeedToken: restoreTarget.feedToken,
   });
   useListingScrollRestore({
     target: restoreTarget,
     queryKey,
     requestedCount: listing.requestedCount,
+    feedToken: listing.feedToken,
     itemCount: listing.items.length,
   });
 
@@ -76,7 +70,6 @@ export default function ListingPage() {
   const showTailError = listing.failed && hasContent;
   const hasActiveFilter = keyword.trim().length > 0 || tag.trim().length > 0;
   const eagerCount = isMobile ? 2 : 4;
-  const [range, setRange] = useState<VirtualGridRange>(EMPTY_RANGE);
   const previousQueryKeyRef = useRef(queryKey);
 
   useEffect(() => {
@@ -101,31 +94,27 @@ export default function ListingPage() {
     window.scrollTo({ top: 0, behavior: "auto" });
   }, [queryKey]);
 
-  const handleRangeChange = useCallback((next: VirtualGridRange) => {
-    setRange((current) =>
-      current.startIndex === next.startIndex &&
-      current.endIndex === next.endIndex &&
-      current.columns === next.columns
-        ? current
-        : next
-    );
-  }, []);
+  const handleSortChange = useCallback(
+    (nextSort: SortKey) => {
+      setParams(
+        (current) =>
+          withListingNavigation(current, { sort: nextSort, page: 1 }),
+        { replace: true }
+      );
+    },
+    [setParams]
+  );
 
-  const { loadMore, loadingMore, hasMore } = listing;
-  useEffect(() => {
-    if (
-      shouldLoadMore({
-        endIndex: range.endIndex,
-        itemCount: items.length,
-        columns: range.columns,
-        hasMore,
-        loading: loadingMore,
-        prefetchRows: PREFETCH_ROWS,
-      })
-    ) {
-      loadMore();
-    }
-  }, [hasMore, items.length, loadMore, loadingMore, range]);
+  const handleViewChange = useCallback(
+    (nextView: ViewMode) => {
+      setParams((current) => withListingView(current, nextView), {
+        replace: true,
+      });
+    },
+    [setParams]
+  );
+
+  const { loadingMore } = listing;
 
   return (
     <AppShell>
@@ -144,15 +133,8 @@ export default function ListingPage() {
           sort={sort}
           view={view}
           sortDisabled={listing.initialLoading}
-          onSortChange={(nextSort) => {
-            setParams(
-              withListingNavigation(params, { sort: nextSort, page: 1 }),
-              { replace: true }
-            );
-          }}
-          onViewChange={(nextView) => {
-            setParams(withListingView(params, nextView), { replace: true });
-          }}
+          onSortChange={handleSortChange}
+          onViewChange={handleViewChange}
         />
 
         {showSkeleton ? (
@@ -178,30 +160,23 @@ export default function ListingPage() {
           <>
             <VirtualVideoGrid
               videos={items}
+              key={`${queryKey}:${listing.feedToken}`}
               compact={view === "compact"}
               eagerCount={eagerCount}
               highPriorityCount={1}
-              onRangeChange={handleRangeChange}
+              hasMore={listing.hasMore}
+              loadingMore={loadingMore}
+              prefetchRows={PREFETCH_ROWS}
+              tailContent={
+                loadingMore ? <InfiniteFeedStatus state="loading" /> : undefined
+              }
+              onLoadMore={listing.loadMore}
             />
 
             {showTailError ? (
               <ListingLoadError hasContent onRetry={listing.retry} />
-            ) : loadingMore ? (
-              <div
-                className="listing-infinite-status"
-                role="status"
-                aria-live="polite"
-              >
-                <span
-                  className="video-grid-refresh-overlay__spinner"
-                  aria-hidden="true"
-                />
-                <span>正在加载更多</span>
-              </div>
             ) : listing.exhausted ? (
-              <div className="listing-infinite-status listing-infinite-status--end">
-                没有更多了
-              </div>
+              <InfiniteFeedStatus state="end" />
             ) : null}
           </>
         )}

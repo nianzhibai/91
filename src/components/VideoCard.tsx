@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { memo, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Link, useLocation } from "react-router";
 import type { PreviewState, VideoItem } from "@/types";
 import { prefetchVideoDetail } from "@/data/videos";
@@ -30,7 +30,7 @@ function useIsActivePreview(videoID: string): boolean {
   );
 }
 
-export function VideoCard({
+export const VideoCard = memo(function VideoCard({
   video,
   eager = false,
   highPriority = false,
@@ -280,7 +280,7 @@ export function VideoCard({
       </Link>
     </article>
   );
-}
+});
 
 // 从后端返回的 sourceLabel 推断网盘类型（用于颜色标识）。
 // 后端目前会下发中文名（"夸克网盘" / "115 网盘" / "PikPak" / "联通网盘" / "OneDrive"）

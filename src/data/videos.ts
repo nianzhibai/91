@@ -69,6 +69,86 @@ export async function fetchListing(
   return result;
 }
 
+export type VideoFeedKind = "listing" | "recommend" | "latest";
+
+export type VideoFeedCursor = {
+  feedToken: string;
+  position: number;
+};
+
+export type VideoFeedResponse = {
+  items: VideoItem[];
+  total: number;
+  feedToken: string;
+  nextCursor: number;
+  exhausted: boolean;
+};
+
+export class VideoFeedExpiredError extends Error {
+  constructor() {
+    super("Video feed expired");
+    this.name = "VideoFeedExpiredError";
+  }
+}
+
+/**
+ * Idempotent snapshot feed. A first response with more data creates an ordered
+ * server-side snapshot; later requests address it with a token and cursor.
+ * A result completed by the first response intentionally has no token.
+ */
+export async function fetchVideoFeed(
+  input: {
+    kind: VideoFeedKind;
+    cursor: VideoFeedCursor;
+    count: number;
+    q?: string;
+    tag?: string;
+    sort?: string;
+  },
+  options: { signal?: AbortSignal } = {}
+): Promise<VideoFeedResponse> {
+  const params = new URLSearchParams({
+    kind: input.kind,
+    cursor: String(input.cursor.position),
+    count: String(input.count),
+  });
+  if (input.cursor.feedToken) params.set("feedToken", input.cursor.feedToken);
+  if (input.q?.trim()) params.set("q", input.q.trim());
+  if (input.tag?.trim()) params.set("tag", input.tag.trim());
+  if (input.sort) params.set("sort", input.sort);
+
+  let result: VideoFeedResponse;
+  try {
+    result = await apiGet<VideoFeedResponse>(`/api/feed?${params.toString()}`, options);
+  } catch (error) {
+    if (error instanceof HTTPStatusError && error.status === 410) {
+      throw new VideoFeedExpiredError();
+    }
+    throw error;
+  }
+
+  if (
+    !result ||
+    !Array.isArray(result.items) ||
+    !Number.isInteger(result.total) ||
+    result.total < 0 ||
+    typeof result.feedToken !== "string" ||
+    result.feedToken.length > 128 ||
+    (input.cursor.feedToken.length > 0 &&
+      result.feedToken !== input.cursor.feedToken) ||
+    !Number.isInteger(result.nextCursor) ||
+    result.nextCursor < input.cursor.position ||
+    result.nextCursor > result.total ||
+    typeof result.exhausted !== "boolean" ||
+    (!result.exhausted && result.feedToken.length === 0) ||
+    (!result.exhausted && result.nextCursor <= input.cursor.position) ||
+    result.exhausted !== (result.nextCursor >= result.total)
+  ) {
+    throw new Error("Invalid /api/feed response");
+  }
+  return result;
+}
+
 export function fetchVideoDetail(id: string): Promise<VideoDetail | null> {
   return apiGet<VideoDetail>(`/api/video/${encodeURIComponent(id)}`).catch(
     () => null

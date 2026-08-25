@@ -9,20 +9,16 @@ function toCount(value: number): number {
   return Math.floor(value);
 }
 
-/**
- * 从计算样式里读出列数。只有 grid 容器才会把 grid-template-columns 解析成
- * 逐条轨道宽度；compact 视图是 flex 列表，此时 grid-template-columns 仍是
- * 未解析的 "repeat(4, minmax(0, 1fr))"，按空格数它会被误读成 3 列，所以
- * 必须先看 display。
- */
-export function virtualGridColumns(style: {
-  display: string;
-  gridTemplateColumns: string;
+/** 与视频网格 CSS 断点一致；首帧即可按正确列数折行。 */
+export function virtualGridColumns(input: {
+  compact: boolean;
+  mobile: boolean;
+  tablet: boolean;
 }): number {
-  if (!style.display?.includes("grid")) return 1;
-  const trimmed = style.gridTemplateColumns?.trim() ?? "";
-  if (!trimmed || trimmed === "none" || trimmed.includes("(")) return 1;
-  return Math.max(1, trimmed.split(/\s+/).filter(Boolean).length);
+  if (input.compact) return 1;
+  if (input.mobile) return 2;
+  if (input.tablet) return 3;
+  return 4;
 }
 
 /** 虚拟单元是"整行"，行数决定 virtualizer 的 count。 */

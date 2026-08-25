@@ -76,7 +76,7 @@ test("only likely first-viewport thumbnails receive eager and high priority hint
   assert.match(homeSource, /const eagerCount = isMobile \? 2 : 4;/);
   assert.match(
     homeSource,
-    /<VideoGrid videos=\{\[\]\} loading skeletonCount=\{feedBatchSize\} \/>/
+    /<VideoGrid videos=\{\[\]\} loading skeletonCount=\{feedSource\.batchSize\} \/>/
   );
 });
 

@@ -33,32 +33,22 @@ test("each row maps to its own slice of the list", () => {
   assert.deepEqual(virtualRowRange(0, 4, 0), { start: 0, end: 0 });
 });
 
-test("grid columns are read from the computed template and fall back to one", () => {
-  const grid = (gridTemplateColumns: string) => ({
-    display: "grid",
-    gridTemplateColumns,
-  });
-
-  assert.equal(virtualGridColumns(grid("240px 240px 240px 240px")), 4);
-  assert.equal(virtualGridColumns(grid("  180px   180px  ")), 2);
-  assert.equal(virtualGridColumns(grid("none")), 1);
-  assert.equal(virtualGridColumns(grid("")), 1);
-  // compact 视图是 flex 列表：此时 grid-template-columns 仍是未解析的写法，
-  // 按空格切会被误读成 3 列，进而把三张卡塞进同一个虚拟行。
+test("grid columns are known before the first browser paint", () => {
   assert.equal(
-    virtualGridColumns({
-      display: "flex",
-      gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
-    }),
-    1
+    virtualGridColumns({ compact: false, mobile: false, tablet: false }),
+    4
   );
   assert.equal(
-    virtualGridColumns({
-      display: "grid",
-      gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
-    }),
-    1,
-    "轨道没被解析成具体宽度时不能猜列数"
+    virtualGridColumns({ compact: false, mobile: false, tablet: true }),
+    3
+  );
+  assert.equal(
+    virtualGridColumns({ compact: false, mobile: true, tablet: true }),
+    2
+  );
+  assert.equal(
+    virtualGridColumns({ compact: true, mobile: false, tablet: false }),
+    1
   );
 });
 

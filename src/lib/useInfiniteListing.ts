@@ -1,27 +1,30 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import type { VideoFeedCursor } from "@/data/videos";
 import {
   emptyInfiniteListingState,
+  infiniteListingCacheMatchesRestore,
   infiniteListingHasMore,
   infiniteListingReducer,
   nextListingRequest,
   type InfiniteListingState,
 } from "@/lib/infiniteListing";
-import type { InfiniteFeedSource } from "@/lib/infiniteFeedSource";
+import type {
+  InfiniteFeedRequest,
+  InfiniteFeedSource,
+} from "@/lib/infiniteFeedSource";
 import type { VideoItem } from "@/types";
-
-/**
- * 无限滚动的数据层：按 feed source 描述的方式一批批往后取，负责累积、去重、
- * 中断过期请求和会话内缓存。渲染窗口交给 VirtualVideoGrid，滚动现场交给
- * useListingScrollRestore。
- */
 
 const INFINITE_LISTING_CACHE_TTL_MS = 60_000;
 const INFINITE_LISTING_CACHE_MAX_ENTRIES = 8;
+const MAX_INITIAL_BATCH_SIZE = 240;
+
+const EMPTY_CURSOR: VideoFeedCursor = { feedToken: "", position: 0 };
 
 type CachedInfiniteListing = {
   key: string;
   items: VideoItem[];
   total: number;
+  feedToken: string;
   requestedCount: number;
   exhausted: boolean;
   receivedAt: number;
@@ -29,9 +32,26 @@ type CachedInfiniteListing = {
 
 const infiniteListingCache = new Map<string, CachedInfiniteListing>();
 
-function readInfiniteListingCache(key: string): CachedInfiniteListing | null {
+function readInfiniteListingCache(
+  key: string,
+  restore: { feedToken: string; count: number }
+): CachedInfiniteListing | null {
   const cached = infiniteListingCache.get(key) ?? null;
   if (!cached) return null;
+  if (!cacheIsFresh(cached, Date.now())) {
+    infiniteListingCache.delete(key);
+    return null;
+  }
+  if (
+    !infiniteListingCacheMatchesRestore({
+      cachedFeedToken: cached.feedToken,
+      cachedRequestedCount: cached.requestedCount,
+      restoreFeedToken: restore.feedToken,
+      restoreCount: restore.count,
+    })
+  ) {
+    return null;
+  }
   infiniteListingCache.delete(key);
   infiniteListingCache.set(key, cached);
   return cached;
@@ -61,15 +81,12 @@ function cacheIsFresh(entry: CachedInfiniteListing, now: number): boolean {
   return now - entry.receivedAt < INFINITE_LISTING_CACHE_TTL_MS;
 }
 
-/**
- * 恢复现场的首个请求要对齐批边界，否则后续游标接不上（page/size 接口尤其
- * 如此）。不支持恢复的 feed 一律按普通首屏来。
- */
 function initialBatchSize(restoreCount: number, batchSize: number): number {
-  if (!Number.isInteger(restoreCount) || restoreCount <= batchSize) {
-    return batchSize;
+  const normalizedBatch = Math.max(1, Math.floor(batchSize));
+  if (!Number.isInteger(restoreCount) || restoreCount <= normalizedBatch) {
+    return normalizedBatch;
   }
-  return Math.ceil(restoreCount / batchSize) * batchSize;
+  return Math.min(MAX_INITIAL_BATCH_SIZE, restoreCount);
 }
 
 function errorValue(error: unknown): Error {
@@ -78,16 +95,18 @@ function errorValue(error: unknown): Error {
 
 function initialState(
   source: InfiniteFeedSource,
-  enabled: boolean
+  enabled: boolean,
+  restore: { feedToken: string; count: number }
 ): InfiniteListingState {
   const base = emptyInfiniteListingState(source.key, source.batchSize);
   if (!enabled) return base;
-  const cached = infiniteListingCache.get(source.key) ?? null;
-  if (cached && cacheIsFresh(cached, Date.now())) {
+  const cached = readInfiniteListingCache(source.key, restore);
+  if (cached) {
     return {
       ...base,
       items: cached.items,
       total: cached.total,
+      feedToken: cached.feedToken,
       requestedCount: cached.requestedCount,
       exhausted: cached.exhausted,
       status: "ready",
@@ -99,8 +118,8 @@ function initialState(
 
 export type UseInfiniteListingOptions = {
   enabled?: boolean;
-  /** 后退回列表时要一次补回的条目数，0 表示普通首屏。 */
   restoreCount?: number;
+  restoreFeedToken?: string;
 };
 
 export function useInfiniteListing(
@@ -111,7 +130,10 @@ export function useInfiniteListing(
   const key = source.key;
   const batchSize = source.batchSize;
   const [state, dispatch] = useReducer(infiniteListingReducer, undefined, () =>
-    initialState(source, enabled)
+    initialState(source, enabled, {
+      feedToken: options.restoreFeedToken ?? "",
+      count: options.restoreCount ?? 0,
+    })
   );
   const [reloadVersion, setReloadVersion] = useState(0);
 
@@ -121,20 +143,24 @@ export function useInfiniteListing(
   const sourceRef = useRef(source);
   const enabledRef = useRef(enabled);
   const restoreCountRef = useRef(options.restoreCount ?? 0);
+  const restoreFeedTokenRef = useRef(options.restoreFeedToken ?? "");
+  const forceFreshRef = useRef(false);
   stateRef.current = state;
   sourceRef.current = source;
   enabledRef.current = enabled;
   restoreCountRef.current = options.restoreCount ?? 0;
+  restoreFeedTokenRef.current = options.restoreFeedToken ?? "";
 
   const sendRequest = useCallback(
-    (
+    function executeRequest(
       requestID: number,
       feed: InfiniteFeedSource,
-      request: { offset: number; size: number }
-    ) => {
+      request: InfiniteFeedRequest
+    ) {
       const controller = new AbortController();
       controllerRef.current = controller;
       dispatch({ type: "load-start", requestID });
+
       feed
         .fetchBatch(request, { signal: controller.signal })
         .then((result) => {
@@ -142,17 +168,44 @@ export function useInfiniteListing(
           dispatch({
             type: "load-success",
             requestID,
-            offset: request.offset,
-            batchSize: request.size,
+            requestCursor: request.cursor,
+            cursor: result.cursor,
             items: result.items ?? [],
             total: result.total ?? 0,
+            exhausted: result.exhausted,
             receivedAt: Date.now(),
-            stopOnDuplicateBatch: feed.stopOnDuplicateBatch,
           });
         })
         .catch((error) => {
           if (controller.signal.aborted) return;
+          if (request.cursor.feedToken && feed.isExpiredError(error)) {
+            clearInfiniteListingCache(feed.key);
+            if (controllerRef.current === controller) {
+              controllerRef.current = null;
+            }
+            const restartID = ++nextRequestIDRef.current;
+            const restoreCount = Math.max(
+              request.cursor.position + request.size,
+              stateRef.current.requestedCount
+            );
+            dispatch({
+              type: "reset",
+              requestID: restartID,
+              key: feed.key,
+              pageSize: feed.batchSize,
+            });
+            executeRequest(restartID, feed, {
+              cursor: EMPTY_CURSOR,
+              size: initialBatchSize(restoreCount, feed.batchSize),
+            });
+            return;
+          }
           dispatch({ type: "load-failure", requestID, error: errorValue(error) });
+        })
+        .finally(() => {
+          if (controllerRef.current === controller) {
+            controllerRef.current = null;
+          }
         });
     },
     []
@@ -164,12 +217,21 @@ export function useInfiniteListing(
     controllerRef.current = null;
 
     if (!enabled) {
-      dispatch({ type: "disable", requestID });
+      dispatch({ type: "disable", requestID, key, pageSize: batchSize });
       return;
     }
 
-    const cached = readInfiniteListingCache(key);
-    if (cached && cacheIsFresh(cached, Date.now())) {
+    const forceFresh = forceFreshRef.current;
+    forceFreshRef.current = false;
+    const restoreCount = restoreCountRef.current;
+    const restoreFeedToken = restoreFeedTokenRef.current;
+    const cached = forceFresh
+      ? null
+      : readInfiniteListingCache(key, {
+          feedToken: restoreFeedToken,
+          count: restoreCount,
+        });
+    if (cached) {
       dispatch({
         type: "hydrate",
         requestID,
@@ -177,6 +239,7 @@ export function useInfiniteListing(
         pageSize: batchSize,
         items: cached.items,
         total: cached.total,
+        feedToken: cached.feedToken,
         requestedCount: cached.requestedCount,
         exhausted: cached.exhausted,
         receivedAt: cached.receivedAt,
@@ -184,12 +247,18 @@ export function useInfiniteListing(
       return;
     }
 
-    dispatch({ type: "reset", requestID, key, pageSize: batchSize });
-    const restoreCount = sourceRef.current.supportsRestore
-      ? restoreCountRef.current
-      : 0;
+    const restoreCursor: VideoFeedCursor = forceFresh
+      ? EMPTY_CURSOR
+      : { feedToken: restoreFeedToken, position: 0 };
+    dispatch({
+      type: "reset",
+      requestID,
+      key,
+      pageSize: batchSize,
+      cursor: restoreCursor,
+    });
     sendRequest(requestID, sourceRef.current, {
-      offset: 0,
+      cursor: restoreCursor,
       size: initialBatchSize(restoreCount, batchSize),
     });
 
@@ -199,7 +268,6 @@ export function useInfiniteListing(
     };
   }, [batchSize, enabled, key, reloadVersion, sendRequest]);
 
-  // 会话内缓存以真实响应时间为准：hydrate 回来的状态不会自我续命。
   useEffect(() => {
     if (!enabled || state.key !== key) return;
     if (state.status !== "ready" || state.items.length === 0) return;
@@ -207,6 +275,7 @@ export function useInfiniteListing(
       key,
       items: state.items,
       total: state.total,
+      feedToken: state.feedToken,
       requestedCount: state.requestedCount,
       exhausted: state.exhausted,
       receivedAt: state.receivedAt,
@@ -216,6 +285,7 @@ export function useInfiniteListing(
   const requestBatch = useCallback(
     (batchOptions: { force?: boolean } = {}) => {
       if (!enabledRef.current) return;
+      if (controllerRef.current && !controllerRef.current.signal.aborted) return;
       const current = stateRef.current;
       if (current.status === "initial-loading" || current.status === "loading-more") {
         return;
@@ -231,11 +301,13 @@ export function useInfiniteListing(
   const loadMore = useCallback(() => requestBatch(), [requestBatch]);
 
   const reload = useCallback(() => {
+    controllerRef.current?.abort();
+    controllerRef.current = null;
+    forceFreshRef.current = true;
     clearInfiniteListingCache(sourceRef.current.key);
     setReloadVersion((version) => version + 1);
   }, []);
 
-  // 首屏失败要整段重来，尾部失败只重试失败的那一批，已加载内容保持不动。
   const retry = useCallback(() => {
     if (stateRef.current.items.length === 0) {
       reload();
@@ -253,6 +325,7 @@ export function useInfiniteListing(
   return {
     items,
     total: matchesQuery ? state.total : 0,
+    feedToken: matchesQuery ? state.feedToken : "",
     status: state.status,
     error: state.error,
     initialLoading,

@@ -36,6 +36,14 @@
   padding-bottom: var(--space-4);
 }
 
+/* 未加载内容不提前撑高，只用固定尾行承载加载反馈。 */
+.video-grid-virtual-tail {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+}
+
 .video-grid--virtual-row.is-compact {
   padding-bottom: var(--space-2);
 }

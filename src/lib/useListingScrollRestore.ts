@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   canRestoreScrollY,
   readListingScrollEntry,
   resolveReachableScrollY,
   resolveRestoreCount,
+  resolveRestoreFeedToken,
   resolveRestoreScrollY,
   writeListingScrollEntry,
   type ListingScrollStorage,
@@ -30,7 +31,9 @@ function sessionStorageOrNull(): ListingScrollStorage | null {
 
 export type ListingRestoreTarget = {
   historyKey: string;
+  queryKey: string;
   count: number;
+  feedToken: string;
   scrollY: number;
 };
 
@@ -44,18 +47,24 @@ export function useListingRestoreTarget(input: {
   pageSize: number;
 }): ListingRestoreTarget {
   const targetRef = useRef<ListingRestoreTarget | null>(null);
-  if (!targetRef.current || targetRef.current.historyKey !== input.historyKey) {
+  if (
+    !targetRef.current ||
+    targetRef.current.historyKey !== input.historyKey ||
+    targetRef.current.queryKey !== input.queryKey
+  ) {
     const entry = readListingScrollEntry(
       sessionStorageOrNull(),
       input.historyKey
     );
     targetRef.current = {
       historyKey: input.historyKey,
+      queryKey: input.queryKey,
       count: resolveRestoreCount({
         entry,
         queryKey: input.queryKey,
         pageSize: input.pageSize,
       }),
+      feedToken: resolveRestoreFeedToken(entry, input.queryKey),
       scrollY: resolveRestoreScrollY(entry, input.queryKey),
     };
   }
@@ -67,29 +76,50 @@ export type UseListingScrollRestoreInput = {
   queryKey: string;
   /** 当前已经请求过的条目数，作为下次恢复的进度。 */
   requestedCount: number;
+  feedToken: string;
   itemCount: number;
+};
+
+type ListingScrollSession = {
+  identity: string;
+  historyKey: string;
+  queryKey: string;
+  feedToken: string;
+  requestedCount: number;
+  pendingScrollY: number;
+  lastScrollY: number;
 };
 
 export function useListingScrollRestore({
   target,
   queryKey,
   requestedCount,
+  feedToken,
   itemCount,
 }: UseListingScrollRestoreInput) {
   const historyKey = target.historyKey;
-  const pendingScrollYRef = useRef(target.scrollY);
-  const lastScrollYRef = useRef(target.scrollY);
-  const restoredHistoryKeyRef = useRef(historyKey);
+  const restoreIdentity = `${historyKey}\u0000${queryKey}`;
+  const sessionRef = useRef<ListingScrollSession | null>(null);
+  if (!sessionRef.current || sessionRef.current.identity !== restoreIdentity) {
+    sessionRef.current = {
+      identity: restoreIdentity,
+      historyKey,
+      queryKey,
+      feedToken,
+      requestedCount,
+      pendingScrollY: target.scrollY,
+      lastScrollY: target.scrollY,
+    };
+  } else {
+    // 请求进度可以变化很多次；滚动监听器始终读取同一个会话对象的最新值。
+    sessionRef.current.feedToken = feedToken;
+    sessionRef.current.requestedCount = requestedCount;
+  }
+  const session = sessionRef.current;
   const [restoring, setRestoring] = useState(target.scrollY > 0);
 
-  if (restoredHistoryKeyRef.current !== historyKey) {
-    restoredHistoryKeyRef.current = historyKey;
-    pendingScrollYRef.current = target.scrollY;
-    lastScrollYRef.current = target.scrollY;
-  }
-
   useEffect(() => {
-    const targetScrollY = pendingScrollYRef.current;
+    const targetScrollY = session.pendingScrollY;
     if (targetScrollY <= 0) {
       setRestoring(false);
       return;
@@ -100,8 +130,8 @@ export function useListingScrollRestore({
     let frame = 0;
     let handle = 0;
     const finish = (restoredScrollY: number) => {
-      pendingScrollYRef.current = 0;
-      lastScrollYRef.current = restoredScrollY;
+      session.pendingScrollY = 0;
+      session.lastScrollY = restoredScrollY;
       setRestoring(false);
     };
     const attempt = () => {
@@ -133,49 +163,45 @@ export function useListingScrollRestore({
     handle = window.requestAnimationFrame(attempt);
 
     return () => window.cancelAnimationFrame(handle);
-  }, [historyKey, itemCount]);
-
-  const save = useCallback(
-    (scrollY: number) => {
-      // 还没恢复完就落盘，会把保存的位置覆盖成恢复前的 0。
-      if (pendingScrollYRef.current > 0) return;
-      if (requestedCount <= 0) return;
-      writeListingScrollEntry(sessionStorageOrNull(), historyKey, {
-        queryKey,
-        requestedCount,
-        scrollY: Math.max(0, Math.round(scrollY)),
-      });
-    },
-    [historyKey, queryKey, requestedCount]
-  );
+  }, [itemCount, restoreIdentity, session]);
 
   useEffect(() => {
-    let ticking = false;
-    let live = true;
+    let lastPersistedSignature = "";
+
+    const persist = () => {
+      // 还没恢复完就落盘，会把保存的位置覆盖成恢复前的 0。
+      if (session.pendingScrollY > 0 || session.requestedCount <= 0) return;
+      const scrollY = Math.max(0, Math.round(session.lastScrollY));
+      const signature = `${session.feedToken}\u0000${session.requestedCount}\u0000${scrollY}`;
+      if (signature === lastPersistedSignature) return;
+      writeListingScrollEntry(sessionStorageOrNull(), session.historyKey, {
+        queryKey: session.queryKey,
+        feedToken: session.feedToken,
+        requestedCount: session.requestedCount,
+        scrollY,
+      });
+      lastPersistedSignature = signature;
+    };
+
     const handleScroll = () => {
       // 位置要在滚动事件里同步记下：卸载时列表 DOM 已经被详情页顶掉，
       // 那时再读 window.scrollY 拿到的是被浏览器压缩过的值。
-      lastScrollYRef.current = Math.max(0, Math.round(window.scrollY));
-      if (ticking) return;
-      ticking = true;
-      window.requestAnimationFrame(() => {
-        ticking = false;
-        if (!live) return;
-        save(lastScrollYRef.current);
-      });
+      session.lastScrollY = Math.max(0, Math.round(window.scrollY));
     };
-    const handlePageHide = () => save(window.scrollY);
+    const handlePageHide = () => {
+      session.lastScrollY = Math.max(0, Math.round(window.scrollY));
+      persist();
+    };
 
     window.addEventListener("scroll", handleScroll, { passive: true });
     window.addEventListener("pagehide", handlePageHide);
     return () => {
-      live = false;
       window.removeEventListener("scroll", handleScroll);
       window.removeEventListener("pagehide", handlePageHide);
       // 离开列表页（例如进详情页）时把最后的位置落盘，后退才能回到原处。
-      save(lastScrollYRef.current);
+      persist();
     };
-  }, [save]);
+  }, [restoreIdentity, session]);
 
   return { restoring };
 }

@@ -74,8 +74,8 @@ test("listing page keeps the public discovery layout and empty semantics", () =>
 test("public listing query control state is restored from the URL", () => {
   assert.match(listingPageSource, /const sort = readListingSort\(params\)/);
   assert.match(listingPageSource, /const view = readListingView\(params\)/);
-  assert.match(listingPageSource, /withListingNavigation\(params, \{ sort: nextSort, page: 1 \}\)/);
-  assert.match(listingPageSource, /withListingView\(params, nextView\)/);
+  assert.match(listingPageSource, /withListingNavigation\(current, \{ sort: nextSort, page: 1 \}\)/);
+  assert.match(listingPageSource, /withListingView\(current, nextView\)/);
   // 列表页改为无限滚动后没有页码，旧链接里的 page 参数会被清掉。
   assert.match(listingPageSource, /if \(!params\.has\("page"\)\) return;/);
   assert.match(

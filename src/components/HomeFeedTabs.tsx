@@ -1,3 +1,4 @@
+import { memo } from "react";
 import type { HomeFeedKey } from "@/lib/listingSearchParams";
 
 type Props = {
@@ -10,7 +11,7 @@ const HOME_FEED_TABS: { key: HomeFeedKey; label: string }[] = [
   { key: "latest", label: "最新视频" },
 ];
 
-export function HomeFeedTabs({ feed, onChange }: Props) {
+export const HomeFeedTabs = memo(function HomeFeedTabs({ feed, onChange }: Props) {
   return (
     <div className="home-feed-tabs" role="tablist" aria-label="首页视频">
       {HOME_FEED_TABS.map((tab) => {
@@ -30,6 +31,6 @@ export function HomeFeedTabs({ feed, onChange }: Props) {
       })}
     </div>
   );
-}
+});
 
 export { HOME_FEED_TABS };

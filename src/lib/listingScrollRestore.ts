@@ -10,6 +10,8 @@ export const MAX_RESTORE_ITEMS = 240;
 
 export type ListingScrollEntry = {
   queryKey: string;
+  /** 服务端不可变快照；为空时恢复到同一查询的新快照。 */
+  feedToken: string;
   /** 保存现场时已经请求过的条目数。 */
   requestedCount: number;
   scrollY: number;
@@ -34,6 +36,8 @@ export function parseListingScrollEntry(
     if (
       !parsed ||
       typeof parsed.queryKey !== "string" ||
+      (parsed.feedToken !== undefined && typeof parsed.feedToken !== "string") ||
+      (typeof parsed.feedToken === "string" && parsed.feedToken.length > 128) ||
       !Number.isInteger(parsed.requestedCount) ||
       parsed.requestedCount <= 0 ||
       !Number.isFinite(parsed.scrollY) ||
@@ -43,6 +47,7 @@ export function parseListingScrollEntry(
     }
     return {
       queryKey: parsed.queryKey,
+      feedToken: parsed.feedToken ?? "",
       requestedCount: parsed.requestedCount,
       scrollY: parsed.scrollY,
     };
@@ -57,7 +62,9 @@ export function readListingScrollEntry(
 ): ListingScrollEntry | null {
   if (!storage || !historyKey) return null;
   try {
-    return parseListingScrollEntry(storage.getItem(listingScrollStorageKey(historyKey)));
+    return parseListingScrollEntry(
+      storage.getItem(listingScrollStorageKey(historyKey))
+    );
   } catch {
     // 隐私模式下读写 sessionStorage 会抛错，恢复失败只是回到列表顶部。
     return null;
@@ -93,8 +100,8 @@ export function clearListingScrollEntry(
 }
 
 /**
- * 恢复现场时首个请求要取多少条：把保存的进度向上取整到页大小的整数倍，
- * 这样后续分页游标仍然落在页边界上；超过上限就只补到上限。
+ * 恢复现场时首个请求要取多少条。显式 cursor 可以从任意位置继续，不再需要
+ * 为 page/size 接口凑整页；超过上限就只补到上限。
  * 返回 0 表示按普通首屏加载。
  */
 export function resolveRestoreCount(input: {
@@ -111,8 +118,7 @@ export function resolveRestoreCount(input: {
 
   const maxItems = input.maxItems ?? MAX_RESTORE_ITEMS;
   const capped = Math.min(entry.requestedCount, Math.max(maxItems, pageSize));
-  const rounded = Math.ceil(capped / pageSize) * pageSize;
-  return rounded > pageSize ? rounded : 0;
+  return capped > pageSize ? capped : 0;
 }
 
 export function resolveRestoreScrollY(
@@ -121,6 +127,14 @@ export function resolveRestoreScrollY(
 ): number {
   if (!entry || entry.queryKey !== queryKey) return 0;
   return entry.scrollY;
+}
+
+export function resolveRestoreFeedToken(
+  entry: ListingScrollEntry | null,
+  queryKey: string
+): string {
+  if (!entry || entry.queryKey !== queryKey) return "";
+  return entry.feedToken;
 }
 
 /**

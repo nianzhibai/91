@@ -1,20 +1,18 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { RefreshCw } from "lucide-react";
 import { useLocation, useSearchParams } from "react-router";
 import { AdminEmptyVisual } from "@/admin/AdminEmptyVisual";
 import { AppShell } from "@/components/AppShell";
 import { HomeFeedTabs } from "@/components/HomeFeedTabs";
+import { InfiniteFeedStatus } from "@/components/InfiniteFeedStatus";
 import { ListingLoadError } from "@/components/ListingLoadError";
 import { Pagination } from "@/components/Pagination";
 import { PromoStrip } from "@/components/PromoStrip";
 import { SearchPanel } from "@/components/SearchPanel";
-import { SortToolbar } from "@/components/SortToolbar";
+import { SortToolbar, type ViewMode } from "@/components/SortToolbar";
 import { TagCloud } from "@/components/TagCloud";
 import { VideoGrid } from "@/components/VideoGrid";
-import {
-  VirtualVideoGrid,
-  type VirtualGridRange,
-} from "@/components/VirtualVideoGrid";
+import { VirtualVideoGrid } from "@/components/VirtualVideoGrid";
 import {
   homeLatestFeedSource,
   homeRecommendationFeedSource,
@@ -28,6 +26,7 @@ import {
   withListingNavigation,
   withListingPage,
   withListingView,
+  type HomeFeedKey,
 } from "@/lib/listingSearchParams";
 import { MOBILE_VIDEO_PAGE_SIZE, useIsMobile } from "@/lib/responsive";
 import { useInfiniteListing } from "@/lib/useInfiniteListing";
@@ -36,19 +35,13 @@ import {
   useListingRestoreTarget,
   useListingScrollRestore,
 } from "@/lib/useListingScrollRestore";
-import { shouldLoadMore } from "@/lib/virtualGrid";
+import type { SortKey } from "@/types";
 
 const HOME_SEARCH_DESKTOP_PAGE_SIZE = 20;
 const HOME_FEED_DESKTOP_BATCH_SIZE = 20;
 
 // 距列表尾部还有两行时就续下一批，滚动到底之前数据已经在路上。
 const PREFETCH_ROWS = 2;
-
-const EMPTY_RANGE: VirtualGridRange = {
-  startIndex: 0,
-  endIndex: 0,
-  columns: 1,
-};
 
 export default function HomePage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -92,8 +85,8 @@ export default function HomePage() {
   const previousSearchPageSizeRef = useRef(searchPageSize);
   const searchScrollOnCommitRef = useRef(false);
 
-  // 两个推荐 tab 都是无限滚动。随机推荐走服务端轮换 feed，最新视频走真正
-  // 分页的列表接口。
+  // 两个推荐 tab 都通过不可变快照无限滚动：随机推荐在建快照时洗牌，最新
+  // 视频按确定顺序冻结，后续请求只按 token/cursor 读取同一份结果集。
   const feedBatchSize = isMobile
     ? MOBILE_VIDEO_PAGE_SIZE
     : HOME_FEED_DESKTOP_BATCH_SIZE;
@@ -112,17 +105,18 @@ export default function HomePage() {
   const homeFeed = useInfiniteListing(feedSource, {
     enabled: !hasActiveFilter,
     restoreCount: restoreTarget.count,
+    restoreFeedToken: restoreTarget.feedToken,
   });
   useListingScrollRestore({
     target: restoreTarget,
     queryKey: feedSource.key,
     requestedCount: hasActiveFilter ? 0 : homeFeed.requestedCount,
+    feedToken: hasActiveFilter ? "" : homeFeed.feedToken,
     itemCount: homeFeed.items.length,
   });
 
   const feedItems = homeFeed.items;
   const feedHasContent = feedItems.length > 0;
-  const [range, setRange] = useState<VirtualGridRange>(EMPTY_RANGE);
   const previousFeedKeyRef = useRef(feedSource.key);
 
   useEffect(() => {
@@ -159,40 +153,6 @@ export default function HomePage() {
     window.scrollTo({ top: 0, behavior: "auto" });
   }, [feedSource.key]);
 
-  const handleRangeChange = useCallback((next: VirtualGridRange) => {
-    setRange((current) =>
-      current.startIndex === next.startIndex &&
-      current.endIndex === next.endIndex &&
-      current.columns === next.columns
-        ? current
-        : next
-    );
-  }, []);
-
-  const { loadMore, loadingMore, hasMore } = homeFeed;
-  useEffect(() => {
-    if (hasActiveFilter) return;
-    if (
-      shouldLoadMore({
-        endIndex: range.endIndex,
-        itemCount: feedItems.length,
-        columns: range.columns,
-        hasMore,
-        loading: loadingMore,
-        prefetchRows: PREFETCH_ROWS,
-      })
-    ) {
-      loadMore();
-    }
-  }, [
-    feedItems.length,
-    hasActiveFilter,
-    hasMore,
-    loadMore,
-    loadingMore,
-    range,
-  ]);
-
   const reloadFeed = homeFeed.reload;
   const refreshHome = useCallback(() => {
     window.scrollTo({ top: 0, behavior: "auto" });
@@ -206,6 +166,44 @@ export default function HomePage() {
   const displayedSearchPage = searchSnapshot?.query.page ?? searchPage;
   const showRefresh = !hasActiveFilter && feed === "recommend";
   const refreshing = showRefresh && homeFeed.initialLoading;
+
+  const handleSearchSortChange = useCallback(
+    (nextSort: SortKey) => {
+      searchScrollOnCommitRef.current = true;
+      setSearchParams(
+        (current) =>
+          withListingNavigation(current, { sort: nextSort, page: 1 }),
+        { replace: true }
+      );
+    },
+    [setSearchParams]
+  );
+
+  const handleSearchViewChange = useCallback(
+    (nextView: ViewMode) => {
+      setSearchParams((current) => withListingView(current, nextView), {
+        replace: true,
+      });
+    },
+    [setSearchParams]
+  );
+
+  const handleSearchPageChange = useCallback(
+    (nextPage: number) => {
+      searchScrollOnCommitRef.current = true;
+      setSearchParams((current) => withListingPage(current, nextPage));
+    },
+    [setSearchParams]
+  );
+
+  const handleFeedChange = useCallback(
+    (nextFeed: HomeFeedKey) => {
+      setSearchParams((current) => withHomeFeed(current, nextFeed), {
+        replace: true,
+      });
+    },
+    [setSearchParams]
+  );
 
   return (
     <AppShell mobileAutoHideNav>
@@ -230,21 +228,8 @@ export default function HomePage() {
             sort={displayedSearchSort}
             view={searchView}
             sortDisabled={searchResult.initialLoading || searchResult.transitioning}
-            onSortChange={(nextSort) => {
-              searchScrollOnCommitRef.current = true;
-              setSearchParams(
-                withListingNavigation(searchParams, {
-                  sort: nextSort,
-                  page: 1,
-                }),
-                { replace: true }
-              );
-            }}
-            onViewChange={(nextView) => {
-              setSearchParams(withListingView(searchParams, nextView), {
-                replace: true,
-              });
-            }}
+            onSortChange={handleSearchSortChange}
+            onViewChange={handleSearchViewChange}
           />
 
           {searchShowSkeleton ? (
@@ -298,10 +283,7 @@ export default function HomePage() {
               total={searchSnapshot.total}
               disabled={searchResult.transitioning}
               pendingPage={searchResult.transitioning ? searchPage : undefined}
-              onChange={(nextPage) => {
-                searchScrollOnCommitRef.current = true;
-                setSearchParams(withListingPage(searchParams, nextPage));
-              }}
+              onChange={handleSearchPageChange}
             />
           )}
         </div>
@@ -309,15 +291,11 @@ export default function HomePage() {
         <div className="container page-section home-primary-section">
           <HomeFeedTabs
             feed={feed}
-            onChange={(nextFeed) => {
-              setSearchParams(withHomeFeed(searchParams, nextFeed), {
-                replace: true,
-              });
-            }}
+            onChange={handleFeedChange}
           />
 
           {homeFeed.initialLoading && !feedHasContent ? (
-            <VideoGrid videos={[]} loading skeletonCount={feedBatchSize} />
+            <VideoGrid videos={[]} loading skeletonCount={feedSource.batchSize} />
           ) : homeFeed.failed && !feedHasContent ? (
             <ListingLoadError
               hasContent={false}
@@ -336,27 +314,22 @@ export default function HomePage() {
                 videos={feedItems}
                 eagerCount={eagerCount}
                 highPriorityCount={1}
-                onRangeChange={handleRangeChange}
+                key={`${feedSource.key}:${homeFeed.feedToken}`}
+                hasMore={homeFeed.hasMore}
+                loadingMore={homeFeed.loadingMore}
+                prefetchRows={PREFETCH_ROWS}
+                tailContent={
+                  homeFeed.loadingMore ? (
+                    <InfiniteFeedStatus state="loading" />
+                  ) : undefined
+                }
+                onLoadMore={homeFeed.loadMore}
               />
 
               {homeFeed.failed ? (
                 <ListingLoadError hasContent onRetry={homeFeed.retry} />
-              ) : homeFeed.loadingMore ? (
-                <div
-                  className="listing-infinite-status"
-                  role="status"
-                  aria-live="polite"
-                >
-                  <span
-                    className="video-grid-refresh-overlay__spinner"
-                    aria-hidden="true"
-                  />
-                  <span>正在加载更多</span>
-                </div>
               ) : homeFeed.exhausted ? (
-                <div className="listing-infinite-status listing-infinite-status--end">
-                  没有更多了
-                </div>
+                <InfiniteFeedStatus state="end" />
               ) : null}
             </>
           )}

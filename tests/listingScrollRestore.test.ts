@@ -9,12 +9,14 @@ import {
   readListingScrollEntry,
   resolveReachableScrollY,
   resolveRestoreCount,
+  resolveRestoreFeedToken,
   resolveRestoreScrollY,
   writeListingScrollEntry,
   type ListingScrollStorage,
 } from "../src/lib/listingScrollRestore.ts";
 
-const QUERY_KEY = '["","","hot",20]';
+const QUERY_KEY = 'listing:["","","hot"]';
+const FEED_TOKEN = "snapshot-token";
 
 function memoryStorage(): ListingScrollStorage & { map: Map<string, string> } {
   const map = new Map<string, string>();
@@ -42,12 +44,14 @@ test("a saved entry round-trips through storage under its history key", () => {
   const storage = memoryStorage();
   writeListingScrollEntry(storage, "history-1", {
     queryKey: QUERY_KEY,
+    feedToken: FEED_TOKEN,
     requestedCount: 60,
     scrollY: 1_800,
   });
 
   assert.deepEqual(readListingScrollEntry(storage, "history-1"), {
     queryKey: QUERY_KEY,
+    feedToken: FEED_TOKEN,
     requestedCount: 60,
     scrollY: 1_800,
   });
@@ -67,6 +71,7 @@ test("unusable storage degrades to no restoration instead of throwing", () => {
   assert.doesNotThrow(() =>
     writeListingScrollEntry(throwingStorage, "history-1", {
       queryKey: QUERY_KEY,
+      feedToken: FEED_TOKEN,
       requestedCount: 40,
       scrollY: 10,
     })
@@ -76,6 +81,7 @@ test("unusable storage degrades to no restoration instead of throwing", () => {
   assert.doesNotThrow(() =>
     writeListingScrollEntry(null, "history-1", {
       queryKey: QUERY_KEY,
+      feedToken: FEED_TOKEN,
       requestedCount: 40,
       scrollY: 10,
     })
@@ -112,18 +118,34 @@ test("malformed stored entries are rejected", () => {
     parseListingScrollEntry(
       JSON.stringify({ queryKey: QUERY_KEY, requestedCount: 40, scrollY: 0 })
     ),
-    { queryKey: QUERY_KEY, requestedCount: 40, scrollY: 0 }
+    { queryKey: QUERY_KEY, feedToken: "", requestedCount: 40, scrollY: 0 }
+  );
+  assert.equal(
+    parseListingScrollEntry(
+      JSON.stringify({
+        queryKey: QUERY_KEY,
+        feedToken: "x".repeat(129),
+        requestedCount: 40,
+        scrollY: 0,
+      })
+    ),
+    null
   );
 });
 
-test("the restore request is rounded up to a page boundary and capped", () => {
-  const entry = { queryKey: QUERY_KEY, requestedCount: 60, scrollY: 900 };
+test("the restore request keeps the exact cursor count and caps deep histories", () => {
+  const entry = {
+    queryKey: QUERY_KEY,
+    feedToken: FEED_TOKEN,
+    requestedCount: 60,
+    scrollY: 900,
+  };
 
   assert.equal(resolveRestoreCount({ entry, queryKey: QUERY_KEY, pageSize: 20 }), 60);
   assert.equal(
     resolveRestoreCount({ entry, queryKey: QUERY_KEY, pageSize: 14 }),
-    70,
-    "换成手机页大小时向上取整，游标仍落在页边界"
+    60,
+    "显式 cursor 不依赖响应式批次的页边界"
   );
   assert.equal(
     resolveRestoreCount({
@@ -140,7 +162,7 @@ test("the restore request is rounded up to a page boundary and capped", () => {
     "只看了首屏就按普通首屏加载"
   );
   assert.equal(
-    resolveRestoreCount({ entry, queryKey: '["","","latest",20]', pageSize: 20 }),
+    resolveRestoreCount({ entry, queryKey: 'listing:["","","latest"]', pageSize: 20 }),
     0,
     "排序变了就是另一个列表，不能沿用旧进度"
   );
@@ -149,10 +171,18 @@ test("the restore request is rounded up to a page boundary and capped", () => {
 });
 
 test("the restore position only applies to the query it was saved for", () => {
-  const entry = { queryKey: QUERY_KEY, requestedCount: 60, scrollY: 1_200 };
+  const entry = {
+    queryKey: QUERY_KEY,
+    feedToken: FEED_TOKEN,
+    requestedCount: 60,
+    scrollY: 1_200,
+  };
   assert.equal(resolveRestoreScrollY(entry, QUERY_KEY), 1_200);
-  assert.equal(resolveRestoreScrollY(entry, '["","","latest",20]'), 0);
+  assert.equal(resolveRestoreFeedToken(entry, QUERY_KEY), FEED_TOKEN);
+  assert.equal(resolveRestoreScrollY(entry, 'listing:["","","latest"]'), 0);
+  assert.equal(resolveRestoreFeedToken(entry, 'listing:["","","latest"]'), "");
   assert.equal(resolveRestoreScrollY(null, QUERY_KEY), 0);
+  assert.equal(resolveRestoreFeedToken(null, QUERY_KEY), "");
 });
 
 test("restoring waits until the document is tall enough to reach the position", () => {

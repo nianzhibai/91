@@ -14,6 +14,10 @@ const tabsSource = readFileSync(
   new URL("../src/components/HomeFeedTabs.tsx", import.meta.url),
   "utf8"
 );
+const infiniteFeedStatusSource = readFileSync(
+  new URL("../src/components/InfiniteFeedStatus.tsx", import.meta.url),
+  "utf8"
+);
 const layoutCss = readFileSync(
   new URL("../src/styles/layout.css", import.meta.url),
   "utf8"
@@ -66,7 +70,7 @@ test("switching tabs replaces the history entry and restarts at the top", () => 
   assert.match(homePageSource, /const feed = readHomeFeed\(searchParams\)/);
   assert.match(
     homePageSource,
-    /setSearchParams\(withHomeFeed\(searchParams, nextFeed\), \{\s*replace: true,\s*\}\)/
+    /setSearchParams\(\(current\) => withHomeFeed\(current, nextFeed\), \{\s*replace: true,\s*\}\)/
   );
   assert.match(
     homePageSource,
@@ -81,11 +85,13 @@ test("each home tab scrolls infinitely through its own feed source", () => {
   );
   assert.match(
     homePageSource,
-    /shouldLoadMore\(\{[\s\S]*?endIndex: range\.endIndex,[\s\S]*?itemCount: feedItems\.length,[\s\S]*?hasMore,[\s\S]*?loading: loadingMore,/
+    /<VirtualVideoGrid[\s\S]*?videos=\{feedItems\}[\s\S]*?hasMore=\{homeFeed\.hasMore\}[\s\S]*?loadingMore=\{homeFeed\.loadingMore\}[\s\S]*?prefetchRows=\{PREFETCH_ROWS\}[\s\S]*?onLoadMore=\{homeFeed\.loadMore\}/
   );
-  assert.match(homePageSource, /if \(hasActiveFilter\) return;\s*if \(\s*shouldLoadMore/);
-  assert.match(homePageSource, /正在加载更多/);
-  assert.match(homePageSource, /没有更多了/);
+  assert.doesNotMatch(homePageSource, /setRange|onRangeChange|shouldLoadMore/);
+  assert.match(homePageSource, /<InfiniteFeedStatus state="loading" \/>/);
+  assert.match(homePageSource, /<InfiniteFeedStatus state="end" \/>/);
+  assert.match(infiniteFeedStatusSource, /正在加载更多/);
+  assert.match(infiniteFeedStatusSource, /没有更多了/);
 });
 
 test("search and tag results keep their pagination", () => {

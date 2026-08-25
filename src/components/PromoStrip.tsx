@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { promoItems } from "@/data/promos";
 
 const kindLabel: Record<string, string> = {
@@ -6,7 +7,7 @@ const kindLabel: Record<string, string> = {
   event: "活动",
 };
 
-export function PromoStrip() {
+export const PromoStrip = memo(function PromoStrip() {
   if (promoItems.length === 0) return null;
   return (
     <div className="promo-strip" aria-label="推荐内容">
@@ -21,4 +22,4 @@ export function PromoStrip() {
       ))}
     </div>
   );
-}
+});

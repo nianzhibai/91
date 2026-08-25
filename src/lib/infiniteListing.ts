@@ -1,9 +1,5 @@
+import type { VideoFeedCursor } from "@/data/videos";
 import type { SortKey, VideoItem } from "@/types";
-
-/**
- * 无限滚动列表的纯状态层。分页游标按"已请求条目数"推进而不是按"已渲染条目数"，
- * 否则后端去重/隐藏行会让偏移量漂移，越翻越错位。
- */
 
 export type InfiniteListingStatus =
   | "idle"
@@ -16,7 +12,6 @@ export type InfiniteListingQuery = {
   q: string;
   tag: string;
   sort: SortKey;
-  pageSize: number;
 };
 
 export type InfiniteListingState = {
@@ -25,19 +20,24 @@ export type InfiniteListingState = {
   pageSize: number;
   items: VideoItem[];
   total: number;
-  /** 已经向后端请求过的条目数，等于下一批的偏移量。 */
+  feedToken: string;
+  /** 下一批在服务端快照中的位置；可能大于 items.length（快照项后来被删除）。 */
   requestedCount: number;
-  /** 后端已经没有更多数据，停止再触发加载。 */
   exhausted: boolean;
   status: InfiniteListingStatus;
   error: Error | null;
-  /** 最近一次真实响应的时间，缓存新鲜度以它为准。 */
   receivedAt: number;
 };
 
 export type InfiniteListingAction =
-  | { type: "disable"; requestID: number }
-  | { type: "reset"; requestID: number; key: string; pageSize: number }
+  | { type: "disable"; requestID: number; key: string; pageSize: number }
+  | {
+      type: "reset";
+      requestID: number;
+      key: string;
+      pageSize: number;
+      cursor?: VideoFeedCursor;
+    }
   | {
       type: "hydrate";
       requestID: number;
@@ -45,6 +45,7 @@ export type InfiniteListingAction =
       pageSize: number;
       items: VideoItem[];
       total: number;
+      feedToken: string;
       requestedCount: number;
       exhausted: boolean;
       receivedAt: number;
@@ -53,24 +54,36 @@ export type InfiniteListingAction =
   | {
       type: "load-success";
       requestID: number;
-      /** 本批请求时的偏移量，用于丢弃与当前游标不衔接的响应。 */
-      offset: number;
-      batchSize: number;
+      requestCursor: VideoFeedCursor;
+      cursor: VideoFeedCursor;
       items: VideoItem[];
       total: number;
+      exhausted: boolean;
       receivedAt: number;
-      /** 服务端轮换 feed 没有终点，整批都是重复内容时就收尾。 */
-      stopOnDuplicateBatch?: boolean;
     }
   | { type: "load-failure"; requestID: number; error: Error };
 
+/** Batch size is a transport concern, not part of a logical result-set key. */
 export function infiniteListingKey(query: InfiniteListingQuery): string {
-  return JSON.stringify([
-    query.q.trim(),
-    query.tag.trim(),
-    query.sort,
-    Number.isInteger(query.pageSize) && query.pageSize > 0 ? query.pageSize : 1,
-  ]);
+  return JSON.stringify([query.q.trim(), query.tag.trim(), query.sort]);
+}
+
+export function infiniteListingCacheMatchesRestore(input: {
+  cachedFeedToken: string;
+  cachedRequestedCount: number;
+  restoreFeedToken: string;
+  restoreCount: number;
+}): boolean {
+  if (
+    input.restoreFeedToken &&
+    input.cachedFeedToken !== input.restoreFeedToken
+  ) {
+    return false;
+  }
+  if (!Number.isInteger(input.restoreCount) || input.restoreCount <= 0) {
+    return true;
+  }
+  return input.cachedRequestedCount >= input.restoreCount;
 }
 
 export function emptyInfiniteListingState(
@@ -83,6 +96,7 @@ export function emptyInfiniteListingState(
     pageSize,
     items: [],
     total: 0,
+    feedToken: "",
     requestedCount: 0,
     exhausted: false,
     status: "idle",
@@ -91,10 +105,7 @@ export function emptyInfiniteListingState(
   };
 }
 
-/**
- * 分页边界会随新入库/删除的视频移动，同一条视频可能出现在相邻两页里。
- * 追加时按 id 去重，既修掉重复卡片，也让 StrictMode 的重复请求幂等。
- */
+/** Defensive identity merge; a correctly formed snapshot already has unique IDs. */
 export function appendUniqueVideos(
   previous: VideoItem[],
   incoming: VideoItem[]
@@ -106,8 +117,7 @@ export function appendUniqueVideos(
     seen.add(item.id);
     return true;
   });
-  if (fresh.length === 0) return previous;
-  return [...previous, ...fresh];
+  return fresh.length === 0 ? previous : [...previous, ...fresh];
 }
 
 export function infiniteListingReducer(
@@ -117,13 +127,15 @@ export function infiniteListingReducer(
   switch (action.type) {
     case "disable":
       return {
-        ...emptyInfiniteListingState(state.key, state.pageSize),
+        ...emptyInfiniteListingState(action.key, action.pageSize),
         requestID: action.requestID,
       };
     case "reset":
       return {
         ...emptyInfiniteListingState(action.key, action.pageSize),
         requestID: action.requestID,
+        feedToken: action.cursor?.feedToken ?? "",
+        requestedCount: action.cursor?.position ?? 0,
       };
     case "hydrate":
       return {
@@ -132,6 +144,7 @@ export function infiniteListingReducer(
         pageSize: action.pageSize,
         items: action.items,
         total: action.total,
+        feedToken: action.feedToken,
         requestedCount: action.requestedCount,
         exhausted: action.exhausted,
         status: "ready",
@@ -147,24 +160,20 @@ export function infiniteListingReducer(
       };
     case "load-success": {
       if (action.requestID !== state.requestID) return state;
-      // 游标不衔接说明这批响应属于已经作废的加载序列。
-      if (action.offset !== state.requestedCount) return state;
+      if (
+        action.requestCursor.feedToken !== state.feedToken ||
+        action.requestCursor.position !== state.requestedCount
+      ) {
+        return state;
+      }
       const items = appendUniqueVideos(state.items, action.items);
-      const requestedCount = action.offset + action.batchSize;
-      const total = action.total > 0 ? action.total : state.total;
       return {
         ...state,
         items,
-        total,
-        requestedCount,
-        exhausted: isListingExhausted({
-          received: action.items.length,
-          added: items.length - state.items.length,
-          batchSize: action.batchSize,
-          requestedCount,
-          total: action.total,
-          stopOnDuplicateBatch: action.stopOnDuplicateBatch,
-        }),
+        total: action.total,
+        feedToken: action.cursor.feedToken,
+        requestedCount: action.cursor.position,
+        exhausted: action.exhausted,
         status: "ready",
         error: null,
         receivedAt: action.receivedAt,
@@ -176,35 +185,23 @@ export function infiniteListingReducer(
   }
 }
 
-/**
- * 两个终止条件缺一不可：total 只是查询时刻的计数，删除/隐藏后会虚高，
- * 只靠它会在尾部反复请求空页；只靠"返回不足一页"则会漏掉整除的边界。
- */
-export function isListingExhausted(input: {
-  received: number;
-  /** 去重后真正新增的条数。 */
-  added: number;
-  batchSize: number;
-  requestedCount: number;
-  total: number;
-  /** 轮换 feed 没有 total，也永远返回满批，只能靠"整批都重复"收尾。 */
-  stopOnDuplicateBatch?: boolean;
-}): boolean {
-  if (input.received < input.batchSize) return true;
-  if (input.stopOnDuplicateBatch && input.added === 0) return true;
-  return input.total > 0 && input.requestedCount >= input.total;
-}
+export type InfiniteListingRequest = {
+  cursor: VideoFeedCursor;
+  size: number;
+};
 
-export type InfiniteListingRequest = { offset: number; size: number };
-
-/** 下一批要取的区间；具体怎么翻页由各个 feed source 自己决定。 */
 export function nextListingRequest(
   state: InfiniteListingState
 ): InfiniteListingRequest | null {
   if (state.exhausted) return null;
-  const size = state.pageSize;
-  if (!Number.isInteger(size) || size <= 0) return null;
-  return { offset: state.requestedCount, size };
+  if (!Number.isInteger(state.pageSize) || state.pageSize <= 0) return null;
+  return {
+    cursor: {
+      feedToken: state.feedToken,
+      position: state.requestedCount,
+    },
+    size: state.pageSize,
+  };
 }
 
 export function infiniteListingHasMore(state: InfiniteListingState): boolean {

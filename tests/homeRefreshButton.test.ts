@@ -112,7 +112,7 @@ test("home page reserves tag cloud space while tags load and uses one empty libr
   assert.match(tagCloudSource, /type TagCloudProps = \{/);
   assert.match(tagCloudSource, /linkBasePath\?: string;/);
   assert.match(tagCloudSource, /onTagSelect\?: \(\) => void;/);
-  assert.match(tagCloudSource, /export function TagCloud\(\{ linkBasePath = "\/list", onTagSelect \}: TagCloudProps\)/);
+  assert.match(tagCloudSource, /export const TagCloud = memo\(function TagCloud\(\{[\s\S]*?linkBasePath = "\/list",[\s\S]*?onTagSelect,[\s\S]*?\}: TagCloudProps\)/);
   assert.match(tagCloudSource, /to=\{buildTagHref\(tag\.label\)\}/);
   assert.match(tagCloudSource, /onClick=\{onTagSelect\}/);
   assert.match(tagCloudSource, /const \[hasMoreRight, setHasMoreRight\] = useState\(false\)/);
@@ -233,8 +233,8 @@ test("home page reserves tag cloud space while tags load and uses one empty libr
   assert.match(homePageSource, /const hasActiveFilter = hasActiveSearch \|\| hasActiveTag/);
   assert.doesNotMatch(homePageSource, /搜索结果：/);
   assert.match(homePageSource, /<SortToolbar[\s\S]*?sort=\{displayedSearchSort\}[\s\S]*?view=\{searchView\}/);
-  assert.match(homePageSource, /withListingNavigation\(searchParams,[\s\S]*?sort: nextSort,[\s\S]*?page: 1/);
-  assert.match(homePageSource, /withListingView\(searchParams, nextView\)/);
+  assert.match(homePageSource, /withListingNavigation\(current, \{ sort: nextSort, page: 1 \}\)/);
+  assert.match(homePageSource, /withListingView\(current, nextView\)/);
   assert.match(homePageSource, /compact=\{searchView === "compact"\}/);
   assert.match(homePageSource, /variant="no-results"[\s\S]*?text="未查询到"[\s\S]*?className="admin-empty-state admin-empty-state--plain home-empty-state"/);
   assert.match(homePageSource, /<Pagination[\s\S]*?page=\{displayedSearchPage\}[\s\S]*?pageSize=\{searchSnapshot\.query\.pageSize\}/);

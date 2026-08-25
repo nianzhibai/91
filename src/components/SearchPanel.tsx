@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { memo, type FormEvent, useCallback, useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { Search } from "lucide-react";
 import { withListingNavigation } from "@/lib/listingSearchParams";
@@ -14,7 +14,7 @@ type SearchPanelProps = {
   className?: string;
 };
 
-export function SearchPanel({
+export const SearchPanel = memo(function SearchPanel({
   value,
   onSearch,
   navigationPath = "/list",
@@ -135,4 +135,4 @@ export function SearchPanel({
       )}
     </form>
   );
-}
+});
