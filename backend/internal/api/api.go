@@ -68,6 +68,11 @@ type Server struct {
 	shortsFeeds   map[string]*shortsFeedSession
 	shortsFeedNow func() time.Time
 
+	videoFeedMu     sync.Mutex
+	videoFeeds      map[string]*videoFeedSession
+	videoFeedShared map[videoFeedSnapshotKey]string
+	videoFeedNow    func() time.Time
+
 	homeRecommendationMu       sync.Mutex
 	homeRecommendationSessions map[string]*homeRecommendationSession
 	homeRecommendationNow      func() time.Time
@@ -134,6 +139,24 @@ type VideoDTO struct {
 	Dislikes        int      `json:"dislikes"`
 	PublishedAt     string   `json:"publishedAt"`
 	Tags            []string `json:"tags,omitempty"`
+}
+
+// VideoCardDTO is the compact transport used by infinite listing feeds. The
+// omitted reaction, tag, storage and processing fields are loaded by the video
+// detail endpoint when the user actually opens a card.
+type VideoCardDTO struct {
+	ID              string   `json:"id"`
+	Href            string   `json:"href"`
+	Title           string   `json:"title"`
+	Thumbnail       string   `json:"thumbnail"`
+	PreviewSrc      string   `json:"previewSrc"`
+	PreviewDuration int      `json:"previewDuration"`
+	PreviewStrategy string   `json:"previewStrategy"`
+	Duration        string   `json:"duration"`
+	Badges          []string `json:"badges"`
+	Author          string   `json:"author"`
+	Views           int      `json:"views"`
+	PublishedAt     string   `json:"publishedAt"`
 }
 
 type TagDTO struct {
@@ -227,6 +250,7 @@ func (s *Server) RegisterRoutes(r chi.Router, a *auth.Authenticator) {
 		r.Get("/api/home", s.handleHome)
 		r.Get("/api/home/latest", s.handleHomeLatest)
 		r.Get("/api/list", s.handleList)
+		r.Get("/api/feed", s.handleVideoFeed)
 		r.Get("/api/video/{id}", s.handleVideoDetail)
 		r.Get("/api/video/{id}/collection", s.handleVideoCollection)
 		r.Get("/api/video/{id}/subtitles", s.handleVideoSubtitles)
@@ -349,24 +373,7 @@ func homeRecommendationCount(r *http.Request) (int, error) {
 }
 
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	page, _ := strconv.Atoi(q.Get("page"))
-	size, _ := strconv.Atoi(q.Get("size"))
-	if size <= 0 {
-		size = 24
-	}
-	sort := q.Get("sort")
-	params := catalog.ListParams{
-		Keyword:   q.Get("q"),
-		Tag:       q.Get("tag"),
-		Sort:      sort,
-		Page:      page,
-		PageSize:  size,
-		SkipTotal: strings.EqualFold(q.Get("count"), "false"),
-	}
-	if sort == "" || sort == "latest" {
-		params.PreferReadyThumbnails = true
-	}
+	params := publicListParams(r)
 	items, total, err := s.Catalog.ListVideos(r.Context(), params)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
@@ -379,6 +386,32 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		"page":  params.Page,
 		"size":  params.PageSize,
 	})
+}
+
+// publicListParams is shared by the paginated compatibility endpoint and the
+// snapshot feed so both expose the same filters and ordering semantics.
+func publicListParams(r *http.Request) catalog.ListParams {
+	q := r.URL.Query()
+	page, _ := strconv.Atoi(q.Get("page"))
+	size, _ := strconv.Atoi(q.Get("size"))
+	if size <= 0 {
+		size = 24
+	}
+	sortKey := strings.TrimSpace(q.Get("sort"))
+	switch sortKey {
+	case "", "latest", "hot", "recent":
+	default:
+		sortKey = ""
+	}
+	return catalog.ListParams{
+		Keyword:               strings.TrimSpace(q.Get("q")),
+		Tag:                   strings.TrimSpace(q.Get("tag")),
+		Sort:                  sortKey,
+		Page:                  page,
+		PageSize:              size,
+		SkipTotal:             strings.EqualFold(q.Get("count"), "false"),
+		PreferReadyThumbnails: sortKey == "" || sortKey == "latest",
+	}
 }
 
 func (s *Server) handleVideoDetail(w http.ResponseWriter, r *http.Request) {
@@ -1439,26 +1472,33 @@ func normalizeSubtitleExt(ext string) string {
 }
 
 func previewURL(v *catalog.Video) string {
-	base := "/p/preview/" + pathSegment(v.ID)
-	if v.PreviewUpdatedAt.IsZero() {
+	return previewURLFor(v.ID, v.PreviewUpdatedAt)
+}
+
+func previewURLFor(videoID string, updatedAt time.Time) string {
+	base := "/p/preview/" + pathSegment(videoID)
+	if updatedAt.IsZero() {
 		return base
 	}
-	return base + "?v=" + strconv.FormatInt(v.PreviewUpdatedAt.UnixMilli(), 10)
+	return base + "?v=" + strconv.FormatInt(updatedAt.UnixMilli(), 10)
 }
 
 func thumbnailURL(v *catalog.Video) string {
-	base := "/p/thumb/" + pathSegment(v.ID)
-	hasThumbnail := v.ThumbnailURL != ""
-	if v.ThumbnailURL != "" {
-		base = v.ThumbnailURL
-		if thumbnailURLMatchesVideoID(base, v.ID) {
-			base = "/p/thumb/" + pathSegment(v.ID)
-		}
+	return thumbnailURLFor(v.ID, v.ThumbnailURL, v.ThumbnailUpdatedAt)
+}
+
+func thumbnailURLFor(videoID, thumbnail string, updatedAt time.Time) string {
+	base := strings.TrimSpace(thumbnail)
+	if base == "" {
+		return ""
 	}
-	if !hasThumbnail || !strings.HasPrefix(base, "/p/thumb/") || v.ThumbnailUpdatedAt.IsZero() {
+	if thumbnailURLMatchesVideoID(base, videoID) {
+		base = "/p/thumb/" + pathSegment(videoID)
+	}
+	if !strings.HasPrefix(base, "/p/thumb/") || updatedAt.IsZero() {
 		return base
 	}
-	return base + "?v=" + strconv.FormatInt(v.ThumbnailUpdatedAt.UnixMilli(), 10)
+	return base + "?v=" + strconv.FormatInt(updatedAt.UnixMilli(), 10)
 }
 
 // transcodedSource 在视频有就绪的浏览器兼容性转码产物时返回产物的播放地址。
@@ -1733,6 +1773,31 @@ func mapVideos(vs []*catalog.Video) []VideoDTO {
 	out := make([]VideoDTO, 0, len(vs))
 	for _, v := range vs {
 		out = append(out, mapVideo(v))
+	}
+	return out
+}
+
+func mapVideoSummaries(videos []*catalog.VideoSummary) []VideoCardDTO {
+	out := make([]VideoCardDTO, 0, len(videos))
+	for _, video := range videos {
+		badges := video.Badges
+		if badges == nil {
+			badges = []string{}
+		}
+		out = append(out, VideoCardDTO{
+			ID:              video.ID,
+			Href:            "/video/" + pathSegment(video.ID),
+			Title:           video.Title,
+			Thumbnail:       thumbnailURLFor(video.ID, video.ThumbnailURL, video.ThumbnailUpdatedAt),
+			PreviewSrc:      previewURLFor(video.ID, video.PreviewUpdatedAt),
+			PreviewDuration: 12,
+			PreviewStrategy: "teaser-file",
+			Duration:        formatDuration(video.DurationSeconds),
+			Badges:          badges,
+			Author:          video.Author,
+			Views:           video.Views,
+			PublishedAt:     video.PublishedAt.Format("2006-01-02"),
+		})
 	}
 	return out
 }

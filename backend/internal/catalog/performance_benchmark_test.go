@@ -149,6 +149,16 @@ func BenchmarkCatalogPublicReads20K(b *testing.B) {
 		}
 	})
 
+	b.Run("visible_summary_chunk_32", func(b *testing.B) {
+		b.ReportAllocs()
+		chunk := ids[:32]
+		for i := 0; i < b.N; i++ {
+			if _, err := cat.VisibleVideoSummariesByIDs(ctx, chunk); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+
 	b.Run("upsert_existing_unchanged_dedup_keys", func(b *testing.B) {
 		video, err := cat.GetVideo(ctx, ids[0])
 		if err != nil {

@@ -174,6 +174,23 @@ type Video struct {
 	UpdatedAt        time.Time `json:"updatedAt"`
 }
 
+// VideoSummary is the public card-sized projection of a video. List feeds use
+// this instead of loading the full persistence object, whose hashes, storage
+// locations, processing state and description are only needed by detail and
+// maintenance paths.
+type VideoSummary struct {
+	ID                 string
+	Title              string
+	Author             string
+	DurationSeconds    int
+	ThumbnailURL       string
+	ThumbnailUpdatedAt time.Time
+	PreviewUpdatedAt   time.Time
+	Views              int
+	Badges             []string
+	PublishedAt        time.Time
+}
+
 func (c *Catalog) UpsertVideo(ctx context.Context, v *Video) error {
 	existed := c.videoExists(ctx, v.ID)
 	storedTags, err := upsertVideoRow(ctx, c.db, v)
@@ -2374,14 +2391,17 @@ type ListParams struct {
 	PageSize              int
 }
 
-func (c *Catalog) ListVideos(ctx context.Context, p ListParams) ([]*Video, int, error) {
-	if p.PageSize <= 0 {
-		p.PageSize = 24
-	}
-	if p.Page <= 0 {
-		p.Page = 1
-	}
+type videoListQuery struct {
+	whereSQL string
+	orderBy  string
+	args     []any
+}
 
+// buildVideoListQuery owns the public-list filtering and ordering contract.
+// Both paginated responses and cursor-feed snapshots must use this exact query;
+// otherwise the two views can silently disagree about which videos are visible
+// or how ties are ordered.
+func buildVideoListQuery(p ListParams) videoListQuery {
 	var where []string
 	var args []any
 	if p.Keyword != "" {
@@ -2434,35 +2454,49 @@ func (c *Catalog) ListVideos(ctx context.Context, p ListParams) ([]*Video, int, 
 	where = append(where, activeDriveWhereSQL)
 	where = append(where, uniqueVideoWhereSQL)
 
-	whereSQL := ""
-	whereSQL = " WHERE " + strings.Join(where, " AND ")
+	whereSQL := " WHERE " + strings.Join(where, " AND ")
 
 	readyOrderPrefix := ""
 	if p.PreferReadyThumbnails {
-		readyOrderPrefix = "CASE WHEN COALESCE(thumbnail_url, '') != '' THEN 0 ELSE 1 END, "
+		readyOrderPrefix = "CASE WHEN COALESCE(videos.thumbnail_url, '') != '' THEN 0 ELSE 1 END, "
 	}
 
-	orderBy := " ORDER BY " + readyOrderPrefix + "published_at DESC"
+	// Every order ends in videos.id so a snapshot has one deterministic total
+	// order even when timestamps and reaction counters are tied.
+	orderBy := " ORDER BY " + readyOrderPrefix + "videos.published_at DESC, videos.id ASC"
 	switch p.Sort {
 	case "hot":
 		// 热度 = 点赞数；点赞数相同按最近点赞时间，最后用发布时间兜底。
-		orderBy = " ORDER BY " + readyOrderPrefix + "likes DESC, COALESCE(last_liked_at, 0) DESC, published_at DESC"
+		orderBy = " ORDER BY " + readyOrderPrefix + "videos.likes DESC, COALESCE(videos.last_liked_at, 0) DESC, videos.published_at DESC, videos.id ASC"
 	case "recent":
-		orderBy = " ORDER BY " + readyOrderPrefix + "COALESCE(last_viewed_at, 0) DESC, published_at DESC"
+		orderBy = " ORDER BY " + readyOrderPrefix + "COALESCE(videos.last_viewed_at, 0) DESC, videos.published_at DESC, videos.id ASC"
 	}
+
+	return videoListQuery{whereSQL: whereSQL, orderBy: orderBy, args: args}
+}
+
+func (c *Catalog) ListVideos(ctx context.Context, p ListParams) ([]*Video, int, error) {
+	if p.PageSize <= 0 {
+		p.PageSize = 24
+	}
+	if p.Page <= 0 {
+		p.Page = 1
+	}
+	query := buildVideoListQuery(p)
 
 	var total int
 	if !p.SkipTotal {
-		if err := c.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM videos"+whereSQL, args...).Scan(&total); err != nil {
+		if err := c.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM videos"+query.whereSQL, query.args...).Scan(&total); err != nil {
 			return nil, 0, err
 		}
 	}
 
 	// list
 	offset := (p.Page - 1) * p.PageSize
+	queryArgs := append(append([]any(nil), query.args...), p.PageSize, offset)
 	rows, err := c.db.QueryContext(ctx,
-		"SELECT "+allVideoCols+" FROM videos"+whereSQL+orderBy+" LIMIT ? OFFSET ?",
-		append(args, p.PageSize, offset)...)
+		"SELECT "+allVideoCols+" FROM videos"+query.whereSQL+query.orderBy+" LIMIT ? OFFSET ?",
+		queryArgs...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -2476,7 +2510,38 @@ func (c *Catalog) ListVideos(ctx context.Context, p ListParams) ([]*Video, int, 
 		}
 		out = append(out, v)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
 	return out, total, nil
+}
+
+// ListVideoIDs freezes the complete ordered identity set for one public-list
+// query. Feed handlers page through this immutable ID slice instead of applying
+// OFFSET repeatedly to a live, mutable ordering.
+func (c *Catalog) ListVideoIDs(ctx context.Context, p ListParams) ([]string, error) {
+	query := buildVideoListQuery(p)
+	rows, err := c.db.QueryContext(ctx,
+		"SELECT videos.id FROM videos"+query.whereSQL+query.orderBy,
+		query.args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return ids, nil
 }
 
 // CountVisibleVideos 返回当前对前台可见的视频总数（未隐藏、且通过去重规则）。
@@ -2595,6 +2660,82 @@ func (c *Catalog) ListVisibleVideoIDsLatest(ctx context.Context, limit int) ([]s
 		return nil, err
 	}
 	return ids, nil
+}
+
+const videoSummaryCols = `
+videos.id, videos.title, COALESCE(videos.author, ''),
+COALESCE(videos.duration_seconds, 0), COALESCE(videos.thumbnail_url, ''),
+COALESCE(videos.thumbnail_updated_at, 0), COALESCE(videos.preview_updated_at, 0),
+COALESCE(videos.views, 0), COALESCE(videos.badges, '[]'), videos.published_at
+`
+
+// VisibleVideoSummariesByIDs loads only the fields rendered by public video
+// cards. Detail, playback and maintenance fields deliberately stay out of this
+// hot path. Results retain the caller's snapshot order.
+func (c *Catalog) VisibleVideoSummariesByIDs(ctx context.Context, ids []string) ([]*VideoSummary, error) {
+	cleaned := cleanVideoIDs(ids)
+	if len(cleaned) == 0 {
+		return nil, nil
+	}
+
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(cleaned)), ",")
+	args := make([]any, 0, len(cleaned))
+	for _, id := range cleaned {
+		args = append(args, id)
+	}
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT `+videoSummaryCols+` FROM videos
+		  WHERE videos.id IN (`+placeholders+`)
+		    AND COALESCE(videos.hidden, 0) = 0
+		    AND `+activeDriveWhereSQL+`
+		    AND `+uniqueVideoWhereSQL,
+		args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	byID := make(map[string]*VideoSummary, len(cleaned))
+	for rows.Next() {
+		video := &VideoSummary{}
+		var thumbnailUpdatedAt, previewUpdatedAt, publishedAt int64
+		var badgesJSON string
+		if err := rows.Scan(
+			&video.ID,
+			&video.Title,
+			&video.Author,
+			&video.DurationSeconds,
+			&video.ThumbnailURL,
+			&thumbnailUpdatedAt,
+			&previewUpdatedAt,
+			&video.Views,
+			&badgesJSON,
+			&publishedAt,
+		); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(badgesJSON), &video.Badges)
+		if thumbnailUpdatedAt > 0 {
+			video.ThumbnailUpdatedAt = time.UnixMilli(thumbnailUpdatedAt)
+		}
+		if previewUpdatedAt > 0 {
+			video.PreviewUpdatedAt = time.UnixMilli(previewUpdatedAt)
+		}
+		video.PublishedAt = time.UnixMilli(publishedAt)
+		byID[video.ID] = video
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	out := make([]*VideoSummary, 0, len(byID))
+	for _, id := range cleaned {
+		if video := byID[id]; video != nil {
+			out = append(out, video)
+		}
+	}
+	return out, nil
 }
 
 // VisibleVideosByIDs loads the still-visible subset of ids while preserving

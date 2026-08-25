@@ -679,8 +679,8 @@ func TestThumbnailURLVersionsLocalGeneratedThumbnails(t *testing.T) {
 		ID:                 "video-pending",
 		ThumbnailUpdatedAt: time.UnixMilli(1778863000123),
 	})
-	if got != "/p/thumb/video-pending" {
-		t.Fatalf("pending thumbnail URL = %q, want unversioned retryable URL", got)
+	if got != "" {
+		t.Fatalf("pending thumbnail URL = %q, want no advertised asset", got)
 	}
 }
 
