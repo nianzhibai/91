@@ -34,6 +34,7 @@ import {
   isWindowsPlatform,
   shouldUseDocumentScrollForShorts,
   shouldUseIOSSharedVideo,
+  shouldUseShortsTouchPager,
 } from "@/shorts/platform";
 import {
   isShortsDebugEnabled,
@@ -50,6 +51,10 @@ import {
   type ShortsKeyboardSeekPreview,
 } from "@/shorts/useShortsKeyboard";
 import { useShortsSlideGestures } from "@/shorts/useShortsSlideGestures";
+import {
+  measureOffsetWithinSlide,
+  useShortsSwipePager,
+} from "@/shorts/useShortsSwipePager";
 import { AdminEmptyVisual } from "@/admin/AdminEmptyVisual";
 import { useAuth } from "@/admin/AuthContext";
 import {
@@ -183,6 +188,12 @@ export default function ShortsPage() {
   const pendingQueueTrimRef = useRef<{
     anchorKey: string;
     activeIndex: number;
+    /**
+     * 裁剪发生时滚动位置相对锚点 slide 顶端的偏移。切屏动画（原生吸附或
+     * 自定义落点动画）跑到一半时索引就已经推进，裁剪往往正好插在中间；
+     * 重贴时把这段偏移一并还原，视觉位置才是连续的，不会硬跳到吸附点。
+     */
+    offsetWithinAnchor: number;
   } | null>(null);
   // Windows 退出浏览器全屏时视口高度会改变。调整滚动位置期间锁住当前
   // slide，避免 IntersectionObserver 把新的像素位置误判成后续视频。
@@ -207,6 +218,9 @@ export default function ShortsPage() {
   );
   // iPhone 浏览器里改用页面滚动，让 Safari 工具栏能随刷动收起。
   const useDocumentScroll = shouldUseDocumentScrollForShorts();
+  // 移动端由页面自己接管上下滑动：跟手、按距离+速度判定切屏、惯性收尾。
+  // 桌面继续用原生 scroll-snap + 滚轮 / 方向键。
+  const useTouchPager = shouldUseShortsTouchPager(useDocumentScroll);
   // Windows 短视频页只保留静音图标；不挂载桌面 hover 音量条，避免点击
   // 图标时因鼠标仍停留在按钮上而展开滑杆。
   const isWindowsShortsPlatform = isWindowsPlatform();
@@ -374,14 +388,20 @@ export default function ShortsPage() {
     const removeCount = getShortsQueueTrimCount(activeIndex, items.length);
     const nextActiveIndex = activeIndex - removeCount;
     queueTrimInProgressRef.current = true;
+    const root = containerRef.current;
+    // 偏移必须在 DOM 变化之前量：重贴 effect 跑的时候旧 slide 已经不在了。
     pendingQueueTrimRef.current = {
       anchorKey: shortsQueueItemKey(activeItem),
       activeIndex: nextActiveIndex,
+      offsetWithinAnchor: measureOffsetWithinActiveSlide(
+        root,
+        activeIndex,
+        useDocumentScroll
+      ),
     };
 
     // IntersectionObserver 会持有 target；被裁掉前显式 unobserve，避免旧空壳
     // 继续留在观察器内部。裁剪期间忽略迟到的 observer 回调。
-    const root = containerRef.current;
     const observer = slideObserverRef.current;
     if (root && observer) {
       const slides =
@@ -439,6 +459,7 @@ export default function ShortsPage() {
     items,
     trimQueueBefore,
     updateUserPausedIndex,
+    useDocumentScroll,
   ]);
 
   // DOM 已按新索引提交后，把同一个逻辑视频重新贴到视口起点。用实际 offset
@@ -460,11 +481,17 @@ export default function ShortsPage() {
         )
       : undefined;
     if (root && slide) {
+      // 还原裁剪那一刻锚点内的偏移：切屏动画进行到一半时被裁剪打断，也只是
+      // 坐标系整体平移，画面不会跳回吸附点。偏移已在测量时夹在一屏之内。
+      const offsetWithinAnchor = pending.offsetWithinAnchor;
       if (useDocumentScroll) {
-        const top = window.scrollY + slide.getBoundingClientRect().top;
-        window.scrollTo({ top, behavior: "auto" });
+        const top =
+          window.scrollY +
+          slide.getBoundingClientRect().top +
+          offsetWithinAnchor;
+        window.scrollTo({ top: Math.max(0, top), behavior: "auto" });
       } else {
-        root.scrollTop = slide.offsetTop;
+        root.scrollTop = Math.max(0, slide.offsetTop + offsetWithinAnchor);
       }
     }
     pendingQueueTrimRef.current = null;
@@ -596,6 +623,26 @@ export default function ShortsPage() {
       observer.observe(el);
     });
   }, [items.length]);
+
+  // 视口尺寸变化后（旋转、输入法）重新对齐用的当前屏。接管手势后原生吸附
+  // 已关闭，浏览器不会再自己纠正，这个查询就是唯一的锚点来源。
+  const getActiveSlideElement = useCallback(() => {
+    const root = containerRef.current;
+    if (!root) return null;
+    return root.querySelector<HTMLElement>(
+      `[data-shorts-slide][data-index="${activeIndexRef.current}"]`
+    );
+  }, []);
+
+  // 移动端的上下滑动手势。activeIndex 仍然只由上面的 IntersectionObserver
+  // 决定：这个 hook 只负责把手指位移写进同一个 scrollTop，播放 / 预载 /
+  // iOS 共享元素那条链路完全不受影响。
+  useShortsSwipePager({
+    enabled: useTouchPager,
+    containerRef,
+    usesDocumentScroll: useDocumentScroll,
+    getAnchorSlide: getActiveSlideElement,
+  });
 
   // 先停掉所有非当前屏。当前屏的 play() 由 ShortsSlide 负责，
   // 那里能在 Safari 拒绝/中断播放时同步 UI，并在 canplay 后安全重试。
@@ -846,6 +893,12 @@ export default function ShortsPage() {
     if (useDocumentScroll) {
       html.classList.add("shorts-document-scroll");
       body.classList.add("shorts-document-scroll");
+      // 文档滚动 + 自接管手势（?shortsPager=1）时要一并关掉根元素的吸附点，
+      // 否则程序化写入的 scrollY 会被浏览器重新吸附，逐帧跟手直接失效。
+      if (useTouchPager) {
+        html.classList.add("is-touch-paged");
+        body.classList.add("is-touch-paged");
+      }
     } else {
       html.style.overflow = "hidden";
       body.style.overflow = "hidden";
@@ -869,6 +922,8 @@ export default function ShortsPage() {
     return () => {
       html.classList.remove("shorts-document-scroll");
       body.classList.remove("shorts-document-scroll");
+      html.classList.remove("is-touch-paged");
+      body.classList.remove("is-touch-paged");
       html.style.overflow = prevHtmlOverflow;
       body.style.overflow = prevBodyOverflow;
       body.style.background = prevBodyBg;
@@ -880,7 +935,7 @@ export default function ShortsPage() {
         }
       }
     };
-  }, [useDocumentScroll]);
+  }, [useDocumentScroll, useTouchPager]);
 
   // 用稳定 feed key 在真实 DOM 中找下一条；不闭包 items/index，既能跨队列
   // 裁剪，也不会每取回一批就换回调引用、击穿 ShortsSlide 的 memo。
@@ -910,8 +965,8 @@ export default function ShortsPage() {
   return (
     <div
       className={`shorts-page${useDocumentScroll ? " is-document-scroll" : ""}${
-        legacyVideoTransitionEnabled ? " has-video-transition" : ""
-      }`}
+        useTouchPager ? " is-touch-paged" : ""
+      }${legacyVideoTransitionEnabled ? " has-video-transition" : ""}`}
     >
       <header className="shorts-header">
         <Link
@@ -981,7 +1036,10 @@ export default function ShortsPage() {
         />
       )}
 
-      <div className="shorts-feed" ref={containerRef}>
+      <div
+        className={`shorts-feed${useTouchPager ? " is-touch-paged" : ""}`}
+        ref={containerRef}
+      >
         {loading && items.length === 0 && !empty && !loadError && (
           <div className="shorts-empty shorts-loading" aria-live="polite">
             <div className="shorts-empty__content">
@@ -1111,6 +1169,27 @@ export default function ShortsPage() {
       </div>
     </div>
   );
+}
+
+/**
+ * 队列裁剪前，当前屏在滚动方向上偏离吸附点多少。两种滚动模式下"容器上沿"
+ * 分别是 feed 的 rect.top 和视口顶端，其余计算共用同一个纯函数。
+ */
+function measureOffsetWithinActiveSlide(
+  root: HTMLElement | null,
+  activeIndex: number,
+  usesDocumentScroll: boolean
+): number {
+  if (!root) return 0;
+  const slide = root.querySelector<HTMLElement>(
+    `[data-shorts-slide][data-index="${activeIndex}"]`
+  );
+  if (!slide) return 0;
+  const base = usesDocumentScroll ? 0 : root.getBoundingClientRect().top;
+  return measureOffsetWithinSlide({
+    slideTop: slide.getBoundingClientRect().top - base,
+    viewportHeight: usesDocumentScroll ? window.innerHeight : root.clientHeight,
+  });
 }
 
 type SlideProps = {
@@ -2761,6 +2840,8 @@ function ShortsSlideImpl({
           className={`shorts-slide__progress ${
             scrubbing ? "is-scrubbing" : ""
           }`}
+          // 进度条自己就要吃掉整根手指：横向定位、纵向也不该误触发翻页。
+          data-shorts-no-swipe=""
           onPointerDown={handleProgressPointerDown}
           onPointerMove={handleProgressPointerMove}
           onPointerUp={handleProgressPointerEnd}
