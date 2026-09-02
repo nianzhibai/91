@@ -344,14 +344,37 @@ export function useShortsSlideGestures(options: ShortsSlideGesturesOptions) {
       end();
     };
 
+    // 桌面现在也能用鼠标拖拽翻页，"按住不动 400ms = 2 倍速"因此必须能被
+    // 拖动取消：否则慢一点的拖拽会顺手把视频切成 2 倍速。触摸那侧本来就有
+    // 同样的取消（cancelFastForTouchSeek），这里补上鼠标的。
+    let mouseDownAt: { x: number; y: number } | null = null;
+
     const handleMouseDown = (event: MouseEvent) => {
-      if (event.button === 0) start();
+      if (event.button !== 0) return;
+      mouseDownAt = { x: event.clientX, y: event.clientY };
+      start();
+    };
+
+    const handleMouseMove = (event: MouseEvent) => {
+      if (!mouseDownAt) return;
+      const dx = event.clientX - mouseDownAt.x;
+      const dy = event.clientY - mouseDownAt.y;
+      // 与横向 seek 共用同一套方向判定的阈值：过了阈值就不再算"按住不动"。
+      if (classifyTouchSeekIntent(dx, dy) === "pending") return;
+      mouseDownAt = null;
+      cancelFastForTouchSeek();
     };
 
     const handleMouseUp = (event: MouseEvent) => {
       if (event.button !== 0) return;
+      mouseDownAt = null;
       const wasFastPress = active;
       if (wasFastPress) suppressNextSyntheticClick();
+      end();
+    };
+
+    const handleMouseLeave = () => {
+      mouseDownAt = null;
       end();
     };
 
@@ -362,8 +385,9 @@ export function useShortsSlideGestures(options: ShortsSlideGesturesOptions) {
     video.addEventListener("touchend", handleTouchEnd);
     video.addEventListener("touchcancel", handleTouchCancel);
     video.addEventListener("mousedown", handleMouseDown);
+    video.addEventListener("mousemove", handleMouseMove);
     video.addEventListener("mouseup", handleMouseUp);
-    video.addEventListener("mouseleave", end);
+    video.addEventListener("mouseleave", handleMouseLeave);
     video.addEventListener("pause", end);
     video.addEventListener("ended", end);
 
@@ -376,8 +400,9 @@ export function useShortsSlideGestures(options: ShortsSlideGesturesOptions) {
       video.removeEventListener("touchend", handleTouchEnd);
       video.removeEventListener("touchcancel", handleTouchCancel);
       video.removeEventListener("mousedown", handleMouseDown);
+      video.removeEventListener("mousemove", handleMouseMove);
       video.removeEventListener("mouseup", handleMouseUp);
-      video.removeEventListener("mouseleave", end);
+      video.removeEventListener("mouseleave", handleMouseLeave);
       video.removeEventListener("pause", end);
       video.removeEventListener("ended", end);
     };

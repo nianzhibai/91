@@ -109,6 +109,8 @@ function createHarness(options?: { slideCount?: number }) {
   const root = {
     scrollTop: 0,
     clientHeight: SLIDE_HEIGHT,
+    // 桌面保留原生吸附，手势期间由 pager 临时摘掉
+    style: { scrollSnapType: "" },
     setPointerCapture: () => undefined,
     releasePointerCapture: () => undefined,
     scrollHeight: slideCount * SLIDE_HEIGHT,
@@ -242,6 +244,10 @@ function createHarness(options?: { slideCount?: number }) {
     },
     get styleFlushes() {
       return styleFlushes;
+    },
+    /** 原生吸附此刻是否被摘掉了。 */
+    get snapSuspended() {
+      return root.style.scrollSnapType === "none";
     },
     /** 落点动画是否在等 transitionend。 */
     get awaitingTransition() {
@@ -1029,4 +1035,87 @@ test("a mouse click that never moves stays a click", () => {
     assert.equal(h.clickGuardActive(), false);
     assert.equal(h.root.scrollTop, 0);
   });
+});
+
+// ---------------------------------------------------------------------------
+// 原生吸附：桌面留着给滚轮用，手势期间必须摘掉
+// ---------------------------------------------------------------------------
+
+test("native snapping is lifted while the gesture drives, and handed back after", () => {
+  withHarness((h) => {
+    // 静止时吸附归样式表管（滚轮和方向键要靠它）
+    assert.equal(h.snapSuspended, false);
+
+    h.pointerDown(200, 700, { pointerType: "mouse" });
+    h.tick(16);
+    // 方向还没定，先别动人家的吸附
+    h.pointerMove(200, 694);
+    assert.equal(h.snapSuspended, false);
+
+    // 判定为纵向、开始接管的那一刻摘掉。不摘的话吸附点会跟着轨道的
+    // transform 一起移动，mandatory 立刻反向拉 scrollTop 补偿，
+    // 净效果正好抵消掉跟手位移——桌面上就是"怎么拖都不动"。
+    h.tick(16);
+    h.pointerMove(200, 680);
+    assert.equal(h.snapSuspended, true);
+
+    h.tick(16);
+    h.pointerMove(200, 600);
+    assert.equal(h.translate, -80);
+    assert.equal(h.snapSuspended, true);
+
+    h.pointerUp(200, 600);
+    // 动画还在跑，吸附点仍然在动，还不能还
+    assert.equal(h.snapSuspended, true);
+
+    h.endTransition();
+    // 落定、transform 清干净之后才还回去，此时我们正停在吸附点上
+    assert.equal(h.snapSuspended, false);
+    assert.equal(h.transformStyle, "");
+  });
+});
+
+test("an interrupted gesture never leaves snapping switched off", () => {
+  withHarness((h) => {
+    // 多指中断
+    h.pointerDown(200, 800);
+    h.tick(16);
+    h.pointerMove(200, 780);
+    h.tick(16);
+    h.pointerMove(200, 500);
+    assert.equal(h.snapSuspended, true);
+    h.secondFingerDownAt([{ clientX: 200, clientY: 500 }]);
+    h.endTransition();
+    assert.equal(h.snapSuspended, false);
+  });
+});
+
+test("横向 seek 与纯点击都不该动到原生吸附", () => {
+  withHarness((h) => {
+    // 判定为横向：手势不归我们管，吸附原样留着
+    h.pointerDown(200, 700);
+    h.tick(16);
+    h.pointerMove(320, 706);
+    h.pointerUp(320, 706);
+    assert.equal(h.snapSuspended, false);
+
+    // 纯点击同理
+    h.pointerDown(200, 700);
+    h.tick(60);
+    h.pointerUp(200, 700);
+    assert.equal(h.snapSuspended, false);
+  });
+});
+
+test("tearing down mid-gesture hands snapping back", () => {
+  const harness = createHarness();
+  harness.pointerDown(200, 800);
+  harness.tick(16);
+  harness.pointerMove(200, 780);
+  harness.tick(16);
+  harness.pointerMove(200, 600);
+  assert.equal(harness.snapSuspended, true);
+  harness.destroy();
+  // 页面走了还把 scroll-snap-type: none 留在 DOM 上，滚轮就永远不吸附了
+  assert.equal(harness.snapSuspended, false);
 });

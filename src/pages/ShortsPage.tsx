@@ -209,6 +209,10 @@ export default function ShortsPage() {
   // 手指正在拖动期间冻结活跃屏判定：IO 看的是视觉位置，跟手时轨道位移一直
   // 在变，它会在一次滑动里反复翻转，每翻一次都是一整套暂停/起播/授权清零。
   const pagerGestureActiveRef = useRef(false);
+  // 用户当前的浏览方向（+1 往后看，-1 往回看）。iOS 只有两个持久 media
+  // element，覆盖不了 prev/active/next 三个位置，备用元素只能放一边——
+  // 放在用户正在去的那一边。
+  const browseDirectionRef = useRef(1);
   const userPausedIndexRef = useRef<number | null>(null);
   const [activeReadyForPreload, setActiveReadyForPreload] = useState(false);
   const [, setUserPausedIndexState] = useState<number | null>(null);
@@ -277,6 +281,11 @@ export default function ShortsPage() {
   // 事件监听器和 iOS 持久 video effect 都通过 ref 读取当前索引。放在最前面的
   // layout effect 可避免长队列裁剪与上一轮 passive effect 交错时写回旧值。
   useLayoutEffect(() => {
+    const previous = activeIndexRef.current;
+    // 队列裁剪会整体重排索引，那次跳变不代表用户的浏览方向。
+    if (!queueTrimInProgressRef.current && activeIndex !== previous) {
+      browseDirectionRef.current = activeIndex > previous ? 1 : -1;
+    }
     activeIndexRef.current = activeIndex;
   }, [activeIndex]);
 
@@ -854,8 +863,14 @@ export default function ShortsPage() {
   // effect 必须保持 useLayoutEffect——活跃元素得在这一帧画出来之前就位。
   useEffect(() => {
     if (!useIOSSharedVideo || iosStandbyPreloadDisabled) return;
-    const nextIndex = activeIndex + 1;
-    const nextItem = items[nextIndex];
+    // 备用元素跟着浏览方向放，而不是死盯着下一屏。原来只放 activeIndex+1，
+    // 于是往回看时每一条都是冷启动：共享元素得重新换 src、重新取流、重新
+    // 解首帧，用户看到的就是一张静态封面加一段等待。往回连看几条是很常见
+    // 的用法，不该每条都付这个代价。
+    // 方向反转的那一次仍然是冷的——两个持久元素覆盖不了三个位置，这是
+    // iOS 分支的固有约束（见上面关于 WebKit 有声播放授权的注释）。
+    const nextIndex = activeIndex + browseDirectionRef.current;
+    const nextItem = nextIndex >= 0 ? items[nextIndex] : undefined;
     const nextSlot = iosSharedVideoSlots.current.get(nextIndex);
     if (!nextItem || !nextSlot) return;
 

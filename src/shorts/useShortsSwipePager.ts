@@ -361,6 +361,30 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
         : root.scrollHeight - root.clientHeight
     );
 
+  // ---- 原生吸附的临时摘除 ----
+  // CSS 的吸附点是按元素**变换后**的位置算的。轨道一平移，吸附点就跟着移，
+  // `scroll-snap-type: mandatory` 会立刻把 scrollTop 反向拉回去补偿——净效果
+  // 正好抵消掉跟手位移，桌面上表现为"鼠标怎么拖画面都不动"。
+  //
+  // 触屏路径靠 .shorts-feed.is-touch-paged 常驻关掉吸附；桌面故意保留吸附让
+  // 滚轮和方向键继续走原生，所以只能在手势和落点动画期间临时摘掉，落定再还
+  // 回去。还回去时我们已经精确停在吸附点上，浏览器的重新吸附是空操作。
+  const snapHosts: HTMLElement[] = usesDocumentScroll
+    ? [document.documentElement, document.body]
+    : [root];
+  let snapSuspended = false;
+  const suspendSnap = () => {
+    if (snapSuspended) return;
+    snapSuspended = true;
+    for (const host of snapHosts) host.style.scrollSnapType = "none";
+  };
+  const restoreSnap = () => {
+    if (!snapSuspended) return;
+    snapSuspended = false;
+    // 清成空串而不是写死值：还给样式表决定，触屏路径那边本来就是 none。
+    for (const host of snapHosts) host.style.scrollSnapType = "";
+  };
+
   // ---- 轨道位移 ----
   /** 轨道当前的 translateY。等效滚动位置恒为 getScrollTop() - translate。 */
   let translate = 0;
@@ -437,6 +461,8 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     settling = false;
     detachSettleListeners();
     clearTranslate();
+    // 必须在 transform 清掉之后才还，否则浏览器会按带位移的吸附点重新吸附。
+    restoreSnap();
   };
 
   /** 返回是否真的打断了一次进行中的动画。 */
@@ -472,6 +498,7 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
   const settleTo = (target: HTMLElement | null, committed: boolean) => {
     detachSettleListeners();
     settling = false;
+    suspendSnap();
 
     const live = readLiveTranslate();
     const from = getScrollTop();
@@ -492,6 +519,7 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     });
     if (duration <= 0) {
       clearTranslate();
+      restoreSnap();
       return;
     }
 
@@ -676,6 +704,7 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
       }
       drag.committed = true;
       setGestureActive(true);
+      suspendSnap();
       // 鼠标拖到容器外面也要继续收事件；触摸本来就隐式捕获，这里是给桌面用的。
       try {
         root.setPointerCapture(event.pointerId);
@@ -779,6 +808,7 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     if (!slide) return;
     const top = readSlideTop(slide);
     clearTranslate();
+    restoreSnap();
     setScrollTop(clamp(top, 0, getMaxScrollTop()));
   };
   const handleViewportResize = () => {
@@ -819,6 +849,7 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     }
     detachSettleListeners();
     releaseClickGuard();
+    restoreSnap();
     setGestureActive(false);
     if (realignFrame !== null) window.cancelAnimationFrame(realignFrame);
     if (realignTimer !== null) window.clearTimeout(realignTimer);

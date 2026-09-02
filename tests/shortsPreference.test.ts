@@ -893,7 +893,7 @@ test("iOS preloads the next video on a standby element and promotes it on swipe"
   // so it never steals bandwidth from a still-buffering active video.
   assert.match(
     shortsPageSource,
-    /if \(!useIOSSharedVideo \|\| iosStandbyPreloadDisabled\) return;\s*const nextIndex = activeIndex \+ 1;/
+    /if \(!useIOSSharedVideo \|\| iosStandbyPreloadDisabled\) return;[\s\S]*?const nextIndex = activeIndex \+ browseDirectionRef\.current;/
   );
   assert.match(
     shortsPageSource,
@@ -1383,6 +1383,17 @@ test("shorts keeps per-swipe work off the queue length", () => {
   );
   // 拉下字节还不够：video 在真正播放前一直画 poster，要 seek 一次逼出首帧
   assert.match(shortsPageSource, /warmStandbyFirstFrame\(standby\);/);
+  // 备用元素跟着浏览方向放：只盯 activeIndex+1 的话，往回看每一条都是冷启动
+  assert.match(shortsPageSource, /const browseDirectionRef = useRef\(1\);/);
+  assert.match(
+    shortsPageSource,
+    /browseDirectionRef\.current = activeIndex > previous \? 1 : -1;/
+  );
+  // 队列裁剪的索引重排不代表浏览方向
+  assert.match(
+    shortsPageSource,
+    /if \(!queueTrimInProgressRef\.current && activeIndex !== previous\)/
+  );
   assert.match(
     shortsPageSource,
     /function warmStandbyFirstFrame\(video: HTMLVideoElement\)/
