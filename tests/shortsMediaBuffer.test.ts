@@ -244,7 +244,7 @@ function warmProbe(overrides: Partial<Parameters<typeof shouldWarmFirstFrame>[0]
   return shouldWarmFirstFrame({
     isActive: false,
     shouldLoad: true,
-    usesSharedVideo: false,
+    isPlaybackElement: false,
     readyState: 1,
     currentTime: 0,
     ...overrides,
@@ -262,8 +262,8 @@ test("first-frame warming leaves every other video alone", () => {
   assert.equal(warmProbe({ isActive: true }), false);
   // 没绑 src 的空壳，seek 无处可去
   assert.equal(warmProbe({ shouldLoad: false }), false);
-  // iOS 共享元素有自己的生命周期，不参与
-  assert.equal(warmProbe({ usesSharedVideo: true }), false);
+  // 播放位由 play() 负责清掉 poster 标志，seek 它只会打断起播
+  assert.equal(warmProbe({ isPlaybackElement: true }), false);
   // 元数据都还没到，seek 会被丢弃；等 loadedmetadata 再试
   assert.equal(warmProbe({ readyState: 0 }), false);
   // 已经被推进过（预热过、或用户拖过进度）：不要把位置冲掉

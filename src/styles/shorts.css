@@ -258,6 +258,9 @@ html.shorts-document-scroll.is-touch-paged body {
   margin: auto;
   object-fit: contain; /* 横屏视频不裁切，多余处由 __bg 顶上 */
   z-index: 1;
+  /* 桌面上用鼠标拖动翻页时，别让浏览器把它当成"拖拽一张图片"。 */
+  -webkit-user-drag: none;
+  user-select: none;
 }
 
 /* 播放层保持稳定、完全不透明，避免 WebKit 在首帧解码期间还要混合和缩放

@@ -17,6 +17,8 @@ import {
 // 写回 scrollTop 并清掉 transform。
 
 const SLIDE_HEIGHT = 900;
+const PRIMARY_POINTER = 1;
+const SECOND_POINTER = 2;
 
 type TouchPoint = { clientX: number; clientY: number };
 
@@ -107,6 +109,8 @@ function createHarness(options?: { slideCount?: number }) {
   const root = {
     scrollTop: 0,
     clientHeight: SLIDE_HEIGHT,
+    setPointerCapture: () => undefined,
+    releasePointerCapture: () => undefined,
     scrollHeight: slideCount * SLIDE_HEIGHT,
     getBoundingClientRect: () => ({ top: 0 }),
     querySelectorAll: () => slides,
@@ -194,14 +198,14 @@ function createHarness(options?: { slideCount?: number }) {
     handler({
       cancelable: true,
       preventDefault: () => {
-        if (type === "touchmove") prevented.touchmove += 1;
-        if (type === "touchend") prevented.touchend += 1;
+        if (type === "pointermove") prevented.touchmove += 1;
+        if (type === "pointerup") prevented.touchend += 1;
       },
       ...event,
     });
   }
 
-  function point(x: number, y: number): TouchPoint {
+  function point(x: number, y: number) {
     return { clientX: x, clientY: y };
   }
 
@@ -307,23 +311,56 @@ function createHarness(options?: { slideCount?: number }) {
       });
       return swallowed;
     },
-    touchStart(x: number, y: number, target?: unknown) {
-      fire("touchstart", { touches: [point(x, y)], target: target ?? null });
+    /** 主指针按下。pointerType 默认 touch，测鼠标时显式传 mouse。 */
+    pointerDown(
+      x: number,
+      y: number,
+      options?: { target?: unknown; pointerType?: string; button?: number; id?: number }
+    ) {
+      fire("pointerdown", {
+        pointerId: options?.id ?? PRIMARY_POINTER,
+        pointerType: options?.pointerType ?? "touch",
+        button: options?.button ?? 0,
+        ...point(x, y),
+        target: options?.target ?? null,
+      });
     },
-    touchStartMulti(points: TouchPoint[]) {
-      fire("touchstart", { touches: points, target: null });
+    pointerMove(x: number, y: number, id = PRIMARY_POINTER) {
+      fire("pointermove", { pointerId: id, ...point(x, y) });
     },
-    touchMove(x: number, y: number) {
-      fire("touchmove", { touches: [point(x, y)] });
+    pointerUp(x: number, y: number, id = PRIMARY_POINTER) {
+      fire("pointerup", { pointerId: id, ...point(x, y) });
     },
-    touchMoveMulti(points: TouchPoint[]) {
-      fire("touchmove", { touches: points });
+    pointerCancel(id = PRIMARY_POINTER) {
+      fire("pointercancel", { pointerId: id });
     },
-    touchEnd(x: number, y: number) {
-      fire("touchend", { changedTouches: [point(x, y)], touches: [] });
+    /** 两根手指同时落下。 */
+    pointerDownMulti(points: TouchPoint[]) {
+      points.forEach((p, i) => {
+        fire("pointerdown", {
+          pointerId: PRIMARY_POINTER + i,
+          pointerType: "touch",
+          button: 0,
+          clientX: p.clientX,
+          clientY: p.clientY,
+          target: null,
+        });
+      });
     },
-    touchCancel() {
-      fire("touchcancel", { touches: [] });
+    /**
+     * 拖动途中第二根手指落下。多指判定现在发生在 pointerdown 上（而不是
+     * 像 touch 事件那样靠 touches.length），语义更直接。
+     */
+    secondFingerDownAt(points: TouchPoint[]) {
+      const second = points[points.length - 1];
+      fire("pointerdown", {
+        pointerId: SECOND_POINTER,
+        pointerType: "touch",
+        button: 0,
+        clientX: second.clientX,
+        clientY: second.clientY,
+        target: null,
+      });
     },
     resize() {
       const handler = windowListeners.get("resize");
@@ -356,12 +393,12 @@ function withHarness(
 
 /** 一次干净的快速上滑（切下一条）。 */
 function flickToNext(h: Harness, fromY = 700) {
-  h.touchStart(200, fromY);
+  h.pointerDown(200, fromY);
   h.tick(16);
-  h.touchMove(200, fromY - 30);
+  h.pointerMove(200, fromY - 30);
   h.tick(16);
-  h.touchMove(200, fromY - 60);
-  h.touchEnd(200, fromY - 60);
+  h.pointerMove(200, fromY - 60);
+  h.pointerUp(200, fromY - 60);
 }
 
 // ---------------------------------------------------------------------------
@@ -370,16 +407,16 @@ function flickToNext(h: Harness, fromY = 700) {
 
 test("the feed follows the finger one to one once the direction is settled", () => {
   withHarness((h) => {
-    h.touchStart(200, 700);
+    h.pointerDown(200, 700);
     // 未过方向判定阈值前不动，长按倍速 / 点击仍有机会成立
     h.tick(16);
-    h.touchMove(200, 692);
+    h.pointerMove(200, 692);
     assert.equal(h.translate, 0);
     assert.equal(h.prevented.touchmove, 0);
 
     // 判定成立的那一帧把阈值位移归零，画面不会突然跳 12px
     h.tick(16);
-    h.touchMove(200, 680);
+    h.pointerMove(200, 680);
     assert.equal(h.translate, 0);
     assert.equal(h.prevented.touchmove, 1);
     // 接管后才提升合成层，静止时不留
@@ -387,10 +424,10 @@ test("the feed follows the finger one to one once the direction is settled", () 
 
     // 之后逐像素跟手
     h.tick(16);
-    h.touchMove(200, 600);
+    h.pointerMove(200, 600);
     assert.equal(h.translate, -80);
     h.tick(16);
-    h.touchMove(200, 640);
+    h.pointerMove(200, 640);
     assert.equal(h.translate, -40);
 
     // 全程 scrollTop 不动：IntersectionObserver 之外的几何都还在原位
@@ -400,11 +437,11 @@ test("the feed follows the finger one to one once the direction is settled", () 
 
 test("the drag runs on the compositor, never through scrollTop", () => {
   withHarness((h) => {
-    h.touchStart(200, 800);
+    h.pointerDown(200, 800);
     h.tick(16);
-    h.touchMove(200, 780);
+    h.pointerMove(200, 780);
     h.tick(16);
-    h.touchMove(200, 600);
+    h.pointerMove(200, 600);
     assert.equal(h.transformStyle, "translate3d(0, -180px, 0)");
     assert.equal(h.transitionSpec, "none");
     assert.equal(h.root.scrollTop, 0);
@@ -413,11 +450,11 @@ test("the drag runs on the compositor, never through scrollTop", () => {
 
 test("dragging never exposes a third video, however far the finger goes", () => {
   withHarness((h) => {
-    h.touchStart(200, 800);
+    h.pointerDown(200, 800);
     h.tick(16);
-    h.touchMove(200, 780);
+    h.pointerMove(200, 780);
     h.tick(16);
-    h.touchMove(200, -5_000);
+    h.pointerMove(200, -5_000);
     // 相邻一屏之外只剩带阻尼的越界余量，第三条永远露不出来
     const overshoot = -SLIDE_HEIGHT - h.translate;
     assert.ok(overshoot > 0, "末端应当能推动一点，不是硬冻结");
@@ -427,16 +464,16 @@ test("dragging never exposes a third video, however far the finger goes", () => 
 
 test("the first video gives a damped pull instead of freezing solid", () => {
   withHarness((h) => {
-    h.touchStart(200, 100);
+    h.pointerDown(200, 100);
     h.tick(16);
-    h.touchMove(200, 120);
+    h.pointerMove(200, 120);
     h.tick(16);
-    h.touchMove(200, 5_000);
+    h.pointerMove(200, 5_000);
     // 手指拉了 4880px，画面只跟出去一屏的 12%——能动，但明确"到头了"
     assert.equal(h.translate, SLIDE_HEIGHT * 0.12);
 
     // 松手后弹回原位
-    h.touchEnd(200, 5_000);
+    h.pointerUp(200, 5_000);
     h.endTransition();
     assert.equal(h.root.scrollTop, 0);
     assert.equal(h.translate, 0);
@@ -493,13 +530,13 @@ test("the FLIP start value is committed before the transition is armed", () => {
 
 test("a slow short drag bounces back to the current video", () => {
   withHarness((h) => {
-    h.touchStart(200, 700);
+    h.pointerDown(200, 700);
     h.tick(16);
-    h.touchMove(200, 680);
+    h.pointerMove(200, 680);
     h.tick(400);
-    h.touchMove(200, 660);
+    h.pointerMove(200, 660);
     assert.equal(h.translate, -20);
-    h.touchEnd(200, 660);
+    h.pointerUp(200, 660);
     h.endTransition();
     assert.equal(h.root.scrollTop, 0);
     assert.equal(h.translate, 0);
@@ -509,12 +546,12 @@ test("a slow short drag bounces back to the current video", () => {
 test("a slow but long drag still switches, exactly like Douyin", () => {
   withHarness((h) => {
     const past = SLIDE_HEIGHT / 3 + 40;
-    h.touchStart(200, 800);
+    h.pointerDown(200, 800);
     h.tick(16);
-    h.touchMove(200, 780);
+    h.pointerMove(200, 780);
     h.tick(2_000);
-    h.touchMove(200, 800 - past);
-    h.touchEnd(200, 800 - past);
+    h.pointerMove(200, 800 - past);
+    h.pointerUp(200, 800 - past);
     h.endTransition();
     assert.equal(h.root.scrollTop, SLIDE_HEIGHT);
   });
@@ -523,12 +560,12 @@ test("a slow but long drag still switches, exactly like Douyin", () => {
 test("swiping back down returns to the previous video", () => {
   withHarness((h) => {
     h.root.scrollTop = SLIDE_HEIGHT * 2;
-    h.touchStart(200, 200);
+    h.pointerDown(200, 200);
     h.tick(16);
-    h.touchMove(200, 230);
+    h.pointerMove(200, 230);
     h.tick(16);
-    h.touchMove(200, 300);
-    h.touchEnd(200, 300);
+    h.pointerMove(200, 300);
+    h.pointerUp(200, 300);
     h.endTransition();
     assert.equal(h.root.scrollTop, SLIDE_HEIGHT);
   });
@@ -538,12 +575,12 @@ test("the last video has nowhere to go and simply bounces back", () => {
   withHarness(
     (h) => {
       h.root.scrollTop = SLIDE_HEIGHT * 2;
-      h.touchStart(200, 800);
+      h.pointerDown(200, 800);
       h.tick(16);
-      h.touchMove(200, 780);
+      h.pointerMove(200, 780);
       h.tick(16);
-      h.touchMove(200, 400);
-      h.touchEnd(200, 400);
+      h.pointerMove(200, 400);
+      h.pointerUp(200, 400);
       h.endTransition();
       assert.equal(h.root.scrollTop, SLIDE_HEIGHT * 2);
       assert.equal(h.translate, 0);
@@ -601,12 +638,12 @@ test("a transitionend from a child or another property is ignored", () => {
 test("a switch always animates for the same fixed duration", () => {
   withHarness((h) => {
     // 慢慢拖过 1/3 屏再松手：切屏成立，时长是常数而不是按速度浮动
-    h.touchStart(200, 800);
+    h.pointerDown(200, 800);
     h.tick(16);
-    h.touchMove(200, 780);
+    h.pointerMove(200, 780);
     h.tick(3_000);
-    h.touchMove(200, 400);
-    h.touchEnd(200, 400);
+    h.pointerMove(200, 400);
+    h.pointerUp(200, 400);
     assert.equal(h.settleDurationMs, SHORTS_PAGER_COMMIT_SETTLE_MS);
     assert.match(h.transitionSpec, /cubic-bezier/);
   });
@@ -614,12 +651,12 @@ test("a switch always animates for the same fixed duration", () => {
 
 test("bouncing back is quicker than switching", () => {
   withHarness((h) => {
-    h.touchStart(200, 700);
+    h.pointerDown(200, 700);
     h.tick(16);
-    h.touchMove(200, 680);
+    h.pointerMove(200, 680);
     h.tick(600);
-    h.touchMove(200, 620);
-    h.touchEnd(200, 620);
+    h.pointerMove(200, 620);
+    h.pointerUp(200, 620);
     // 没构成切屏 → 回弹，必须比切屏干脆
     assert.ok(h.settleDurationMs > 0);
     assert.ok(h.settleDurationMs <= SHORTS_PAGER_MAX_BOUNCE_MS);
@@ -635,16 +672,16 @@ test("bouncing back is quicker than switching", () => {
 
 test("horizontal seeking on the video keeps the feed completely still", () => {
   withHarness((h) => {
-    h.touchStart(200, 700);
+    h.pointerDown(200, 700);
     h.tick(16);
-    h.touchMove(260, 706);
+    h.pointerMove(260, 706);
     h.tick(16);
-    h.touchMove(400, 712);
+    h.pointerMove(400, 712);
     assert.equal(h.translate, 0);
     assert.equal(h.root.scrollTop, 0);
     // 没有接管就不能挡掉默认行为，也不能吞掉这次点击
     assert.equal(h.prevented.touchmove, 0);
-    h.touchEnd(400, 712);
+    h.pointerUp(400, 712);
     assert.equal(h.prevented.touchend, 0);
     assert.equal(h.awaitingTransition, false);
     // 轨道上不能留下任何合成层提示
@@ -654,9 +691,9 @@ test("horizontal seeking on the video keeps the feed completely still", () => {
 
 test("a plain tap stays a tap", () => {
   withHarness((h) => {
-    h.touchStart(200, 700);
+    h.pointerDown(200, 700);
     h.tick(80);
-    h.touchEnd(200, 700);
+    h.pointerUp(200, 700);
     assert.equal(h.prevented.touchend, 0);
     assert.equal(h.root.scrollTop, 0);
     assert.equal(h.awaitingTransition, false);
@@ -669,25 +706,25 @@ test("touches that start on the progress bar never page the feed", () => {
       closest: (selector: string) =>
         selector === "[data-shorts-no-swipe]" ? progress : null,
     };
-    h.touchStart(200, 700, progress);
+    h.pointerDown(200, 700, { target: progress });
     h.tick(16);
-    h.touchMove(200, 400);
+    h.pointerMove(200, 400);
     assert.equal(h.translate, 0);
-    h.touchEnd(200, 400);
+    h.pointerUp(200, 400);
     assert.equal(h.prevented.touchend, 0);
   });
 });
 
 test("a second finger hands the gesture back and snaps to the nearest video", () => {
   withHarness((h) => {
-    h.touchStart(200, 800);
+    h.pointerDown(200, 800);
     h.tick(16);
-    h.touchMove(200, 780);
+    h.pointerMove(200, 780);
     h.tick(16);
-    h.touchMove(200, 200);
+    h.pointerMove(200, 200);
     assert.equal(h.translate, -580);
 
-    h.touchMoveMulti([
+    h.secondFingerDownAt([
       { clientX: 200, clientY: 200 },
       { clientX: 260, clientY: 400 },
     ]);
@@ -696,19 +733,19 @@ test("a second finger hands the gesture back and snaps to the nearest video", ()
     assert.equal(h.root.scrollTop, SLIDE_HEIGHT);
 
     // 交出去之后的移动完全不再影响位移
-    h.touchMove(200, 100);
+    h.pointerMove(200, 100);
     assert.equal(h.translate, 0);
   });
 });
 
 test("a multi-touch start is ignored outright", () => {
   withHarness((h) => {
-    h.touchStartMulti([
+    h.pointerDownMulti([
       { clientX: 100, clientY: 700 },
       { clientX: 300, clientY: 700 },
     ]);
     h.tick(16);
-    h.touchMove(100, 300);
+    h.pointerMove(100, 300);
     assert.equal(h.translate, 0);
     assert.equal(h.root.scrollTop, 0);
   });
@@ -716,13 +753,13 @@ test("a multi-touch start is ignored outright", () => {
 
 test("a cancelled touch settles instead of freezing between videos", () => {
   withHarness((h) => {
-    h.touchStart(200, 800);
+    h.pointerDown(200, 800);
     h.tick(16);
-    h.touchMove(200, 780);
+    h.pointerMove(200, 780);
     h.tick(16);
-    h.touchMove(200, 500);
+    h.pointerMove(200, 500);
     assert.equal(h.translate, -280);
-    h.touchCancel();
+    h.pointerCancel();
     h.endTransition();
     assert.equal(h.root.scrollTop, 0);
     assert.equal(h.translate, 0);
@@ -739,7 +776,7 @@ test("grabbing a flying slide freezes it at the frame it is actually on", () => 
     // 补偿量从 870 动画归零；此刻画面走到一半，还剩 400
     h.setLiveTranslate(400);
 
-    h.touchStart(200, 500);
+    h.pointerDown(200, 500);
     // 内联值被改写成当前这一帧的位置，不会瞬移到终点
     assert.equal(h.translate, 400);
     assert.equal(h.transitionSpec, "none");
@@ -748,10 +785,10 @@ test("grabbing a flying slide freezes it at the frame it is actually on", () => 
     // 接着再甩一把。等效位置 900-400=500 已经更靠近第 1 屏，
     // 所以这一下是从第 1 屏再前进一屏——连甩两次走两屏，不会卡住
     h.tick(16);
-    h.touchMove(200, 470);
+    h.pointerMove(200, 470);
     h.tick(16);
-    h.touchMove(200, 440);
-    h.touchEnd(200, 440);
+    h.pointerMove(200, 440);
+    h.pointerUp(200, 440);
     assert.equal(h.root.scrollTop, SLIDE_HEIGHT * 2);
     h.endTransition();
     assert.equal(h.root.scrollTop, SLIDE_HEIGHT * 2);
@@ -764,9 +801,9 @@ test("tapping to stop a flying slide still lands on a video", () => {
     flickToNext(h, 800);
     h.setLiveTranslate(400);
 
-    h.touchStart(200, 500);
+    h.pointerDown(200, 500);
     h.tick(40);
-    h.touchEnd(200, 500);
+    h.pointerUp(200, 500);
     // 这一下只是"停住"，不该被当成单击去暂停视频
     assert.equal(h.prevented.touchend, 2);
     h.endTransition();
@@ -799,17 +836,17 @@ test("a queue trim mid-flight lands on the same video, in new coordinates", () =
 test("a queue trim mid-drag keeps the finger tracking continuous", () => {
   withHarness((h) => {
     h.root.scrollTop = SLIDE_HEIGHT * 3;
-    h.touchStart(200, 800);
+    h.pointerDown(200, 800);
     h.tick(16);
-    h.touchMove(200, 780);
+    h.pointerMove(200, 780);
     h.tick(16);
-    h.touchMove(200, 700);
+    h.pointerMove(200, 700);
     assert.equal(h.translate, -80);
 
     h.trimLeading(2);
     h.tick(16);
     // 位移纯由手指决定，裁剪换坐标系不会把跟手带偏
-    h.touchMove(200, 680);
+    h.pointerMove(200, 680);
     assert.equal(h.translate, -100);
   });
 });
@@ -844,11 +881,11 @@ test("a resize mid-flight drops the stale target and realigns", () => {
 test("a resize during a drag leaves the finger in control", () => {
   withHarness((h) => {
     h.setAnchorIndex(0);
-    h.touchStart(200, 800);
+    h.pointerDown(200, 800);
     h.tick(16);
-    h.touchMove(200, 780);
+    h.pointerMove(200, 780);
     h.tick(16);
-    h.touchMove(200, 600);
+    h.pointerMove(200, 600);
     assert.equal(h.translate, -180);
     h.resize();
     assert.equal(h.translate, -180);
@@ -876,7 +913,7 @@ test("a deliberate tap right after a swipe still reaches the video", () => {
     flickToNext(h);
     assert.equal(h.clickGuardActive(), true);
     // 用户重新按下：守卫立即失效，这一下轻点的 click 能原样穿过去
-    h.touchStart(200, 500);
+    h.pointerDown(200, 500);
     assert.equal(h.clickGuardActive(), false);
     assert.equal(h.fireClick(), false);
   });
@@ -887,9 +924,9 @@ test("once the feed has settled a tap is just a tap again", () => {
     flickToNext(h);
     h.endTransition();
     h.advance(400);
-    h.touchStart(200, 500);
+    h.pointerDown(200, 500);
     h.tick(60);
-    h.touchEnd(200, 500);
+    h.pointerUp(200, 500);
     // 只有那次竖滑挡过默认行为，这一下轻点原样放行
     assert.equal(h.prevented.touchend, 1);
     assert.equal(h.clickGuardActive(), false);
@@ -907,10 +944,10 @@ test("the click guard expires on its own if no click ever arrives", () => {
 
 test("horizontal seeking leaves the click guard alone", () => {
   withHarness((h) => {
-    h.touchStart(200, 700);
+    h.pointerDown(200, 700);
     h.tick(16);
-    h.touchMove(280, 706);
-    h.touchEnd(280, 706);
+    h.pointerMove(280, 706);
+    h.pointerUp(280, 706);
     assert.equal(h.clickGuardActive(), false);
   });
 });
@@ -932,11 +969,11 @@ test("tearing down mid-flight leaves a settled position and a clean track", () =
 
 test("tearing down mid-drag writes the finger offset back to scrollTop", () => {
   const harness = createHarness();
-  harness.touchStart(200, 800);
+  harness.pointerDown(200, 800);
   harness.tick(16);
-  harness.touchMove(200, 780);
+  harness.pointerMove(200, 780);
   harness.tick(16);
-  harness.touchMove(200, 600);
+  harness.pointerMove(200, 600);
   assert.equal(harness.translate, -180);
   // 手指还按着就被卸载：跟手位移必须落回 scrollTop，不能凭空丢掉
   harness.destroy();
@@ -950,4 +987,46 @@ test("tearing down the page releases every listener", () => {
   harness.destroy();
   assert.equal(harness.hasListeners(), false);
   assert.equal(harness.awaitingTransition, false);
+});
+
+// ---------------------------------------------------------------------------
+// 鼠标：桌面拖拽走的是同一条状态机
+// ---------------------------------------------------------------------------
+
+test("a mouse drag pages the feed exactly like a finger does", () => {
+  withHarness((h) => {
+    h.pointerDown(200, 700, { pointerType: "mouse" });
+    h.tick(16);
+    h.pointerMove(200, 670);
+    h.tick(16);
+    h.pointerMove(200, 640);
+    // 跟手位移写在轨道上，和触摸一模一样
+    assert.equal(h.translate, -30);
+    h.pointerUp(200, 640);
+    assert.equal(h.root.scrollTop, SLIDE_HEIGHT);
+    h.endTransition();
+    assert.equal(h.transformStyle, "");
+  });
+});
+
+test("only the left mouse button drags", () => {
+  withHarness((h) => {
+    // 右键 / 中键按下不该起手，否则右键菜单和中键粘贴会被当成滑动
+    h.pointerDown(200, 700, { pointerType: "mouse", button: 2 });
+    h.tick(16);
+    h.pointerMove(200, 400);
+    assert.equal(h.translate, 0);
+    assert.equal(h.root.scrollTop, 0);
+  });
+});
+
+test("a mouse click that never moves stays a click", () => {
+  withHarness((h) => {
+    h.pointerDown(200, 700, { pointerType: "mouse" });
+    h.tick(60);
+    h.pointerUp(200, 700);
+    assert.equal(h.prevented.touchend, 0);
+    assert.equal(h.clickGuardActive(), false);
+    assert.equal(h.root.scrollTop, 0);
+  });
 });

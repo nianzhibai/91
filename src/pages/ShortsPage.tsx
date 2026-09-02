@@ -37,7 +37,8 @@ import {
   isWindowsPlatform,
   shouldUseDocumentScrollForShorts,
   shouldUseIOSSharedVideo,
-  shouldUseShortsTouchPager,
+  shouldTakeOverShortsScrolling,
+  shouldUseShortsSwipePager,
 } from "@/shorts/platform";
 import {
   isShortsDebugEnabled,
@@ -228,9 +229,10 @@ export default function ShortsPage() {
   );
   // iPhone 浏览器里改用页面滚动，让 Safari 工具栏能随刷动收起。
   const useDocumentScroll = shouldUseDocumentScrollForShorts();
-  // 移动端由页面自己接管上下滑动：跟手、按距离+速度判定切屏、固定时长落点。
-  // 桌面继续用原生 scroll-snap + 滚轮 / 方向键。
-  const useTouchPager = shouldUseShortsTouchPager();
+  // 手势控制器所有设备都挂：pointer 事件同时吃手指和鼠标，桌面因此也能拖拽。
+  const usePagerGestures = shouldUseShortsSwipePager();
+  // 但只有触屏才连原生滚动一起接管；桌面保留 scroll-snap，滚轮和方向键不变。
+  const takeOverScrolling = shouldTakeOverShortsScrolling();
   // Windows 短视频页只保留静音图标；不挂载桌面 hover 音量条，避免点击
   // 图标时因鼠标仍停留在按钮上而展开滑杆。
   const isWindowsShortsPlatform = isWindowsPlatform();
@@ -654,7 +656,7 @@ export default function ShortsPage() {
   }, []);
 
   useShortsSwipePager({
-    enabled: useTouchPager,
+    enabled: usePagerGestures,
     containerRef,
     trackRef,
     usesDocumentScroll: useDocumentScroll,
@@ -837,20 +839,21 @@ export default function ShortsPage() {
     useIOSSharedVideo,
   ]);
 
-  // 下一屏：用备用元素提前把下一条视频拉起来。iOS 分支此前完全没有预加载，
-  // 唯一的 media element 要等滑动到位后才换 src，网盘取链 + 首帧解码整条
-  // 串行发生在用户眼前；桌面/Android 早就预载了 PRELOAD_AHEAD_COUNT 条。
-  // 开始时机沿用同一套高低水位（activeReadyForPreload），当前视频缓冲不
-  // 健康时不去抢它的带宽。
+  // 下一屏：用备用元素提前把下一条视频拉起来。
+  //
+  // 这里**不看** activeReadyForPreload：备用元素承担的正是"下一条"这一档，
+  // 与非 iOS 路径上 getPreloadAheadCount 的下限 1 是同一条规则。那道授权每次
+  // 切屏都清零、要靠当前条真的起播并囤够 4~12 秒缓冲才挣得回来，而正常刷视频
+  // 比这条链路走完还快——挂在它上面就等于"永远来不及"，滑到位时下一条一个
+  // 字节都还没请求过。授权只该决定再往后囤几条；iOS 一共就两个 media element，
+  // 没有"再往后"，所以这里没有它的位置。
   //
   // 这里是普通 useEffect 而不是 useLayoutEffect：备用元素处于隐藏角色，
   // 移动插槽和起 src 都没有当帧的视觉后果，没必要把一次 appendChild 和一次
   // load()（会立刻发网络请求）压进浏览器绘制前的同步块里。上面那个提升
   // effect 必须保持 useLayoutEffect——活跃元素得在这一帧画出来之前就位。
   useEffect(() => {
-    if (!useIOSSharedVideo || iosStandbyPreloadDisabled || !activeReadyForPreload) {
-      return;
-    }
+    if (!useIOSSharedVideo || iosStandbyPreloadDisabled) return;
     const nextIndex = activeIndex + 1;
     const nextItem = items[nextIndex];
     const nextSlot = iosSharedVideoSlots.current.get(nextIndex);
@@ -875,10 +878,12 @@ export default function ShortsPage() {
     standby.poster = nextItem.poster;
     standby.src = nextItem.videoSrc;
     standby.load();
+    // 光把字节拉下来还是一张静态图：video 在真正播放前一直画 poster。
+    // 拿到元数据后 seek 一次逼它解码首帧，滑到位就直接有画面。
+    warmStandbyFirstFrame(standby);
   }, [
     acquireIOSVideoElement,
     activeIndex,
-    activeReadyForPreload,
     iosStandbyPreloadDisabled,
     items,
     useIOSSharedVideo,
@@ -913,7 +918,7 @@ export default function ShortsPage() {
       body.classList.add("shorts-document-scroll");
       // 文档滚动 + 自接管手势（?shortsPager=1）时要一并关掉根元素的吸附点，
       // 否则程序化写入的 scrollY 会被浏览器重新吸附，逐帧跟手直接失效。
-      if (useTouchPager) {
+      if (takeOverScrolling) {
         html.classList.add("is-touch-paged");
         body.classList.add("is-touch-paged");
       }
@@ -953,7 +958,7 @@ export default function ShortsPage() {
         }
       }
     };
-  }, [useDocumentScroll, useTouchPager]);
+  }, [useDocumentScroll, takeOverScrolling]);
 
   // 用稳定 feed key 在真实 DOM 中找下一条；不闭包 items/index，既能跨队列
   // 裁剪，也不会每取回一批就换回调引用、击穿 ShortsSlide 的 memo。
@@ -983,7 +988,7 @@ export default function ShortsPage() {
   return (
     <div
       className={`shorts-page${useDocumentScroll ? " is-document-scroll" : ""}${
-        useTouchPager ? " is-touch-paged" : ""
+        takeOverScrolling ? " is-touch-paged" : ""
       }${legacyVideoTransitionEnabled ? " has-video-transition" : ""}`}
     >
       <header className="shorts-header">
@@ -1055,7 +1060,7 @@ export default function ShortsPage() {
       )}
 
       <div
-        className={`shorts-feed${useTouchPager ? " is-touch-paged" : ""}`}
+        className={`shorts-feed${takeOverScrolling ? " is-touch-paged" : ""}`}
         ref={containerRef}
       >
         <div className="shorts-feed__track" ref={trackRef}>
@@ -1191,6 +1196,35 @@ export default function ShortsPage() {
       </div>
     </div>
   );
+}
+
+/**
+ * iOS 备用元素的首帧预热。它停在下一屏的插槽里，绑了源却只画 poster——
+ * 按 HTML 渲染模型，video 在播放真正开始前一直呈现 poster frame，缓冲多满
+ * 都一样。seek 一次即可清掉这个标志并强制解码首帧。
+ * 一次性监听：src 换了会重新走这条路。
+ */
+function warmStandbyFirstFrame(video: HTMLVideoElement) {
+  const nudge = () => {
+    if (
+      !shouldWarmFirstFrame({
+        isActive: false,
+        shouldLoad: true,
+        isPlaybackElement: false,
+        readyState: video.readyState,
+        currentTime: video.currentTime,
+      })
+    ) {
+      return;
+    }
+    try {
+      video.currentTime = FIRST_FRAME_WARM_TIME;
+    } catch {
+      // 部分 ready state 下 seek 会抛错；另一个事件还会再试一次。
+    }
+  };
+  video.addEventListener("loadedmetadata", nudge, { once: true });
+  video.addEventListener("loadeddata", nudge, { once: true });
 }
 
 /**
@@ -2238,7 +2272,7 @@ function ShortsSlideImpl({
         !shouldWarmFirstFrame({
           isActive,
           shouldLoad,
-          usesSharedVideo,
+          isPlaybackElement: usesSharedVideo,
           readyState: video.readyState,
           currentTime: video.currentTime,
         })

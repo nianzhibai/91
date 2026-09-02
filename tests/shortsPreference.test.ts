@@ -893,7 +893,7 @@ test("iOS preloads the next video on a standby element and promotes it on swipe"
   // so it never steals bandwidth from a still-buffering active video.
   assert.match(
     shortsPageSource,
-    /if \(!useIOSSharedVideo \|\| iosStandbyPreloadDisabled \|\| !activeReadyForPreload\) \{\s*return;\s*\}\s*const nextIndex = activeIndex \+ 1;/
+    /if \(!useIOSSharedVideo \|\| iosStandbyPreloadDisabled\) return;\s*const nextIndex = activeIndex \+ 1;/
   );
   assert.match(
     shortsPageSource,
@@ -1372,7 +1372,24 @@ test("shorts keeps per-swipe work off the queue length", () => {
   // ③ 备用元素预载不占绘制前的同步块；提升那一条仍然必须是 layout effect。
   assert.match(
     shortsPageSource,
-    /useEffect\(\(\) => \{\s*if \(!useIOSSharedVideo \|\| iosStandbyPreloadDisabled \|\| !activeReadyForPreload\)/
+    /useEffect\(\(\) => \{\s*if \(!useIOSSharedVideo \|\| iosStandbyPreloadDisabled\) return;/
+  );
+  // 备用元素承担的是"下一条"这一档，和非 iOS 路径的 getPreloadAheadCount
+  // 下限 1 同一条规则：绝不能挂在每次切屏都清零的 activeReadyForPreload 上，
+  // 否则滑到位时下一条一个字节都还没请求过。
+  assert.doesNotMatch(
+    shortsPageSource,
+    /iosStandbyPreloadDisabled \|\| !activeReadyForPreload/
+  );
+  // 拉下字节还不够：video 在真正播放前一直画 poster，要 seek 一次逼出首帧
+  assert.match(shortsPageSource, /warmStandbyFirstFrame\(standby\);/);
+  assert.match(
+    shortsPageSource,
+    /function warmStandbyFirstFrame\(video: HTMLVideoElement\)/
+  );
+  assert.match(
+    shortsPageSource,
+    /video\.addEventListener\("loadedmetadata", nudge, \{ once: true \}\)/
   );
   assert.match(
     shortsPageSource,

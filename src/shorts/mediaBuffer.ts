@@ -58,8 +58,11 @@ export type FirstFrameWarmProbe = {
   isActive: boolean;
   /** 该 slide 是否已经绑定了 src */
   shouldLoad: boolean;
-  /** iOS 共享元素分支自有生命周期，不参与预热 */
-  usesSharedVideo: boolean;
+  /**
+   * 该元素是不是"播放位"——即将被 play() 的那一个。播放位由 play() 自己
+   * 清掉 show-poster 标志，不该被 seek 打断；只有候补位才需要预热。
+   */
+  isPlaybackElement: boolean;
   readyState: number;
   currentTime: number;
 };
@@ -83,7 +86,7 @@ export type FirstFrameWarmProbe = {
 export function shouldWarmFirstFrame(probe: FirstFrameWarmProbe): boolean {
   if (probe.isActive) return false;
   if (!probe.shouldLoad) return false;
-  if (probe.usesSharedVideo) return false;
+  if (probe.isPlaybackElement) return false;
   // HAVE_METADATA 之前 seek 无处可去；currentTime 非 0 说明已经被推进过。
   if (probe.readyState < 1) return false;
   return probe.currentTime === 0;

@@ -18,7 +18,10 @@ import {
   resolveShortsPagerSettleDuration,
   resolveShortsPagerTargetIndex,
 } from "../src/shorts/useShortsSwipePager";
-import { shouldUseShortsTouchPager } from "../src/shorts/platform";
+import {
+  shouldTakeOverShortsScrolling,
+  shouldUseShortsSwipePager,
+} from "../src/shorts/platform";
 
 const VIEWPORT = 900;
 
@@ -385,33 +388,53 @@ function withWindow<T>(
   }
 }
 
-test("the touch pager takes over wherever touch is the primary input", () => {
-  // iPhone 文档滚动模式也一视同仁：它当初被排除是为了保住"Safari 工具栏
-  // 随刷动收起"，而真机截图证明有 scroll-snap 在时工具栏根本收不起来。
+test("the gesture controller is mounted on every device, mouse included", () => {
+  // 控制器用 pointer 事件，同一套代码同时吃手指和鼠标——桌面拖拽是白送的。
+  // 参考实现 zyronon/douyin 全仓只绑 pointer 事件，没有"移动端一套桌面一套"。
   withWindow({ search: "", coarsePointer: true }, () => {
-    assert.equal(shouldUseShortsTouchPager(), true);
+    assert.equal(shouldUseShortsSwipePager(), true);
   });
-  // 桌面 / 触控本仍然走原生 scroll-snap + 滚轮 + 方向键
   withWindow({ search: "", coarsePointer: false }, () => {
-    assert.equal(shouldUseShortsTouchPager(), false);
+    assert.equal(shouldUseShortsSwipePager(), true);
   });
-  // 不支持 matchMedia 的环境不能抛错，按不启用处理
+  // 不支持 matchMedia 的环境不能抛错
   withWindow({ search: "" }, () => {
-    assert.equal(shouldUseShortsTouchPager(), false);
+    assert.equal(shouldUseShortsSwipePager(), true);
+  });
+  // 唯一的关闭方式是显式回退开关
+  withWindow({ search: "?shortsPager=0", coarsePointer: true }, () => {
+    assert.equal(shouldUseShortsSwipePager(), false);
   });
 });
 
-test("the touch pager has an explicit escape hatch in both directions", () => {
-  withWindow({ search: "?shortsPager=0", coarsePointer: true }, () => {
-    assert.equal(shouldUseShortsTouchPager(), false);
+test("only touch devices hand native scrolling over to the pager", () => {
+  // 触屏：手指位移必须完全由我们写，不能和浏览器的滚动预测抢同一根手指。
+  // iPhone 文档滚动模式也一视同仁——它当初被排除是为了保住"Safari 工具栏
+  // 随刷动收起"，而真机截图证明有 scroll-snap 在时工具栏根本收不起来。
+  withWindow({ search: "", coarsePointer: true }, () => {
+    assert.equal(shouldTakeOverShortsScrolling(), true);
   });
-  // 桌面上强制开启，便于在开发机上验证手势逻辑
+  // 桌面保留原生吸附：滚轮和方向键本来就好用，没理由替浏览器重写一遍。
+  // 鼠标拖拽是叠加上去的，只写 transform，与吸附不冲突。
+  withWindow({ search: "", coarsePointer: false }, () => {
+    assert.equal(shouldTakeOverShortsScrolling(), false);
+  });
+  withWindow({ search: "" }, () => {
+    assert.equal(shouldTakeOverShortsScrolling(), false);
+  });
+});
+
+test("the pager has an explicit escape hatch in both directions", () => {
+  withWindow({ search: "?shortsPager=0", coarsePointer: true }, () => {
+    assert.equal(shouldTakeOverShortsScrolling(), false);
+  });
+  // 桌面上强制走触屏那套，便于同机对照
   withWindow({ search: "?shortsPager=1", coarsePointer: false }, () => {
-    assert.equal(shouldUseShortsTouchPager(), true);
+    assert.equal(shouldTakeOverShortsScrolling(), true);
   });
   // 无关取值不改变默认判定
   withWindow({ search: "?shortsPager=yes", coarsePointer: false }, () => {
-    assert.equal(shouldUseShortsTouchPager(), false);
+    assert.equal(shouldTakeOverShortsScrolling(), false);
   });
 });
 
@@ -454,13 +477,13 @@ test("desktop keeps the native snapping path untouched", () => {
 
 test("the shorts page wires the pager to the same scroll container", () => {
   assert.match(shortsPageSource, /useShortsSwipePager\(\{/);
-  assert.match(shortsPageSource, /enabled:\s*useTouchPager/);
+  assert.match(shortsPageSource, /enabled:\s*usePagerGestures/);
   assert.match(shortsPageSource, /containerRef,/);
   assert.match(shortsPageSource, /trackRef,/);
   assert.match(shortsPageSource, /usesDocumentScroll:\s*useDocumentScroll/);
   assert.match(
     shortsPageSource,
-    /className=\{`shorts-feed\$\{useTouchPager \? " is-touch-paged" : ""\}`\}/
+    /className=\{`shorts-feed\$\{takeOverScrolling \? " is-touch-paged" : ""\}`\}/
   );
   // activeIndex 仍然只由 IntersectionObserver 决定，播放/预载链路不变
   assert.doesNotMatch(shortsPageSource, /pager[\s\S]{0,40}setActiveIndex/i);

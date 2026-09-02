@@ -556,7 +556,15 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
   };
 
   // ---- 手势 ----
+  // 用 pointer 事件而不是 touch 事件：同一套代码同时吃手指和鼠标，桌面
+  // 拖拽是白送的。zyronon/douyin 的 SlideVertical 也只绑 pointerdown/move/up，
+  // 全仓一处 touch 事件都没有——分成"移动端一套、桌面一套"是我们凭空加的
+  // 平台特例。
   let drag: PagerDrag | null = null;
+  /** 当前按在屏幕上的所有指针；多于一个就交出手势。 */
+  const activePointers = new Set<number>();
+  /** 正在驱动本次手势的那一个指针。 */
+  let dragPointerId: number | null = null;
   let gestureActive = false;
   const setGestureActive = (active: boolean) => {
     if (gestureActive === active) return;
@@ -573,7 +581,8 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     settleTo(slides[index] ?? null, false);
   };
 
-  const handleTouchStart = (event: TouchEvent) => {
+  const handlePointerDown = (event: PointerEvent) => {
+    activePointers.add(event.pointerId);
     // 新的一次按下：上一次竖滑的合成 click 早该到了，守卫立刻失效，
     // 这样紧接着的这次轻点一定能穿到 slide 上。
     releaseClickGuard();
@@ -588,7 +597,10 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
       if (interrupted) settleToNearest();
     };
 
-    if (event.touches.length !== 1) return bail();
+    dragPointerId = null;
+    // 鼠标只认左键；第二根手指落下时整只手势作废。
+    if (event.pointerType === "mouse" && event.button !== 0) return bail();
+    if (activePointers.size !== 1) return bail();
 
     // 用鸭子类型而不是 instanceof Element：这条状态机要能脱离浏览器全局
     // 直接被测试，而 target 在真实环境里一定是元素或 null。
@@ -611,12 +623,12 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     const previousTop = slideTops[anchorIndex - 1] ?? anchorTop;
     const nextTop = slideTops[anchorIndex + 1] ?? anchorTop;
     const scrollTop = getScrollTop();
-    const touch = event.touches[0];
     const now = performance.now();
+    dragPointerId = event.pointerId;
 
     drag = {
-      startX: touch.clientX,
-      startY: touch.clientY,
+      startX: event.clientX,
+      startY: event.clientY,
       startTime: now,
       baselineY: 0,
       originTranslate: translate,
@@ -631,13 +643,14 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
       committed: false,
       abandoned: false,
       interrupted,
-      samples: [{ y: touch.clientY, t: now }],
+      samples: [{ y: event.clientY, t: now }],
     };
   };
 
-  const handleTouchMove = (event: TouchEvent) => {
+  const handlePointerMove = (event: PointerEvent) => {
     if (!drag || drag.abandoned) return;
-    if (event.touches.length !== 1) {
+    if (event.pointerId !== dragPointerId) return;
+    if (activePointers.size !== 1) {
       // 第二根手指落下：交出手势，已经拖开的部分就近吸附回去。
       const shouldSettle = drag.committed || drag.interrupted;
       drag.abandoned = true;
@@ -646,7 +659,7 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
       return;
     }
 
-    const touch = event.touches[0];
+    const touch = event;
     const deltaX = touch.clientX - drag.startX;
     const deltaY = touch.clientY - drag.startY;
 
@@ -663,6 +676,12 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
       }
       drag.committed = true;
       setGestureActive(true);
+      // 鼠标拖到容器外面也要继续收事件；触摸本来就隐式捕获，这里是给桌面用的。
+      try {
+        root.setPointerCapture(event.pointerId);
+      } catch {
+        // 指针已经抬起 / 不支持捕获时忽略，后续事件照常走冒泡。
+      }
       // 激活阈值那段位移不能再算进画面位移，否则接管的瞬间会跳一下。
       drag.baselineY = deltaY;
       track.style.willChange = "transform";
@@ -696,7 +715,10 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     );
   };
 
-  const handleTouchEnd = (event: TouchEvent) => {
+  const handlePointerUp = (event: PointerEvent) => {
+    activePointers.delete(event.pointerId);
+    if (dragPointerId !== null && event.pointerId !== dragPointerId) return;
+    dragPointerId = null;
     const current = drag;
     drag = null;
     setGestureActive(false);
@@ -716,14 +738,9 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     if (event.cancelable) event.preventDefault();
     guardNextClick();
 
-    const changedTouch = event.changedTouches[0];
     const now = performance.now();
-    if (changedTouch) {
-      current.samples.push({ y: changedTouch.clientY, t: now });
-    }
-    const deltaY = changedTouch
-      ? changedTouch.clientY - current.startY
-      : current.samples[current.samples.length - 1].y - current.startY;
+    current.samples.push({ y: event.clientY, t: now });
+    const deltaY = event.clientY - current.startY;
 
     const targetIndex = resolveShortsPagerTargetIndex({
       deltaY,
@@ -739,7 +756,10 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     settleTo(target, targetIndex !== current.anchorIndex);
   };
 
-  const handleTouchCancel = () => {
+  const handlePointerCancel = (event: PointerEvent) => {
+    activePointers.delete(event.pointerId);
+    if (dragPointerId !== null && event.pointerId !== dragPointerId) return;
+    dragPointerId = null;
     const current = drag;
     drag = null;
     setGestureActive(false);
@@ -778,10 +798,10 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     }, 240);
   };
 
-  root.addEventListener("touchstart", handleTouchStart, { passive: true });
-  root.addEventListener("touchmove", handleTouchMove, { passive: false });
-  root.addEventListener("touchend", handleTouchEnd);
-  root.addEventListener("touchcancel", handleTouchCancel);
+  root.addEventListener("pointerdown", handlePointerDown, { passive: true });
+  root.addEventListener("pointermove", handlePointerMove, { passive: false });
+  root.addEventListener("pointerup", handlePointerUp);
+  root.addEventListener("pointercancel", handlePointerCancel);
   window.addEventListener("resize", handleViewportResize);
   window.addEventListener("orientationchange", handleViewportResize);
 
@@ -802,10 +822,10 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     setGestureActive(false);
     if (realignFrame !== null) window.cancelAnimationFrame(realignFrame);
     if (realignTimer !== null) window.clearTimeout(realignTimer);
-    root.removeEventListener("touchstart", handleTouchStart);
-    root.removeEventListener("touchmove", handleTouchMove);
-    root.removeEventListener("touchend", handleTouchEnd);
-    root.removeEventListener("touchcancel", handleTouchCancel);
+    root.removeEventListener("pointerdown", handlePointerDown);
+    root.removeEventListener("pointermove", handlePointerMove);
+    root.removeEventListener("pointerup", handlePointerUp);
+    root.removeEventListener("pointercancel", handlePointerCancel);
     window.removeEventListener("resize", handleViewportResize);
     window.removeEventListener("orientationchange", handleViewportResize);
   };
