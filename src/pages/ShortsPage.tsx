@@ -53,6 +53,7 @@ import {
 import { useShortsSlideGestures } from "@/shorts/useShortsSlideGestures";
 import {
   measureOffsetWithinSlide,
+  readShortsSlideTopWithinTrack,
   useShortsSwipePager,
 } from "@/shorts/useShortsSwipePager";
 import { AdminEmptyVisual } from "@/admin/AdminEmptyVisual";
@@ -159,6 +160,11 @@ export default function ShortsPage() {
   }, []);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
+  // 承载滑动位移的轨道。它没有定位也没有常驻 transform，slide 的 offsetTop
+  // 和 nextElementSibling 关系都不受影响；只有手势 / 落点动画进行中才会被
+  // 写上 translate3d，落定立刻清掉——不给 WebKit 在 <video> 祖先上留常驻
+  // 合成层（本页在 iOS 合成路径上踩过坑，见 .shorts-page 的注释）。
+  const trackRef = useRef<HTMLDivElement | null>(null);
   const itemsLengthRef = useRef(items.length);
   itemsLengthRef.current = items.length;
   // 整页只建一个 slide 观察器，新批次到达时增量补充观察目标。
@@ -395,6 +401,7 @@ export default function ShortsPage() {
       activeIndex: nextActiveIndex,
       offsetWithinAnchor: measureOffsetWithinActiveSlide(
         root,
+        trackRef.current,
         activeIndex,
         useDocumentScroll
       ),
@@ -483,15 +490,15 @@ export default function ShortsPage() {
     if (root && slide) {
       // 还原裁剪那一刻锚点内的偏移：切屏动画进行到一半时被裁剪打断，也只是
       // 坐标系整体平移，画面不会跳回吸附点。偏移已在测量时夹在一屏之内。
-      const offsetWithinAnchor = pending.offsetWithinAnchor;
+      // 位置和测量用同一个参照系（轨道），两边都不受 transform 影响。
+      const track = trackRef.current;
+      const top = track
+        ? readShortsSlideTopWithinTrack(slide, track) + pending.offsetWithinAnchor
+        : slide.offsetTop + pending.offsetWithinAnchor;
       if (useDocumentScroll) {
-        const top =
-          window.scrollY +
-          slide.getBoundingClientRect().top +
-          offsetWithinAnchor;
         window.scrollTo({ top: Math.max(0, top), behavior: "auto" });
       } else {
-        root.scrollTop = Math.max(0, slide.offsetTop + offsetWithinAnchor);
+        root.scrollTop = Math.max(0, top);
       }
     }
     pendingQueueTrimRef.current = null;
@@ -640,6 +647,7 @@ export default function ShortsPage() {
   useShortsSwipePager({
     enabled: useTouchPager,
     containerRef,
+    trackRef,
     usesDocumentScroll: useDocumentScroll,
     getAnchorSlide: getActiveSlideElement,
   });
@@ -1040,154 +1048,160 @@ export default function ShortsPage() {
         className={`shorts-feed${useTouchPager ? " is-touch-paged" : ""}`}
         ref={containerRef}
       >
-        {loading && items.length === 0 && !empty && !loadError && (
-          <div className="shorts-empty shorts-loading" aria-live="polite">
-            <div className="shorts-empty__content">
-              <ShortsLoadingSpinner size={30} />
-              <p>正在加载短视频</p>
+        <div className="shorts-feed__track" ref={trackRef}>
+          {loading && items.length === 0 && !empty && !loadError && (
+            <div className="shorts-empty shorts-loading" aria-live="polite">
+              <div className="shorts-empty__content">
+                <ShortsLoadingSpinner size={30} />
+                <p>正在加载短视频</p>
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {loadError && items.length === 0 && (
-          <div className="shorts-empty" role="alert">
-            <div className="shorts-empty__content">
-              <p>短视频加载失败，请检查网络后重试</p>
-              <button
-                type="button"
-                className="shorts-empty__link"
-                onClick={() => void loadMore()}
-              >
-                重新加载
-              </button>
+          {loadError && items.length === 0 && (
+            <div className="shorts-empty" role="alert">
+              <div className="shorts-empty__content">
+                <p>短视频加载失败，请检查网络后重试</p>
+                <button
+                  type="button"
+                  className="shorts-empty__link"
+                  onClick={() => void loadMore()}
+                >
+                  重新加载
+                </button>
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {empty && items.length === 0 && (
-          <div className="shorts-empty">
-            <AdminEmptyVisual
-              variant="empty"
-              text="当前库中没有视频"
-              className="shorts-empty__visual"
-            />
-          </div>
-        )}
-
-        {items.map((item, index) => {
-          const itemKey = shortsQueueItemKey(item);
-          const isActiveSlide = index === activeIndex;
-          const isInCacheWindow =
-            index >= videoWindow.start && index <= videoWindow.end;
-          const preloadOffset = index - activeIndex;
-          const shouldPreload =
-            !useIOSSharedVideo &&
-            activeReadyForPreload &&
-            preloadOffset > 0 &&
-            preloadOffset <= PRELOAD_AHEAD_COUNT;
-          const shouldMount =
-            isActiveSlide ||
-            (!useIOSSharedVideo && (isInCacheWindow || shouldPreload));
-          // 视频窗口内已经缓冲过的视频保留 src：
-          // 在窗口内来回切换时，直接复用浏览器已缓冲数据。
-          const shouldRetainCached =
-            !useIOSSharedVideo &&
-            isInCacheWindow &&
-            !isActiveSlide &&
-            cacheableSourceIds.has(item.id);
-          const shouldLoad = isActiveSlide || shouldPreload || shouldRetainCached;
-          const shouldEagerLoad = isActiveSlide || shouldPreload;
-          // 视口附近的照常渲染；再加上所有还挂着 <video> 的 slide——那些是
-          // 有意保留的缓冲，不能因为离开视口就被拆掉。两者之和有上限，
-          // 与队列长度无关。
-          const shouldRenderContent =
-            Math.abs(preloadOffset) <= SLIDE_CONTENT_WINDOW_RADIUS ||
-            shouldMount ||
-            shouldRetainCached;
-          return (
-            <ShortsSlide
-              key={itemKey}
-              item={item}
-              itemKey={itemKey}
-              index={index}
-              isActive={isActiveSlide}
-              // 固定 4 条视频窗口内才挂载 <video> 壳；
-              // 当前屏先绑定 src；后两个视频等当前屏缓冲健康后再预加载；
-              // 已缓冲过的窗口内视频保留 src，便于来回切换复用缓存。
-              shouldMount={shouldMount}
-              shouldLoad={shouldLoad}
-              shouldEagerLoad={shouldEagerLoad}
-              shouldRenderContent={shouldRenderContent}
-              keyboardSeekPreview={
-                keyboardSeekPreview?.videoIndex === index
-                  ? keyboardSeekPreview
-                  : undefined
-              }
-              sharedVideoRef={
-                useIOSSharedVideo ? iosSharedVideoRef : undefined
-              }
-              sharedVideoSlotRef={
-                useIOSSharedVideo
-                  ? setIOSSharedVideoSlotRef(index)
-                  : undefined
-              }
-              muted={muted}
-              videoRef={setVideoRef(index)}
-              onLikeToggle={handleLikeToggle}
-              hasLiked={hasLiked}
-              registerKeyboardLikeHandler={registerKeyboardLikeHandler}
-              canHide={isAdmin}
-              onHideSuccess={handleHideSuccess}
-              onActiveReadyForPreload={handleActiveReadyForPreload}
-              onActiveNeedsPriority={handleActiveNeedsPriority}
-              onSourceCached={handleSourceCached}
-              onUserPausedChange={setUserPausedForIndex}
-              isVideoPausedByUser={isVideoPausedByUser}
-              onRouteClick={handleShortsRouteClick}
-              showHud={showHud}
-              loopDebugProbeRef={
-                debugHudEnabled ? loopDebugProbeRef : undefined
-              }
-            />
-          );
-        })}
-
-        {loadError && items.length > 0 && (
-          <div className="shorts-empty" role="alert">
-            <div className="shorts-empty__content">
-              <p>后续视频加载失败</p>
-              <button
-                type="button"
-                className="shorts-empty__link"
-                onClick={() => void loadMore()}
-              >
-                重新加载
-              </button>
+          {empty && items.length === 0 && (
+            <div className="shorts-empty">
+              <AdminEmptyVisual
+                variant="empty"
+                text="当前库中没有视频"
+                className="shorts-empty__visual"
+              />
             </div>
-          </div>
-        )}
+          )}
+
+          {items.map((item, index) => {
+            const itemKey = shortsQueueItemKey(item);
+            const isActiveSlide = index === activeIndex;
+            const isInCacheWindow =
+              index >= videoWindow.start && index <= videoWindow.end;
+            const preloadOffset = index - activeIndex;
+            const shouldPreload =
+              !useIOSSharedVideo &&
+              activeReadyForPreload &&
+              preloadOffset > 0 &&
+              preloadOffset <= PRELOAD_AHEAD_COUNT;
+            const shouldMount =
+              isActiveSlide ||
+              (!useIOSSharedVideo && (isInCacheWindow || shouldPreload));
+            // 视频窗口内已经缓冲过的视频保留 src：
+            // 在窗口内来回切换时，直接复用浏览器已缓冲数据。
+            const shouldRetainCached =
+              !useIOSSharedVideo &&
+              isInCacheWindow &&
+              !isActiveSlide &&
+              cacheableSourceIds.has(item.id);
+            const shouldLoad = isActiveSlide || shouldPreload || shouldRetainCached;
+            const shouldEagerLoad = isActiveSlide || shouldPreload;
+            // 视口附近的照常渲染；再加上所有还挂着 <video> 的 slide——那些是
+            // 有意保留的缓冲，不能因为离开视口就被拆掉。两者之和有上限，
+            // 与队列长度无关。
+            const shouldRenderContent =
+              Math.abs(preloadOffset) <= SLIDE_CONTENT_WINDOW_RADIUS ||
+              shouldMount ||
+              shouldRetainCached;
+            return (
+              <ShortsSlide
+                key={itemKey}
+                item={item}
+                itemKey={itemKey}
+                index={index}
+                isActive={isActiveSlide}
+                // 固定 4 条视频窗口内才挂载 <video> 壳；
+                // 当前屏先绑定 src；后两个视频等当前屏缓冲健康后再预加载；
+                // 已缓冲过的窗口内视频保留 src，便于来回切换复用缓存。
+                shouldMount={shouldMount}
+                shouldLoad={shouldLoad}
+                shouldEagerLoad={shouldEagerLoad}
+                shouldRenderContent={shouldRenderContent}
+                keyboardSeekPreview={
+                  keyboardSeekPreview?.videoIndex === index
+                    ? keyboardSeekPreview
+                    : undefined
+                }
+                sharedVideoRef={
+                  useIOSSharedVideo ? iosSharedVideoRef : undefined
+                }
+                sharedVideoSlotRef={
+                  useIOSSharedVideo
+                    ? setIOSSharedVideoSlotRef(index)
+                    : undefined
+                }
+                muted={muted}
+                videoRef={setVideoRef(index)}
+                onLikeToggle={handleLikeToggle}
+                hasLiked={hasLiked}
+                registerKeyboardLikeHandler={registerKeyboardLikeHandler}
+                canHide={isAdmin}
+                onHideSuccess={handleHideSuccess}
+                onActiveReadyForPreload={handleActiveReadyForPreload}
+                onActiveNeedsPriority={handleActiveNeedsPriority}
+                onSourceCached={handleSourceCached}
+                onUserPausedChange={setUserPausedForIndex}
+                isVideoPausedByUser={isVideoPausedByUser}
+                onRouteClick={handleShortsRouteClick}
+                showHud={showHud}
+                loopDebugProbeRef={
+                  debugHudEnabled ? loopDebugProbeRef : undefined
+                }
+              />
+            );
+          })}
+
+          {loadError && items.length > 0 && (
+            <div className="shorts-empty" role="alert">
+              <div className="shorts-empty__content">
+                <p>后续视频加载失败</p>
+                <button
+                  type="button"
+                  className="shorts-empty__link"
+                  onClick={() => void loadMore()}
+                >
+                  重新加载
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
 /**
- * 队列裁剪前，当前屏在滚动方向上偏离吸附点多少。两种滚动模式下"容器上沿"
- * 分别是 feed 的 rect.top 和视口顶端，其余计算共用同一个纯函数。
+ * 队列裁剪前，当前屏在滚动方向上偏离吸附点多少。
+ *
+ * slide 的位置必须相对**轨道**来量，不能相对 feed 或视口：滑动手势进行中
+ * 轨道上挂着 translateY，相对视口的 rect 会把这段位移重复计入，重贴时画面
+ * 会跳一整屏。两个 rect 受同一个 transform 影响，相减正好把它消掉。
  */
 function measureOffsetWithinActiveSlide(
   root: HTMLElement | null,
+  track: HTMLElement | null,
   activeIndex: number,
   usesDocumentScroll: boolean
 ): number {
-  if (!root) return 0;
+  if (!root || !track) return 0;
   const slide = root.querySelector<HTMLElement>(
     `[data-shorts-slide][data-index="${activeIndex}"]`
   );
   if (!slide) return 0;
-  const base = usesDocumentScroll ? 0 : root.getBoundingClientRect().top;
   return measureOffsetWithinSlide({
-    slideTop: slide.getBoundingClientRect().top - base,
+    scrollTop: usesDocumentScroll ? window.scrollY : root.scrollTop,
+    slideTop: readShortsSlideTopWithinTrack(slide, track),
     viewportHeight: usesDocumentScroll ? window.innerHeight : root.clientHeight,
   });
 }

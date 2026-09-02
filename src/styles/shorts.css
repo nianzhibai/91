@@ -155,6 +155,16 @@ body.shorts-document-scroll::before {
   display: none;
 }
 
+/* 滑动位移的承载体。静止时它是一个完全透明的普通块——没有定位、没有
+   transform、没有 will-change，所以既不改变 slide 的 offsetTop / 兄弟关系，
+   也不会在 <video> 祖先上留下常驻合成层（本页在 iOS 合成路径上踩过坑）。
+   手势和落点动画进行中由 JS 写内联 translate3d，落定立刻清掉。 */
+.shorts-feed__track {
+  position: static;
+  transform: none;
+  will-change: auto;
+}
+
 /* 页面自己接管上下滑动时（移动端）：
    - touch-action: none —— 手指位移完全由 JS 写进 scrollTop，不和浏览器的
      滚动预测抢同一根手指；横向的进度条 seek 手势本来就是 JS 驱动，不受影响。

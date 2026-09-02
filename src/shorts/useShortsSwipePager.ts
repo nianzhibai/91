@@ -9,16 +9,32 @@ import { classifyTouchSeekIntent } from "./useShortsSlideGestures";
  * 各家实现不一致，慢速大幅滑动经常被判回弹，快速轻扫又可能不吸附，落点动画
  * 的时长和缓动也不可控——这就是移动端"手感不好"的根源。
  *
- * 这里参考 zyronon/douyin 的 `utils/slide.ts` 把判定收回自己手里：
- * - 按下到抬手全程 1:1 跟手（不跟随浏览器的滚动预测）
- * - 抬手时按"距离 + 时长"判定切屏还是回弹，规则固定、跨浏览器一致
- * - 落点用 easeOutCubic 收尾，时长按抬手速度反解，读起来是惯性减速而非跳变
+ * 判定和运动两部分都照 zyronon/douyin 的 `utils/slide.ts` 来：
+ * - 判定：位移 <20px 回弹、>1/3 屏必切、中间地带看 150ms 内是否抬手
+ * - 运动：`translate3d` + CSS `transition`，**跑在合成器线程上**
  *
- * 与 douyin 不同的是，这里不引入 transform 轨道：位移仍然写在原有滚动容器的
- * `scrollTop`（文档滚动模式写 `window.scrollY`）上。页面其余部分——
- * IntersectionObserver 判活跃屏、长会话队列裁剪重贴、键盘 `scrollIntoView`、
- * 隐藏视频后跳下一条——全都建立在同一套 scrollTop / offsetTop 几何上，换成
- * transform 轨道会一次性推翻它们。
+ * 运动机制这条尤其关键。切屏那几百毫秒恰好是主线程最忙的时候——activeIndex
+ * 变化触发 React 重渲染、iOS 共享 <video> 换插槽、`play()` 起播、下一条预载。
+ * 用 rAF 逐帧写 `scrollTop` 的话主线程一掉帧动画就顿；交给 CSS transition
+ * 则完全不受主线程影响。
+ *
+ * ## 坐标模型
+ *
+ * 记 `T` 为轨道当前的 translateY，任意时刻的等效滚动位置恒为 `scrollTop - T`；
+ * 下面所有几何换算都从这一条推出来。三个阶段：
+ *
+ * - 静止：`scrollTop` 精确落在某条 slide 上，`T = 0`，轨道上什么都没有。
+ * - 跟手：`scrollTop` 不动，位移全部记在 `T` 上（逐帧只写 transform）。
+ * - 落点：**先把 `scrollTop` 写到目标 slide，再用 `T` 反向补偿这次跳变，
+ *   然后让 `T` 动画归零**（FLIP）。画面是平滑滑过去的，但滚动位置在第 0
+ *   毫秒就已经是新的了。
+ *
+ * 落点这样排有两个直接后果：IntersectionObserver 在松手当场就判出新的活跃屏
+ * （下一条视频立刻起播，与 douyin 在 touchEnd 里推进 index 一致），以及位置
+ * 提交完全不依赖 transitionend——那个事件丢了也只是 will-change 多留一会儿。
+ *
+ * 页面其余部分因此完全不用改：判活跃屏、长会话队列裁剪重贴、键盘
+ * `scrollIntoView`、隐藏视频后跳下一条，全都仍然建立在 `scrollTop` 几何上。
  */
 
 /** 位移不足这个值一律当误触，回弹到当前视频。 */
@@ -30,15 +46,22 @@ export const SHORTS_PAGER_FLICK_MS = 150;
 /** 落点动画时长区间；douyin 用的是固定 300ms，这里按速度在区间内浮动。 */
 export const SHORTS_PAGER_MIN_SETTLE_MS = 180;
 export const SHORTS_PAGER_MAX_SETTLE_MS = 380;
+/**
+ * 落点缓动。这是 easeOutCubic 的 cubic-bezier 形式，起始斜率
+ * 0.61 / 0.215 ≈ 2.84，与下面按 3×距离/时长 反解时长的假设吻合：动画第一帧
+ * 的速度就接上手指离开时的速度，读起来是继续减速滑过去而不是重新起步。
+ * 换缓动就必须同步改 resolveShortsPagerSettleDuration 里的系数。
+ */
+export const SHORTS_PAGER_SETTLE_EASING = "cubic-bezier(0.215, 0.61, 0.355, 1)";
 /** 抬手速度取这个时间窗内的平均值，避免最后一帧抖动主导结果。 */
 export const SHORTS_PAGER_VELOCITY_WINDOW_MS = 100;
+/**
+ * transitionend 兜底。标签页切走、合成器丢事件时它可能不来；位置早已提交，
+ * 这里只是保证 will-change 和内联 transform 不会一直挂在轨道上。
+ */
+export const SHORTS_PAGER_SETTLE_FALLBACK_MS = 80;
 /** 低于这个速度就不按速度反解时长，直接按剩余距离取。 */
 const SHORTS_PAGER_MIN_VELOCITY_PX_PER_MS = 0.05;
-/**
- * 判定"滚动位置被外力挪过"的阈值。自己写进去的值再读回来只会有亚像素级
- * 取整误差；队列裁剪重贴一次至少挪掉好几屏，两者相差好几个数量级。
- */
-const SHORTS_PAGER_EXTERNAL_SCROLL_EPSILON_PX = 4;
 /**
  * 竖滑之后吞掉合成 click 的时间窗。合成 click 紧跟在同一次 touchend 之后
  * 到达，这个窗口只要覆盖住它即可；下一次按下也会立刻解除，用户真正的轻点
@@ -109,9 +132,8 @@ export function resolveShortsPagerTargetIndex(input: ShortsPagerRelease): number
 }
 
 /**
- * 落点动画时长。easeOutCubic 的起始速度是 3 × 距离 / 时长，按抬手速度反解
- * 时长，动画第一帧就能接上手指离开时的速度，看起来是"继续减速滑过去"而不是
- * 松手后重新起步——这正是需求里的惯性滚动。
+ * 落点动画时长。SHORTS_PAGER_SETTLE_EASING 的起始速度约为 3 × 距离 / 时长，
+ * 按抬手速度反解时长，动画第一帧就能接上手指离开时的速度。
  *
  * 速度过低（慢慢拖到位再松手）时反解出来的时长会趋于无穷，改按剩余距离取：
  * 拖得越远收尾越长，短距离回弹不会拖泥带水。两条路径最后都夹在区间内。
@@ -140,25 +162,69 @@ export function resolveShortsPagerSettleDuration(input: {
   );
 }
 
-/** easeOutCubic：入场快、收尾慢，和惯性减速同形。 */
-export function shortsPagerEase(t: number): number {
-  const clamped = clamp(t, 0, 1);
-  return 1 - (1 - clamped) * (1 - clamped) * (1 - clamped);
+/**
+ * 从 transform 值里取出 translateY。内联样式写的是 `translate3d(0, Npx, 0)`，
+ * `getComputedStyle` 读回来的是 `matrix(...)` / `matrix3d(...)`——动画进行中
+ * 只有后者能拿到当前的中间值，所以两种都要认。认不出来时返回 0：宁可当成
+ * 没有位移（最坏是少平移一次），也不要把 NaN 传进滚动位置里。
+ */
+export function parseTranslateY(transform: string | null | undefined): number {
+  if (!transform || transform === "none") return 0;
+
+  const translate3d = /translate3d\(\s*[^,]+,\s*(-?[\d.]+)px/.exec(transform);
+  if (translate3d) return toFiniteNumber(translate3d[1]);
+
+  const translateY = /translateY\(\s*(-?[\d.]+)px/.exec(transform);
+  if (translateY) return toFiniteNumber(translateY[1]);
+
+  const matrix3d = /^matrix3d\((.+)\)$/.exec(transform);
+  if (matrix3d) {
+    const parts = matrix3d[1].split(",");
+    return parts.length === 16 ? toFiniteNumber(parts[13]) : 0;
+  }
+
+  const matrix = /^matrix\((.+)\)$/.exec(transform);
+  if (matrix) {
+    const parts = matrix[1].split(",");
+    return parts.length === 6 ? toFiniteNumber(parts[5]) : 0;
+  }
+
+  return 0;
+}
+
+function toFiniteNumber(raw: string): number {
+  const value = Number(raw.trim());
+  return Number.isFinite(value) ? value : 0;
 }
 
 /**
- * 锚点 slide 内的滚动偏移：0 表示正好贴在吸附点上，正值表示已经往下滑过了
- * 一部分。长会话队列裁剪要用它把"裁剪前的画面位置"原样搬到新坐标系里。
- * 夹在 ±一屏之内，异常几何（尺寸未就绪、节点已脱离布局）不会把滚动甩飞。
+ * 滚动位置相对某条 slide 顶端的偏移：0 表示正好贴在吸附点上，正值表示已经
+ * 往下滑过了一部分。长会话队列裁剪要用它把"裁剪前的画面位置"原样搬到新
+ * 坐标系里。夹在 ±一屏之内，异常几何不会把滚动位置甩飞。
+ *
+ * 传进来的 `slideTop` 必须是**消掉了轨道 transform 之后**的布局位置，
+ * 否则动画进行中量出来的值会把 translateY 重复计入一次，重贴时画面会跳
+ * 一整屏。取法见 readShortsSlideTopWithinTrack。
  */
 export function measureOffsetWithinSlide(input: {
-  /** slide 顶端相对滚动容器上沿的距离，向下为正。 */
+  scrollTop: number;
   slideTop: number;
   viewportHeight: number;
 }): number {
   const limit = Math.max(0, input.viewportHeight);
-  // `0 - x` 而不是 `-x`：贴合吸附点时前者是 +0，后者是 -0，会污染调用方的比较。
-  return clamp(0 - input.slideTop, -limit, limit);
+  return clamp(input.scrollTop - input.slideTop, -limit, limit);
+}
+
+/**
+ * slide 相对轨道内容原点的位置。两个 rect 受同一个 transform 影响，相减就
+ * 把它消掉了，因此这个值在动画进行中同样可靠，且不依赖 offsetParent 语义。
+ */
+export function readShortsSlideTopWithinTrack(
+  slide: HTMLElement | null,
+  track: HTMLElement | null
+): number {
+  if (!slide || !track) return 0;
+  return slide.getBoundingClientRect().top - track.getBoundingClientRect().top;
 }
 
 /** 贴合度最高的那一屏；用于手势起点和落点的锚定。 */
@@ -185,12 +251,15 @@ type PagerDrag = {
   startTime: number;
   /** 判定为纵向翻页那一刻的位移；后续按它做零点，避免激活时画面跳一下。 */
   baselineY: number;
+  /** 手势开始时轨道已有的位移（中途接住动画时非 0）。 */
+  originTranslate: number;
   anchorIndex: number;
-  anchorTop: number;
-  /** 本次手势允许到达的滚动范围：最多相邻一屏。 */
-  minTop: number;
-  maxTop: number;
+  /** 本次手势允许到达的 translateY 范围：最多相邻一屏。 */
+  minTranslate: number;
+  maxTranslate: number;
   viewportHeight: number;
+  /** 手势开始时的 slide 节点与它们的等效滚动位置。 */
+  slides: HTMLElement[];
   slideTops: number[];
   /** 已判定为纵向翻页并接管 */
   committed: boolean;
@@ -202,8 +271,10 @@ type PagerDrag = {
 };
 
 export type ShortsSwipePagerHost = {
-  /** slide 所在的容器；同时也是触摸监听的挂载点。 */
+  /** slide 所在的滚动容器；同时也是触摸监听的挂载点。 */
   root: HTMLElement;
+  /** 承载位移的轨道，`root` 的唯一子元素。 */
+  track: HTMLElement;
   /** iPhone 浏览器壳的文档滚动模式：位移写在 window 上。 */
   usesDocumentScroll: boolean;
   /** 视口尺寸变化后用来重新对齐的当前屏。 */
@@ -212,32 +283,18 @@ export type ShortsSwipePagerHost = {
 
 /**
  * 手势状态机本体，不依赖 React。这样它能脱离渲染器直接接受完整的事件序列
- * 测试——按下 / 移动 / 抬手 / 多指 / 打断动画每条分支都能覆盖到，这些恰恰
- * 是"手感"真正落在的地方。返回值是解除绑定的函数。
+ * 测试——按下 / 移动 / 抬手 / 多指 / 打断动画 / 落点提交每条分支都能覆盖到，
+ * 这些恰恰是"手感"真正落在的地方。返回值是解除绑定的函数。
  */
 export function createShortsSwipePager(host: ShortsSwipePagerHost) {
-  const { root, usesDocumentScroll } = host;
+  const { root, track, usesDocumentScroll } = host;
+
   // ---- 滚动目标适配：容器滚动 / 文档滚动共用同一套位移逻辑 ----
   const getScrollTop = () =>
     usesDocumentScroll ? window.scrollY : root.scrollTop;
-  /** 上一次由本模块写入的滚动位置；null 表示当前没有在跟踪。 */
-  let lastWrittenTop: number | null = null;
   const setScrollTop = (value: number) => {
     if (usesDocumentScroll) window.scrollTo(0, value);
     else root.scrollTop = value;
-    lastWrittenTop = value;
-  };
-  /**
-   * 外力（长会话队列裁剪重贴、scrollIntoView）挪动滚动位置时的位移量，
-   * 没被挪过就是 0。裁剪几乎总是插在切屏过程中间：不跟着平移，跟手位移
-   * 和落点动画都会按旧坐标继续写，画面会硬跳一大截。
-   */
-  const readExternalScrollDelta = () => {
-    if (lastWrittenTop === null) return 0;
-    const delta = getScrollTop() - lastWrittenTop;
-    return Math.abs(delta) > SHORTS_PAGER_EXTERNAL_SCROLL_EPSILON_PX
-      ? delta
-      : 0;
   };
   const getViewportHeight = () =>
     usesDocumentScroll ? window.innerHeight : root.clientHeight;
@@ -248,68 +305,169 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
         ? document.documentElement.scrollHeight - window.innerHeight
         : root.scrollHeight - root.clientHeight
     );
-  /**
-   * slide 在滚动坐标系里的位置。不用 offsetTop：那依赖 offsetParent 恰好
-   * 是滚动容器的上沿，rect 差值在两种滚动模式下都成立。
-   */
-  const getSlideTop = (slide: HTMLElement) => {
-    const base = usesDocumentScroll ? 0 : root.getBoundingClientRect().top;
-    return slide.getBoundingClientRect().top - base + getScrollTop();
+
+  // ---- 轨道位移 ----
+  /** 轨道当前的 translateY。等效滚动位置恒为 getScrollTop() - translate。 */
+  let translate = 0;
+  /** 动画进行中内联样式记的是终点值，当前值只能从 computed 里读。 */
+  const readLiveTranslate = () => {
+    const computed = window.getComputedStyle?.(track)?.transform;
+    return computed === undefined ? translate : parseTranslateY(computed);
   };
-  /** 一次手势只读一次：容器 rect 和滚动位置在循环外取好，避免逐条回读布局。 */
+  const applyTranslate = (value: number) => {
+    translate = value;
+    track.style.transform = `translate3d(0, ${value}px, 0)`;
+  };
+  /** 静止态：清掉 transform 和合成层提示。 */
+  const clearTranslate = () => {
+    translate = 0;
+    track.style.transition = "";
+    track.style.transform = "";
+    track.style.willChange = "";
+  };
+
+  /**
+   * 当前等效滚动位置。用**实时** translate 而不是内联终点值：动画进行中两者
+   * 不同，rect 反映的是实时值，混用会算出差一整屏的结果。
+   * 每次手势 / 落点只调用几次（逐帧的跟手位移不走这里），开销可以忽略。
+   */
+  const getEffectiveTop = () => getScrollTop() - readLiveTranslate();
+  const readSlides = () => [
+    ...root.querySelectorAll<HTMLElement>("[data-shorts-slide]"),
+  ];
+  /**
+   * slide 的等效滚动位置。由 `slide.rect.top = rootRect.top + (S - scrollTop)
+   * + translate` 反解而来；rect 和减掉的 translate 取自同一时刻，因此不管
+   * 动画跑到哪一帧，结果都是这条 slide 真实的布局落点。
+   */
   const readSlideTops = () => {
     const base = usesDocumentScroll ? 0 : root.getBoundingClientRect().top;
-    const origin = getScrollTop();
-    return [...root.querySelectorAll<HTMLElement>("[data-shorts-slide]")].map(
+    const origin = getEffectiveTop();
+    return readSlides().map(
       (slide) => slide.getBoundingClientRect().top - base + origin
     );
   };
+  const readSlideTop = (slide: HTMLElement) =>
+    slide.getBoundingClientRect().top -
+    (usesDocumentScroll ? 0 : root.getBoundingClientRect().top) +
+    getEffectiveTop();
 
   // ---- 落点动画 ----
-  let settleFrame: number | null = null;
+  let settleTimer: number | null = null;
+  let settling = false;
+
+  const handleTransitionEnd = (event: Event) => {
+    const transitionEvent = event as TransitionEvent;
+    if (transitionEvent.target !== track) return;
+    if (
+      transitionEvent.propertyName &&
+      transitionEvent.propertyName !== "transform"
+    ) {
+      return;
+    }
+    finishMotion();
+  };
+
+  const detachSettleListeners = () => {
+    if (settleTimer !== null) {
+      window.clearTimeout(settleTimer);
+      settleTimer = null;
+    }
+    track.removeEventListener("transitionend", handleTransitionEnd);
+  };
+
+  /** 动画收尾：只是摘掉合成层提示，位置在动画开始时就已经落定了。 */
+  const finishMotion = () => {
+    if (!settling) return;
+    settling = false;
+    detachSettleListeners();
+    clearTranslate();
+  };
+
   /** 返回是否真的打断了一次进行中的动画。 */
   const cancelSettle = () => {
-    if (settleFrame === null) return false;
-    window.cancelAnimationFrame(settleFrame);
-    settleFrame = null;
+    if (!settling) return false;
+    settling = false;
+    detachSettleListeners();
+    // 冻结在当前这一帧的位置，手指从这里接着走。
+    const live = readLiveTranslate();
+    track.style.transition = "none";
+    applyTranslate(live);
     return true;
   };
-  const settleTo = (targetTop: number, velocityPxPerMs: number) => {
-    cancelSettle();
-    let from = getScrollTop();
-    const distance = targetTop - from;
+
+  /**
+   * 落点：**先提交位置，再补一段动画**（FLIP）。
+   *
+   * 松手的当下就把 `scrollTop` 写到目标 slide 上，然后给轨道加一个反向的
+   * translate 抵消掉这次跳变，再让它动画归零——画面看起来是平滑滑过去的，
+   * 但滚动位置在第 0 毫秒就已经是新的了。
+   *
+   * 这么排有两个好处，都关乎手感和健壮性：
+   * 1. IntersectionObserver 在松手当场就判出新的活跃屏，下一条视频立刻起播，
+   *    不用等动画走完（douyin 也是在 touchEnd 里就推进 localIndex 的）。
+   *    也就不必去赌"合成器动画期间 IO 会不会被触发"。
+   * 2. 位置提交不依赖 transitionend。那个事件在标签页切走、动画被打断时会丢；
+   *    在这个排法里丢了也只是 will-change 多留一会儿，绝不会卡在两屏之间。
+   *
+   * 长会话队列裁剪同理：它保持 `scrollTop - slide 布局位置` 不变，轨道上的
+   * translate 原样继续，视觉完全连续，不需要任何额外处理。
+   */
+  const settleTo = (target: HTMLElement | null, velocityPxPerMs: number) => {
+    detachSettleListeners();
+    settling = false;
+
+    const live = readLiveTranslate();
+    const from = getScrollTop();
+    const targetTop = clamp(
+      target ? readSlideTop(target) : from - live,
+      0,
+      getMaxScrollTop()
+    );
+
+    setScrollTop(targetTop);
+    // 浏览器可能夹取实际落点，按真正生效的值算补偿量，画面才不会跳。
+    const compensation = live + (getScrollTop() - from);
+
     const duration = resolveShortsPagerSettleDuration({
-      remainingPx: distance,
+      remainingPx: compensation,
       velocityPxPerMs,
       viewportHeight: getViewportHeight(),
     });
     if (duration <= 0) {
-      setScrollTop(targetTop);
+      clearTranslate();
       return;
     }
-    lastWrittenTop = from;
-    const startedAt = performance.now();
-    const step = (now: number) => {
-      // 队列裁剪只是把整条 feed 换了坐标系，画面位置是连续的：起点跟着
-      // 平移，终点（from + distance）自然一起平移，动画不受影响地跑完。
-      from += readExternalScrollDelta();
-      const progress = clamp((now - startedAt) / duration, 0, 1);
-      setScrollTop(from + distance * shortsPagerEase(progress));
-      if (progress < 1) {
-        settleFrame = window.requestAnimationFrame(step);
-      } else {
-        settleFrame = null;
-        lastWrittenTop = null;
-      }
-    };
-    settleFrame = window.requestAnimationFrame(step);
+
+    settling = true;
+    track.style.willChange = "transform";
+    // 起点必须先以"无过渡"的方式落到样式上，否则浏览器会把它和终点合并，
+    // 直接跳到 0 而没有动画。
+    track.style.transition = "none";
+    applyTranslate(compensation);
+    forceStyleFlush();
+    track.style.transition = `transform ${Math.round(duration)}ms ${SHORTS_PAGER_SETTLE_EASING}`;
+    applyTranslate(0);
+    track.addEventListener("transitionend", handleTransitionEnd);
+    settleTimer = window.setTimeout(
+      finishMotion,
+      Math.round(duration) + SHORTS_PAGER_SETTLE_FALLBACK_MS
+    );
   };
+
+  /**
+   * 把刚写下的起点值真正提交给样式系统。用方法调用而不是 `void el.offsetHeight`：
+   * 属性读取有被压缩器判成无副作用而删掉的风险，那会让 FLIP 的两次写入被合并，
+   * 动画直接消失。
+   */
+  function forceStyleFlush() {
+    track.getBoundingClientRect();
+  }
 
   // ---- 合成 click 兜底 ----
   // touchend 上的 preventDefault 按规范应当挡住合成 click，但个别 WebKit
   // 版本只认"第一个 touchmove 上的 preventDefault"。漏出来的那一次 click 会
   // 落到 slide 上被当成单击去暂停视频——每滑一屏暂停一次，非常显眼。
-  // 这里只吞掉紧跟在一次成功竖滑之后的那一个 click。
   let clickGuardTimer: number | null = null;
   const swallowClick = (event: Event) => {
     releaseClickGuard();
@@ -336,19 +494,20 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
 
   /** 多指 / 取消等中断：就近吸附，不要停在两屏之间。 */
   const settleToNearest = () => {
+    const slides = drag?.slides ?? readSlides();
     const slideTops = drag?.slideTops ?? readSlideTops();
-    const index = findNearestShortsSlideIndex(slideTops, getScrollTop());
+    const index = findNearestShortsSlideIndex(slideTops, getEffectiveTop());
     if (index < 0) return;
-    settleTo(clamp(slideTops[index], 0, getMaxScrollTop()), 0);
+    settleTo(slides[index] ?? null, 0);
   };
 
   const handleTouchStart = (event: TouchEvent) => {
-    // 上一次的落点动画还在跑：接住它，用当前位置作为新手势的起点。
-    // 打断过动画、或上一次手势被第二根手指顶掉，位置就停在两屏之间，
-    // 这次手势无论走哪条分支收尾都得把它吸回吸附点。
     // 新的一次按下：上一次竖滑的合成 click 早该到了，守卫立刻失效，
     // 这样紧接着的这次轻点一定能穿到 slide 上。
     releaseClickGuard();
+    // 上一次的落点动画还在跑：接住它，用当前位置作为新手势的起点。
+    // 打断过动画、或上一次手势被第二根手指顶掉，位置就停在两屏之间，
+    // 这次手势无论走哪条分支收尾都得把它吸回吸附点。
     const previous = drag;
     drag = null;
     const interrupted = cancelSettle() || Boolean(previous?.committed);
@@ -369,32 +528,33 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
       return bail();
     }
 
+    const slides = readSlides();
+    if (slides.length === 0) return bail();
     const slideTops = readSlideTops();
-    if (slideTops.length === 0) return bail();
-    const scrollTop = getScrollTop();
-    const anchorIndex = findNearestShortsSlideIndex(slideTops, scrollTop);
+    const effectiveTop = getEffectiveTop();
+    const anchorIndex = findNearestShortsSlideIndex(slideTops, effectiveTop);
     if (anchorIndex < 0) return bail();
-    const maxScrollTop = getMaxScrollTop();
-    const previousTop = slideTops[anchorIndex - 1];
-    const nextTop = slideTops[anchorIndex + 1];
+
     const anchorTop = slideTops[anchorIndex];
+    const previousTop = slideTops[anchorIndex - 1] ?? anchorTop;
+    const nextTop = slideTops[anchorIndex + 1] ?? anchorTop;
+    const scrollTop = getScrollTop();
     const touch = event.touches[0];
     const now = performance.now();
-    // 几何刚刚重新采过，之前那次动画写下的位置不能再当作平移基准。
-    lastWrittenTop = null;
 
     drag = {
       startX: touch.clientX,
       startY: touch.clientY,
       startTime: now,
       baselineY: 0,
+      originTranslate: translate,
       anchorIndex,
-      // 手势起点就是当前实际位置：中途接住动画时不会先跳回吸附点。
-      anchorTop: clamp(scrollTop, 0, maxScrollTop),
       // 一次手势最多离开当前屏一屏；否则松手只切一屏会看到明显的回抽。
-      minTop: clamp(previousTop ?? anchorTop, 0, maxScrollTop),
-      maxTop: clamp(nextTop ?? anchorTop, 0, maxScrollTop),
+      // translate 与滚动位置反向，因此 next 对应下限、previous 对应上限。
+      minTranslate: scrollTop - nextTop,
+      maxTranslate: scrollTop - previousTop,
       viewportHeight: getViewportHeight(),
+      slides,
       slideTops,
       committed: false,
       abandoned: false,
@@ -430,6 +590,8 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
       drag.committed = true;
       // 激活阈值那段位移不能再算进画面位移，否则接管的瞬间会跳一下。
       drag.baselineY = deltaY;
+      track.style.willChange = "transform";
+      track.style.transition = "none";
     }
 
     // 接管后必须挡掉浏览器的默认处理（容器已是 touch-action: none，
@@ -446,35 +608,10 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
       drag.samples.shift();
     }
 
-    // 拖动途中被队列裁剪换了坐标系：重新采一次几何，手指接着往下拖时
-    // 位移仍然连续，不会突然跳到旧坐标对应的位置。
-    const externalDelta = readExternalScrollDelta();
-    if (externalDelta !== 0) {
-      const maxScrollTop = getMaxScrollTop();
-      drag.slideTops = readSlideTops();
-      drag.anchorTop = clamp(drag.anchorTop + externalDelta, 0, maxScrollTop);
-      const anchorIndex = findNearestShortsSlideIndex(
-        drag.slideTops,
-        drag.anchorTop
-      );
-      if (anchorIndex >= 0) {
-        const ownTop = drag.slideTops[anchorIndex];
-        drag.anchorIndex = anchorIndex;
-        drag.minTop = clamp(
-          drag.slideTops[anchorIndex - 1] ?? ownTop,
-          0,
-          maxScrollTop
-        );
-        drag.maxTop = clamp(
-          drag.slideTops[anchorIndex + 1] ?? ownTop,
-          0,
-          maxScrollTop
-        );
-      }
-    }
-
-    const offset = drag.anchorTop - (deltaY - drag.baselineY);
-    setScrollTop(clamp(offset, drag.minTop, drag.maxTop));
+    // 位移纯粹由手指决定，不读 scrollTop——队列裁剪在拖动中途换坐标系时
+    // 跟手也不会被带偏（裁剪同时改 slide 布局与 scrollTop，视觉是连续的）。
+    const next = drag.originTranslate + (deltaY - drag.baselineY);
+    applyTranslate(clamp(next, drag.minTranslate, drag.maxTranslate));
   };
 
   const handleTouchEnd = (event: TouchEvent) => {
@@ -510,14 +647,12 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
       elapsedMs: now - current.startTime,
       viewportHeight: current.viewportHeight,
       anchorIndex: current.anchorIndex,
-      slideCount: current.slideTops.length,
+      slideCount: current.slides.length,
     });
-    const targetTop = clamp(
-      current.slideTops[targetIndex] ?? current.anchorTop,
-      0,
-      getMaxScrollTop()
-    );
-    settleTo(targetTop, computeShortsPagerVelocity(current.samples));
+    // 记住目标**节点**而不是坐标：队列裁剪会在动画途中改坐标系，节点身份不会变。
+    const target =
+      current.slides[targetIndex] ?? current.slides[current.anchorIndex] ?? null;
+    settleTo(target, computeShortsPagerVelocity(current.samples));
   };
 
   const handleTouchCancel = () => {
@@ -537,9 +672,12 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     if (drag) return;
     const slide = host.getAnchorSlide();
     if (!slide) return;
-    setScrollTop(clamp(getSlideTop(slide), 0, getMaxScrollTop()));
+    const top = readSlideTop(slide);
+    clearTranslate();
+    setScrollTop(clamp(top, 0, getMaxScrollTop()));
   };
   const handleViewportResize = () => {
+    // 尺寸都变了，正在跑的动画按旧尺寸算的终点已经没有意义。
     cancelSettle();
     realign();
     if (realignFrame !== null) window.cancelAnimationFrame(realignFrame);
@@ -563,7 +701,18 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
   window.addEventListener("orientationchange", handleViewportResize);
 
   return () => {
-    cancelSettle();
+    // 落点动画进行中时位置早已提交，直接清干净即可；只有拖到一半被卸载
+    // （手指还按着）才需要把跟手位移落回 scrollTop。
+    if (settling) {
+      finishMotion();
+    } else if (translate !== 0) {
+      const top = getEffectiveTop();
+      clearTranslate();
+      setScrollTop(clamp(top, 0, getMaxScrollTop()));
+    } else {
+      clearTranslate();
+    }
+    detachSettleListeners();
     releaseClickGuard();
     if (realignFrame !== null) window.cancelAnimationFrame(realignFrame);
     if (realignTimer !== null) window.clearTimeout(realignTimer);
@@ -580,6 +729,7 @@ export type ShortsSwipePagerOptions = {
   /** 关闭时完全不挂监听，页面回到原生 scroll-snap。 */
   enabled: boolean;
   containerRef: React.RefObject<HTMLElement | null>;
+  trackRef: React.RefObject<HTMLElement | null>;
   usesDocumentScroll: boolean;
   getAnchorSlide: () => HTMLElement | null;
 };
@@ -594,9 +744,11 @@ export function useShortsSwipePager(options: ShortsSwipePagerOptions) {
   useEffect(() => {
     if (!enabled) return;
     const root = optionsRef.current.containerRef.current;
-    if (!root) return;
+    const track = optionsRef.current.trackRef.current;
+    if (!root || !track) return;
     return createShortsSwipePager({
       root,
+      track,
       usesDocumentScroll,
       // 走 ref 读取，回调换引用不会重挂监听。
       getAnchorSlide: () => optionsRef.current.getAnchorSlide(),

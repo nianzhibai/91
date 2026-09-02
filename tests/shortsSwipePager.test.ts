@@ -6,13 +6,14 @@ import {
   SHORTS_PAGER_MAX_SETTLE_MS,
   SHORTS_PAGER_MIN_COMMIT_PX,
   SHORTS_PAGER_MIN_SETTLE_MS,
+  SHORTS_PAGER_SETTLE_EASING,
   SHORTS_PAGER_VELOCITY_WINDOW_MS,
   computeShortsPagerVelocity,
   findNearestShortsSlideIndex,
   measureOffsetWithinSlide,
+  parseTranslateY,
   resolveShortsPagerSettleDuration,
   resolveShortsPagerTargetIndex,
-  shortsPagerEase,
 } from "../src/shorts/useShortsSwipePager";
 import { shouldUseShortsTouchPager } from "../src/shorts/platform";
 
@@ -160,21 +161,39 @@ test("an already-settled position needs no animation at all", () => {
   );
 });
 
-test("the settle curve starts fast and eases out", () => {
-  assert.equal(shortsPagerEase(0), 0);
-  assert.equal(shortsPagerEase(1), 1);
-  // 定义域外夹紧，动画被拖长/回拨也不会越过端点
-  assert.equal(shortsPagerEase(-1), 0);
-  assert.equal(shortsPagerEase(2), 1);
-  // 前半程走完大半路程才叫惯性减速
-  assert.ok(shortsPagerEase(0.5) > 0.8);
-  assert.ok(shortsPagerEase(0.25) > 0.5);
-  let previous = -1;
-  for (let step = 0; step <= 10; step += 1) {
-    const value = shortsPagerEase(step / 10);
-    assert.ok(value > previous);
-    previous = value;
-  }
+test("the settle curve is easeOutCubic, matching the duration formula", () => {
+  // 缓动交给 CSS（合成器线程），但它的起始斜率必须和上面按 3×距离/时长
+  // 反解时长的假设对得上，否则动画第一帧接不上手指的速度。
+  const control = /^cubic-bezier\(([\d.]+), ([\d.]+), ([\d.]+), ([\d.]+)\)$/.exec(
+    SHORTS_PAGER_SETTLE_EASING
+  );
+  assert.ok(control, "easing should be an explicit cubic-bezier");
+  const [x1, y1, , y2] = control.slice(1).map(Number);
+  const initialSlope = y1 / x1;
+  assert.ok(initialSlope > 2.5 && initialSlope < 3.5, `slope ${initialSlope}`);
+  // 收尾必须停住（终点斜率为 0），否则落点会显得"撞上去"
+  assert.equal(y2, 1);
+});
+
+test("the live track offset is readable from both inline and computed values", () => {
+  // 我们自己写进去的内联值
+  assert.equal(parseTranslateY("translate3d(0, -240px, 0)"), -240);
+  assert.equal(parseTranslateY("translate3d(0px, 37.5px, 0px)"), 37.5);
+  assert.equal(parseTranslateY("translateY(-12px)"), -12);
+  // 动画进行中只有 computed 能拿到中间值，浏览器给的是矩阵
+  assert.equal(parseTranslateY("matrix(1, 0, 0, 1, 0, -123.5)"), -123.5);
+  assert.equal(
+    parseTranslateY("matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, -88, 0, 1)"),
+    -88
+  );
+  // 静止态与异常输入一律当没有位移，绝不能让 NaN 流进滚动位置
+  assert.equal(parseTranslateY("none"), 0);
+  assert.equal(parseTranslateY(""), 0);
+  assert.equal(parseTranslateY(null), 0);
+  assert.equal(parseTranslateY(undefined), 0);
+  assert.equal(parseTranslateY("matrix(1, 0, 0, 1)"), 0);
+  assert.equal(parseTranslateY("matrix(1, 0, 0, 1, 0, abc)"), 0);
+  assert.equal(parseTranslateY("rotate(20deg)"), 0);
 });
 
 // ---------------------------------------------------------------------------
@@ -231,26 +250,52 @@ test("the anchor slide is the one the viewport is closest to", () => {
 
 test("queue trimming carries the in-flight offset into the new coordinates", () => {
   // 正好贴在吸附点上：没有偏移要还原
-  assert.equal(measureOffsetWithinSlide({ slideTop: 0, viewportHeight: VIEWPORT }), 0);
-  // 切屏动画走到 40%：锚点已经被顶出去 360px，重贴时要原样还回来
   assert.equal(
-    measureOffsetWithinSlide({ slideTop: -360, viewportHeight: VIEWPORT }),
+    measureOffsetWithinSlide({
+      scrollTop: 1_800,
+      slideTop: 1_800,
+      viewportHeight: VIEWPORT,
+    }),
+    0
+  );
+  // 已经往下滑过锚点 360px，重贴时要原样还回来
+  assert.equal(
+    measureOffsetWithinSlide({
+      scrollTop: 2_160,
+      slideTop: 1_800,
+      viewportHeight: VIEWPORT,
+    }),
     360
   );
   assert.equal(
-    measureOffsetWithinSlide({ slideTop: 200, viewportHeight: VIEWPORT }),
+    measureOffsetWithinSlide({
+      scrollTop: 1_600,
+      slideTop: 1_800,
+      viewportHeight: VIEWPORT,
+    }),
     -200
   );
   // 几何异常时夹在一屏内，不会把滚动位置甩飞
   assert.equal(
-    measureOffsetWithinSlide({ slideTop: -50_000, viewportHeight: VIEWPORT }),
+    measureOffsetWithinSlide({
+      scrollTop: 50_000,
+      slideTop: 0,
+      viewportHeight: VIEWPORT,
+    }),
     VIEWPORT
   );
   assert.equal(
-    measureOffsetWithinSlide({ slideTop: 50_000, viewportHeight: VIEWPORT }),
+    measureOffsetWithinSlide({
+      scrollTop: 0,
+      slideTop: 50_000,
+      viewportHeight: VIEWPORT,
+    }),
     -VIEWPORT
   );
-  assert.equal(measureOffsetWithinSlide({ slideTop: -10, viewportHeight: 0 }), 0);
+  assert.equal(
+    measureOffsetWithinSlide({ scrollTop: 10, slideTop: 0, viewportHeight: 0 }),
+    0
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -365,6 +410,7 @@ test("the shorts page wires the pager to the same scroll container", () => {
   assert.match(shortsPageSource, /useShortsSwipePager\(\{/);
   assert.match(shortsPageSource, /enabled:\s*useTouchPager/);
   assert.match(shortsPageSource, /containerRef,/);
+  assert.match(shortsPageSource, /trackRef,/);
   assert.match(shortsPageSource, /usesDocumentScroll:\s*useDocumentScroll/);
   assert.match(
     shortsPageSource,
@@ -372,6 +418,30 @@ test("the shorts page wires the pager to the same scroll container", () => {
   );
   // activeIndex 仍然只由 IntersectionObserver 决定，播放/预载链路不变
   assert.doesNotMatch(shortsPageSource, /pager[\s\S]{0,40}setActiveIndex/i);
+});
+
+test("every slide lives inside the transform track", () => {
+  // 位移写在轨道上而不是逐条 slide 上：一次合成层，切屏动画走合成器线程
+  assert.match(
+    shortsPageSource,
+    /<div className="shorts-feed__track" ref=\{trackRef\}>/
+  );
+  const feedBlock =
+    /<div\s+className=\{`shorts-feed[\s\S]*?<div className="shorts-feed__track"[\s\S]*?items\.map\(/.exec(
+      shortsPageSource
+    );
+  assert.ok(feedBlock, "slides should be rendered inside the track");
+});
+
+test("the track carries no layer hint while the feed is at rest", () => {
+  // 常驻 transform / will-change 会在每个 <video> 祖先上留合成层，
+  // 本页在 iOS 合成路径上踩过坑，静止态必须是干净的普通块
+  const trackRule = /^\.shorts-feed__track \{[\s\S]*?\}/m.exec(shortsCss);
+  assert.ok(trackRule, ".shorts-feed__track rule should exist");
+  assert.match(trackRule[0], /transform:\s*none/);
+  assert.match(trackRule[0], /will-change:\s*auto/);
+  assert.match(trackRule[0], /position:\s*static/);
+  assert.doesNotMatch(trackRule[0], /translate3d/);
 });
 
 test("the progress bar keeps the whole finger to itself", () => {
@@ -385,8 +455,15 @@ test("the progress bar keeps the whole finger to itself", () => {
 
 test("queue trimming re-anchors without discarding the in-flight offset", () => {
   assert.match(shortsPageSource, /offsetWithinAnchor: measureOffsetWithinActiveSlide\(/);
+  // 量和还原必须用同一个参照系（轨道），否则动画进行中的 translateY 会被
+  // 重复计入一次，重贴时画面跳一整屏
   assert.match(
     shortsPageSource,
-    /root\.scrollTop = Math\.max\(0, slide\.offsetTop \+ offsetWithinAnchor\)/
+    /readShortsSlideTopWithinTrack\(slide, track\) \+ pending\.offsetWithinAnchor/
+  );
+  assert.match(shortsPageSource, /slideTop: readShortsSlideTopWithinTrack\(slide, track\)/);
+  assert.doesNotMatch(
+    shortsPageSource,
+    /slideTop:[\s\S]{0,80}getBoundingClientRect\(\)\.top - base/
   );
 });
