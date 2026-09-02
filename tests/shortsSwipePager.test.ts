@@ -3,13 +3,16 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   SHORTS_PAGER_FLICK_MS,
-  SHORTS_PAGER_MAX_SETTLE_MS,
+  SHORTS_PAGER_COMMIT_SETTLE_MS,
+  SHORTS_PAGER_FLICK_VELOCITY_PX_PER_MS,
+  SHORTS_PAGER_MAX_BOUNCE_MS,
   SHORTS_PAGER_MIN_COMMIT_PX,
   SHORTS_PAGER_MIN_SETTLE_MS,
   SHORTS_PAGER_SETTLE_EASING,
   SHORTS_PAGER_VELOCITY_WINDOW_MS,
   computeShortsPagerVelocity,
   findNearestShortsSlideIndex,
+  applyShortsPagerEdgeResistance,
   measureOffsetWithinSlide,
   parseTranslateY,
   resolveShortsPagerSettleDuration,
@@ -22,6 +25,7 @@ const VIEWPORT = 900;
 function release(overrides: {
   deltaY: number;
   elapsedMs: number;
+  velocityPxPerMs?: number;
   anchorIndex?: number;
   slideCount?: number;
   viewportHeight?: number;
@@ -29,6 +33,8 @@ function release(overrides: {
   return resolveShortsPagerTargetIndex({
     deltaY: overrides.deltaY,
     elapsedMs: overrides.elapsedMs,
+    // 默认按"慢拖到位"处理，速度通路单独测
+    velocityPxPerMs: overrides.velocityPxPerMs ?? 0,
     viewportHeight: overrides.viewportHeight ?? VIEWPORT,
     anchorIndex: overrides.anchorIndex ?? 5,
     slideCount: overrides.slideCount ?? 20,
@@ -83,52 +89,74 @@ test("a gesture never skips a video, and never runs off either end", () => {
 // 惯性收尾
 // ---------------------------------------------------------------------------
 
-test("settling matches the release speed so the slide keeps decelerating", () => {
-  // easeOutCubic 起速 = 3 × 距离 / 时长；按抬手速度反解出来的时长满足这条式子
-  const duration = resolveShortsPagerSettleDuration({
-    remainingPx: 300,
-    velocityPxPerMs: 3,
-    viewportHeight: VIEWPORT,
-  });
-  assert.equal(duration, 300);
-  assert.equal((3 * 300) / duration, 3);
+test("mid-range swipes also commit on a fast flick, not just a short press", () => {
+  // 先把手指搭在屏幕上停一会再甩：按压总时长早就超了，但这明显是一次甩动
+  const fast = -SHORTS_PAGER_FLICK_VELOCITY_PX_PER_MS;
+  assert.equal(release({ deltaY: -60, elapsedMs: 900, velocityPxPerMs: fast }), 6);
+  assert.equal(release({ deltaY: 60, elapsedMs: 900, velocityPxPerMs: -fast }), 4);
+  // 速度不够快，仍然回弹
+  assert.equal(
+    release({ deltaY: -60, elapsedMs: 900, velocityPxPerMs: fast * 0.99 }),
+    5
+  );
+  // 速度方向和位移方向相反（滑过头又回带）：不认这条通路
+  assert.equal(release({ deltaY: -60, elapsedMs: 900, velocityPxPerMs: -fast }), 5);
+  // 距离仍然是硬门槛，再快也不能低于 20px
+  assert.equal(release({ deltaY: -19, elapsedMs: 900, velocityPxPerMs: fast * 10 }), 5);
 });
 
-test("settling stays inside a hand-tuned duration range", () => {
-  // 甩得极快：时长压到下限，切屏干脆
+// ---------------------------------------------------------------------------
+// 落点时长
+// ---------------------------------------------------------------------------
+
+test("switching to a neighbouring video always takes the same time", () => {
+  // 「按抬手速度反解时长」在 FLIP 的几何下永远被夹到上限，是写了但从不生效
+  // 的机制。切屏改成固定值——douyin/TikTok 也是固定时长。
+  for (const remainingPx of [200, 600, 870, 1_500]) {
+    assert.equal(
+      resolveShortsPagerSettleDuration({
+        remainingPx,
+        viewportHeight: VIEWPORT,
+        committed: true,
+      }),
+      SHORTS_PAGER_COMMIT_SETTLE_MS
+    );
+  }
+  // 方向不影响时长
   assert.equal(
     resolveShortsPagerSettleDuration({
-      remainingPx: 100,
-      velocityPxPerMs: 20,
+      remainingPx: -870,
       viewportHeight: VIEWPORT,
+      committed: true,
     }),
-    SHORTS_PAGER_MIN_SETTLE_MS
+    SHORTS_PAGER_COMMIT_SETTLE_MS
   );
-  // 慢慢拖了大半屏才松手：按距离取时长，且不超过上限
-  assert.equal(
-    resolveShortsPagerSettleDuration({
-      remainingPx: VIEWPORT,
-      velocityPxPerMs: 0,
-      viewportHeight: VIEWPORT,
-    }),
-    SHORTS_PAGER_MAX_SETTLE_MS
-  );
-  // 速度低于阈值时不按速度反解（否则时长会趋于无穷再被夹到上限）
-  const nearlyStill = resolveShortsPagerSettleDuration({
-    remainingPx: 90,
-    velocityPxPerMs: 0.01,
+});
+
+test("bouncing back scales with distance and is always quicker than a switch", () => {
+  const near = resolveShortsPagerSettleDuration({
+    remainingPx: 30,
     viewportHeight: VIEWPORT,
+    committed: false,
   });
-  assert.ok(nearlyStill > SHORTS_PAGER_MIN_SETTLE_MS);
-  assert.ok(nearlyStill < SHORTS_PAGER_MAX_SETTLE_MS);
-  // 抬手方向和落点方向相反时只取快慢，不取朝向
+  const far = resolveShortsPagerSettleDuration({
+    remainingPx: VIEWPORT / 2,
+    viewportHeight: VIEWPORT,
+    committed: false,
+  });
+  assert.ok(near >= SHORTS_PAGER_MIN_SETTLE_MS);
+  assert.ok(near < far);
+  assert.equal(far, SHORTS_PAGER_MAX_BOUNCE_MS);
+  // 回弹不可能比切屏还慢，否则"没切成"读起来比"切成了"更拖沓
+  assert.ok(far < SHORTS_PAGER_COMMIT_SETTLE_MS);
+  // 超过半屏的回弹（边缘阻尼下可能出现）不会突破上限
   assert.equal(
     resolveShortsPagerSettleDuration({
-      remainingPx: -300,
-      velocityPxPerMs: -3,
+      remainingPx: VIEWPORT * 2,
       viewportHeight: VIEWPORT,
+      committed: false,
     }),
-    300
+    SHORTS_PAGER_MAX_BOUNCE_MS
   );
 });
 
@@ -136,16 +164,16 @@ test("an already-settled position needs no animation at all", () => {
   assert.equal(
     resolveShortsPagerSettleDuration({
       remainingPx: 0,
-      velocityPxPerMs: 5,
       viewportHeight: VIEWPORT,
+      committed: true,
     }),
     0
   );
   assert.equal(
     resolveShortsPagerSettleDuration({
       remainingPx: 0.4,
-      velocityPxPerMs: 0,
       viewportHeight: VIEWPORT,
+      committed: false,
     }),
     0
   );
@@ -154,25 +182,52 @@ test("an already-settled position needs no animation at all", () => {
     Number.isFinite(
       resolveShortsPagerSettleDuration({
         remainingPx: 50,
-        velocityPxPerMs: 0,
         viewportHeight: 0,
+        committed: false,
       })
     )
   );
 });
 
-test("the settle curve is easeOutCubic, matching the duration formula", () => {
-  // 缓动交给 CSS（合成器线程），但它的起始斜率必须和上面按 3×距离/时长
-  // 反解时长的假设对得上，否则动画第一帧接不上手指的速度。
+test("the settle curve keeps its hand-tuned shape", () => {
+  // 缓动交给 CSS（合成器线程）。契约：起速要明显快过手指，终点斜率为 0。
   const control = /^cubic-bezier\(([\d.]+), ([\d.]+), ([\d.]+), ([\d.]+)\)$/.exec(
     SHORTS_PAGER_SETTLE_EASING
   );
   assert.ok(control, "easing should be an explicit cubic-bezier");
   const [x1, y1, , y2] = control.slice(1).map(Number);
-  const initialSlope = y1 / x1;
-  assert.ok(initialSlope > 2.5 && initialSlope < 3.5, `slope ${initialSlope}`);
-  // 收尾必须停住（终点斜率为 0），否则落点会显得"撞上去"
+  assert.ok(y1 / x1 > 2.5, "should leave the finger behind immediately");
+  // 收尾必须停住，否则落点会显得"撞上去"
   assert.equal(y2, 1);
+});
+
+// ---------------------------------------------------------------------------
+// 到头 / 到尾的阻尼
+// ---------------------------------------------------------------------------
+
+test("the ends give a little instead of freezing solid", () => {
+  const bounds = { min: -900, max: 0, viewportHeight: VIEWPORT };
+  // 范围内原样通过
+  assert.equal(applyShortsPagerEdgeResistance({ value: -450, ...bounds }), -450);
+  assert.equal(applyShortsPagerEdgeResistance({ value: 0, ...bounds }), 0);
+  assert.equal(applyShortsPagerEdgeResistance({ value: -900, ...bounds }), -900);
+  // 越界：能推动，但只有原位移的一小部分
+  const pulled = applyShortsPagerEdgeResistance({ value: 100, ...bounds });
+  assert.ok(pulled > 0 && pulled < 100);
+  const pushed = applyShortsPagerEdgeResistance({ value: -1_000, ...bounds });
+  assert.ok(pushed < -900 && pushed > -1_000);
+  // 再怎么拽也有上限，画面不会被拉走大半屏
+  const limit = VIEWPORT * 0.12;
+  assert.equal(applyShortsPagerEdgeResistance({ value: 99_999, ...bounds }), limit);
+  assert.equal(
+    applyShortsPagerEdgeResistance({ value: -99_999, ...bounds }),
+    -900 - limit
+  );
+  // 视口高度为 0 时退化成硬 clamp，不产生 NaN
+  assert.equal(
+    applyShortsPagerEdgeResistance({ value: 500, min: -900, max: 0, viewportHeight: 0 }),
+    0
+  );
 });
 
 test("the live track offset is readable from both inline and computed values", () => {
@@ -330,42 +385,33 @@ function withWindow<T>(
   }
 }
 
-test("the touch pager takes over only where touch is the primary input", () => {
+test("the touch pager takes over wherever touch is the primary input", () => {
+  // iPhone 文档滚动模式也一视同仁：它当初被排除是为了保住"Safari 工具栏
+  // 随刷动收起"，而真机截图证明有 scroll-snap 在时工具栏根本收不起来。
   withWindow({ search: "", coarsePointer: true }, () => {
-    assert.equal(shouldUseShortsTouchPager(false), true);
+    assert.equal(shouldUseShortsTouchPager(), true);
   });
   // 桌面 / 触控本仍然走原生 scroll-snap + 滚轮 + 方向键
   withWindow({ search: "", coarsePointer: false }, () => {
-    assert.equal(shouldUseShortsTouchPager(false), false);
+    assert.equal(shouldUseShortsTouchPager(), false);
   });
   // 不支持 matchMedia 的环境不能抛错，按不启用处理
   withWindow({ search: "" }, () => {
-    assert.equal(shouldUseShortsTouchPager(false), false);
-  });
-});
-
-test("iPhone document scrolling keeps its native snapping by default", () => {
-  // 文档滚动是为了让 Safari 工具栏随刷动收起，接管触摸会让它永远展开
-  withWindow({ search: "", coarsePointer: true }, () => {
-    assert.equal(shouldUseShortsTouchPager(true), false);
-  });
-  // 但可以显式强制开启做同机对照
-  withWindow({ search: "?shortsPager=1", coarsePointer: true }, () => {
-    assert.equal(shouldUseShortsTouchPager(true), true);
+    assert.equal(shouldUseShortsTouchPager(), false);
   });
 });
 
 test("the touch pager has an explicit escape hatch in both directions", () => {
   withWindow({ search: "?shortsPager=0", coarsePointer: true }, () => {
-    assert.equal(shouldUseShortsTouchPager(false), false);
+    assert.equal(shouldUseShortsTouchPager(), false);
   });
   // 桌面上强制开启，便于在开发机上验证手势逻辑
   withWindow({ search: "?shortsPager=1", coarsePointer: false }, () => {
-    assert.equal(shouldUseShortsTouchPager(false), true);
+    assert.equal(shouldUseShortsTouchPager(), true);
   });
   // 无关取值不改变默认判定
   withWindow({ search: "?shortsPager=yes", coarsePointer: false }, () => {
-    assert.equal(shouldUseShortsTouchPager(false), false);
+    assert.equal(shouldUseShortsTouchPager(), false);
   });
 });
 

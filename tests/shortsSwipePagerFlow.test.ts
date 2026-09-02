@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  SHORTS_PAGER_MAX_SETTLE_MS,
+  SHORTS_PAGER_COMMIT_SETTLE_MS,
+  SHORTS_PAGER_MAX_BOUNCE_MS,
   SHORTS_PAGER_SETTLE_FALLBACK_MS,
   createShortsSwipePager,
   parseTranslateY,
@@ -417,17 +418,27 @@ test("dragging never exposes a third video, however far the finger goes", () => 
     h.touchMove(200, 780);
     h.tick(16);
     h.touchMove(200, -5_000);
-    assert.equal(h.translate, -SLIDE_HEIGHT);
+    // 相邻一屏之外只剩带阻尼的越界余量，第三条永远露不出来
+    const overshoot = -SLIDE_HEIGHT - h.translate;
+    assert.ok(overshoot > 0, "末端应当能推动一点，不是硬冻结");
+    assert.ok(overshoot <= SLIDE_HEIGHT * 0.12 + 0.001, `overshoot ${overshoot}`);
   });
 });
 
-test("the first video does not scroll above the top of the feed", () => {
+test("the first video gives a damped pull instead of freezing solid", () => {
   withHarness((h) => {
     h.touchStart(200, 100);
     h.tick(16);
     h.touchMove(200, 120);
     h.tick(16);
     h.touchMove(200, 5_000);
+    // 手指拉了 4880px，画面只跟出去一屏的 12%——能动，但明确"到头了"
+    assert.equal(h.translate, SLIDE_HEIGHT * 0.12);
+
+    // 松手后弹回原位
+    h.touchEnd(200, 5_000);
+    h.endTransition();
+    assert.equal(h.root.scrollTop, 0);
     assert.equal(h.translate, 0);
   });
 });
@@ -587,17 +598,34 @@ test("a transitionend from a child or another property is ignored", () => {
   });
 });
 
-test("settling never runs longer than the tuned ceiling", () => {
+test("a switch always animates for the same fixed duration", () => {
   withHarness((h) => {
+    // 慢慢拖过 1/3 屏再松手：切屏成立，时长是常数而不是按速度浮动
     h.touchStart(200, 800);
     h.tick(16);
     h.touchMove(200, 780);
     h.tick(3_000);
     h.touchMove(200, 400);
     h.touchEnd(200, 400);
-    assert.ok(h.settleDurationMs <= SHORTS_PAGER_MAX_SETTLE_MS);
-    assert.ok(h.settleDurationMs > 0);
+    assert.equal(h.settleDurationMs, SHORTS_PAGER_COMMIT_SETTLE_MS);
     assert.match(h.transitionSpec, /cubic-bezier/);
+  });
+});
+
+test("bouncing back is quicker than switching", () => {
+  withHarness((h) => {
+    h.touchStart(200, 700);
+    h.tick(16);
+    h.touchMove(200, 680);
+    h.tick(600);
+    h.touchMove(200, 620);
+    h.touchEnd(200, 620);
+    // 没构成切屏 → 回弹，必须比切屏干脆
+    assert.ok(h.settleDurationMs > 0);
+    assert.ok(h.settleDurationMs <= SHORTS_PAGER_MAX_BOUNCE_MS);
+    assert.ok(h.settleDurationMs < SHORTS_PAGER_COMMIT_SETTLE_MS);
+    h.endTransition();
+    assert.equal(h.root.scrollTop, 0);
   });
 });
 

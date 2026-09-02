@@ -43,14 +43,36 @@ export const SHORTS_PAGER_MIN_COMMIT_PX = 20;
 export const SHORTS_PAGER_COMMIT_RATIO = 1 / 3;
 /** 中间地带（位移够但不大）看抬手快慢：短于这个时长算轻扫，切屏。 */
 export const SHORTS_PAGER_FLICK_MS = 150;
-/** 落点动画时长区间；douyin 用的是固定 300ms，这里按速度在区间内浮动。 */
-export const SHORTS_PAGER_MIN_SETTLE_MS = 180;
-export const SHORTS_PAGER_MAX_SETTLE_MS = 380;
 /**
- * 落点缓动。这是 easeOutCubic 的 cubic-bezier 形式，起始斜率
- * 0.61 / 0.215 ≈ 2.84，与下面按 3×距离/时长 反解时长的假设吻合：动画第一帧
- * 的速度就接上手指离开时的速度，读起来是继续减速滑过去而不是重新起步。
- * 换缓动就必须同步改 resolveShortsPagerSettleDuration 里的系数。
+ * 中间地带的第二条通路：抬手速度够快也算轻扫。
+ *
+ * 只看整段按压时长（douyin 的做法）有个真实的糙点——先把手指搭在屏幕上停一会
+ * 再甩，elapsedMs 早就超过 150ms，必定被判回弹。而"点一下暂停、再甩走"是很
+ * 常见的用法。速度采样本来就在手里，用它补一条通路即可。
+ * 0.5 px/ms 意味着最后 100ms 内至少走了 50px，是明确的甩动而不是慢拖。
+ */
+export const SHORTS_PAGER_FLICK_VELOCITY_PX_PER_MS = 0.5;
+/**
+ * 切屏落点时长，固定值——douyin 用的也是固定 300ms。
+ *
+ * 这里曾经按抬手速度反解时长（3 × 距离 / 时长），前提是"动画首帧速度接上
+ * 手指离开时的速度"。但那个前提只在剩余距离与手指行程同量级时成立：FLIP
+ * 之后剩余距离恒为约一屏（补偿量 = 屏高 − 手指位移），而甩动行程只有几十
+ * 像素，反解出来的时长必然远超上限，整套机制退化成一个常数 380ms——甩得
+ * 越快反而越慢。douyin 和 TikTok 明确不做速度连续：固定时长、让动画起速就
+ * 快过手指，这才是"甩一下就翻过去"的手感来源。
+ */
+export const SHORTS_PAGER_COMMIT_SETTLE_MS = 300;
+/** 回弹时长区间：按剩余距离取，短距离回弹不拖泥带水。 */
+export const SHORTS_PAGER_MIN_SETTLE_MS = 180;
+export const SHORTS_PAGER_MAX_BOUNCE_MS = 260;
+/** 到头 / 到尾继续拖时的阻尼系数与最大越界距离（占一屏的比例）。 */
+export const SHORTS_PAGER_EDGE_RESISTANCE = 0.35;
+export const SHORTS_PAGER_EDGE_LIMIT_RATIO = 0.12;
+/**
+ * 落点缓动，easeOutCubic 的 cubic-bezier 形式。这是一条手调契约：起始斜率
+ * （≈2.84）要明显快于手指，终点斜率为 0 才不会"撞"上落点。300ms 配这条曲线
+ * 走完 95% 只要约 190ms，比 douyin 的 300ms 线性观感更干脆。
  */
 export const SHORTS_PAGER_SETTLE_EASING = "cubic-bezier(0.215, 0.61, 0.355, 1)";
 /** 抬手速度取这个时间窗内的平均值，避免最后一帧抖动主导结果。 */
@@ -60,8 +82,6 @@ export const SHORTS_PAGER_VELOCITY_WINDOW_MS = 100;
  * 这里只是保证 will-change 和内联 transform 不会一直挂在轨道上。
  */
 export const SHORTS_PAGER_SETTLE_FALLBACK_MS = 80;
-/** 低于这个速度就不按速度反解时长，直接按剩余距离取。 */
-const SHORTS_PAGER_MIN_VELOCITY_PX_PER_MS = 0.05;
 /**
  * 竖滑之后吞掉合成 click 的时间窗。合成 click 紧跟在同一次 touchend 之后
  * 到达，这个窗口只要覆盖住它即可；下一次按下也会立刻解除，用户真正的轻点
@@ -70,6 +90,9 @@ const SHORTS_PAGER_MIN_VELOCITY_PX_PER_MS = 0.05;
 const SHORTS_PAGER_CLICK_GUARD_MS = 300;
 /** 起点标记：滑动手势不接管这个子树内按下的触摸（如底部进度条）。 */
 export const SHORTS_NO_SWIPE_ATTRIBUTE = "data-shorts-no-swipe";
+/** 这些元素上的 click 永远不能被合成 click 守卫吞掉。 */
+export const SHORTS_INTERACTIVE_SELECTOR =
+  `button, a, input, [role="button"], [${SHORTS_NO_SWIPE_ATTRIBUTE}]`;
 
 export type ShortsPagerSample = { y: number; t: number };
 
@@ -98,6 +121,8 @@ export type ShortsPagerRelease = {
   deltaY: number;
   /** 按下到抬手的毫秒数。 */
   elapsedMs: number;
+  /** 抬手瞬间的纵向速度（px/ms，向下为正）。 */
+  velocityPxPerMs: number;
   /** 一屏高度。 */
   viewportHeight: number;
   /** 手势开始时贴合的那一屏。 */
@@ -114,17 +139,22 @@ export type ShortsPagerRelease = {
  * 最多切一屏，快速连滑靠多次手势叠加，不会一口气跳过中间的视频。
  */
 export function resolveShortsPagerTargetIndex(input: ShortsPagerRelease): number {
-  const { deltaY, elapsedMs, viewportHeight, anchorIndex, slideCount } = input;
+  const { deltaY, elapsedMs, velocityPxPerMs, viewportHeight, anchorIndex, slideCount } =
+    input;
   const lastIndex = Math.max(0, slideCount - 1);
   const distance = Math.abs(deltaY);
+  const stay = clamp(anchorIndex, 0, lastIndex);
 
-  let gapTime = elapsedMs;
-  if (distance < SHORTS_PAGER_MIN_COMMIT_PX) {
-    gapTime = Number.POSITIVE_INFINITY;
-  } else if (distance > viewportHeight * SHORTS_PAGER_COMMIT_RATIO) {
-    gapTime = 0;
+  if (distance < SHORTS_PAGER_MIN_COMMIT_PX) return stay;
+
+  if (distance <= viewportHeight * SHORTS_PAGER_COMMIT_RATIO) {
+    // 中间地带：短促轻扫才切屏。抬手速度与位移同向且够快时也算——
+    // 只看整段按压时长会把"先按住再甩"误判成回弹。
+    const flickedFast =
+      Math.abs(velocityPxPerMs) >= SHORTS_PAGER_FLICK_VELOCITY_PX_PER_MS &&
+      velocityPxPerMs < 0 === deltaY < 0;
+    if (elapsedMs >= SHORTS_PAGER_FLICK_MS && !flickedFast) return stay;
   }
-  if (gapTime >= SHORTS_PAGER_FLICK_MS) return clamp(anchorIndex, 0, lastIndex);
 
   const next = deltaY < 0 ? anchorIndex + 1 : anchorIndex - 1;
   // 到头/到尾时 clamp 会把目标压回 anchorIndex，等价于回弹。
@@ -132,34 +162,51 @@ export function resolveShortsPagerTargetIndex(input: ShortsPagerRelease): number
 }
 
 /**
- * 落点动画时长。SHORTS_PAGER_SETTLE_EASING 的起始速度约为 3 × 距离 / 时长，
- * 按抬手速度反解时长，动画第一帧就能接上手指离开时的速度。
+ * 落点动画时长。切屏用固定值，回弹按剩余距离取。
  *
- * 速度过低（慢慢拖到位再松手）时反解出来的时长会趋于无穷，改按剩余距离取：
- * 拖得越远收尾越长，短距离回弹不会拖泥带水。两条路径最后都夹在区间内。
- *
- * `velocityPxPerMs` 只取模：抬手瞬间的方向偶尔会和落点方向相反（滑过头又
- * 回带一点），那时用的是它的快慢而不是朝向。
+ * 切屏之所以是常数：见 SHORTS_PAGER_COMMIT_SETTLE_MS 的注释——"按抬手速度
+ * 反解"在 FLIP 的几何下永远被夹到上限，是一套写了但从不生效的机制。
+ * 回弹之所以按距离：拖 20px 松手和拖 400px 松手要是同样时长，短距离会显得
+ * 黏；按距离取之后回弹一定比切屏短，符合直觉。
  */
 export function resolveShortsPagerSettleDuration(input: {
   remainingPx: number;
-  velocityPxPerMs: number;
   viewportHeight: number;
+  /** true = 切到相邻一屏，false = 回弹到原处 */
+  committed: boolean;
 }): number {
   const remaining = Math.abs(input.remainingPx);
   if (remaining < 1) return 0;
-  const speed = Math.abs(input.velocityPxPerMs);
-  const ratio = clamp(remaining / Math.max(1, input.viewportHeight), 0, 1);
-  const duration =
-    speed > SHORTS_PAGER_MIN_VELOCITY_PX_PER_MS
-      ? (3 * remaining) / speed
-      : SHORTS_PAGER_MIN_SETTLE_MS +
-        (SHORTS_PAGER_MAX_SETTLE_MS - SHORTS_PAGER_MIN_SETTLE_MS) * ratio;
-  return clamp(
-    duration,
-    SHORTS_PAGER_MIN_SETTLE_MS,
-    SHORTS_PAGER_MAX_SETTLE_MS
+  if (input.committed) return SHORTS_PAGER_COMMIT_SETTLE_MS;
+  // 回弹距离最多就是半屏（超过就该切屏了），按这个量程归一化。
+  const span = Math.max(1, input.viewportHeight) / 2;
+  const ratio = clamp(remaining / span, 0, 1);
+  return (
+    SHORTS_PAGER_MIN_SETTLE_MS +
+    (SHORTS_PAGER_MAX_BOUNCE_MS - SHORTS_PAGER_MIN_SETTLE_MS) * ratio
   );
+}
+
+/**
+ * 到头 / 到尾继续拖时的阻尼。硬 clamp 会让画面完全不动，读起来像卡死；
+ * 给一段带阻尼的越界位移，手指能推动一点、松手弹回来，才是"到头了"。
+ */
+export function applyShortsPagerEdgeResistance(input: {
+  value: number;
+  min: number;
+  max: number;
+  viewportHeight: number;
+}): number {
+  const limit = Math.max(0, input.viewportHeight) * SHORTS_PAGER_EDGE_LIMIT_RATIO;
+  if (input.value > input.max) {
+    const over = input.value - input.max;
+    return input.max + Math.min(over * SHORTS_PAGER_EDGE_RESISTANCE, limit);
+  }
+  if (input.value < input.min) {
+    const over = input.min - input.value;
+    return input.min - Math.min(over * SHORTS_PAGER_EDGE_RESISTANCE, limit);
+  }
+  return input.value;
 }
 
 /**
@@ -279,6 +326,14 @@ export type ShortsSwipePagerHost = {
   usesDocumentScroll: boolean;
   /** 视口尺寸变化后用来重新对齐的当前屏。 */
   getAnchorSlide: () => HTMLElement | null;
+  /**
+   * 手指正在拖动（已判定为纵向）时通知一次 true，手势收尾时 false。
+   * 页面据此在跟手阶段冻结 IntersectionObserver 的活跃屏判定——IO 看的是
+   * 视觉位置，拖动中轨道 translate 一直在变，它会在一次滑动里反复翻转，
+   * 每翻一次就是一整套暂停/起播/预载授权清零/媒体监听重建，全砸在跟手那几帧上。
+   * douyin 同样只在 touchEnd 里推进 localIndex。
+   */
+  onGestureActiveChange?: (active: boolean) => void;
 };
 
 /**
@@ -414,7 +469,7 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
    * 发生在画面视觉越过 60% 的那一刻（easeOutCubic 前段快，约在动画前 1/4）。
    * 做不做 FLIP 在这一点上完全一样。
    */
-  const settleTo = (target: HTMLElement | null, velocityPxPerMs: number) => {
+  const settleTo = (target: HTMLElement | null, committed: boolean) => {
     detachSettleListeners();
     settling = false;
 
@@ -432,8 +487,8 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
 
     const duration = resolveShortsPagerSettleDuration({
       remainingPx: compensation,
-      velocityPxPerMs,
       viewportHeight: getViewportHeight(),
+      committed,
     });
     if (duration <= 0) {
       clearTranslate();
@@ -472,6 +527,16 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
   let clickGuardTimer: number | null = null;
   const swallowClick = (event: Event) => {
     releaseClickGuard();
+    // 只吞掉落在 slide 空白处的那一次——它唯一的去处是"单击切换播放/暂停"。
+    // 点赞、分享、隐藏、详情链接、进度条都必须放行：守卫在"按住把飞行中的
+    // 动画停下来"时也会武装，那一下如果正好按在按钮上，吞掉就是功能失灵。
+    const target = event.target as Element | null;
+    if (
+      typeof target?.closest === "function" &&
+      target.closest(SHORTS_INTERACTIVE_SELECTOR)
+    ) {
+      return;
+    }
     event.stopPropagation();
     event.preventDefault();
   };
@@ -492,6 +557,12 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
 
   // ---- 手势 ----
   let drag: PagerDrag | null = null;
+  let gestureActive = false;
+  const setGestureActive = (active: boolean) => {
+    if (gestureActive === active) return;
+    gestureActive = active;
+    host.onGestureActiveChange?.(active);
+  };
 
   /** 多指 / 取消等中断：就近吸附，不要停在两屏之间。 */
   const settleToNearest = () => {
@@ -499,7 +570,7 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     const slideTops = drag?.slideTops ?? readSlideTops();
     const index = findNearestShortsSlideIndex(slideTops, getEffectiveTop());
     if (index < 0) return;
-    settleTo(slides[index] ?? null, 0);
+    settleTo(slides[index] ?? null, false);
   };
 
   const handleTouchStart = (event: TouchEvent) => {
@@ -570,6 +641,7 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
       // 第二根手指落下：交出手势，已经拖开的部分就近吸附回去。
       const shouldSettle = drag.committed || drag.interrupted;
       drag.abandoned = true;
+      setGestureActive(false);
       if (shouldSettle) settleToNearest();
       return;
     }
@@ -584,11 +656,13 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
       if (intent === "pending") return;
       if (intent === "seek") {
         drag.abandoned = true;
+        setGestureActive(false);
         // 横向 seek 与纵向落点互不干扰，被打断的那次动画照样要收尾。
         if (drag.interrupted) settleToNearest();
         return;
       }
       drag.committed = true;
+      setGestureActive(true);
       // 激活阈值那段位移不能再算进画面位移，否则接管的瞬间会跳一下。
       drag.baselineY = deltaY;
       track.style.willChange = "transform";
@@ -612,12 +686,20 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     // 位移纯粹由手指决定，不读 scrollTop——队列裁剪在拖动中途换坐标系时
     // 跟手也不会被带偏（裁剪同时改 slide 布局与 scrollTop，视觉是连续的）。
     const next = drag.originTranslate + (deltaY - drag.baselineY);
-    applyTranslate(clamp(next, drag.minTranslate, drag.maxTranslate));
+    applyTranslate(
+      applyShortsPagerEdgeResistance({
+        value: next,
+        min: drag.minTranslate,
+        max: drag.maxTranslate,
+        viewportHeight: drag.viewportHeight,
+      })
+    );
   };
 
   const handleTouchEnd = (event: TouchEvent) => {
     const current = drag;
     drag = null;
+    setGestureActive(false);
     if (!current || current.abandoned) return;
     if (!current.committed) {
       // 没构成滑动。若这一下只是"按住把飞行中的动画停下来"，同样要吸回
@@ -646,6 +728,7 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     const targetIndex = resolveShortsPagerTargetIndex({
       deltaY,
       elapsedMs: now - current.startTime,
+      velocityPxPerMs: computeShortsPagerVelocity(current.samples),
       viewportHeight: current.viewportHeight,
       anchorIndex: current.anchorIndex,
       slideCount: current.slides.length,
@@ -653,12 +736,13 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     // 记住目标**节点**而不是坐标：队列裁剪会在动画途中改坐标系，节点身份不会变。
     const target =
       current.slides[targetIndex] ?? current.slides[current.anchorIndex] ?? null;
-    settleTo(target, computeShortsPagerVelocity(current.samples));
+    settleTo(target, targetIndex !== current.anchorIndex);
   };
 
   const handleTouchCancel = () => {
     const current = drag;
     drag = null;
+    setGestureActive(false);
     if (current && (current.committed || current.interrupted)) {
       settleToNearest();
     }
@@ -715,6 +799,7 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     }
     detachSettleListeners();
     releaseClickGuard();
+    setGestureActive(false);
     if (realignFrame !== null) window.cancelAnimationFrame(realignFrame);
     if (realignTimer !== null) window.clearTimeout(realignTimer);
     root.removeEventListener("touchstart", handleTouchStart);
@@ -733,6 +818,7 @@ export type ShortsSwipePagerOptions = {
   trackRef: React.RefObject<HTMLElement | null>;
   usesDocumentScroll: boolean;
   getAnchorSlide: () => HTMLElement | null;
+  onGestureActiveChange?: (active: boolean) => void;
 };
 
 /** React 侧只负责生命周期；判定和动画全在 createShortsSwipePager 里。 */
@@ -753,6 +839,8 @@ export function useShortsSwipePager(options: ShortsSwipePagerOptions) {
       usesDocumentScroll,
       // 走 ref 读取，回调换引用不会重挂监听。
       getAnchorSlide: () => optionsRef.current.getAnchorSlide(),
+      onGestureActiveChange: (active) =>
+        optionsRef.current.onGestureActiveChange?.(active),
     });
   }, [enabled, usesDocumentScroll]);
 }

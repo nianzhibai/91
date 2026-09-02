@@ -41,24 +41,25 @@ export function isLegacyShortsVideoTransitionEnabled() {
 }
 
 /**
- * 是否由页面自己接管上下滑动（惯性收尾 + 大幅滑动才切屏），替代浏览器的
- * 原生 scroll-snap。默认只在"触屏是主输入"的设备上启用：桌面和触控本
- * （hover: hover）继续走原生滚动 + 滚轮 / 键盘，行为完全不变。
+ * 是否由页面自己接管上下滑动（跟手 + 大幅滑动才切屏 + 固定时长落点），
+ * 替代浏览器的原生 scroll-snap。只在"触屏是主输入"的设备上启用：桌面和
+ * 触控本（hover: hover）继续走原生滚动 + 滚轮 / 键盘，行为完全不变。
  *
- * iPhone 浏览器壳走的是文档滚动，目的是让 Safari 工具栏随刷动收起；接管
- * 触摸会让工具栏永远展开，属于功能回退，所以默认不启用。
+ * iPhone 浏览器壳（文档滚动模式）一度默认排除在外，理由是"接管触摸会让
+ * Safari 工具栏收不起来"。真机截图推翻了这个前提：`scroll-snap-type: y
+ * mandatory` 每次滑动都把滚动截断，工具栏本来就从没收起过——那是个不存在
+ * 的功能，为它牺牲手感不划算。现在两条路径一视同仁。
  *
  * `?shortsPager=0` 强制回到原生滚动（真机回退开关）；`?shortsPager=1`
- * 强制开启，用来在 iPhone 文档滚动模式或桌面上做同机 A/B。
+ * 强制开启，用来在桌面上做同机 A/B。
  */
-export function shouldUseShortsTouchPager(usesDocumentScroll: boolean) {
+export function shouldUseShortsTouchPager() {
   if (typeof window === "undefined") return false;
   const override = new URLSearchParams(window.location.search).get(
     "shortsPager"
   );
   if (override === "0") return false;
   if (override === "1") return true;
-  if (usesDocumentScroll) return false;
   return (
     window.matchMedia?.("(hover: none) and (pointer: coarse)").matches === true
   );

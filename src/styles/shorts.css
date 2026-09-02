@@ -151,8 +151,25 @@ body.shorts-document-scroll::before {
   touch-action: pan-y;
   overscroll-behavior: contain;
 }
-.shorts-feed::-webkit-scrollbar {
+/* 滚动条抑制是"当前滚动宿主"的属性，不是某个具体元素的属性。
+   .shorts-feed（容器滚动）和 html.shorts-document-scroll（iPhone 文档滚动）
+   在两种模式下轮流担任宿主，必须一起抑制——当初把滚动主体从 feed 搬到 html
+   时只搬了滚动、没搬抑制，右侧那条滚动条就是这么漏出来的。
+   base.css 的 `* { scrollbar-width: thin }` 会命中 html，所以这里必须显式覆盖。 */
+.shorts-feed,
+html.shorts-document-scroll,
+body.shorts-document-scroll {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+/* WebKit 某些版本从 body 而不是 html 取视口滚动条的伪元素，两个都写上。 */
+.shorts-feed::-webkit-scrollbar,
+html.shorts-document-scroll::-webkit-scrollbar,
+body.shorts-document-scroll::-webkit-scrollbar {
   display: none;
+  width: 0;
+  height: 0;
 }
 
 /* 滑动位移的承载体。静止时它是一个完全透明的普通块——没有定位、没有
@@ -264,22 +281,19 @@ html.shorts-document-scroll.is-touch-paged body {
   opacity: 1;
 }
 
-.shorts-slide__poster {
-  /* 影院镜头变焦动效：非活跃状态下稍微缩小，切入时柔和放大并淡入 */
-  transform: scale(0.96);
-  opacity: 0.5;
-  transition: transform 0.6s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1);
-}
+/* 画面层（<video> 与兜底海报）必须共用同一套视觉契约：恒为全亮、无变换。
+   这里曾经给非活跃海报挂过 scale(.96)/opacity(.5) 的"影院变焦"入场动效，
+   结果是——手指刚开始下滑时，正在进入视野的下一屏盖着一张半透明的暗海报，
+   要等它覆盖视口 60%（IntersectionObserver 阈值）翻转 data-active 之后，
+   再走 600ms 才淡到全亮。也就是整个滑动过程的前 60% 画面都是暗的。
+   用户看到的"一张灰暗的静态封面图"有一半是这段 CSS 造成的，与解码快慢无关。
+   而且它和 <video> 的契约不一致：已挂载 video 的 slide 全亮、只有海报的 slide
+   半透明，同一个手势在不同预载状态下亮度还不一样。 */
 
 /* iOS 的共享 video 由父级创建一次，再在各 slide 的空插槽之间移动。
    z-index 比海报高一层，海报只作为切源期间的无闪烁兜底。 */
 .shorts-slide__video--ios-shared {
   z-index: 2;
-}
-
-.shorts-slide[data-active="true"] .shorts-slide__poster {
-  transform: scale(1);
-  opacity: 1;
 }
 
 /* 阴影只给静态海报，绝不给 <video>：WebKit 一旦要对视频元素应用 CSS
@@ -505,17 +519,6 @@ html.shorts-document-scroll.is-touch-paged body {
   flex-direction: column;
   gap: 8px;
   pointer-events: none;
-  
-  /* 影院文字浮现动效：切屏时，文字稍微往下位移并淡入 */
-  transform: translateY(15px);
-  opacity: 0;
-  transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.5s cubic-bezier(0.16, 1, 0.3, 1);
-  transition-delay: 0.1s;
-}
-
-.shorts-slide[data-active="true"] .shorts-slide__overlay {
-  transform: translateY(0);
-  opacity: 1;
 }
 
 .shorts-slide__title {
@@ -561,18 +564,15 @@ html.shorts-document-scroll.is-touch-paged body {
   align-items: center;
   gap: 16px;
   z-index: 15;
-  
-  /* 影院动作条滑入动效：切屏时，右侧按钮向右微移并淡入 */
-  transform: translateX(18px);
-  opacity: 0;
-  transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.5s cubic-bezier(0.16, 1, 0.3, 1);
-  transition-delay: 0.15s;
 }
 
-.shorts-slide[data-active="true"] .shorts-slide__actions {
-  transform: translateX(0);
-  opacity: 1;
-}
+/* 标题栏和操作栏都不做 [data-active] 入场动效。
+   它们是**贴在各自那条视频上**的图层，应该跟着视频一起滑进滑出——
+   TikTok 就是这样。原来的做法是非活跃时 opacity: 0，等切屏后再延迟
+   0.1~0.15s、花 0.5s 淡入，于是下一条视频滑进来时它的标题和按钮是隐形的，
+   等落屏了才"叠"上来，读起来像是这层 UI 事后被贴到屏幕上，而不是本来就
+   长在那条视频上。而且 500~600ms 的入场动效是落点动画（300ms）的两倍，
+   切屏过程中屏幕上会有两组文字同时在淡入淡出。 */
 
 /* 来源云盘圆形徽章，也是当前视频的详情链接。 */
 .shorts-drive-badge {

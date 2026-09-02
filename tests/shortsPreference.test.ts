@@ -532,13 +532,20 @@ test("shorts loading spinner covers video buffering and initial feed loading", (
   assert.doesNotMatch(mobileBufferingRule, /width:\s*56px|height:\s*56px/);
 });
 
-test("shorts preloads the next two original videos only after the active video has comfortable buffer", () => {
+test("shorts always preloads the next video and gates only the ones after it", () => {
   assert.match(shortsPageSource, /const \[activeReadyForPreload, setActiveReadyForPreload\] = useState\(false\);/);
   assert.match(mediaBufferSource, /const ACTIVE_PRELOAD_BUFFER_SECONDS = 12;/);
-  assert.match(shortsPageSource, /const PRELOAD_AHEAD_COUNT = 2;/);
+  assert.match(mediaBufferSource, /export const PRELOAD_AHEAD_COUNT = 2;/);
+  // 预载深度由授权决定，但下一条永远无条件预载——"让下一条存在"和
+  // "后台囤积"是两件成本差一个数量级的事，不能共用一个开关。
+  // 深度换算的行为用例见 shortsMediaBuffer.test.ts。
   assert.match(
     shortsPageSource,
-    /const preloadOffset = index - activeIndex;[\s\S]*?preloadOffset > 0 &&[\s\S]*?preloadOffset <= PRELOAD_AHEAD_COUNT;/
+    /const preloadOffset = index - activeIndex;[\s\S]*?preloadOffset > 0 &&[\s\S]*?preloadOffset <= getPreloadAheadCount\(activeReadyForPreload\);/
+  );
+  assert.doesNotMatch(
+    shortsPageSource,
+    /const shouldPreload =\s*!useIOSSharedVideo &&\s*activeReadyForPreload/
   );
   assert.match(shortsPageSource, /const shouldLoad = isActiveSlide \|\| shouldPreload \|\| shouldRetainCached;/);
   assert.match(shortsPageSource, /shouldLoad=\{shouldLoad\}/);
@@ -850,9 +857,10 @@ test("shorts reuses one persistent media element across iOS slides", () => {
   assert.match(shortsPlatformSource, /function shouldUseIOSSharedVideo\(\)/);
   assert.match(shortsPlatformSource, /\\biPhone\\b\|\\biPad\\b\|\\biPod\\b/);
   assert.match(shortsPlatformSource, /navigator\.platform === "MacIntel" && navigator\.maxTouchPoints > 1/);
+  // iOS 走共享元素分支，完全不参与上面那套 <video> 预载
   assert.match(
     shortsPageSource,
-    /const shouldPreload =\s*!useIOSSharedVideo &&\s*activeReadyForPreload/
+    /const shouldPreload =\s*!useIOSSharedVideo &&/
   );
   assert.match(shortsPageSource, /const iosSharedVideoRef = useRef<HTMLVideoElement \| null>\(null\);/);
   assert.match(shortsPageSource, /if \(!video\) \{\s*video = document\.createElement\("video"\);/);
@@ -1260,7 +1268,7 @@ test("Windows viewport resize keeps the current short aligned", () => {
   );
   assert.match(
     shortsPageSource,
-    /const observer = new IntersectionObserver\(\s*\(entries\) => \{\s*if \(\s*viewportResizeAnchorIndexRef\.current !== null \|\|\s*queueTrimInProgressRef\.current\s*\) \{\s*return;\s*\}/
+    /const observer = new IntersectionObserver\(\s*\(entries\) => \{\s*if \(\s*viewportResizeAnchorIndexRef\.current !== null \|\|\s*queueTrimInProgressRef\.current \|\|\s*pagerGestureActiveRef\.current\s*\) \{\s*return;\s*\}/
   );
 });
 

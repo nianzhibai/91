@@ -9,7 +9,11 @@ import {
   VIDEO_WINDOW_SIZE,
   averageBytesPerSecond,
   bufferedAheadSeconds,
+  FIRST_FRAME_WARM_TIME,
+  getPreloadAheadCount,
   getVideoWindowBounds,
+  PRELOAD_AHEAD_COUNT,
+  shouldWarmFirstFrame,
   preloadBufferSecondsFor,
   preloadKeepSecondsFor,
   videoBufferIsCritical,
@@ -214,4 +218,60 @@ test("video window slides forward with the highest viewed index", () => {
   // 索引越界时收敛到队列末尾（空库后残留的高位索引）
   assert.deepEqual(getVideoWindowBounds(9, 4), { start: 0, end: 3 });
   assert.deepEqual(getVideoWindowBounds(3, 0), { start: 0, end: -1 });
+});
+
+// ---------------------------------------------------------------------------
+// 预载深度：让下一条"存在"和"后台囤积"是两件事
+// ---------------------------------------------------------------------------
+
+test("the next video is always preloaded, however unhealthy the current one is", () => {
+  // 授权拿到手：向后囤两条
+  assert.equal(getPreloadAheadCount(true), PRELOAD_AHEAD_COUNT);
+  // 授权没拿到：下一条仍然无条件预载。这一条是"滑到就有画面"的底线——
+  // 授权每次切屏都会清零、要靠当前条起播并囤够 4~12 秒缓冲才挣得回来，
+  // 而正常刷短视频比这条链路走完还快，下一条会永远处在"还没开始加载"。
+  assert.equal(getPreloadAheadCount(false), 1);
+  // 无论如何都不会退化成 0（那意味着完全没有预载）
+  assert.ok(getPreloadAheadCount(false) >= 1);
+  assert.ok(getPreloadAheadCount(true) >= getPreloadAheadCount(false));
+});
+
+// ---------------------------------------------------------------------------
+// 首帧预热：把字节下下来不等于有画面
+// ---------------------------------------------------------------------------
+
+function warmProbe(overrides: Partial<Parameters<typeof shouldWarmFirstFrame>[0]> = {}) {
+  return shouldWarmFirstFrame({
+    isActive: false,
+    shouldLoad: true,
+    usesSharedVideo: false,
+    readyState: 1,
+    currentTime: 0,
+    ...overrides,
+  });
+}
+
+test("preloaded videos are nudged into decoding their first frame", () => {
+  // 已绑源、已拿到元数据、还停在起点的非活跃条：正是要预热的对象
+  assert.equal(warmProbe(), true);
+  assert.equal(warmProbe({ readyState: 4 }), true);
+});
+
+test("first-frame warming leaves every other video alone", () => {
+  // 当前屏由 play() 负责，不需要也不该被 seek 打断
+  assert.equal(warmProbe({ isActive: true }), false);
+  // 没绑 src 的空壳，seek 无处可去
+  assert.equal(warmProbe({ shouldLoad: false }), false);
+  // iOS 共享元素有自己的生命周期，不参与
+  assert.equal(warmProbe({ usesSharedVideo: true }), false);
+  // 元数据都还没到，seek 会被丢弃；等 loadedmetadata 再试
+  assert.equal(warmProbe({ readyState: 0 }), false);
+  // 已经被推进过（预热过、或用户拖过进度）：不要把位置冲掉
+  assert.equal(warmProbe({ currentTime: 0.001 }), false);
+  assert.equal(warmProbe({ currentTime: 12.5 }), false);
+});
+
+test("the warm target is small enough to still read as the first frame", () => {
+  assert.ok(FIRST_FRAME_WARM_TIME > 0, "必须真的产生一次 seek");
+  assert.ok(FIRST_FRAME_WARM_TIME < 0.04, "小于一帧的时长，视觉上仍是首帧");
 });

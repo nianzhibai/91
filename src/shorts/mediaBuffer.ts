@@ -30,6 +30,68 @@ export const ACTIVE_PRELOAD_MIN_KEEP_SECONDS = 1.5;
 // 窗口内只要已经产生过可复用缓冲，就保留 src 复用浏览器缓存。
 export const VIDEO_WINDOW_SIZE = 4;
 
+/** 当前屏缓冲健康时，向后预载几条。 */
+export const PRELOAD_AHEAD_COUNT = 2;
+
+/**
+ * 实际允许向后预载几条。
+ *
+ * 关键在于**下限是 1 而不是 0**：紧邻的下一条永远无条件预载。
+ *
+ * 原来的写法是"当前屏缓冲健康（activeReadyForPreload）才允许预载"，而这个
+ * 授权每次切屏都会被清零、要重新挣回来——需要新活跃条真的起播、并囤够
+ * 4~12 秒前向缓冲。正常刷短视频是 3~5 秒一条，比这条链路走完还快，于是下一条
+ * 在被滑到的那一刻**根本没有开始过任何网络请求**，只能先画一张静态封面。
+ *
+ * 这里把两件成本差一个数量级的事拆开：让下一条"存在"（绑 src、取 moov 和
+ * 第一个 GOP，几百 KB，是"滑到就有画面"的底线）不该和"后台囤积后续视频"
+ * （几 MB，是带宽优化）共用一个开关。zyronon/douyin 的 SlideVerticalInfinite
+ * 对窗口内每一条无条件挂 <video> 并绑源，机制上不存在"下一条还没开始加载"
+ * 这种状态；授权只该决定预载的**深度**，不该决定它**存不存在**。
+ */
+export function getPreloadAheadCount(activeReadyForPreload: boolean): number {
+  return activeReadyForPreload ? PRELOAD_AHEAD_COUNT : 1;
+}
+
+/** shouldWarmFirstFrame 的输入切面；HTMLVideoElement 天然满足前两项。 */
+export type FirstFrameWarmProbe = {
+  isActive: boolean;
+  /** 该 slide 是否已经绑定了 src */
+  shouldLoad: boolean;
+  /** iOS 共享元素分支自有生命周期，不参与预热 */
+  usesSharedVideo: boolean;
+  readyState: number;
+  currentTime: number;
+};
+
+/**
+ * 非活跃的预载视频要不要"逼出首帧"。
+ *
+ * 按 HTML 渲染模型，video 元素的 show-poster 标志在播放真正开始之前一直为真：
+ * 哪怕已经 preload="auto" 缓冲到满、首帧完全可解码，元素画的仍然是那张静态
+ * poster。也就是说光把字节下下来并不能让"滑到就有画面"成立——浏览器没有
+ * 任何理由去解码一帧。
+ *
+ * 清掉这个标志只有 play() 和 seek 两条路。预载条不能 play()（会出声、会抢
+ * 解码器），所以走 seek：写一次 currentTime 就会强制解码该位置的一帧并送进
+ * 合成器。douyin 的 BaseVideo.vue 在 onMounted 里对每个挂载的 video 写
+ * `videoEl.currentTime = 0`，就是这一步。
+ *
+ * 只在还停在起点（currentTime 为 0）且已经拿到元数据时做一次，避免把用户
+ * 的播放进度或正在进行的 seek 冲掉。
+ */
+export function shouldWarmFirstFrame(probe: FirstFrameWarmProbe): boolean {
+  if (probe.isActive) return false;
+  if (!probe.shouldLoad) return false;
+  if (probe.usesSharedVideo) return false;
+  // HAVE_METADATA 之前 seek 无处可去；currentTime 非 0 说明已经被推进过。
+  if (probe.readyState < 1) return false;
+  return probe.currentTime === 0;
+}
+
+/** 预热用的落点：足够小以视觉上仍是首帧，又足以让 seek 真的发生。 */
+export const FIRST_FRAME_WARM_TIME = 0.001;
+
 /** 判定所需的最小视频元素切面；HTMLVideoElement 天然满足。 */
 export type BufferedMediaProbe = {
   currentTime: number;

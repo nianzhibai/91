@@ -21,11 +21,14 @@ import { hideVideo, setVideoLike, type ShortsItem } from "@/data/videos";
 import {
   averageBytesPerSecond,
   clamp,
+  FIRST_FRAME_WARM_TIME,
+  getPreloadAheadCount,
   getVideoWindowBounds,
   preloadBufferSecondsFor,
   preloadKeepSecondsFor,
   videoBufferIsCritical,
   videoHasBufferedData,
+  shouldWarmFirstFrame,
   videoHasComfortableBuffer,
 } from "@/shorts/mediaBuffer";
 import {
@@ -64,8 +67,6 @@ import {
 } from "@/lib/videoShareClipboard";
 import "@/styles/shorts.css";
 
-// 当前视频流畅播放后，向后预加载多少条视频。
-const PRELOAD_AHEAD_COUNT = 2;
 
 // 距当前屏多少条以内的 slide 才渲染真正的内容（背景、海报、文案、操作栏）。
 // 即使队列已经有几十条，也只让附近 slide 持有位图和完整子树；窗口外退化成
@@ -204,6 +205,9 @@ export default function ShortsPage() {
   // Windows 退出浏览器全屏时视口高度会改变。调整滚动位置期间锁住当前
   // slide，避免 IntersectionObserver 把新的像素位置误判成后续视频。
   const viewportResizeAnchorIndexRef = useRef<number | null>(null);
+  // 手指正在拖动期间冻结活跃屏判定：IO 看的是视觉位置，跟手时轨道位移一直
+  // 在变，它会在一次滑动里反复翻转，每翻一次都是一整套暂停/起播/授权清零。
+  const pagerGestureActiveRef = useRef(false);
   const userPausedIndexRef = useRef<number | null>(null);
   const [activeReadyForPreload, setActiveReadyForPreload] = useState(false);
   const [, setUserPausedIndexState] = useState<number | null>(null);
@@ -224,9 +228,9 @@ export default function ShortsPage() {
   );
   // iPhone 浏览器里改用页面滚动，让 Safari 工具栏能随刷动收起。
   const useDocumentScroll = shouldUseDocumentScrollForShorts();
-  // 移动端由页面自己接管上下滑动：跟手、按距离+速度判定切屏、惯性收尾。
+  // 移动端由页面自己接管上下滑动：跟手、按距离+速度判定切屏、固定时长落点。
   // 桌面继续用原生 scroll-snap + 滚轮 / 方向键。
-  const useTouchPager = shouldUseShortsTouchPager(useDocumentScroll);
+  const useTouchPager = shouldUseShortsTouchPager();
   // Windows 短视频页只保留静音图标；不挂载桌面 hover 音量条，避免点击
   // 图标时因鼠标仍停留在按钮上而展开滑杆。
   const isWindowsShortsPlatform = isWindowsPlatform();
@@ -580,7 +584,8 @@ export default function ShortsPage() {
       (entries) => {
         if (
           viewportResizeAnchorIndexRef.current !== null ||
-          queueTrimInProgressRef.current
+          queueTrimInProgressRef.current ||
+          pagerGestureActiveRef.current
         ) {
           return;
         }
@@ -644,12 +649,17 @@ export default function ShortsPage() {
   // 移动端的上下滑动手势。activeIndex 仍然只由上面的 IntersectionObserver
   // 决定：这个 hook 只负责把手指位移写进同一个 scrollTop，播放 / 预载 /
   // iOS 共享元素那条链路完全不受影响。
+  const handlePagerGestureActiveChange = useCallback((active: boolean) => {
+    pagerGestureActiveRef.current = active;
+  }, []);
+
   useShortsSwipePager({
     enabled: useTouchPager,
     containerRef,
     trackRef,
     usesDocumentScroll: useDocumentScroll,
     getAnchorSlide: getActiveSlideElement,
+    onGestureActiveChange: handlePagerGestureActiveChange,
   });
 
   // 先停掉所有非当前屏。当前屏的 play() 由 ShortsSlide 负责，
@@ -1089,11 +1099,13 @@ export default function ShortsPage() {
             const isInCacheWindow =
               index >= videoWindow.start && index <= videoWindow.end;
             const preloadOffset = index - activeIndex;
+            // 下一条无条件预载，再往后才受"当前屏缓冲健康"的授权节流。
+            // 详见 getPreloadAheadCount 的注释：让下一条"存在"和"后台囤积"
+            // 是两件成本差一个数量级的事，不该共用一个开关。
             const shouldPreload =
               !useIOSSharedVideo &&
-              activeReadyForPreload &&
               preloadOffset > 0 &&
-              preloadOffset <= PRELOAD_AHEAD_COUNT;
+              preloadOffset <= getPreloadAheadCount(activeReadyForPreload);
             const shouldMount =
               isActiveSlide ||
               (!useIOSSharedVideo && (isInCacheWindow || shouldPreload));
@@ -2215,8 +2227,36 @@ function ShortsSlideImpl({
       }
     }
 
+    /**
+     * 预载条的首帧预热。字节下下来了不等于有画面：video 元素在真正开始播放
+     * 之前一直画 poster，哪怕缓冲已满。写一次 currentTime 触发 seek，强制它
+     * 解码并呈现真实首帧，滑到这一屏时就不再是一张静态封面。
+     * 全程静音、不播放，判定条件见 shouldWarmFirstFrame。
+     */
+    const warmFirstFrame = () => {
+      if (
+        !shouldWarmFirstFrame({
+          isActive,
+          shouldLoad,
+          usesSharedVideo,
+          readyState: video.readyState,
+          currentTime: video.currentTime,
+        })
+      ) {
+        return;
+      }
+      try {
+        video.currentTime = FIRST_FRAME_WARM_TIME;
+      } catch {
+        // 少数 ready state 下 seek 会抛错；下一次 loadeddata 还会再试。
+      }
+    };
+
     handleLoaded();
     handleTime();
+    warmFirstFrame();
+    video.addEventListener("loadedmetadata", warmFirstFrame);
+    video.addEventListener("loadeddata", warmFirstFrame);
     video.addEventListener("loadedmetadata", handleLoaded);
     video.addEventListener("durationchange", handleLoaded);
     video.addEventListener("timeupdate", handleTime);
@@ -2236,6 +2276,8 @@ function ShortsSlideImpl({
     }
 
     return () => {
+      video.removeEventListener("loadedmetadata", warmFirstFrame);
+      video.removeEventListener("loadeddata", warmFirstFrame);
       video.removeEventListener("loadedmetadata", handleLoaded);
       video.removeEventListener("durationchange", handleLoaded);
       video.removeEventListener("timeupdate", handleTime);
