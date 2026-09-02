@@ -383,6 +383,59 @@
   }
 }
 
+/* ---------- 控制栏倍速按钮 ---------- */
+
+.art-video-player .art-control-playbackRateToggle {
+  padding: 0 2px;
+  color: rgba(255, 255, 255, 0.92);
+  font-size: var(--font-sm);
+  font-weight: var(--weight-semibold);
+}
+
+.art-video-player .art-control-playbackRateToggle .art-selector-value {
+  min-width: 44px;
+  padding: 0 6px;
+  text-align: center;
+}
+
+.art-video-player .art-control-playbackRateToggle .art-selector-list {
+  right: 0;
+  min-width: 78px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/*
+ * ArtPlayer 控制栏的下拉列表只靠 :hover 展开，触摸设备上没有可靠的 hover，
+ * 所以展开状态由按钮点击写在 data-rate-open 上，两种指针分别生效。
+ */
+.art-video-player
+  .art-control-playbackRateToggle[data-rate-open="true"]
+  .art-selector-list {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .art-video-player .art-control-playbackRateToggle:hover .art-selector-list {
+    opacity: 0;
+    transform: translateY(10px);
+    pointer-events: none;
+  }
+
+  .art-video-player
+    .art-control-playbackRateToggle[data-rate-open="true"]
+    .art-selector-list {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+  }
+
+  .art-video-player .art-control-playbackRateToggle .art-selector-item {
+    padding: 12px 18px;
+  }
+}
+
 .video-player__status {
   position: absolute;
   inset: 0;
@@ -500,6 +553,8 @@
   font-weight: var(--weight-semibold);
   line-height: 1;
   text-align: center;
+  /* 绝对定位按 left 收缩，窄屏上不加这行文案会被压成两行。 */
+  white-space: nowrap;
   transform: translate(-50%, -50%);
   pointer-events: none;
   animation: video-player-art-hud-in 120ms ease-out both;
@@ -527,6 +582,169 @@
   min-width: 36px;
   text-align: left;
   letter-spacing: 0;
+}
+
+/* ---------- 双击快进 / 快退的水波纹 ---------- */
+
+/*
+ * 被点的那一侧铺一层半圆遮罩，内边缘做成椭圆，和移动端 YouTube 一致。
+ * 层级压在控制栏（60）和播放遮罩（50）下面，只盖住画面。
+ */
+.video-player__art-seek-ripple {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 52%;
+  overflow: hidden;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+  pointer-events: none;
+  animation: video-player-seek-ripple-in 140ms ease-out both;
+}
+
+.video-player__art-seek-ripple--left {
+  left: 0;
+  border-radius: 0 46% 46% 0 / 0 50% 50% 0;
+}
+
+.video-player__art-seek-ripple--right {
+  right: 0;
+  border-radius: 46% 0 0 46% / 50% 0 0 50%;
+}
+
+.video-player__art-seek-ripple--leaving {
+  animation: video-player-seek-ripple-out 220ms ease-out both;
+}
+
+/*
+ * 水波纹从指尖扩散。用足够大的圆做缩放而不是把小圆放大几十倍，
+ * 边缘再用径向渐变化开，避免位图拉伸后的锯齿。
+ */
+.video-player__art-seek-ripple-wave {
+  position: absolute;
+  width: 100%;
+  aspect-ratio: 1;
+  margin: -50% 0 0 -50%;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    rgba(255, 255, 255, 0.34) 0%,
+    rgba(255, 255, 255, 0.16) 58%,
+    rgba(255, 255, 255, 0) 72%
+  );
+  will-change: transform, opacity;
+  animation: video-player-seek-wave 560ms ease-out both;
+}
+
+.video-player__art-seek-ripple-icon {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  width: 48px;
+  height: 22px;
+}
+
+.video-player__art-seek-ripple--left .video-player__art-seek-ripple-icon {
+  transform: scaleX(-1);
+}
+
+.video-player__art-seek-ripple-icon svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* 三个箭头依次点亮，方向感跟着快进 / 快退走。 */
+.video-player__art-seek-ripple-icon path {
+  animation: video-player-seek-chevron 900ms ease-in-out infinite;
+}
+
+.video-player__art-seek-ripple-icon path:nth-child(2) {
+  animation-delay: 150ms;
+}
+
+.video-player__art-seek-ripple-icon path:nth-child(3) {
+  animation-delay: 300ms;
+}
+
+.video-player__art-seek-ripple-value {
+  position: relative;
+  z-index: 1;
+  font-size: var(--font-sm);
+  font-weight: var(--weight-bold);
+  line-height: 1;
+  white-space: nowrap;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.55);
+}
+
+/* 全屏时画面变大，箭头和秒数同步放大，保持和内嵌时一样的视觉比重。 */
+.art-video-player.art-fullscreen .video-player__art-seek-ripple-icon,
+.art-video-player.art-fullscreen-web .video-player__art-seek-ripple-icon,
+.art-video-player.art-manual-orientation .video-player__art-seek-ripple-icon {
+  width: 62px;
+  height: 28px;
+}
+
+.art-video-player.art-fullscreen .video-player__art-seek-ripple-value,
+.art-video-player.art-fullscreen-web .video-player__art-seek-ripple-value,
+.art-video-player.art-manual-orientation .video-player__art-seek-ripple-value {
+  font-size: var(--font-md);
+}
+
+@keyframes video-player-seek-ripple-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes video-player-seek-ripple-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes video-player-seek-wave {
+  from {
+    transform: scale(0.28);
+    opacity: 0.85;
+  }
+  to {
+    transform: scale(2.4);
+    opacity: 0;
+  }
+}
+
+@keyframes video-player-seek-chevron {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .video-player__art-seek-ripple-wave,
+  .video-player__art-seek-ripple-icon path {
+    animation: none;
+  }
+
+  .video-player__art-seek-ripple-wave {
+    opacity: 0;
+  }
 }
 
 .art-video-player.art-fullscreen .video-player__art-gesture-hud,
