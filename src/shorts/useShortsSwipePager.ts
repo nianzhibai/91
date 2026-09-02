@@ -29,9 +29,9 @@ import { classifyTouchSeekIntent } from "./useShortsSlideGestures";
  *   然后让 `T` 动画归零**（FLIP）。画面是平滑滑过去的，但滚动位置在第 0
  *   毫秒就已经是新的了。
  *
- * 落点这样排有两个直接后果：IntersectionObserver 在松手当场就判出新的活跃屏
- * （下一条视频立刻起播，与 douyin 在 touchEnd 里推进 index 一致），以及位置
- * 提交完全不依赖 transitionend——那个事件丢了也只是 will-change 多留一会儿。
+ * 落点这样排是为了健壮性：位置提交不依赖 transitionend（那个事件在标签页
+ * 切走时会丢），也让队列裁剪的坐标平移天然连续。它**不**改变视频切换时机——
+ * 活跃屏仍由 IntersectionObserver 按视觉位置判定，详见 settleTo 的注释。
  *
  * 页面其余部分因此完全不用改：判活跃屏、长会话队列裁剪重贴、键盘
  * `scrollIntoView`、隐藏视频后跳下一条，全都仍然建立在 `scrollTop` 几何上。
@@ -403,15 +403,16 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
    * translate 抵消掉这次跳变，再让它动画归零——画面看起来是平滑滑过去的，
    * 但滚动位置在第 0 毫秒就已经是新的了。
    *
-   * 这么排有两个好处，都关乎手感和健壮性：
-   * 1. IntersectionObserver 在松手当场就判出新的活跃屏，下一条视频立刻起播，
-   *    不用等动画走完（douyin 也是在 touchEnd 里就推进 localIndex 的）。
-   *    也就不必去赌"合成器动画期间 IO 会不会被触发"。
-   * 2. 位置提交不依赖 transitionend。那个事件在标签页切走、动画被打断时会丢；
+   * 这么排换来的是健壮性：
+   * 1. 位置提交不依赖 transitionend。那个事件在标签页切走、合成器丢帧时会丢；
    *    在这个排法里丢了也只是 will-change 多留一会儿，绝不会卡在两屏之间。
+   * 2. 长会话队列裁剪天然连续：它保持 `scrollTop - slide 布局位置` 不变，
+   *    轨道上的 translate 原样继续，不需要任何额外处理。
    *
-   * 长会话队列裁剪同理：它保持 `scrollTop - slide 布局位置` 不变，轨道上的
-   * translate 原样继续，视觉完全连续，不需要任何额外处理。
+   * 注意它**不**改变视频切换的时机。活跃屏仍由 IntersectionObserver 判定，
+   * 而 IO 看的是视觉矩形——补偿量正是为了让视觉位置保持连续，所以切换依旧
+   * 发生在画面视觉越过 60% 的那一刻（easeOutCubic 前段快，约在动画前 1/4）。
+   * 做不做 FLIP 在这一点上完全一样。
    */
   const settleTo = (target: HTMLElement | null, velocityPxPerMs: number) => {
     detachSettleListeners();
