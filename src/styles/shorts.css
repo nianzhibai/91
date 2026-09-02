@@ -192,6 +192,11 @@ body.shorts-document-scroll::-webkit-scrollbar {
 .shorts-feed.is-pager-driven {
   touch-action: none;
   scroll-snap-type: none;
+  /* 关掉浏览器的滚动锚定。快速翻页时 slide 会频繁挂载 / 卸载 <video> 和内容，
+     锚定会为了"保持内容稳定"自动微调 scrollTop——而这里的 scrollTop 是我们
+     精确管理的落点。以前有 mandatory 吸附兜着，微调会被纠正回去；吸附关掉
+     之后它就永久留在非吸附点上，表现为快速滚动后画面停在两条视频中间。 */
+  overflow-anchor: none;
 }
 
 .shorts-feed.is-pager-driven .shorts-slide {
@@ -202,6 +207,7 @@ body.shorts-document-scroll::-webkit-scrollbar {
 html.shorts-document-scroll.is-pager-driven,
 html.shorts-document-scroll.is-pager-driven body {
   scroll-snap-type: none;
+  overflow-anchor: none;
 }
 
 .shorts-page.is-document-scroll.is-pager-driven {

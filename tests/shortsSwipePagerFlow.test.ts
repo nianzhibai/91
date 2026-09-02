@@ -347,6 +347,12 @@ function createHarness(options?: { slideCount?: number }) {
         });
       });
     },
+    /** 容器发出一次 scroll 事件（外力挪动了滚动位置）。 */
+    scroll() {
+      const handler = rootListeners.get("scroll");
+      assert.ok(handler, "scroll listener should be registered");
+      handler({});
+    },
     /** 一次 wheel 事件。deltaY 正 = 向下滚 = 看下一条。 */
     wheel(
       deltaY: number,
@@ -1135,19 +1141,76 @@ test("the wheel stops at the end of the queue", () => {
   );
 });
 
-test("pinch zoom and the progress bar keep their own wheel", () => {
+test("pinch zoom keeps its own wheel, everything else is taken over", () => {
   withHarness((h) => {
     // Ctrl+滚轮是浏览器缩放，不能抢
     h.wheel(300, { ctrlKey: true });
     assert.equal(h.root.scrollTop, 0);
-    // 进度条上的滚轮同样不归我们管
+
+    // 进度条上的滚轮**必须**被接管。data-shorts-no-swipe 是给拖拽用的
+    // （进度条要吃掉整根手指），滚轮不该认它——漏掉一处 preventDefault，
+    // 原生滚动就从那里溜出去，而吸附已经关了，画面会停在两条视频中间。
     const progress = {
       closest: (selector: string) =>
         selector === "[data-shorts-no-swipe]" ? progress : null,
     };
     h.tick(500);
     h.wheel(300, { target: progress });
-    assert.equal(h.root.scrollTop, 0);
+    assert.equal(h.root.scrollTop, SLIDE_HEIGHT);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 兜底不变量：静止时绝不停在两条视频之间
+// ---------------------------------------------------------------------------
+
+test("an unexplained scroll drift corrects itself once things go quiet", () => {
+  withHarness((h) => {
+    // 模拟浏览器滚动锚定 / 漏掉的原生滚动：位置被外力挪到了半路
+    h.root.scrollTop = SLIDE_HEIGHT + 137;
+    h.scroll();
+    // 立刻不动手，先等滚动真正停下来
+    assert.equal(h.root.scrollTop, SLIDE_HEIGHT + 137);
+    h.advance(200);
+    // 就近吸附回去
+    assert.equal(h.root.scrollTop, SLIDE_HEIGHT);
+    h.endTransition();
+    assert.equal(h.transformStyle, "");
+  });
+});
+
+test("a couple of pixels of rounding is not worth a correction", () => {
+  withHarness((h) => {
+    h.root.scrollTop = SLIDE_HEIGHT + 1;
+    h.scroll();
+    h.advance(200);
+    // 亚像素取整不该触发一次动画
+    assert.equal(h.root.scrollTop, SLIDE_HEIGHT + 1);
+    assert.equal(h.awaitingTransition, false);
+  });
+});
+
+test("the guard never fights an animation or a finger", () => {
+  withHarness((h) => {
+    // 落点动画进行中：scrollTop 本来就已经在目标上，守卫不能插手
+    h.wheel(100);
+    assert.equal(h.root.scrollTop, SLIDE_HEIGHT);
+    h.scroll();
+    h.advance(200);
+    assert.equal(h.root.scrollTop, SLIDE_HEIGHT);
+
+    // 手指拖动中：位移记在 transform 上，scrollTop 不动，同样不能插手
+    h.endTransition();
+    h.tick(500);
+    h.pointerDown(200, 800);
+    h.tick(16);
+    h.pointerMove(200, 780);
+    h.tick(16);
+    h.pointerMove(200, 600);
+    const dragged = h.translate;
+    h.scroll();
+    h.advance(200);
+    assert.equal(h.translate, dragged);
   });
 });
 

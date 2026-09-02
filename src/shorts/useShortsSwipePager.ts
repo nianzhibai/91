@@ -105,6 +105,18 @@ export const SHORTS_PAGER_WHEEL_STEP_PX = 40;
 export const SHORTS_PAGER_WHEEL_GESTURE_GAP_MS = 120;
 /** deltaMode=1（按行）时一行折算多少像素。 */
 export const SHORTS_WHEEL_LINE_HEIGHT_PX = 16;
+/**
+ * 静止时允许偏离吸附点的最大像素数，超过就自我纠正。
+ *
+ * 这是一条**不变量**而不是又一个特例修复："静止时画面绝不停在两条视频之间"。
+ * 关掉原生吸附之后，任何一条我们没预料到的路径——浏览器的滚动锚定、某个
+ * 漏掉 preventDefault 的输入、扩展程序、页内查找、无障碍工具——都会把滚动
+ * 位置留在半路，而没有任何机制会把它纠回来。与其逐个堵，不如让这条不变量
+ * 自己成立。
+ */
+export const SHORTS_PAGER_ALIGNMENT_TOLERANCE_PX = 2;
+/** 纠正前的防抖：等滚动真正停下来再判断，别和进行中的动作打架。 */
+export const SHORTS_PAGER_ALIGNMENT_CHECK_MS = 120;
 /** 起点标记：滑动手势不接管这个子树内按下的触摸（如底部进度条）。 */
 export const SHORTS_NO_SWIPE_ATTRIBUTE = "data-shorts-no-swipe";
 /** 这些元素上的 click 永远不能被合成 click 守卫吞掉。 */
@@ -863,16 +875,11 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
   let wheelState = INITIAL_SHORTS_WHEEL_STATE;
 
   const handleWheel = (event: WheelEvent) => {
-    // 捏合缩放（Ctrl+滚轮）交还给浏览器。
+    // 捏合缩放（Ctrl+滚轮）交还给浏览器，其余一律接管。
     if (event.ctrlKey) return;
-    const target = event.target as Element | null;
-    if (
-      typeof target?.closest === "function" &&
-      target.closest(`[${SHORTS_NO_SWIPE_ATTRIBUTE}]`)
-    ) {
-      return;
-    }
-    // 必须挡掉原生滚动：否则容器会一边被我们翻页、一边自己自由滚动。
+    // 这里刻意**不**看 data-shorts-no-swipe：那个标记是给拖拽用的（进度条要
+    // 吃掉整根手指），滚轮没有理由认它。漏掉任何一处 preventDefault，原生
+    // 滚动就会从那里溜出去，而吸附已经关了，画面会停在两条视频中间。
     if (event.cancelable) event.preventDefault();
     if (drag) return;
 
@@ -899,6 +906,36 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     if (current && (current.committed || current.interrupted)) {
       settleToNearest();
     }
+  };
+
+  // ---- 兜底不变量：静止时绝不停在两条视频之间 ----
+  // 关掉原生吸附之后，没有任何机制会把意外的滚动偏移纠回来。这里不去逐个
+  // 堵源头（浏览器滚动锚定、漏掉的 preventDefault、扩展、页内查找……），
+  // 而是让"静止即对齐"这条不变量自己成立：滚动停下来之后一量，偏了就吸回去。
+  let alignmentCheckTimer: number | null = null;
+  const cancelAlignmentCheck = () => {
+    if (alignmentCheckTimer === null) return;
+    window.clearTimeout(alignmentCheckTimer);
+    alignmentCheckTimer = null;
+  };
+  const handleScroll = () => {
+    // 我们自己驱动的位移不算意外，跳过。
+    if (drag || settling) return;
+    cancelAlignmentCheck();
+    alignmentCheckTimer = window.setTimeout(() => {
+      alignmentCheckTimer = null;
+      if (drag || settling) return;
+      const slides = readSlides();
+      if (slides.length === 0) return;
+      const slideTops = readSlideTops();
+      const effectiveTop = getEffectiveTop();
+      const index = findNearestShortsSlideIndex(slideTops, effectiveTop);
+      if (index < 0) return;
+      const drift = Math.abs(slideTops[index] - effectiveTop);
+      if (drift <= SHORTS_PAGER_ALIGNMENT_TOLERANCE_PX) return;
+      // 就近吸附，用回弹时长——这不是一次切屏，只是把画面扶正。
+      settleTo(slides[index] ?? null, false);
+    }, SHORTS_PAGER_ALIGNMENT_CHECK_MS);
   };
 
   // ---- 视口尺寸变化后重新对齐 ----
@@ -931,6 +968,7 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     }, 240);
   };
 
+  root.addEventListener("scroll", handleScroll, { passive: true });
   root.addEventListener("wheel", handleWheel, { passive: false });
   root.addEventListener("pointerdown", handlePointerDown, { passive: true });
   root.addEventListener("pointermove", handlePointerMove, { passive: false });
@@ -956,6 +994,8 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     setGestureActive(false);
     if (realignFrame !== null) window.cancelAnimationFrame(realignFrame);
     if (realignTimer !== null) window.clearTimeout(realignTimer);
+    cancelAlignmentCheck();
+    root.removeEventListener("scroll", handleScroll);
     root.removeEventListener("wheel", handleWheel);
     root.removeEventListener("pointerdown", handlePointerDown);
     root.removeEventListener("pointermove", handlePointerMove);
