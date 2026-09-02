@@ -109,8 +109,6 @@ function createHarness(options?: { slideCount?: number }) {
   const root = {
     scrollTop: 0,
     clientHeight: SLIDE_HEIGHT,
-    // 桌面保留原生吸附，手势期间由 pager 临时摘掉
-    style: { scrollSnapType: "" },
     setPointerCapture: () => undefined,
     releasePointerCapture: () => undefined,
     scrollHeight: slideCount * SLIDE_HEIGHT,
@@ -245,10 +243,6 @@ function createHarness(options?: { slideCount?: number }) {
     get styleFlushes() {
       return styleFlushes;
     },
-    /** 原生吸附此刻是否被摘掉了。 */
-    get snapSuspended() {
-      return root.style.scrollSnapType === "none";
-    },
     /** 落点动画是否在等 transitionend。 */
     get awaitingTransition() {
       return (trackListeners.get("transitionend")?.size ?? 0) > 0;
@@ -351,6 +345,18 @@ function createHarness(options?: { slideCount?: number }) {
           clientY: p.clientY,
           target: null,
         });
+      });
+    },
+    /** 一次 wheel 事件。deltaY 正 = 向下滚 = 看下一条。 */
+    wheel(
+      deltaY: number,
+      options?: { deltaMode?: number; ctrlKey?: boolean; target?: unknown }
+    ) {
+      fire("wheel", {
+        deltaY,
+        deltaMode: options?.deltaMode ?? 0,
+        ctrlKey: options?.ctrlKey ?? false,
+        target: options?.target ?? null,
       });
     },
     /**
@@ -1038,84 +1044,124 @@ test("a mouse click that never moves stays a click", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 原生吸附：桌面留着给滚轮用，手势期间必须摘掉
+// 滚轮：一次手势 = 一条视频，和手指同一条落点动画
 // ---------------------------------------------------------------------------
 
-test("native snapping is lifted while the gesture drives, and handed back after", () => {
+test("one wheel notch advances exactly one video", () => {
   withHarness((h) => {
-    // 静止时吸附归样式表管（滚轮和方向键要靠它）
-    assert.equal(h.snapSuspended, false);
-
-    h.pointerDown(200, 700, { pointerType: "mouse" });
-    h.tick(16);
-    // 方向还没定，先别动人家的吸附
-    h.pointerMove(200, 694);
-    assert.equal(h.snapSuspended, false);
-
-    // 判定为纵向、开始接管的那一刻摘掉。不摘的话吸附点会跟着轨道的
-    // transform 一起移动，mandatory 立刻反向拉 scrollTop 补偿，
-    // 净效果正好抵消掉跟手位移——桌面上就是"怎么拖都不动"。
-    h.tick(16);
-    h.pointerMove(200, 680);
-    assert.equal(h.snapSuspended, true);
-
-    h.tick(16);
-    h.pointerMove(200, 600);
-    assert.equal(h.translate, -80);
-    assert.equal(h.snapSuspended, true);
-
-    h.pointerUp(200, 600);
-    // 动画还在跑，吸附点仍然在动，还不能还
-    assert.equal(h.snapSuspended, true);
-
+    h.wheel(100);
+    // 走的是和拖拽完全相同的 FLIP 落点：位置当场提交，再补一段动画
+    assert.equal(h.root.scrollTop, SLIDE_HEIGHT);
+    assert.equal(h.settleDurationMs, SHORTS_PAGER_COMMIT_SETTLE_MS);
     h.endTransition();
-    // 落定、transform 清干净之后才还回去，此时我们正停在吸附点上
-    assert.equal(h.snapSuspended, false);
     assert.equal(h.transformStyle, "");
+    assert.equal(h.root.scrollTop, SLIDE_HEIGHT);
   });
 });
 
-test("an interrupted gesture never leaves snapping switched off", () => {
+test("scrolling up with the wheel goes back one video", () => {
   withHarness((h) => {
-    // 多指中断
+    h.root.scrollTop = SLIDE_HEIGHT * 2;
+    h.wheel(-100);
+    assert.equal(h.root.scrollTop, SLIDE_HEIGHT);
+  });
+});
+
+test("a trackpad flick is one video, not fifteen", () => {
+  withHarness((h) => {
+    // 触控板一次轻扫：几十个小 delta，间隔十几毫秒，尾巴拖很久
+    h.wheel(8);
+    h.wheel(14);
+    h.wheel(22); // 累计 44，越过阈值 → 切一屏
+    assert.equal(h.root.scrollTop, SLIDE_HEIGHT);
+
+    // 之后的惯性尾巴全部被同一次手势吞掉
+    for (let i = 0; i < 40; i += 1) {
+      h.tick(12);
+      h.wheel(30);
+    }
+    assert.equal(h.root.scrollTop, SLIDE_HEIGHT, "惯性尾巴不该继续翻页");
+  });
+});
+
+test("a fresh wheel gesture after a pause advances again", () => {
+  withHarness((h) => {
+    h.wheel(100);
+    assert.equal(h.root.scrollTop, SLIDE_HEIGHT);
+    h.endTransition();
+    // 间隔拉开 = 新的一次手势
+    h.tick(200);
+    h.wheel(100);
+    assert.equal(h.root.scrollTop, SLIDE_HEIGHT * 2);
+  });
+});
+
+test("a nudge too small to be deliberate does nothing", () => {
+  withHarness((h) => {
+    h.wheel(10);
+    h.tick(10);
+    h.wheel(12);
+    assert.equal(h.root.scrollTop, 0);
+    assert.equal(h.awaitingTransition, false);
+  });
+});
+
+test("the wheel is line- and page-aware, not just pixel-aware", () => {
+  withHarness((h) => {
+    // Firefox 按行给 delta：3 行 ≈ 48px，够一格
+    h.wheel(3, { deltaMode: 1 });
+    assert.equal(h.root.scrollTop, SLIDE_HEIGHT);
+  });
+  withHarness((h) => {
+    h.wheel(1, { deltaMode: 2 });
+    assert.equal(h.root.scrollTop, SLIDE_HEIGHT);
+  });
+});
+
+test("the wheel stops at the end of the queue", () => {
+  withHarness(
+    (h) => {
+      h.root.scrollTop = SLIDE_HEIGHT * 2;
+      h.wheel(100);
+      assert.equal(h.root.scrollTop, SLIDE_HEIGHT * 2);
+      assert.equal(h.awaitingTransition, false);
+      // 队首同理
+      h.root.scrollTop = 0;
+      h.tick(500);
+      h.wheel(-100);
+      assert.equal(h.root.scrollTop, 0);
+    },
+    { slideCount: 3 }
+  );
+});
+
+test("pinch zoom and the progress bar keep their own wheel", () => {
+  withHarness((h) => {
+    // Ctrl+滚轮是浏览器缩放，不能抢
+    h.wheel(300, { ctrlKey: true });
+    assert.equal(h.root.scrollTop, 0);
+    // 进度条上的滚轮同样不归我们管
+    const progress = {
+      closest: (selector: string) =>
+        selector === "[data-shorts-no-swipe]" ? progress : null,
+    };
+    h.tick(500);
+    h.wheel(300, { target: progress });
+    assert.equal(h.root.scrollTop, 0);
+  });
+});
+
+test("the wheel is ignored while a finger is still down", () => {
+  withHarness((h) => {
     h.pointerDown(200, 800);
     h.tick(16);
     h.pointerMove(200, 780);
     h.tick(16);
-    h.pointerMove(200, 500);
-    assert.equal(h.snapSuspended, true);
-    h.secondFingerDownAt([{ clientX: 200, clientY: 500 }]);
-    h.endTransition();
-    assert.equal(h.snapSuspended, false);
+    h.pointerMove(200, 700);
+    const dragged = h.translate;
+    h.wheel(300);
+    // 手指还在拖，滚轮不能横插一脚改变落点
+    assert.equal(h.translate, dragged);
+    assert.equal(h.root.scrollTop, 0);
   });
-});
-
-test("横向 seek 与纯点击都不该动到原生吸附", () => {
-  withHarness((h) => {
-    // 判定为横向：手势不归我们管，吸附原样留着
-    h.pointerDown(200, 700);
-    h.tick(16);
-    h.pointerMove(320, 706);
-    h.pointerUp(320, 706);
-    assert.equal(h.snapSuspended, false);
-
-    // 纯点击同理
-    h.pointerDown(200, 700);
-    h.tick(60);
-    h.pointerUp(200, 700);
-    assert.equal(h.snapSuspended, false);
-  });
-});
-
-test("tearing down mid-gesture hands snapping back", () => {
-  const harness = createHarness();
-  harness.pointerDown(200, 800);
-  harness.tick(16);
-  harness.pointerMove(200, 780);
-  harness.tick(16);
-  harness.pointerMove(200, 600);
-  assert.equal(harness.snapSuspended, true);
-  harness.destroy();
-  // 页面走了还把 scroll-snap-type: none 留在 DOM 上，滚轮就永远不吸附了
-  assert.equal(harness.snapSuspended, false);
 });

@@ -88,6 +88,23 @@ export const SHORTS_PAGER_SETTLE_FALLBACK_MS = 80;
  * 不会被误伤。
  */
 const SHORTS_PAGER_CLICK_GUARD_MS = 300;
+/**
+ * 一次滚轮手势内累计位移达到这个像素数就切一屏。
+ * 鼠标一格通常是 100px（deltaMode=0）或 3 行（deltaMode=1，≈48px），
+ * 取 40 保证任何一格都够；触控板轻推一下也够。
+ */
+export const SHORTS_PAGER_WHEEL_STEP_PX = 40;
+/**
+ * 两次 wheel 事件间隔超过这个毫秒数就算新的一次手势。
+ *
+ * 这是"一次手势最多切一屏"在滚轮上的落点，也是触控板惯性尾巴的分水岭：
+ * 触控板一次轻扫会连发几十个事件、间隔只有十几毫秒，尾巴能拖一秒多；
+ * 不按手势聚合的话一次轻扫会连翻十几条视频。鼠标滚轮有意识地一格一格滚
+ * 时，间隔通常在 150ms 以上，每一格因此都是独立手势。
+ */
+export const SHORTS_PAGER_WHEEL_GESTURE_GAP_MS = 120;
+/** deltaMode=1（按行）时一行折算多少像素。 */
+export const SHORTS_WHEEL_LINE_HEIGHT_PX = 16;
 /** 起点标记：滑动手势不接管这个子树内按下的触摸（如底部进度条）。 */
 export const SHORTS_NO_SWIPE_ATTRIBUTE = "data-shorts-no-swipe";
 /** 这些元素上的 click 永远不能被合成 click 守卫吞掉。 */
@@ -207,6 +224,76 @@ export function applyShortsPagerEdgeResistance(input: {
     return input.min - Math.min(over * SHORTS_PAGER_EDGE_RESISTANCE, limit);
   }
   return input.value;
+}
+
+/** 把 wheel 的三种 deltaMode 统一换算成像素，后面只跟像素打交道。 */
+export function normalizeShortsWheelDelta(input: {
+  deltaY: number;
+  deltaMode: number;
+  viewportHeight: number;
+}): number {
+  if (!Number.isFinite(input.deltaY)) return 0;
+  // 1 = 按行（Firefox 常用），2 = 按页
+  if (input.deltaMode === 1) return input.deltaY * SHORTS_WHEEL_LINE_HEIGHT_PX;
+  if (input.deltaMode === 2) {
+    return input.deltaY * Math.max(1, input.viewportHeight);
+  }
+  return input.deltaY;
+}
+
+export type ShortsWheelGestureState = {
+  /** 上一次 wheel 事件的时间戳 */
+  lastEventAt: number;
+  /** 本次手势内累计的像素位移 */
+  accumulated: number;
+  /** 本次手势是否已经消费过一步——之后的惯性尾巴一律忽略 */
+  consumed: boolean;
+};
+
+export const INITIAL_SHORTS_WHEEL_STATE: ShortsWheelGestureState = {
+  lastEventAt: Number.NEGATIVE_INFINITY,
+  accumulated: 0,
+  consumed: false,
+};
+
+/**
+ * 一次 wheel 事件该不该切屏，以及切哪个方向。
+ *
+ * 规则与手指完全一致：**一次手势最多切一屏**。事件流按间隔切分成手势，
+ * 每个手势里累计位移第一次越过阈值就切一屏，之后这次手势里剩下的事件
+ * （触控板的惯性尾巴）全部忽略。
+ *
+ * 返回新的状态而不是就地修改：这样整条判定是纯函数，能脱离浏览器直接测。
+ */
+export function resolveShortsWheelStep(input: {
+  state: ShortsWheelGestureState;
+  deltaPx: number;
+  now: number;
+}): { state: ShortsWheelGestureState; step: -1 | 0 | 1 } {
+  const continuing =
+    input.now - input.state.lastEventAt < SHORTS_PAGER_WHEEL_GESTURE_GAP_MS;
+  const accumulated = continuing ? input.state.accumulated : 0;
+  const consumed = continuing ? input.state.consumed : false;
+
+  if (consumed) {
+    // 同一次手势已经切过屏，剩下的惯性照单全收但不产生动作。
+    return {
+      state: { lastEventAt: input.now, accumulated: 0, consumed: true },
+      step: 0,
+    };
+  }
+
+  const next = accumulated + input.deltaPx;
+  if (Math.abs(next) < SHORTS_PAGER_WHEEL_STEP_PX) {
+    return {
+      state: { lastEventAt: input.now, accumulated: next, consumed: false },
+      step: 0,
+    };
+  }
+  return {
+    state: { lastEventAt: input.now, accumulated: 0, consumed: true },
+    step: next > 0 ? 1 : -1,
+  };
 }
 
 /**
@@ -361,30 +448,6 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
         : root.scrollHeight - root.clientHeight
     );
 
-  // ---- 原生吸附的临时摘除 ----
-  // CSS 的吸附点是按元素**变换后**的位置算的。轨道一平移，吸附点就跟着移，
-  // `scroll-snap-type: mandatory` 会立刻把 scrollTop 反向拉回去补偿——净效果
-  // 正好抵消掉跟手位移，桌面上表现为"鼠标怎么拖画面都不动"。
-  //
-  // 触屏路径靠 .shorts-feed.is-touch-paged 常驻关掉吸附；桌面故意保留吸附让
-  // 滚轮和方向键继续走原生，所以只能在手势和落点动画期间临时摘掉，落定再还
-  // 回去。还回去时我们已经精确停在吸附点上，浏览器的重新吸附是空操作。
-  const snapHosts: HTMLElement[] = usesDocumentScroll
-    ? [document.documentElement, document.body]
-    : [root];
-  let snapSuspended = false;
-  const suspendSnap = () => {
-    if (snapSuspended) return;
-    snapSuspended = true;
-    for (const host of snapHosts) host.style.scrollSnapType = "none";
-  };
-  const restoreSnap = () => {
-    if (!snapSuspended) return;
-    snapSuspended = false;
-    // 清成空串而不是写死值：还给样式表决定，触屏路径那边本来就是 none。
-    for (const host of snapHosts) host.style.scrollSnapType = "";
-  };
-
   // ---- 轨道位移 ----
   /** 轨道当前的 translateY。等效滚动位置恒为 getScrollTop() - translate。 */
   let translate = 0;
@@ -461,8 +524,6 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     settling = false;
     detachSettleListeners();
     clearTranslate();
-    // 必须在 transform 清掉之后才还，否则浏览器会按带位移的吸附点重新吸附。
-    restoreSnap();
   };
 
   /** 返回是否真的打断了一次进行中的动画。 */
@@ -498,7 +559,6 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
   const settleTo = (target: HTMLElement | null, committed: boolean) => {
     detachSettleListeners();
     settling = false;
-    suspendSnap();
 
     const live = readLiveTranslate();
     const from = getScrollTop();
@@ -519,8 +579,7 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     });
     if (duration <= 0) {
       clearTranslate();
-      restoreSnap();
-      return;
+        return;
     }
 
     settling = true;
@@ -704,8 +763,7 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
       }
       drag.committed = true;
       setGestureActive(true);
-      suspendSnap();
-      // 鼠标拖到容器外面也要继续收事件；触摸本来就隐式捕获，这里是给桌面用的。
+        // 鼠标拖到容器外面也要继续收事件；触摸本来就隐式捕获，这里是给桌面用的。
       try {
         root.setPointerCapture(event.pointerId);
       } catch {
@@ -785,6 +843,52 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     settleTo(target, targetIndex !== current.anchorIndex);
   };
 
+  /**
+   * 把当前屏推进 / 退回一屏。滚轮和拖拽最终都汇到 settleTo，因此过渡完全
+   * 一致——用户不该从动画上看出自己刚才用的是手指、鼠标还是滚轮。
+   */
+  const stepBy = (direction: 1 | -1) => {
+    if (drag) return;
+    const slides = readSlides();
+    if (slides.length === 0) return;
+    const slideTops = readSlideTops();
+    // 用视觉位置定锚：动画途中再来一次滚轮，是从画面此刻所在的位置推进。
+    const index = findNearestShortsSlideIndex(slideTops, getEffectiveTop());
+    if (index < 0) return;
+    const target = clamp(index + direction, 0, slides.length - 1);
+    if (target === index) return;
+    settleTo(slides[target] ?? null, true);
+  };
+
+  let wheelState = INITIAL_SHORTS_WHEEL_STATE;
+
+  const handleWheel = (event: WheelEvent) => {
+    // 捏合缩放（Ctrl+滚轮）交还给浏览器。
+    if (event.ctrlKey) return;
+    const target = event.target as Element | null;
+    if (
+      typeof target?.closest === "function" &&
+      target.closest(`[${SHORTS_NO_SWIPE_ATTRIBUTE}]`)
+    ) {
+      return;
+    }
+    // 必须挡掉原生滚动：否则容器会一边被我们翻页、一边自己自由滚动。
+    if (event.cancelable) event.preventDefault();
+    if (drag) return;
+
+    const decision = resolveShortsWheelStep({
+      state: wheelState,
+      deltaPx: normalizeShortsWheelDelta({
+        deltaY: event.deltaY,
+        deltaMode: event.deltaMode,
+        viewportHeight: getViewportHeight(),
+      }),
+      now: performance.now(),
+    });
+    wheelState = decision.state;
+    if (decision.step !== 0) stepBy(decision.step);
+  };
+
   const handlePointerCancel = (event: PointerEvent) => {
     activePointers.delete(event.pointerId);
     if (dragPointerId !== null && event.pointerId !== dragPointerId) return;
@@ -808,7 +912,6 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     if (!slide) return;
     const top = readSlideTop(slide);
     clearTranslate();
-    restoreSnap();
     setScrollTop(clamp(top, 0, getMaxScrollTop()));
   };
   const handleViewportResize = () => {
@@ -828,6 +931,7 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     }, 240);
   };
 
+  root.addEventListener("wheel", handleWheel, { passive: false });
   root.addEventListener("pointerdown", handlePointerDown, { passive: true });
   root.addEventListener("pointermove", handlePointerMove, { passive: false });
   root.addEventListener("pointerup", handlePointerUp);
@@ -849,10 +953,10 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     }
     detachSettleListeners();
     releaseClickGuard();
-    restoreSnap();
     setGestureActive(false);
     if (realignFrame !== null) window.cancelAnimationFrame(realignFrame);
     if (realignTimer !== null) window.clearTimeout(realignTimer);
+    root.removeEventListener("wheel", handleWheel);
     root.removeEventListener("pointerdown", handlePointerDown);
     root.removeEventListener("pointermove", handlePointerMove);
     root.removeEventListener("pointerup", handlePointerUp);

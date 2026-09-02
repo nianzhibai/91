@@ -37,7 +37,6 @@ import {
   isWindowsPlatform,
   shouldUseDocumentScrollForShorts,
   shouldUseIOSSharedVideo,
-  shouldTakeOverShortsScrolling,
   shouldUseShortsSwipePager,
 } from "@/shorts/platform";
 import {
@@ -233,10 +232,9 @@ export default function ShortsPage() {
   );
   // iPhone 浏览器里改用页面滚动，让 Safari 工具栏能随刷动收起。
   const useDocumentScroll = shouldUseDocumentScrollForShorts();
-  // 手势控制器所有设备都挂：pointer 事件同时吃手指和鼠标，桌面因此也能拖拽。
+  // 全部滚动输入都由页面自己接管：手指、鼠标拖拽、滚轮共用同一条落点动画。
+  // 凡是留给浏览器的输入通道，"原生吸附手感不可控"这个问题就原样留在那里。
   const usePagerGestures = shouldUseShortsSwipePager();
-  // 但只有触屏才连原生滚动一起接管；桌面保留 scroll-snap，滚轮和方向键不变。
-  const takeOverScrolling = shouldTakeOverShortsScrolling();
   // Windows 短视频页只保留静音图标；不挂载桌面 hover 音量条，避免点击
   // 图标时因鼠标仍停留在按钮上而展开滑杆。
   const isWindowsShortsPlatform = isWindowsPlatform();
@@ -933,9 +931,9 @@ export default function ShortsPage() {
       body.classList.add("shorts-document-scroll");
       // 文档滚动 + 自接管手势（?shortsPager=1）时要一并关掉根元素的吸附点，
       // 否则程序化写入的 scrollY 会被浏览器重新吸附，逐帧跟手直接失效。
-      if (takeOverScrolling) {
-        html.classList.add("is-touch-paged");
-        body.classList.add("is-touch-paged");
+      if (usePagerGestures) {
+        html.classList.add("is-pager-driven");
+        body.classList.add("is-pager-driven");
       }
     } else {
       html.style.overflow = "hidden";
@@ -960,8 +958,8 @@ export default function ShortsPage() {
     return () => {
       html.classList.remove("shorts-document-scroll");
       body.classList.remove("shorts-document-scroll");
-      html.classList.remove("is-touch-paged");
-      body.classList.remove("is-touch-paged");
+      html.classList.remove("is-pager-driven");
+      body.classList.remove("is-pager-driven");
       html.style.overflow = prevHtmlOverflow;
       body.style.overflow = prevBodyOverflow;
       body.style.background = prevBodyBg;
@@ -973,7 +971,7 @@ export default function ShortsPage() {
         }
       }
     };
-  }, [useDocumentScroll, takeOverScrolling]);
+  }, [useDocumentScroll, usePagerGestures]);
 
   // 用稳定 feed key 在真实 DOM 中找下一条；不闭包 items/index，既能跨队列
   // 裁剪，也不会每取回一批就换回调引用、击穿 ShortsSlide 的 memo。
@@ -1003,7 +1001,7 @@ export default function ShortsPage() {
   return (
     <div
       className={`shorts-page${useDocumentScroll ? " is-document-scroll" : ""}${
-        takeOverScrolling ? " is-touch-paged" : ""
+        usePagerGestures ? " is-pager-driven" : ""
       }${legacyVideoTransitionEnabled ? " has-video-transition" : ""}`}
     >
       <header className="shorts-header">
@@ -1075,7 +1073,7 @@ export default function ShortsPage() {
       )}
 
       <div
-        className={`shorts-feed${takeOverScrolling ? " is-touch-paged" : ""}`}
+        className={`shorts-feed${usePagerGestures ? " is-pager-driven" : ""}`}
         ref={containerRef}
       >
         <div className="shorts-feed__track" ref={trackRef}>

@@ -12,16 +12,19 @@ import {
   SHORTS_PAGER_VELOCITY_WINDOW_MS,
   computeShortsPagerVelocity,
   findNearestShortsSlideIndex,
+  INITIAL_SHORTS_WHEEL_STATE,
+  SHORTS_PAGER_WHEEL_GESTURE_GAP_MS,
+  SHORTS_PAGER_WHEEL_STEP_PX,
+  SHORTS_WHEEL_LINE_HEIGHT_PX,
   applyShortsPagerEdgeResistance,
+  normalizeShortsWheelDelta,
+  resolveShortsWheelStep,
   measureOffsetWithinSlide,
   parseTranslateY,
   resolveShortsPagerSettleDuration,
   resolveShortsPagerTargetIndex,
 } from "../src/shorts/useShortsSwipePager";
-import {
-  shouldTakeOverShortsScrolling,
-  shouldUseShortsSwipePager,
-} from "../src/shorts/platform";
+import { shouldUseShortsSwipePager } from "../src/shorts/platform";
 
 const VIEWPORT = 900;
 
@@ -407,34 +410,17 @@ test("the gesture controller is mounted on every device, mouse included", () => 
   });
 });
 
-test("only touch devices hand native scrolling over to the pager", () => {
-  // 触屏：手指位移必须完全由我们写，不能和浏览器的滚动预测抢同一根手指。
-  // iPhone 文档滚动模式也一视同仁——它当初被排除是为了保住"Safari 工具栏
-  // 随刷动收起"，而真机截图证明有 scroll-snap 在时工具栏根本收不起来。
-  withWindow({ search: "", coarsePointer: true }, () => {
-    assert.equal(shouldTakeOverShortsScrolling(), true);
-  });
-  // 桌面保留原生吸附：滚轮和方向键本来就好用，没理由替浏览器重写一遍。
-  // 鼠标拖拽是叠加上去的，只写 transform，与吸附不冲突。
-  withWindow({ search: "", coarsePointer: false }, () => {
-    assert.equal(shouldTakeOverShortsScrolling(), false);
-  });
-  withWindow({ search: "" }, () => {
-    assert.equal(shouldTakeOverShortsScrolling(), false);
-  });
-});
-
 test("the pager has an explicit escape hatch in both directions", () => {
   withWindow({ search: "?shortsPager=0", coarsePointer: true }, () => {
-    assert.equal(shouldTakeOverShortsScrolling(), false);
+    assert.equal(shouldUseShortsSwipePager(), false);
   });
-  // 桌面上强制走触屏那套，便于同机对照
+  // 桌面同样接管：滚轮和拖拽都走我们自己的判定与落点
   withWindow({ search: "?shortsPager=1", coarsePointer: false }, () => {
-    assert.equal(shouldTakeOverShortsScrolling(), true);
+    assert.equal(shouldUseShortsSwipePager(), true);
   });
-  // 无关取值不改变默认判定
+  // 无关取值不改变默认判定（默认就是开）
   withWindow({ search: "?shortsPager=yes", coarsePointer: false }, () => {
-    assert.equal(shouldTakeOverShortsScrolling(), false);
+    assert.equal(shouldUseShortsSwipePager(), true);
   });
 });
 
@@ -452,15 +438,15 @@ const shortsPageSource = readFileSync(
 );
 
 test("taking over the gesture also turns off the browser's own scrolling", () => {
-  const pagedRule = /^\.shorts-feed\.is-touch-paged \{[\s\S]*?\}/m.exec(shortsCss);
-  assert.ok(pagedRule, ".shorts-feed.is-touch-paged rule should exist");
+  const pagedRule = /^\.shorts-feed\.is-pager-driven \{[\s\S]*?\}/m.exec(shortsCss);
+  assert.ok(pagedRule, ".shorts-feed.is-pager-driven rule should exist");
   // 手指位移完全由 JS 写进 scrollTop，不能再和浏览器抢同一根手指
   assert.match(pagedRule[0], /touch-action:\s*none/);
   // 吸附点会把程序化写入重新对齐，逐帧跟手和落点动画都会被它吃掉
   assert.match(pagedRule[0], /scroll-snap-type:\s*none/);
   assert.match(
     shortsCss,
-    /\.shorts-feed\.is-touch-paged \.shorts-slide \{[\s\S]*?scroll-snap-align:\s*none/
+    /\.shorts-feed\.is-pager-driven \.shorts-slide \{[\s\S]*?scroll-snap-align:\s*none/
   );
 });
 
@@ -483,7 +469,7 @@ test("the shorts page wires the pager to the same scroll container", () => {
   assert.match(shortsPageSource, /usesDocumentScroll:\s*useDocumentScroll/);
   assert.match(
     shortsPageSource,
-    /className=\{`shorts-feed\$\{takeOverScrolling \? " is-touch-paged" : ""\}`\}/
+    /className=\{`shorts-feed\$\{usePagerGestures \? " is-pager-driven" : ""\}`\}/
   );
   // activeIndex 仍然只由 IntersectionObserver 决定，播放/预载链路不变
   assert.doesNotMatch(shortsPageSource, /pager[\s\S]{0,40}setActiveIndex/i);
@@ -534,5 +520,100 @@ test("queue trimming re-anchors without discarding the in-flight offset", () => 
   assert.doesNotMatch(
     shortsPageSource,
     /slideTop:[\s\S]{0,80}getBoundingClientRect\(\)\.top - base/
+  );
+});
+
+// ---------------------------------------------------------------------------
+// 滚轮：一次手势 = 一条视频
+// ---------------------------------------------------------------------------
+
+test("wheel deltas are normalised across the three delta modes", () => {
+  const viewportHeight = VIEWPORT;
+  // 0 = 像素（Chrome 一格约 100）
+  assert.equal(normalizeShortsWheelDelta({ deltaY: 100, deltaMode: 0, viewportHeight }), 100);
+  // 1 = 行（Firefox 一格 3 行）
+  assert.equal(
+    normalizeShortsWheelDelta({ deltaY: 3, deltaMode: 1, viewportHeight }),
+    3 * SHORTS_WHEEL_LINE_HEIGHT_PX
+  );
+  // 2 = 页
+  assert.equal(
+    normalizeShortsWheelDelta({ deltaY: 1, deltaMode: 2, viewportHeight }),
+    VIEWPORT
+  );
+  // 方向保留
+  assert.ok(normalizeShortsWheelDelta({ deltaY: -3, deltaMode: 1, viewportHeight }) < 0);
+  // 视口高度异常时按 1px 兜底；脏输入不产生 NaN
+  assert.equal(normalizeShortsWheelDelta({ deltaY: 2, deltaMode: 2, viewportHeight: 0 }), 2);
+  assert.equal(normalizeShortsWheelDelta({ deltaY: NaN, deltaMode: 0, viewportHeight }), 0);
+});
+
+function wheelRun(events: Array<{ delta: number; at: number }>) {
+  let state = INITIAL_SHORTS_WHEEL_STATE;
+  const steps: number[] = [];
+  for (const event of events) {
+    const decision = resolveShortsWheelStep({
+      state,
+      deltaPx: event.delta,
+      now: event.at,
+    });
+    state = decision.state;
+    if (decision.step !== 0) steps.push(decision.step);
+  }
+  return steps;
+}
+
+test("small deltas accumulate until they add up to a deliberate scroll", () => {
+  // 单个事件不够，累计够了才切
+  assert.deepEqual(wheelRun([{ delta: 15, at: 0 }, { delta: 15, at: 10 }]), []);
+  assert.deepEqual(
+    wheelRun([
+      { delta: 15, at: 0 },
+      { delta: 15, at: 10 },
+      { delta: 15, at: 20 },
+    ]),
+    [1]
+  );
+  // 一格鼠标滚轮本身就够
+  assert.deepEqual(wheelRun([{ delta: SHORTS_PAGER_WHEEL_STEP_PX, at: 0 }]), [1]);
+  assert.deepEqual(wheelRun([{ delta: -SHORTS_PAGER_WHEEL_STEP_PX, at: 0 }]), [-1]);
+});
+
+test("one continuous wheel gesture only ever moves one video", () => {
+  // 触控板一次轻扫：连发大量事件、间隔十几毫秒、尾巴很长
+  const flick = Array.from({ length: 60 }, (_, i) => ({ delta: 30, at: i * 12 }));
+  assert.deepEqual(wheelRun(flick), [1], "惯性尾巴不该继续翻页");
+});
+
+test("a pause between wheel events starts a new gesture", () => {
+  const gap = SHORTS_PAGER_WHEEL_GESTURE_GAP_MS;
+  assert.deepEqual(
+    wheelRun([
+      { delta: 100, at: 0 },
+      { delta: 100, at: gap - 1 }, // 仍属同一次手势
+      { delta: 100, at: gap - 1 + gap }, // 间隔够了 → 新手势
+    ]),
+    [1, 1]
+  );
+  // 累计量也跟着手势重置：跨手势的零碎位移不该攒成一步
+  assert.deepEqual(
+    wheelRun([
+      { delta: 30, at: 0 },
+      { delta: 30, at: 1_000 },
+      { delta: 30, at: 2_000 },
+    ]),
+    []
+  );
+});
+
+test("reversing direction mid-tail does not double back", () => {
+  // 同一次手势内先向下越过阈值，之后无论来什么都不再产生动作
+  assert.deepEqual(
+    wheelRun([
+      { delta: 100, at: 0 },
+      { delta: -100, at: 10 },
+      { delta: -100, at: 20 },
+    ]),
+    [1]
   );
 });

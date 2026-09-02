@@ -182,29 +182,29 @@ body.shorts-document-scroll::-webkit-scrollbar {
   will-change: auto;
 }
 
-/* 页面自己接管上下滑动时（移动端）：
-   - touch-action: none —— 手指位移完全由 JS 写进 scrollTop，不和浏览器的
-     滚动预测抢同一根手指；横向的进度条 seek 手势本来就是 JS 驱动，不受影响。
-   - scroll-snap-type: none —— 吸附点会把程序化的 scrollTop 写入重新对齐到
-     最近的一屏，那会把逐帧跟手和落点动画整个吃掉。切屏判定和落点动画改由
-     useShortsSwipePager 负责，尺寸变化后的重新对齐也在那里补上。
-   桌面 / 触控本不会加这个类，继续走上面的原生吸附。 */
-.shorts-feed.is-touch-paged {
+/* 页面接管全部滚动输入时（默认；`?shortsPager=0` 关掉）：
+   - touch-action: none —— 手指位移完全由 JS 写进轨道的 transform，不和浏览器
+     的滚动预测抢同一根手指；横向的进度条 seek 本来就是 JS 驱动，不受影响。
+   - scroll-snap-type: none —— 吸附点是按元素**变换后**的位置算的：轨道一平移
+     吸附点就跟着移，mandatory 会立刻反向拉 scrollTop 补偿，把跟手位移整个
+     抵消掉（桌面上表现为鼠标怎么拖都不动）。切屏判定、落点动画、尺寸变化后的
+     重新对齐全部改由 useShortsSwipePager 负责，滚轮也一并接管。 */
+.shorts-feed.is-pager-driven {
   touch-action: none;
   scroll-snap-type: none;
 }
 
-.shorts-feed.is-touch-paged .shorts-slide {
+.shorts-feed.is-pager-driven .shorts-slide {
   scroll-snap-align: none;
 }
 
-/* 文档滚动模式（iPhone 浏览器壳）只有 ?shortsPager=1 时才会走到这里。 */
-html.shorts-document-scroll.is-touch-paged,
-html.shorts-document-scroll.is-touch-paged body {
+/* 文档滚动模式（iPhone 浏览器壳）：滚动主体是 html/body，吸附也在那边。 */
+html.shorts-document-scroll.is-pager-driven,
+html.shorts-document-scroll.is-pager-driven body {
   scroll-snap-type: none;
 }
 
-.shorts-page.is-document-scroll.is-touch-paged {
+.shorts-page.is-document-scroll.is-pager-driven {
   touch-action: none;
 }
 

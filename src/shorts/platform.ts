@@ -41,48 +41,27 @@ export function isLegacyShortsVideoTransitionEnabled() {
 }
 
 /**
- * 是否挂载自己的滑动手势控制器（跟手 + 大幅滑动才切屏 + 固定时长落点）。
+ * 短视频页是否由自己接管全部滚动输入——拖拽、滚轮、原生吸附一并接管。
  *
- * 默认对**所有**设备开启。控制器用的是 pointer 事件，同一套代码同时吃手指
- * 和鼠标——桌面的拖拽翻页是白送的。参考实现 zyronon/douyin 的 SlideVertical
- * 也只绑 pointerdown/move/up，全仓一处 touch 事件都没有；把它拆成"移动端
- * 一套、桌面一套"是我们凭空加的平台特例。
+ * 对**所有**设备、**所有**输入方式一视同仁，这是刻意的：这个页面存在的整个
+ * 理由就是"浏览器控制的吸附滚动手感不可控"，凡是还留给浏览器的输入通道，
+ * 那份不可控就原样保留在那里。曾经分过两次特例，两次都被证伪：
  *
- * iPhone 浏览器壳（文档滚动模式）一度默认排除在外，理由是"接管触摸会让
- * Safari 工具栏收不起来"。真机截图推翻了这个前提：`scroll-snap-type: y
- * mandatory` 每次滑动都把滚动截断，工具栏本来就从没收起过——那是个不存在
- * 的功能，为它牺牲手感不划算。
+ * - "iPhone 走文档滚动，接管触摸会让 Safari 工具栏收不起来" —— 真机截图
+ *   显示有 `scroll-snap-type: y mandatory` 在时工具栏本来就从没收起过。
+ * - "桌面滚轮走原生吸附本来就好用" —— 实测手感和移动端原来一样糟，而且
+ *   保留吸附还让鼠标拖拽彻底失效（吸附点跟着轨道 transform 走，mandatory
+ *   会反向拉 scrollTop 把位移抵消掉）。
+ *
+ * 控制器用 pointer 事件 + wheel，同一套判定同时服务手指、鼠标拖拽和滚轮，
+ * 三者共用同一条落点动画。参考实现 zyronon/douyin 也只绑 pointer 事件
+ * （它是纯移动端 demo，没有滚轮，那一半是我们自己补的）。
  *
  * `?shortsPager=0` 整个关掉，回到纯原生滚动（真机回退开关）。
  */
 export function shouldUseShortsSwipePager() {
   if (typeof window === "undefined") return false;
-  return readShortsPagerOverride() !== "0";
-}
-
-/**
- * 是否连浏览器的原生滚动一起接管（关掉 scroll-snap 与 touch-action）。
- *
- * 只有触屏设备需要——手指的位移必须完全由我们写进 transform，不能和浏览器
- * 的滚动预测抢同一根手指。桌面则相反：滚轮和方向键走原生吸附本来就很好用，
- * 没有理由替浏览器重写一遍（参考实现是纯移动端 demo，桌面上只能拖、根本
- * 没有滚轮，那不是我们能照抄的）。桌面只叠加鼠标拖拽：拖动只写 transform，
- * 松手写回的 scrollTop 正好落在吸附点上，与原生吸附不冲突。
- *
- * `?shortsPager=1` 可在桌面上强制走触屏那套，用来做同机对照。
- */
-export function shouldTakeOverShortsScrolling() {
-  if (typeof window === "undefined") return false;
-  const override = readShortsPagerOverride();
-  if (override === "0") return false;
-  if (override === "1") return true;
-  return (
-    window.matchMedia?.("(hover: none) and (pointer: coarse)").matches === true
-  );
-}
-
-function readShortsPagerOverride() {
-  return new URLSearchParams(window.location.search).get("shortsPager");
+  return new URLSearchParams(window.location.search).get("shortsPager") !== "0";
 }
 
 export function isWindowsPlatform() {
