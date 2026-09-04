@@ -315,7 +315,7 @@ test("shorts exposes media failures separately from pause and retries in place",
   assert.match(shortsPageSource, /exposePlaybackFailure\("loop-restart"\);/);
   assert.match(
     shortsPageSource,
-    /\{paused && !playbackFailure && isActive && !scrubbing && \(/
+    /\{paused &&\s*!playbackFailure &&\s*isActive &&\s*!scrubbing &&\s*!isMarkedHidden && \(/
   );
   assert.match(
     shortsPageSource,
@@ -462,7 +462,7 @@ test("shorts play pause does not render transient center hud", () => {
   assert.doesNotMatch(shortsCssSource, /@keyframes shorts-hud-pop/);
   assert.match(
     shortsPageSource,
-    /\{paused && !playbackFailure && isActive && !scrubbing && \(\s*<div className="shorts-slide__paused"/
+    /\{paused &&\s*!playbackFailure &&\s*isActive &&\s*!scrubbing &&\s*!isMarkedHidden && \(\s*<div className="shorts-slide__paused"/
   );
   assert.match(
     shortsPageSource,
@@ -703,6 +703,14 @@ test("shorts empty library reuses the homepage empty visual", () => {
 
 test("shorts hidden overlay keeps only the concise confirmation", () => {
   assert.match(shortsPageSource, /shorts-slide__hidden-title">已隐藏该视频/);
+  assert.match(
+    shortsCssSource,
+    /\.shorts-slide__hidden-overlay\s*\{[\s\S]*?gap:\s*8px;/
+  );
+  assert.match(
+    shortsPageSource,
+    /\{paused &&\s*!playbackFailure &&\s*isActive &&\s*!scrubbing &&\s*!isMarkedHidden && \(/
+  );
   assert.doesNotMatch(
     shortsPageSource,
     /系统将不会再次在任何地方向您展示此视频|shorts-slide__hidden-desc/

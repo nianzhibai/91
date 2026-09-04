@@ -2793,7 +2793,11 @@ function ShortsSlideImpl({
 
 
 
-      {paused && !playbackFailure && isActive && !scrubbing && (
+      {paused &&
+        !playbackFailure &&
+        isActive &&
+        !scrubbing &&
+        !isMarkedHidden && (
         <div className="shorts-slide__paused" aria-hidden="true">
           <span className="shorts-slide__paused-icon">
             <Play size={22} fill="currentColor" strokeWidth={1.75} />

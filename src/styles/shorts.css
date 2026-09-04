@@ -874,7 +874,7 @@ html.shorts-document-scroll.is-pager-driven body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 16px;
+  gap: 8px;
   z-index: 30;
   animation: hidden-fade-in 0.25s ease-out forwards;
   color: #fff;
