@@ -319,7 +319,22 @@ test("shorts exposes media failures separately from pause and retries in place",
   );
   assert.match(
     shortsPageSource,
-    /className="shorts-slide__playback-error"\s*role="alert"[\s\S]*?<div className="shorts-slide__playback-error-title">播放失败<\/div>[\s\S]*?className="shorts-slide__playback-retry"[\s\S]*?<span>重新播放<\/span>/
+    /className="shorts-slide__playback-error"\s*role="alert"[\s\S]*?<div className="shorts-slide__playback-error-title">播放失败<\/div>[\s\S]*?className="shorts-slide__playback-retry"[\s\S]*?>\s*重试播放\s*<\/button>/
+  );
+  assert.doesNotMatch(shortsPageSource, /视频暂时无法播放|>重新播放</);
+  const retryButtonMarkup =
+    /<button\s+[^>]*className="shorts-slide__playback-retry"[^>]*>[\s\S]*?<\/button>/.exec(
+      shortsPageSource
+    );
+  assert.ok(retryButtonMarkup, "playback retry button should be present");
+  assert.doesNotMatch(
+    retryButtonMarkup[0],
+    /<Play/,
+    "playback retry button should not contain an icon"
+  );
+  assert.doesNotMatch(
+    shortsCssSource,
+    /shorts-slide__playback-error-copy|shorts-slide__playback-error-message/
   );
 
   const retryStart = shortsPageSource.indexOf("function handlePlaybackRetry(");
@@ -339,7 +354,7 @@ test("shorts exposes media failures separately from pause and retries in place",
   );
   assert.match(
     shortsCssSource,
-    /\.shorts-slide__playback-error \{[\s\S]*?z-index: 18;[\s\S]*?backdrop-filter: blur\(14px\);/
+    /\.shorts-slide__playback-error \{[\s\S]*?width:\s*min\(240px, calc\(100% - 48px\)\);[\s\S]*?z-index: 18;[\s\S]*?backdrop-filter: blur\(14px\);/
   );
 });
 

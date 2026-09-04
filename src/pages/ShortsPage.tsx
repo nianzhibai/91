@@ -2824,19 +2824,13 @@ function ShortsSlideImpl({
           onClick={(e) => e.stopPropagation()}
         >
           <AlertCircle size={28} aria-hidden="true" />
-          <div className="shorts-slide__playback-error-copy">
-            <div className="shorts-slide__playback-error-title">播放失败</div>
-            <div className="shorts-slide__playback-error-message">
-              视频暂时无法播放
-            </div>
-          </div>
+          <div className="shorts-slide__playback-error-title">播放失败</div>
           <button
             type="button"
             className="shorts-slide__playback-retry"
             onClick={handlePlaybackRetry}
           >
-            <Play size={15} fill="currentColor" aria-hidden="true" />
-            <span>重新播放</span>
+            重试播放
           </button>
         </div>
       )}

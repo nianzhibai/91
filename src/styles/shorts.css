@@ -388,7 +388,7 @@ html.shorts-document-scroll.is-pager-driven body {
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  width: min(280px, calc(100% - 48px));
+  width: min(240px, calc(100% - 48px));
   padding: 18px;
   border-radius: 18px;
   background: rgba(10, 10, 12, 0.82);
@@ -410,21 +410,10 @@ html.shorts-document-scroll.is-pager-driven body {
   color: #ff6a7f;
 }
 
-.shorts-slide__playback-error-copy {
-  display: grid;
-  gap: 3px;
-}
-
 .shorts-slide__playback-error-title {
   font-size: 16px;
   line-height: 1.35;
   font-weight: 700;
-}
-
-.shorts-slide__playback-error-message {
-  color: rgba(255, 255, 255, 0.72);
-  font-size: 12px;
-  line-height: 1.5;
 }
 
 .shorts-slide__playback-retry {
@@ -440,7 +429,6 @@ html.shorts-document-scroll.is-pager-driven body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
   transition: background-color 0.18s ease, transform 0.18s ease;
