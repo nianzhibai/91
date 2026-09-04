@@ -8,10 +8,30 @@ import {
 import Artplayer, { type Option, type SettingOption } from "artplayer";
 import type Hls from "hls.js";
 import {
+  classifyTapZone,
+  computeDoubleTapSeekTime,
+  DOUBLE_TAP_CHAIN_WINDOW_MS,
+  formatDoubleTapSeekLabel,
+  reduceDoubleTap,
+  type DoubleTapAction,
+  type SeekChain,
+  type SeekChainSide,
+  type TapKind,
+  type TapZone,
+} from "@/lib/doubleTapSeek";
+import {
   calculateFullscreenSubtitleBottom,
   getFullscreenPlayerOrientation,
 } from "@/lib/fullscreenSubtitleLayout";
 import { diagnosePlaybackSource } from "@/lib/playbackError";
+import {
+  formatPlaybackRateLabel,
+  formatPlaybackRateOptionLabel,
+  matchPlaybackRateOption,
+  normalizePlaybackRate,
+  NORMAL_PLAYBACK_RATE,
+  PLAYBACK_RATE_OPTIONS,
+} from "@/lib/playbackRate";
 import {
   escapeHtml,
   formatSubtitleLabel,
@@ -115,7 +135,7 @@ const LONG_PRESS_MS = 400;
 /** 长按时使用的播放倍速。 */
 const FAST_RATE = 2;
 /** 默认倍速。 */
-const NORMAL_RATE = 1;
+const NORMAL_RATE = NORMAL_PLAYBACK_RATE;
 /** ArtPlayer 内部播放失败自动重连次数。 */
 const ARTPLAYER_RECONNECT_TIME_MAX = 3;
 /** 播放状态下控制栏无操作后自动隐藏的时间。 */
@@ -128,6 +148,14 @@ const KEYBOARD_SEEK_IDLE_COMMIT_MS = 1_500;
 Artplayer.FAST_FORWARD_VALUE = FAST_RATE;
 Artplayer.RECONNECT_TIME_MAX = ARTPLAYER_RECONNECT_TIME_MAX;
 Artplayer.CONTROL_HIDE_TIME = ARTPLAYER_CONTROL_HIDE_TIME_MS;
+// 控制栏倍速按钮、设置面板“播放速度”和桌面端右键菜单共用同一份档位。
+Artplayer.PLAYBACK_RATE = PLAYBACK_RATE_OPTIONS;
+// ArtPlayer 的双击动作写死在它的点击派发里：先 emit dblclick，再按自己的
+// UA 判断执行“移动端切换播放 / 桌面端切换全屏”，回调里无法取消。它的移动端
+// 判断口径又和本文件按指针类型判断的不一致（例如带触摸屏的桌面浏览器），
+// 所以这里关掉两个内置开关，双击语义统一由 bindPlayerDoubleClickActions 实现。
+Artplayer.MOBILE_DBCLICK_PLAY = false;
+Artplayer.DBCLICK_FULLSCREEN = false;
 
 const DEFAULT_SETTINGS: PlayerSettings = {
   volume: 1,
@@ -147,6 +175,10 @@ const COMPACT_SETTING_LAYOUT = {
   itemHeight: 30,
 };
 const ORIENTATION_CONTROL_NAME = "orientationToggle";
+const PLAYBACK_RATE_CONTROL_NAME = "playbackRateToggle";
+const PLAYBACK_RATE_VALUE_CLASS = "art-selector-value";
+const PLAYBACK_RATE_ITEM_CLASS = "art-selector-item";
+const PLAYBACK_RATE_LIST_CLASS = "art-selector-list";
 const TRIPLE_SCREEN_CONTROL_NAME = "tripleScreen";
 const TRIPLE_SCREEN_RELAY_QUERY = "tripleScreenRelay";
 const MANUAL_ORIENTATION_CLASS = "art-manual-orientation";
@@ -156,6 +188,10 @@ const FAST_RATE_HINT_CLASS = "video-player__art-rate-hint";
 const PLAYER_GESTURE_HUD_CLASS = "video-player__art-gesture-hud";
 const PLAYER_GESTURE_HUD_ICON_CLASS = "video-player__art-gesture-hud-icon";
 const PLAYER_GESTURE_HUD_VALUE_CLASS = "video-player__art-gesture-hud-value";
+const SEEK_RIPPLE_CLASS = "video-player__art-seek-ripple";
+const SEEK_RIPPLE_LEAVING_CLASS = "video-player__art-seek-ripple--leaving";
+/** 与 CSS 里淡出动画的时长一致，动画结束后才移除节点。 */
+const SEEK_RIPPLE_LEAVE_MS = 220;
 const FULLSCREEN_SUBTITLE_BOTTOM_CSS_VAR =
   "--video-player-subtitle-bottom";
 const FULLSCREEN_SUBTITLE_ORIENTATION_DATASET =
@@ -188,6 +224,7 @@ const GESTURE_ACTIVATION_PX = 12;
 const GESTURE_DIRECTION_LOCK_RATIO = 1.2;
 const GESTURE_VERTICAL_SCALE = 1.15;
 const playerGestureHudTimers = new WeakMap<HTMLElement, number>();
+const seekRippleTimers = new WeakMap<HTMLElement, number>();
 const tripleScreenBindings = new WeakMap<
   Artplayer,
   { toggle: () => void; destroy: () => void }
@@ -594,6 +631,8 @@ function mountArtPlayer({
     handleFastChange,
     onGestureHud
   );
+  const unbindDoubleClickActions = bindPlayerDoubleClickActions(art);
+  const unbindPlaybackRateControl = bindPlaybackRateControl(art);
   const unbindProgressPreview = bindProgressPreview(
     art,
     video,
@@ -645,6 +684,8 @@ function mountArtPlayer({
     if (art.fullscreenWeb) art.fullscreenWeb = false;
     unbindFastRate();
     unbindMobileGestures();
+    unbindDoubleClickActions();
+    unbindPlaybackRateControl();
     unbindProgressPreview();
     unbindKeyboardHotkeys();
     unbindMobileFullscreenControlAutoHide();
@@ -1325,6 +1366,103 @@ function showPlayerGestureHud(
   playerGestureHudTimers.set(player, timer);
 }
 
+/**
+ * 双击快进 / 快退的反馈：在被点的那一侧铺一层半圆遮罩，并从指尖位置扩散
+ * 一圈水波纹，中间显示方向箭头和累计秒数。遮罩的生命周期就是连击窗口，
+ * 每次点击刷新水波纹和文案，窗口结束提交 seek 时一起淡出。
+ *
+ * 用整块半圆而不是居中的小胶囊：胶囊靠 left 百分比定位，窄屏上可用宽度只
+ * 剩另一半，文案会被压成两行；这里的文案在半圆内部居中，不受这个限制。
+ */
+function showPlayerSeekRipple(
+  art: Artplayer,
+  side: SeekChainSide,
+  label: string,
+  event: Event
+) {
+  const player = art.template.$player;
+  clearSeekRippleTimer(player);
+
+  let ripple = player.querySelector<HTMLElement>(`.${SEEK_RIPPLE_CLASS}`);
+  if (!ripple) {
+    ripple = document.createElement("div");
+    ripple.setAttribute("aria-hidden", "true");
+    player.appendChild(ripple);
+  }
+  // 整体重新赋值：既切换左右，也清掉可能正在播放的淡出状态。
+  ripple.className = `${SEEK_RIPPLE_CLASS} ${SEEK_RIPPLE_CLASS}--${side}`;
+  ripple.replaceChildren();
+
+  const wave = document.createElement("span");
+  wave.className = `${SEEK_RIPPLE_CLASS}-wave`;
+  const origin = seekRippleOrigin(ripple, event);
+  wave.style.left = `${origin.x}%`;
+  wave.style.top = `${origin.y}%`;
+
+  const icon = document.createElement("span");
+  icon.className = `${SEEK_RIPPLE_CLASS}-icon`;
+  icon.innerHTML = seekRippleIcon();
+
+  const value = document.createElement("span");
+  value.className = `${SEEK_RIPPLE_CLASS}-value`;
+  value.textContent = label;
+
+  // 重新创建子节点即可重放水波纹和箭头动画，不必手动重置 animation。
+  ripple.append(wave, icon, value);
+}
+
+/** 连击结束：淡出后移除。 */
+function hidePlayerSeekRipple(art: Artplayer) {
+  const player = art.template.$player;
+  const ripple = player.querySelector<HTMLElement>(`.${SEEK_RIPPLE_CLASS}`);
+  if (!ripple) return;
+
+  clearSeekRippleTimer(player);
+  ripple.classList.add(SEEK_RIPPLE_LEAVING_CLASS);
+  const timer = window.setTimeout(() => {
+    seekRippleTimers.delete(player);
+    ripple.remove();
+  }, SEEK_RIPPLE_LEAVE_MS);
+  seekRippleTimers.set(player, timer);
+}
+
+/** 播放器卸载：不放动画，直接清掉。 */
+function clearPlayerSeekRipple(art: Artplayer) {
+  const player = art.template.$player;
+  clearSeekRippleTimer(player);
+  player.querySelector<HTMLElement>(`.${SEEK_RIPPLE_CLASS}`)?.remove();
+}
+
+function clearSeekRippleTimer(player: HTMLElement) {
+  const timer = seekRippleTimers.get(player);
+  if (timer === undefined) return;
+  window.clearTimeout(timer);
+  seekRippleTimers.delete(player);
+}
+
+/** 水波纹从指尖扩散：把点击位置换算成遮罩内部的百分比。 */
+function seekRippleOrigin(ripple: HTMLElement, event: Event) {
+  const rect = ripple.getBoundingClientRect();
+  if (!(event instanceof MouseEvent) || rect.width <= 0 || rect.height <= 0) {
+    return { x: 50, y: 50 };
+  }
+  return {
+    x: clamp(((event.clientX - rect.left) / rect.width) * 100, 0, 100),
+    y: clamp(((event.clientY - rect.top) / rect.height) * 100, 0, 100),
+  };
+}
+
+/** 三个箭头按 CSS 里的延迟依次点亮，左侧靠水平翻转复用同一段路径。 */
+function seekRippleIcon() {
+  return `
+    <svg viewBox="0 0 34 24" fill="none">
+      <path d="m5 7.4 4.6 4.6L5 16.6" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="m14.2 7.4 4.6 4.6-4.6 4.6" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="m23.4 7.4 4.6 4.6-4.6 4.6" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  `;
+}
+
 function clearPlayerGestureHud(art: Artplayer) {
   const player = art.template.$player;
   const currentTimer = playerGestureHudTimers.get(player);
@@ -1372,7 +1510,7 @@ function createPlayerControls(
   enableOrientationControl: boolean,
   enableTripleScreenControl: boolean
 ): PlayerControl[] {
-  const controls: PlayerControl[] = [];
+  const controls: PlayerControl[] = [createPlaybackRateControl()];
   if (enableTripleScreenControl) {
     controls.push(createTripleScreenControl());
   }
@@ -1380,6 +1518,146 @@ function createPlayerControls(
     controls.push(createOrientationControl());
   }
   return controls;
+}
+
+/**
+ * 控制栏上的倍速入口。ArtPlayer 自带的倍速藏在设置面板二级菜单里，桌面端
+ * 的右键菜单在移动端根本不初始化，所以这里补一个一步可达的按钮，选项沿用
+ * ArtPlayer 控制栏 selector 的原生结构与样式。
+ */
+function createPlaybackRateControl(): PlayerControl {
+  return {
+    name: PLAYBACK_RATE_CONTROL_NAME,
+    position: "right",
+    index: 26,
+    // 不用 ArtPlayer 的 hint 提示：它渲染在控件正上方，正好压住展开的最后一档。
+    html: formatPlaybackRateLabel(NORMAL_RATE),
+    selector: PLAYBACK_RATE_OPTIONS.map((rate) => ({
+      value: rate,
+      default: rate === NORMAL_RATE,
+      html: formatPlaybackRateOptionLabel(rate),
+    })),
+    onSelect(this: Artplayer, selector) {
+      const rate = normalizePlaybackRate(selector.value);
+      this.playbackRate = rate;
+      // 播放失败重连和切换清晰度都会走 video.load()，那时浏览器把
+      // playbackRate 重置成 defaultPlaybackRate；一起写入才能保住用户选择。
+      this.video.defaultPlaybackRate = rate;
+      setPlaybackRateSelectorOpen(this, false);
+      return formatPlaybackRateLabel(rate);
+    },
+    mounted(this: Artplayer, element) {
+      element.setAttribute("role", "button");
+      element.setAttribute("tabindex", "0");
+      element.setAttribute("aria-haspopup", "listbox");
+      element.setAttribute("aria-label", "播放速度");
+      element.setAttribute("title", "播放速度");
+      element.dataset.rateOpen = "false";
+      this.events.proxy(element, "keydown", (event) => {
+        const keyEvent = event as KeyboardEvent;
+        if (keyEvent.key !== "Enter" && keyEvent.key !== " ") return;
+        keyEvent.preventDefault();
+        setPlaybackRateSelectorOpen(
+          this,
+          element.dataset.rateOpen !== "true",
+          element
+        );
+      });
+      updatePlaybackRateControl(this, element);
+    },
+    click(this: Artplayer, _component, event) {
+      // 选项自身的点击交给 onSelect，这里只负责展开 / 收起。
+      const target = event.target;
+      if (
+        target instanceof Element &&
+        target.closest(`.${PLAYBACK_RATE_LIST_CLASS}`)
+      ) {
+        return;
+      }
+      const element = getPlaybackRateControl(this);
+      setPlaybackRateSelectorOpen(this, element?.dataset.rateOpen !== "true");
+    },
+  };
+}
+
+function getPlaybackRateControl(art: Artplayer, mountedElement?: HTMLElement) {
+  // 控件 mounted 时 art.controls 还没赋值到实例上，这时只能用回调里的节点。
+  const controls = (art as Artplayer & {
+    controls?: Record<string, HTMLElement | undefined>;
+  }).controls;
+  return mountedElement ?? controls?.[PLAYBACK_RATE_CONTROL_NAME];
+}
+
+/**
+ * ArtPlayer 控制栏的 selector 只有 :hover 才展开，触摸设备上不可靠，
+ * 所以额外用 data-rate-open 表达展开状态，由 CSS 在两种指针下分别生效。
+ */
+function setPlaybackRateSelectorOpen(
+  art: Artplayer,
+  open: boolean,
+  mountedElement?: HTMLElement
+) {
+  const element = getPlaybackRateControl(art, mountedElement);
+  if (!element) return;
+  element.dataset.rateOpen = open ? "true" : "false";
+  element.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+/** 把控制栏按钮文案与列表选中态同步到真实倍速。 */
+function updatePlaybackRateControl(art: Artplayer, mountedElement?: HTMLElement) {
+  const element = getPlaybackRateControl(art, mountedElement);
+  if (!element) return;
+
+  const rate = normalizePlaybackRate(art.video?.playbackRate);
+  const value = element.querySelector<HTMLElement>(
+    `.${PLAYBACK_RATE_VALUE_CLASS}`
+  );
+  if (value) value.textContent = formatPlaybackRateLabel(rate);
+
+  const current = matchPlaybackRateOption(rate);
+  element
+    .querySelectorAll<HTMLElement>(`.${PLAYBACK_RATE_ITEM_CLASS}`)
+    .forEach((item) => {
+      const itemRate = normalizePlaybackRate(item.dataset.value);
+      item.classList.toggle("art-current", current !== null && itemRate === current);
+    });
+}
+
+function bindPlaybackRateControl(art: Artplayer) {
+  function handleRateChange() {
+    // 长按 2 倍速是临时状态，松手就恢复；期间不改按钮文案，
+    // 免得用户以为自己选中了 2 倍速。
+    if (art.template.$player.classList.contains(FAST_RATE_CLASS)) return;
+    updatePlaybackRateControl(art);
+  }
+
+  function closeSelector() {
+    setPlaybackRateSelectorOpen(art, false);
+  }
+
+  function handleControlChange(show: boolean) {
+    // 控制栏在桌面端每次 mousemove 都会重新置为显示，只在隐藏时收起列表。
+    if (!show) closeSelector();
+  }
+
+  art.on("video:ratechange", handleRateChange);
+  art.on("video:loadedmetadata", handleRateChange);
+  // 点到播放器外面、控制栏隐藏、进出全屏、打开设置面板时都要收起展开的列表。
+  art.on("blur", closeSelector);
+  art.on("control", handleControlChange);
+  art.on("fullscreen", closeSelector);
+  art.on("fullscreenWeb", closeSelector);
+  art.on("setting", closeSelector);
+
+  return () => {
+    art.off("video:ratechange", handleRateChange);
+    art.off("video:loadedmetadata", handleRateChange);
+    art.off("blur", closeSelector);
+    art.off("control", handleControlChange);
+    art.off("fullscreen", closeSelector);
+    art.off("fullscreenWeb", closeSelector);
+    art.off("setting", closeSelector);
+  };
 }
 
 function createTripleScreenControl(): PlayerControl {
@@ -2150,6 +2428,140 @@ function bindLongPressFast(
     video.removeEventListener("mouseleave", handlePressEnd);
     video.removeEventListener("pause", handlePressEnd);
     video.removeEventListener("ended", handlePressEnd);
+  };
+}
+
+/**
+ * 播放器的双击动作。触摸设备上双击左右侧边按 10 秒快退 / 快进（移动端
+ * YouTube 的连击机制），双击中间仍是播放 / 暂停；鼠标设备保持双击全屏。
+ *
+ * 真实 seek 与键盘左右键一致：连击期间只累计目标时间并预览进度条，
+ * 窗口结束后提交一次，避免一串点击把 HLS 缓冲反复冲掉。
+ */
+function bindPlayerDoubleClickActions(art: Artplayer) {
+  const seekEnabled = shouldEnableMobileGestures();
+  let chain: SeekChain | null = null;
+  let seekTarget: number | null = null;
+  let chainTimer: number | null = null;
+
+  function clearChainTimer() {
+    if (chainTimer === null) return;
+    window.clearTimeout(chainTimer);
+    chainTimer = null;
+  }
+
+  function scheduleChainCommit() {
+    clearChainTimer();
+    chainTimer = window.setTimeout(() => {
+      chainTimer = null;
+      commitChainSeek();
+    }, DOUBLE_TAP_CHAIN_WINDOW_MS);
+  }
+
+  function renderSeekTarget() {
+    const duration = art.duration;
+    if (seekTarget === null || !Number.isFinite(duration) || duration <= 0) {
+      return;
+    }
+    art.emit("setBar", "played", clamp(seekTarget, 0, duration) / duration);
+  }
+
+  function commitChainSeek() {
+    clearChainTimer();
+    chain = null;
+    hidePlayerSeekRipple(art);
+    if (seekTarget === null) return;
+
+    const duration = art.duration;
+    const hasDuration = Number.isFinite(duration) && duration > 0;
+    const target = hasDuration ? clamp(seekTarget, 0, duration) : seekTarget;
+    seekTarget = null;
+    art.seek = target;
+    if (hasDuration) art.emit("setBar", "played", target / duration);
+  }
+
+  function accumulateSeek(
+    action: Extract<DoubleTapAction, { type: "seek" }>,
+    event: Event
+  ) {
+    const duration = art.duration;
+    if (!Number.isFinite(duration) || duration <= 0) return;
+
+    seekTarget = computeDoubleTapSeekTime({
+      baseTime: seekTarget ?? art.currentTime,
+      stepSeconds: action.stepSeconds,
+      duration,
+    });
+    renderSeekTarget();
+    showPlayerSeekRipple(
+      art,
+      action.side,
+      formatDoubleTapSeekLabel(action.totalSeconds),
+      event
+    );
+    scheduleChainCommit();
+  }
+
+  function tapZoneFromEvent(event: Event): TapZone {
+    const rect = art.template.$player.getBoundingClientRect();
+    const clientX =
+      event instanceof MouseEvent ? event.clientX : rect.left + rect.width / 2;
+    return classifyTapZone(clientX - rect.left, rect.width);
+  }
+
+  function handleTap(kind: TapKind, event: Event) {
+    if (!seekEnabled) {
+      // 鼠标设备沿用 ArtPlayer 原本的双击全屏。
+      if (kind === "dblclick") art.fullscreen = !art.fullscreen;
+      return;
+    }
+    if (art.isLock) return;
+
+    const result = reduceDoubleTap(chain, {
+      kind,
+      zone: tapZoneFromEvent(event),
+      at: Date.now(),
+    });
+    chain = result.chain;
+
+    if (result.action.type === "seek") {
+      accumulateSeek(result.action, event);
+      return;
+    }
+    if (result.action.type === "end") {
+      commitChainSeek();
+      if (result.action.toggle) art.toggle();
+    }
+  }
+
+  const handleClick = (event: Event) => handleTap("click", event);
+  const handleDoubleClick = (event: Event) => handleTap("dblclick", event);
+
+  function handleTimeUpdate() {
+    // 播放中的 timeupdate 会把进度条写回真实媒体时间，连击未提交时要盖回目标。
+    if (seekTarget !== null) renderSeekTarget();
+  }
+
+  art.on("click", handleClick);
+  art.on("dblclick", handleDoubleClick);
+  art.on("video:timeupdate", handleTimeUpdate);
+  art.on("video:pause", commitChainSeek);
+  art.on("video:ended", commitChainSeek);
+  art.on("blur", commitChainSeek);
+  window.addEventListener("blur", commitChainSeek);
+
+  return () => {
+    clearChainTimer();
+    chain = null;
+    seekTarget = null;
+    clearPlayerSeekRipple(art);
+    art.off("click", handleClick);
+    art.off("dblclick", handleDoubleClick);
+    art.off("video:timeupdate", handleTimeUpdate);
+    art.off("video:pause", commitChainSeek);
+    art.off("video:ended", commitChainSeek);
+    art.off("blur", commitChainSeek);
+    window.removeEventListener("blur", commitChainSeek);
   };
 }
 
