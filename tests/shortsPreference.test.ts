@@ -972,7 +972,7 @@ test("iOS standby preload has a kill switch for on-device A/B", () => {
 test("the sound toggle also grants unmuted playback to the iOS standby element", () => {
   assert.match(
     shortsPageSource,
-    /const standbyVideo = iosStandbyVideoRef\.current;\s*if \(standbyVideo && standbyVideo !== activeVideo\) \{\s*unlockVideoAudioPlayback\(standbyVideo\);/
+    /if \(useIOSSharedVideo\) \{\s*const standbyVideo = iosStandbyVideoRef\.current;\s*if \(standbyVideo && standbyVideo !== activeVideo\) \{\s*unlockVideoAudioPlayback\(standbyVideo\);/
   );
   assert.match(
     shortsPageSource,
@@ -1209,7 +1209,7 @@ test("shorts grants preload only after the active video really started", () => {
   );
 });
 
-test("shorts sound toggle grants playback in the direct user click", () => {
+test("shorts sound toggle limits playback recovery to the iOS media path", () => {
   assert.match(shortsPageSource, /function applyVideoMutedState/);
   assert.doesNotMatch(shortsPageSource, /onFirstPointer/);
   assert.doesNotMatch(shortsPageSource, /currentPage\.addEventListener\("pointerdown"/);
@@ -1223,12 +1223,11 @@ test("shorts sound toggle grants playback in the direct user click", () => {
   assert.match(shortsPageSource, /onTouchStart=\{stopHeaderControlPropagation\}/);
   assert.match(shortsPageSource, /function normalizeVideoPlaybackRate/);
   assert.match(shortsPageSource, /function stabilizeVideoAfterAudioToggle/);
-  assert.match(shortsPageSource, /normalizeVideoPlaybackRate\(activeVideo\);/);
-  assert.match(shortsPageSource, /getVideoAtIndex\(activeIndexRef\.current\) === activeVideo/);
   assert.match(
     shortsPageSource,
-    /applyVideoMutedState\(activeVideo, next\);[\s\S]*?activeVideo\.play\(\)\.catch[\s\S]*?setMuted\(next\);/
+    /if \(!useIOSSharedVideo\) \{\s*applyVideoMutedState\(activeVideo, next\);\s*\} else \{[\s\S]*?normalizeVideoPlaybackRate\(activeVideo\);\s*applyVideoMutedState\(activeVideo, next\);[\s\S]*?activeVideo\.play\(\)\.catch[\s\S]*?stabilizeVideoAfterAudioToggle/
   );
+  assert.match(shortsPageSource, /getVideoAtIndex\(activeIndexRef\.current\) === activeVideo/);
   assert.match(shortsPageSource, /stabilizeVideoAfterAudioToggle\(\s*activeVideo,\s*canResumeActiveVideo\s*\);/);
   assert.match(shortsPageSource, /if \(shouldResume\(\) && video\.paused && !video\.ended\) \{/);
   assert.match(shortsPageSource, /for \(const delay of \[80, 240, 600\]\)/);

@@ -103,6 +103,9 @@ export default function ShortsPage() {
     : "";
   // 是否静音；首次必须静音才能 autoplay，用户点击后切换
   const [muted, setMuted] = useState(true);
+  // iOS/WebKit 的有声播放授权按 media element 管理。iOS 分支始终复用
+  // 同一个真实 <video>，滑动时只移动节点并更换 src。
+  const useIOSSharedVideo = shouldUseIOSSharedVideo();
   // 全局 Toast / HUD 提醒文字
   const [hudText, setHudText] = useState<{ id: number; text: string; icon?: React.ReactNode } | null>(null);
   const hudTimeoutRef = useRef<number | null>(null);
@@ -121,37 +124,45 @@ export default function ShortsPage() {
 
   const handleMuteButtonClick = useCallback(() => {
     const activeVideo = getVideoAtIndex(activeIndex);
-    const canResumeActiveVideo = () =>
-      Boolean(activeVideo) &&
-      getVideoAtIndex(activeIndexRef.current) === activeVideo &&
-      userPausedIndexRef.current !== activeIndexRef.current;
     const next = !muted;
     if (activeVideo) {
-      normalizeVideoPlaybackRate(activeVideo);
-      applyVideoMutedState(activeVideo, next);
-      // 必须直接发生在这个 click 回调中：这一次 play() 给 iOS 的持久
-      // media element 授予有声播放权限，之后切 src 仍复用同一元素。
-      if (canResumeActiveVideo()) {
-        activeVideo.play().catch(() => undefined);
+      // Android Chrome 切换静音时可能正在重建音频管线。对一个本来就在
+      // 播放的元素重复 play() 和延迟重试只会干扰这次切换，因此普通 video
+      // 路径到这里就结束；下面的恢复只服务于 iOS 持久 media element。
+      if (!useIOSSharedVideo) {
+        applyVideoMutedState(activeVideo, next);
+      } else {
+        const canResumeActiveVideo = () =>
+          getVideoAtIndex(activeIndexRef.current) === activeVideo &&
+          userPausedIndexRef.current !== activeIndexRef.current;
+        normalizeVideoPlaybackRate(activeVideo);
+        applyVideoMutedState(activeVideo, next);
+        // 必须直接发生在这个 click 回调中：这一次 play() 给 iOS 的持久
+        // media element 授予有声播放权限，之后切 src 仍复用同一元素。
+        if (canResumeActiveVideo()) {
+          activeVideo.play().catch(() => undefined);
+        }
+        stabilizeVideoAfterAudioToggle(
+          activeVideo,
+          canResumeActiveVideo
+        );
       }
-      stabilizeVideoAfterAudioToggle(
-        activeVideo,
-        canResumeActiveVideo
-      );
     }
     // 预载用的备用元素之后会被提升为播放元素，而 WebKit 的有声播放授权是
     // 按 media element 记账的。趁这次用户手势一并给它授权，否则它接管播放
     // 的那一刻会被当成"没有手势的有声自动播放"直接拒掉。
-    const standbyVideo = iosStandbyVideoRef.current;
-    if (standbyVideo && standbyVideo !== activeVideo) {
-      unlockVideoAudioPlayback(standbyVideo);
+    if (useIOSSharedVideo) {
+      const standbyVideo = iosStandbyVideoRef.current;
+      if (standbyVideo && standbyVideo !== activeVideo) {
+        unlockVideoAudioPlayback(standbyVideo);
+      }
     }
     setMuted(next);
     showHud(
       next ? "已静音" : "音量已开启",
       next ? <VolumeX size={16} /> : <Volume2 size={16} />
     );
-  }, [activeIndex, muted, showHud]);
+  }, [activeIndex, muted, showHud, useIOSSharedVideo]);
 
   // 组件卸载时清理 HUD 定时器
   useEffect(() => {
@@ -238,10 +249,6 @@ export default function ShortsPage() {
   // Windows 短视频页只保留静音图标；不挂载桌面 hover 音量条，避免点击
   // 图标时因鼠标仍停留在按钮上而展开滑杆。
   const isWindowsShortsPlatform = isWindowsPlatform();
-  // iOS/WebKit 的有声播放授权按 media element 管理。iOS 分支始终复用
-  // 同一个真实 <video>，滑动时只移动节点并更换 src。
-  const useIOSSharedVideo = shouldUseIOSSharedVideo();
-
   const handleShortsRouteClick = useCallback(
     (event: React.MouseEvent<HTMLAnchorElement>, destination: string) => {
       // 主导航点击 documentElement 后进入的是“文档全屏”，SPA 路由切换
