@@ -413,7 +413,7 @@ test("shorts keeps the full heart animation when reduced motion is enabled", () 
   );
 });
 
-test("desktop held arrow-key seeking previews progress and commits once", () => {
+test("desktop left-key seeking and held right-key playback keep distinct semantics", () => {
   assert.match(
     useShortsKeyboardSource,
     /type ShortsKeyboardSeekPreview = \{[\s\S]*?videoIndex: number;[\s\S]*?currentTime: number;[\s\S]*?duration: number;/
@@ -428,7 +428,7 @@ test("desktop held arrow-key seeking previews progress and commits once", () => 
   );
   assert.match(
     useShortsKeyboardSource,
-    /const handleKeyUp = \(e: KeyboardEvent\) => \{[\s\S]*?keyboardSeekHeldKeysRef\.current\.delete\(e\.key\);[\s\S]*?size === 0\) finishKeyboardSeek\(\)/
+    /if \(e\.key !== "ArrowLeft"\) return;[\s\S]*?keyboardSeekHeldKeysRef\.current\.delete\(e\.key\);[\s\S]*?size === 0\) finishKeyboardSeek\(\)/
   );
   const previewStart = useShortsKeyboardSource.indexOf("const previewKeyboardSeek");
   const keydownStart = useShortsKeyboardSource.indexOf("const handleKeyDown", previewStart);
@@ -445,6 +445,34 @@ test("desktop held arrow-key seeking previews progress and commits once", () => 
     useShortsKeyboardSource,
     /SHORTS_KEYBOARD_SEEK_IDLE_COMMIT_MS[\s\S]*?scheduleKeyboardSeekIdleCommit/
   );
+  assert.match(
+    useShortsKeyboardSource,
+    /const SHORTS_KEYBOARD_FAST_PLAYBACK_DELAY_MS = 400;/
+  );
+  assert.match(
+    useShortsKeyboardSource,
+    /else if \(e\.key === "ArrowRight"\) \{\s*e\.preventDefault\(\);\s*if \(e\.repeat\) return;\s*startKeyboardRightPress\(\);/
+  );
+  assert.match(
+    useShortsKeyboardSource,
+    /keyboardRightPressTimer = window\.setTimeout\([\s\S]*?target\.video\.playbackRate = 2;[\s\S]*?setKeyboardFastPlaybackIndex\(target\.videoIndex\);[\s\S]*?SHORTS_KEYBOARD_FAST_PLAYBACK_DELAY_MS/
+  );
+  assert.match(
+    useShortsKeyboardSource,
+    /if \(target\.fastPlaybackActive\) \{[\s\S]*?target\.video\.playbackRate = 1;[\s\S]*?setKeyboardFastPlaybackIndex\(null\);/
+  );
+  assert.match(
+    useShortsKeyboardSource,
+    /if \(e\.key === "ArrowRight"\) \{[\s\S]*?finishKeyboardRightPress\(true\);/
+  );
+  assert.match(
+    useShortsKeyboardSource,
+    /seekOnShortPress[\s\S]*?previewKeyboardSeek\(\s*SHORTS_KEYBOARD_SEEK_SECONDS,\s*"ArrowRight"\s*\);/
+  );
+  assert.match(
+    useShortsKeyboardSource,
+    /const handleWindowBlur = \(\) => \{\s*finishKeyboardRightPress\(false\);/
+  );
   assert.match(useShortsKeyboardSource, /window\.addEventListener\("keyup", handleKeyUp\);/);
   assert.match(
     shortsPageSource,
@@ -457,6 +485,14 @@ test("desktop held arrow-key seeking previews progress and commits once", () => 
   assert.match(
     shortsPageSource,
     /keyboardSeekPreview=\{[\s\S]*?keyboardSeekPreview\?\.videoIndex === index[\s\S]*?\? keyboardSeekPreview/
+  );
+  assert.match(
+    shortsPageSource,
+    /keyboardFastPlayback=\{keyboardFastPlaybackIndex === index\}/
+  );
+  assert.match(
+    shortsPageSource,
+    /\{\(fastActive \|\| keyboardFastPlayback\) && \([\s\S]*?2x 速播放中/
   );
   assert.match(
     shortsPageSource,

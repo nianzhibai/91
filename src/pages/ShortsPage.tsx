@@ -315,19 +315,22 @@ export default function ShortsPage() {
     []
   );
 
-  // 键盘快捷键：↑↓切换、空格播放/暂停（双空格点赞）、←→累计快进、M/L
-  const { keyboardSeekPreview, registerKeyboardLikeHandler } =
-    useShortsKeyboard({
-      containerRef,
-      activeIndexRef,
-      itemsLengthRef,
-      getVideoAtIndex,
-      isVideoPausedByUser,
-      setUserPausedForIndex,
-      onToggleMute: handleMuteButtonClick,
-      showHud,
-      isWindowsShortsPlatform,
-    });
+  // 键盘快捷键：↑↓切换、空格播放/暂停（双空格点赞）、←快退、→长按倍速、M/L
+  const {
+    keyboardSeekPreview,
+    keyboardFastPlaybackIndex,
+    registerKeyboardLikeHandler,
+  } = useShortsKeyboard({
+    containerRef,
+    activeIndexRef,
+    itemsLengthRef,
+    getVideoAtIndex,
+    isVideoPausedByUser,
+    setUserPausedForIndex,
+    onToggleMute: handleMuteButtonClick,
+    showHud,
+    isWindowsShortsPlatform,
+  });
 
   useEffect(() => {
     updateUserPausedIndex(null);
@@ -1172,6 +1175,7 @@ export default function ShortsPage() {
                     ? keyboardSeekPreview
                     : undefined
                 }
+                keyboardFastPlayback={keyboardFastPlaybackIndex === index}
                 sharedVideoRef={
                   useIOSSharedVideo ? iosSharedVideoRef : undefined
                 }
@@ -1294,6 +1298,8 @@ type SlideProps = {
     ShortsKeyboardSeekPreview,
     "currentTime" | "duration"
   >;
+  /** 当前 slide 是否正由键盘右键长按驱动 2 倍速播放。 */
+  keyboardFastPlayback: boolean;
   /** iOS 所有 slide 共用的同一个持久 video DOM 节点 */
   sharedVideoRef?: React.RefObject<HTMLVideoElement>;
   /** 持久 video 当前应移动到的 slide 插槽 */
@@ -1353,6 +1359,7 @@ function ShortsSlideImpl({
   shouldEagerLoad,
   shouldRenderContent,
   keyboardSeekPreview,
+  keyboardFastPlayback,
   sharedVideoRef,
   sharedVideoSlotRef,
   muted,
@@ -2785,7 +2792,7 @@ function ShortsSlideImpl({
         />
       )}
 
-      {fastActive && (
+      {(fastActive || keyboardFastPlayback) && (
         <div className="shorts-slide__rate-hint" aria-hidden="true">
           2x 速播放中
         </div>

@@ -9,7 +9,8 @@ import { Sparkles } from "lucide-react";
 import { clamp } from "./mediaBuffer";
 
 const SHORTS_KEYBOARD_SEEK_SECONDS = 5;
-// 浏览器失焦时可能收不到 keyup；最后一次重复按键后自动提交，避免目标悬空。
+const SHORTS_KEYBOARD_FAST_PLAYBACK_DELAY_MS = 400;
+// 浏览器失焦时可能收不到 keyup；左键最后一次重复事件后自动提交，避免目标悬空。
 const SHORTS_KEYBOARD_SEEK_IDLE_COMMIT_MS = 1500;
 const SHORTS_KEYBOARD_SEEK_RELEASE_HIDE_MS = 400;
 const SHORTS_KEYBOARD_DOUBLE_SPACE_MS = 280;
@@ -43,11 +44,14 @@ export type ShortsKeyboardOptions = {
 /**
  * 短视频页的键盘快捷键：
  * - ↑/↓ 切换上下视频，空格播放/暂停（双空格点赞），M 静音，L 点赞
- * - ←/→ 长按累计 5s/次，只更新预览；全部松开（或失焦/超时）后提交一次真实 seek
+ * - ← 按键重复时累计快退 5s/次，松开（或失焦/超时）后提交一次真实 seek
+ * - → 短按快进 5s；按住 400ms 后以 2 倍速播放，松开恢复 1 倍速
  */
 export function useShortsKeyboard(options: ShortsKeyboardOptions) {
   const [keyboardSeekPreview, setKeyboardSeekPreview] =
     useState<ShortsKeyboardSeekPreview | null>(null);
+  const [keyboardFastPlaybackIndex, setKeyboardFastPlaybackIndex] =
+    useState<number | null>(null);
   const keyboardSeekTargetRef = useRef<ShortsKeyboardSeekTarget | null>(null);
   const keyboardSeekHeldKeysRef = useRef<Set<ShortsKeyboardSeekKey>>(new Set());
   const keyboardSeekCommitTimerRef = useRef<number | null>(null);
@@ -83,6 +87,12 @@ export function useShortsKeyboard(options: ShortsKeyboardOptions) {
     let pendingSpaceTarget: {
       videoIndex: number;
       video: HTMLVideoElement;
+    } | null = null;
+    let keyboardRightPressTimer: number | null = null;
+    let keyboardRightPressTarget: {
+      videoIndex: number;
+      video: HTMLVideoElement;
+      fastPlaybackActive: boolean;
     } | null = null;
 
     const clearKeyboardSeekCommitTimer = () => {
@@ -176,7 +186,7 @@ export function useShortsKeyboard(options: ShortsKeyboardOptions) {
             : target.duration;
         const nextTime = clamp(target.currentTime, 0, duration);
         try {
-          // 长按期间只更新预览；在左右键全部松开后才执行这一次真实 seek。
+          // 左键连按期间只更新预览；松开后才执行这一次真实 seek。
           target.video.currentTime = nextTime;
         } catch {
           // ignore（部分 ready state 下设置会抛错）
@@ -237,6 +247,76 @@ export function useShortsKeyboard(options: ShortsKeyboardOptions) {
       scheduleKeyboardSeekIdleCommit();
     };
 
+    const clearKeyboardRightPressTimer = () => {
+      if (keyboardRightPressTimer === null) return;
+      window.clearTimeout(keyboardRightPressTimer);
+      keyboardRightPressTimer = null;
+    };
+
+    const finishKeyboardRightPress = (seekOnShortPress: boolean) => {
+      clearKeyboardRightPressTimer();
+      const target = keyboardRightPressTarget;
+      keyboardRightPressTarget = null;
+      if (!target) return;
+
+      if (target.fastPlaybackActive) {
+        try {
+          target.video.playbackRate = 1;
+        } catch {
+          // ignore
+        }
+        setKeyboardFastPlaybackIndex(null);
+        return;
+      }
+
+      if (
+        seekOnShortPress &&
+        activeIndexRef.current === target.videoIndex &&
+        getCurrentVideoAtIndex(target.videoIndex) === target.video
+      ) {
+        previewKeyboardSeek(
+          SHORTS_KEYBOARD_SEEK_SECONDS,
+          "ArrowRight"
+        );
+        keyboardSeekHeldKeysRef.current.delete("ArrowRight");
+        finishKeyboardSeek();
+      }
+    };
+
+    const startKeyboardRightPress = () => {
+      if (keyboardRightPressTarget) return;
+      finishKeyboardSeek();
+      const videoIndex = activeIndexRef.current;
+      const video = getCurrentVideoAtIndex(videoIndex);
+      if (!video) return;
+
+      keyboardRightPressTarget = {
+        videoIndex,
+        video,
+        fastPlaybackActive: false,
+      };
+      keyboardRightPressTimer = window.setTimeout(() => {
+        keyboardRightPressTimer = null;
+        const target = keyboardRightPressTarget;
+        if (
+          !target ||
+          activeIndexRef.current !== target.videoIndex ||
+          getCurrentVideoAtIndex(target.videoIndex) !== target.video ||
+          target.video.paused ||
+          target.video.ended
+        ) {
+          return;
+        }
+        try {
+          target.video.playbackRate = 2;
+        } catch {
+          return;
+        }
+        target.fastPlaybackActive = true;
+        setKeyboardFastPlaybackIndex(target.videoIndex);
+      }, SHORTS_KEYBOARD_FAST_PLAYBACK_DELAY_MS);
+    };
+
     const handleKeyDown = (e: KeyboardEvent) => {
       const activeEl = document.activeElement;
       if (
@@ -251,6 +331,7 @@ export function useShortsKeyboard(options: ShortsKeyboardOptions) {
 
       if (e.key === "ArrowDown") {
         e.preventDefault();
+        finishKeyboardRightPress(false);
         finishKeyboardSeek();
         const nextIdx = activeIndexRef.current + 1;
         if (nextIdx < itemsLengthRef.current) {
@@ -261,6 +342,7 @@ export function useShortsKeyboard(options: ShortsKeyboardOptions) {
         }
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
+        finishKeyboardRightPress(false);
         finishKeyboardSeek();
         const prevIdx = activeIndexRef.current - 1;
         if (prevIdx >= 0) {
@@ -271,6 +353,7 @@ export function useShortsKeyboard(options: ShortsKeyboardOptions) {
         }
       } else if (e.key === " ") {
         e.preventDefault();
+        finishKeyboardRightPress(false);
         finishKeyboardSeek();
         if (e.repeat) return;
         const videoIndex = activeIndexRef.current;
@@ -294,22 +377,23 @@ export function useShortsKeyboard(options: ShortsKeyboardOptions) {
         scheduleKeyboardSpaceToggle(videoIndex, activeVideo);
       } else if (e.key === "m" || e.key === "M") {
         e.preventDefault();
+        finishKeyboardRightPress(false);
         finishKeyboardSeek();
         if (e.repeat) return;
         optionsRef.current.onToggleMute();
       } else if (e.key === "l" || e.key === "L") {
         e.preventDefault();
+        finishKeyboardRightPress(false);
         finishKeyboardSeek();
         if (e.repeat) return;
         getActiveLikeButton(activeIndexRef.current)?.click();
       } else if (e.key === "ArrowRight") {
         e.preventDefault();
-        previewKeyboardSeek(
-          SHORTS_KEYBOARD_SEEK_SECONDS,
-          "ArrowRight"
-        );
+        if (e.repeat) return;
+        startKeyboardRightPress();
       } else if (e.key === "ArrowLeft") {
         e.preventDefault();
+        finishKeyboardRightPress(false);
         previewKeyboardSeek(
           -SHORTS_KEYBOARD_SEEK_SECONDS,
           "ArrowLeft"
@@ -318,7 +402,13 @@ export function useShortsKeyboard(options: ShortsKeyboardOptions) {
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
-      if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+      if (e.key === "ArrowRight") {
+        if (!keyboardRightPressTarget) return;
+        e.preventDefault();
+        finishKeyboardRightPress(true);
+        return;
+      }
+      if (e.key !== "ArrowLeft") return;
       if (!keyboardSeekTargetRef.current) return;
 
       e.preventDefault();
@@ -328,11 +418,13 @@ export function useShortsKeyboard(options: ShortsKeyboardOptions) {
 
     const handleVisibilityChange = () => {
       if (!document.hidden) return;
+      finishKeyboardRightPress(false);
       finishKeyboardSeek();
       clearKeyboardSpaceTimer();
     };
 
     const handleWindowBlur = () => {
+      finishKeyboardRightPress(false);
       finishKeyboardSeek();
       clearKeyboardSpaceTimer();
     };
@@ -347,6 +439,7 @@ export function useShortsKeyboard(options: ShortsKeyboardOptions) {
       window.removeEventListener("blur", handleWindowBlur);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       clearKeyboardSpaceTimer();
+      finishKeyboardRightPress(false);
       // 卸载时同步清掉累计 seek 的定时器与目标，避免悬空提交
       clearKeyboardSeekCommitTimer();
       if (keyboardSeekHideTimerRef.current !== null) {
@@ -358,5 +451,9 @@ export function useShortsKeyboard(options: ShortsKeyboardOptions) {
     };
   }, []);
 
-  return { keyboardSeekPreview, registerKeyboardLikeHandler };
+  return {
+    keyboardSeekPreview,
+    keyboardFastPlaybackIndex,
+    registerKeyboardLikeHandler,
+  };
 }
