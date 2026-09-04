@@ -758,7 +758,6 @@ export default function ShortsPage() {
         // 在 ended 后受控重播，桌面/Android 的 JSX video 仍保留原生 loop。
         video.loop = false;
         video.playsInline = true;
-        video.preload = "auto";
         video.disablePictureInPicture = true;
         video.setAttribute("playsinline", "");
         video.setAttribute("webkit-playsinline", "");
@@ -846,14 +845,10 @@ export default function ShortsPage() {
     useIOSSharedVideo,
   ]);
 
-  // 下一屏：用备用元素提前把下一条视频拉起来。
+  // 下一屏：用备用元素提前准备下一条视频。
   //
-  // 这里**不看** activeReadyForPreload：备用元素承担的正是"下一条"这一档，
-  // 与非 iOS 路径上 getPreloadAheadCount 的下限 1 是同一条规则。那道授权每次
-  // 切屏都清零、要靠当前条真的起播并囤够 4~12 秒缓冲才挣得回来，而正常刷视频
-  // 比这条链路走完还快——挂在它上面就等于"永远来不及"，滑到位时下一条一个
-  // 字节都还没请求过。授权只该决定再往后囤几条；iOS 一共就两个 media element，
-  // 没有"再往后"，所以这里没有它的位置。
+  // 备用元素一直保留下一条的 src：当前屏缓冲不足时只取 metadata，缓冲健康后
+  // 再切到 auto。降级时不重设 src，因此已经下载的数据仍能复用。
   //
   // 这里是普通 useEffect 而不是 useLayoutEffect：备用元素处于隐藏角色，
   // 移动插槽和起 src 都没有当帧的视觉后果，没必要把一次 appendChild 和一次
@@ -877,6 +872,7 @@ export default function ShortsPage() {
     if (standby === iosSharedVideoRef.current) return;
 
     applyIOSVideoRole(standby, "standby");
+    standby.preload = activeReadyForPreload ? "auto" : "metadata";
     // 直接停进下一屏的插槽：滑动到位后连 DOM 移动都省了。
     if (standby.parentElement !== nextSlot) nextSlot.appendChild(standby);
     iosStandbyVideoIndexRef.current = nextIndex;
@@ -897,6 +893,7 @@ export default function ShortsPage() {
   }, [
     acquireIOSVideoElement,
     activeIndex,
+    activeReadyForPreload,
     iosStandbyPreloadDisabled,
     items,
     useIOSSharedVideo,
@@ -1117,16 +1114,18 @@ export default function ShortsPage() {
             const isInCacheWindow =
               index >= videoWindow.start && index <= videoWindow.end;
             const preloadOffset = index - activeIndex;
-            // 下一条无条件预载，再往后才受"当前屏缓冲健康"的授权节流。
-            // 详见 getPreloadAheadCount 的注释：让下一条"存在"和"后台囤积"
-            // 是两件成本差一个数量级的事，不该共用一个开关。
+            // 下一条始终挂源做轻量准备；只有当前屏缓冲健康时，后续视频才允许
+            // 用 preload="auto" 全速拉取。卡顿时只降级 preload，不删除已有 src。
+            const shouldPrepareNext =
+              !useIOSSharedVideo && preloadOffset === 1;
             const shouldPreload =
               !useIOSSharedVideo &&
               preloadOffset > 0 &&
               preloadOffset <= getPreloadAheadCount(activeReadyForPreload);
             const shouldMount =
               isActiveSlide ||
-              (!useIOSSharedVideo && (isInCacheWindow || shouldPreload));
+              (!useIOSSharedVideo &&
+                (isInCacheWindow || shouldPrepareNext || shouldPreload));
             // 视频窗口内已经缓冲过的视频保留 src：
             // 在窗口内来回切换时，直接复用浏览器已缓冲数据。
             const shouldRetainCached =
@@ -1134,7 +1133,11 @@ export default function ShortsPage() {
               isInCacheWindow &&
               !isActiveSlide &&
               cacheableSourceIds.has(item.id);
-            const shouldLoad = isActiveSlide || shouldPreload || shouldRetainCached;
+            const shouldLoad =
+              isActiveSlide ||
+              shouldPrepareNext ||
+              shouldPreload ||
+              shouldRetainCached;
             const shouldEagerLoad = isActiveSlide || shouldPreload;
             // 视口附近的照常渲染；再加上所有还挂着 <video> 的 slide——那些是
             // 有意保留的缓冲，不能因为离开视口就被拆掉。两者之和有上限，
@@ -1151,7 +1154,7 @@ export default function ShortsPage() {
                 index={index}
                 isActive={isActiveSlide}
                 // 固定 4 条视频窗口内才挂载 <video> 壳；
-                // 当前屏先绑定 src；后两个视频等当前屏缓冲健康后再预加载；
+                // 下一屏先用 metadata 轻量准备；当前屏缓冲健康后再全速预加载；
                 // 已缓冲过的窗口内视频保留 src，便于来回切换复用缓存。
                 shouldMount={shouldMount}
                 shouldLoad={shouldLoad}
@@ -3003,18 +3006,21 @@ function applyVideoMutedState(video: HTMLVideoElement, nextMuted: boolean) {
 }
 
 /**
- * 两个持久 media element 的角色。备用元素只负责把下一条的数据先拉下来：
- * 不能带 autoplay（有数据后会在屏幕外真的播起来），也必须保持静音。
+ * 两个持久 media element 的角色。播放元素始终优先加载；备用元素默认只做
+ * metadata 准备，页面会在当前视频缓冲健康时把它提升为 auto。备用元素不能
+ * 带 autoplay（有数据后会在屏幕外真的播起来），也必须保持静音。
  */
 function applyIOSVideoRole(
   video: HTMLVideoElement,
   role: "active" | "standby"
 ) {
   if (role === "active") {
+    video.preload = "auto";
     video.autoplay = true;
     video.setAttribute("autoplay", "");
     return;
   }
+  video.preload = "metadata";
   video.autoplay = false;
   video.removeAttribute("autoplay");
   applyVideoMutedState(video, true);

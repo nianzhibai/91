@@ -532,13 +532,15 @@ test("shorts loading spinner covers video buffering and initial feed loading", (
   assert.doesNotMatch(mobileBufferingRule, /width:\s*56px|height:\s*56px/);
 });
 
-test("shorts always preloads the next video and gates only the ones after it", () => {
+test("shorts prepares the next video lightly until the active buffer is healthy", () => {
   assert.match(shortsPageSource, /const \[activeReadyForPreload, setActiveReadyForPreload\] = useState\(false\);/);
   assert.match(mediaBufferSource, /const ACTIVE_PRELOAD_BUFFER_SECONDS = 12;/);
   assert.match(mediaBufferSource, /export const PRELOAD_AHEAD_COUNT = 2;/);
-  // 预载深度由授权决定，但下一条永远无条件预载——"让下一条存在"和
-  // "后台囤积"是两件成本差一个数量级的事，不能共用一个开关。
-  // 深度换算的行为用例见 shortsMediaBuffer.test.ts。
+  // 下一条始终保留 src，但只有授权后才能和更后面的条目一起用 auto。
+  assert.match(
+    shortsPageSource,
+    /const shouldPrepareNext =\s*!useIOSSharedVideo && preloadOffset === 1;/
+  );
   assert.match(
     shortsPageSource,
     /const preloadOffset = index - activeIndex;[\s\S]*?preloadOffset > 0 &&[\s\S]*?preloadOffset <= getPreloadAheadCount\(activeReadyForPreload\);/
@@ -547,7 +549,18 @@ test("shorts always preloads the next video and gates only the ones after it", (
     shortsPageSource,
     /const shouldPreload =\s*!useIOSSharedVideo &&\s*activeReadyForPreload/
   );
-  assert.match(shortsPageSource, /const shouldLoad = isActiveSlide \|\| shouldPreload \|\| shouldRetainCached;/);
+  assert.match(
+    shortsPageSource,
+    /const shouldLoad =\s*isActiveSlide \|\|\s*shouldPrepareNext \|\|\s*shouldPreload \|\|\s*shouldRetainCached;/
+  );
+  assert.match(
+    shortsPageSource,
+    /const shouldEagerLoad = isActiveSlide \|\| shouldPreload;/
+  );
+  assert.match(
+    shortsPageSource,
+    /preload=\{shouldLoad \? \(shouldEagerLoad \? "auto" : "metadata"\) : "none"\}/
+  );
   assert.match(shortsPageSource, /shouldLoad=\{shouldLoad\}/);
   assert.match(shortsPageSource, /setActiveReadyForPreload\(false\);\s*setActiveIndex\(bestIndex\);/);
   assert.match(shortsPageSource, /function syncActivePreloadReadiness\(currentVideo: HTMLVideoElement\)/);
@@ -769,7 +782,7 @@ test("shorts keeps buffered sources inside a four video window", () => {
   );
   assert.match(
     shortsPageSource,
-    /const shouldMount =\s*isActiveSlide \|\|\s*\(!useIOSSharedVideo && \(isInCacheWindow \|\| shouldPreload\)\);/
+    /const shouldMount =\s*isActiveSlide \|\|\s*\(!useIOSSharedVideo &&\s*\(isInCacheWindow \|\| shouldPrepareNext \|\| shouldPreload\)\);/
   );
   // 视频窗口内已缓冲过的视频都保留 src，来回切换均复用缓存
   assert.match(
@@ -889,11 +902,15 @@ test("iOS preloads the next video on a standby element and promotes it on swipe"
     shortsPageSource,
     /const iosStandbyVideoRef = useRef<HTMLVideoElement \| null>\(null\);/
   );
-  // Preloading starts on the same high/low watermark the desktop branch uses,
-  // so it never steals bandwidth from a still-buffering active video.
+  // The standby keeps the next src but switches between metadata and auto on
+  // the same high/low watermark as the desktop branch.
   assert.match(
     shortsPageSource,
     /if \(!useIOSSharedVideo \|\| iosStandbyPreloadDisabled\) return;[\s\S]*?const nextIndex = activeIndex \+ browseDirectionRef\.current;/
+  );
+  assert.match(
+    shortsPageSource,
+    /applyIOSVideoRole\(standby, "standby"\);\s*standby\.preload = activeReadyForPreload \? "auto" : "metadata";/
   );
   assert.match(
     shortsPageSource,
@@ -1374,12 +1391,14 @@ test("shorts keeps per-swipe work off the queue length", () => {
     shortsPageSource,
     /useEffect\(\(\) => \{\s*if \(!useIOSSharedVideo \|\| iosStandbyPreloadDisabled\) return;/
   );
-  // 备用元素承担的是"下一条"这一档，和非 iOS 路径的 getPreloadAheadCount
-  // 下限 1 同一条规则：绝不能挂在每次切屏都清零的 activeReadyForPreload 上，
-  // 否则滑到位时下一条一个字节都还没请求过。
+  // 备用元素始终保留下一条的源，但全速预载受当前视频健康状态控制。
   assert.doesNotMatch(
     shortsPageSource,
     /iosStandbyPreloadDisabled \|\| !activeReadyForPreload/
+  );
+  assert.match(
+    shortsPageSource,
+    /standby\.preload = activeReadyForPreload \? "auto" : "metadata";/
   );
   // 拉下字节还不够：video 在真正播放前一直画 poster，要 seek 一次逼出首帧
   assert.match(shortsPageSource, /warmStandbyFirstFrame\(standby\);/);

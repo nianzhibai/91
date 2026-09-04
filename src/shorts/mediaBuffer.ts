@@ -26,7 +26,7 @@ export const ACTIVE_PRELOAD_KEEP_RATIO = 1 / 3;
 export const ACTIVE_PRELOAD_MIN_KEEP_SECONDS = 1.5;
 
 // 维护一个固定大小的视频窗口：窗口内才 mount 真实 <video> 壳。
-// 当前屏先绑定 src；后续预加载要等当前屏缓冲健康后才开始。
+// 下一屏可以轻量准备；全速预加载要等当前屏缓冲健康后才开始。
 // 窗口内只要已经产生过可复用缓冲，就保留 src 复用浏览器缓存。
 export const VIDEO_WINDOW_SIZE = 4;
 
@@ -34,23 +34,14 @@ export const VIDEO_WINDOW_SIZE = 4;
 export const PRELOAD_AHEAD_COUNT = 2;
 
 /**
- * 实际允许向后预载几条。
+ * 当前屏缓冲状态允许几条后续视频使用 preload="auto"。
  *
- * 关键在于**下限是 1 而不是 0**：紧邻的下一条永远无条件预载。
- *
- * 原来的写法是"当前屏缓冲健康（activeReadyForPreload）才允许预载"，而这个
- * 授权每次切屏都会被清零、要重新挣回来——需要新活跃条真的起播、并囤够
- * 4~12 秒前向缓冲。正常刷短视频是 3~5 秒一条，比这条链路走完还快，于是下一条
- * 在被滑到的那一刻**根本没有开始过任何网络请求**，只能先画一张静态封面。
- *
- * 这里把两件成本差一个数量级的事拆开：让下一条"存在"（绑 src、取 moov 和
- * 第一个 GOP，几百 KB，是"滑到就有画面"的底线）不该和"后台囤积后续视频"
- * （几 MB，是带宽优化）共用一个开关。zyronon/douyin 的 SlideVerticalInfinite
- * 对窗口内每一条无条件挂 <video> 并绑源，机制上不存在"下一条还没开始加载"
- * 这种状态；授权只该决定预载的**深度**，不该决定它**存不存在**。
+ * 这里只负责全速预载的深度。下一屏是否挂载、绑定 src 并用 metadata 做轻量
+ * 准备，由页面单独决定。分开后，当前视频卡顿时可以收回后台带宽，又不用删除
+ * 下一屏的 src 或丢弃已经下载的数据。
  */
 export function getPreloadAheadCount(activeReadyForPreload: boolean): number {
-  return activeReadyForPreload ? PRELOAD_AHEAD_COUNT : 1;
+  return activeReadyForPreload ? PRELOAD_AHEAD_COUNT : 0;
 }
 
 /** shouldWarmFirstFrame 的输入切面；HTMLVideoElement 天然满足前两项。 */

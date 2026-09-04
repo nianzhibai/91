@@ -221,19 +221,16 @@ test("video window slides forward with the highest viewed index", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 预载深度：让下一条"存在"和"后台囤积"是两件事
+// 预载深度：当前屏优先，健康后才开放后台带宽
 // ---------------------------------------------------------------------------
 
-test("the next video is always preloaded, however unhealthy the current one is", () => {
+test("aggressive preloading waits for the active video buffer", () => {
   // 授权拿到手：向后囤两条
   assert.equal(getPreloadAheadCount(true), PRELOAD_AHEAD_COUNT);
-  // 授权没拿到：下一条仍然无条件预载。这一条是"滑到就有画面"的底线——
-  // 授权每次切屏都会清零、要靠当前条起播并囤够 4~12 秒缓冲才挣得回来，
-  // 而正常刷短视频比这条链路走完还快，下一条会永远处在"还没开始加载"。
-  assert.equal(getPreloadAheadCount(false), 1);
-  // 无论如何都不会退化成 0（那意味着完全没有预载）
-  assert.ok(getPreloadAheadCount(false) >= 1);
-  assert.ok(getPreloadAheadCount(true) >= getPreloadAheadCount(false));
+  // 授权没拿到：不允许任何后续视频用 auto 抢当前视频的带宽。
+  // 下一条仍由页面挂源并用 metadata 轻量准备，不属于这个深度计算。
+  assert.equal(getPreloadAheadCount(false), 0);
+  assert.ok(getPreloadAheadCount(true) > getPreloadAheadCount(false));
 });
 
 // ---------------------------------------------------------------------------
