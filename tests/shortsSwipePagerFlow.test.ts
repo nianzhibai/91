@@ -23,9 +23,15 @@ const SECOND_POINTER = 2;
 type TouchPoint = { clientX: number; clientY: number };
 
 type Harness = ReturnType<typeof createHarness>;
+type HarnessOptions = {
+  slideCount?: number;
+  usesDocumentScroll?: boolean;
+};
 
-function createHarness(options?: { slideCount?: number }) {
+function createHarness(options?: HarnessOptions) {
   const slideCount = options?.slideCount ?? 6;
+  const usesDocumentScroll = options?.usesDocumentScroll ?? false;
+  let documentScrollTop = 0;
   let clock = 1_000;
   let nextFrameId = 1;
   let nextTimerId = 1;
@@ -81,7 +87,7 @@ function createHarness(options?: { slideCount?: number }) {
     getBoundingClientRect: () => {
       // 实现只在 FLIP 里读轨道自身的 rect，用来强制一次样式提交
       styleFlushes += 1;
-      return { top: -root.scrollTop + visualTranslate() };
+      return { top: -readScrollTop() + visualTranslate() };
     },
     addEventListener: (type: string, handler: (event: unknown) => void) => {
       if (!trackListeners.has(type)) trackListeners.set(type, new Set());
@@ -100,7 +106,10 @@ function createHarness(options?: { slideCount?: number }) {
     const slide = {
       dataset: { index: String(index) },
       getBoundingClientRect: () => ({
-        top: slides.indexOf(slide) * SLIDE_HEIGHT - root.scrollTop + visualTranslate(),
+        top:
+          slides.indexOf(slide) * SLIDE_HEIGHT -
+          readScrollTop() +
+          visualTranslate(),
       }),
     };
     slides.push(slide);
@@ -121,6 +130,9 @@ function createHarness(options?: { slideCount?: number }) {
       rootListeners.delete(type);
     },
   };
+
+  const readScrollTop = () =>
+    usesDocumentScroll ? documentScrollTop : root.scrollTop;
 
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
@@ -144,8 +156,12 @@ function createHarness(options?: { slideCount?: number }) {
 
   const fakeWindow = {
     innerHeight: SLIDE_HEIGHT,
-    scrollY: 0,
-    scrollTo: () => undefined,
+    get scrollY() {
+      return documentScrollTop;
+    },
+    scrollTo: (_left: number, top: number) => {
+      documentScrollTop = top;
+    },
     // 浏览器给的是矩阵形式，实现必须认得
     getComputedStyle: () => ({
       transform:
@@ -185,7 +201,7 @@ function createHarness(options?: { slideCount?: number }) {
   const destroyPager = createShortsSwipePager({
     root: root as unknown as HTMLElement,
     track: track as unknown as HTMLElement,
-    usesDocumentScroll: false,
+    usesDocumentScroll,
     getAnchorSlide: () =>
       (slides[anchorIndex] ?? null) as unknown as HTMLElement | null,
   });
@@ -349,9 +365,17 @@ function createHarness(options?: { slideCount?: number }) {
     },
     /** 容器发出一次 scroll 事件（外力挪动了滚动位置）。 */
     scroll() {
-      const handler = rootListeners.get("scroll");
+      const listeners = usesDocumentScroll ? windowListeners : rootListeners;
+      const handler = listeners.get("scroll");
       assert.ok(handler, "scroll listener should be registered");
       handler({});
+    },
+    get scrollTop() {
+      return readScrollTop();
+    },
+    setExternalScrollTop(value: number) {
+      if (usesDocumentScroll) documentScrollTop = value;
+      else root.scrollTop = value;
     },
     /** 一次 wheel 事件。deltaY 正 = 向下滚 = 看下一条。 */
     wheel(
@@ -399,7 +423,7 @@ function createHarness(options?: { slideCount?: number }) {
 
 function withHarness(
   run: (harness: Harness) => void,
-  options?: { slideCount?: number }
+  options?: HarnessOptions
 ) {
   const harness = createHarness(options);
   try {
@@ -1163,6 +1187,23 @@ test("pinch zoom keeps its own wheel, everything else is taken over", () => {
 // ---------------------------------------------------------------------------
 // 兜底不变量：静止时绝不停在两条视频之间
 // ---------------------------------------------------------------------------
+
+test("document scroll drift is observed and corrected on the viewport", () => {
+  const harness = createHarness({ usesDocumentScroll: true });
+  try {
+    harness.setExternalScrollTop(SLIDE_HEIGHT + 137);
+    harness.scroll();
+    assert.equal(harness.scrollTop, SLIDE_HEIGHT + 137);
+
+    harness.advance(200);
+    assert.equal(harness.scrollTop, SLIDE_HEIGHT);
+    harness.endTransition();
+  } finally {
+    harness.destroy();
+  }
+  // 清理也必须使用同一个宿主，否则每次重进短视频页都会泄漏一个监听器。
+  assert.equal(harness.hasListeners(), false);
+});
 
 test("an unexplained scroll drift corrects itself once things go quiet", () => {
   withHarness((h) => {

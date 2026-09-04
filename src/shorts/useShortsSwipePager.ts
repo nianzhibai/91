@@ -444,6 +444,9 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
   const { root, track, usesDocumentScroll } = host;
 
   // ---- 滚动目标适配：容器滚动 / 文档滚动共用同一套位移逻辑 ----
+  // 文档滚动产生的 scroll 事件只会到达 document/window，不会向下传播给
+  // `.shorts-feed`；事件订阅必须和下面的读写操作使用同一个真实滚动宿主。
+  const scrollEventTarget = usesDocumentScroll ? window : root;
   const getScrollTop = () =>
     usesDocumentScroll ? window.scrollY : root.scrollTop;
   const setScrollTop = (value: number) => {
@@ -968,7 +971,7 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     }, 240);
   };
 
-  root.addEventListener("scroll", handleScroll, { passive: true });
+  scrollEventTarget.addEventListener("scroll", handleScroll, { passive: true });
   root.addEventListener("wheel", handleWheel, { passive: false });
   root.addEventListener("pointerdown", handlePointerDown, { passive: true });
   root.addEventListener("pointermove", handlePointerMove, { passive: false });
@@ -995,7 +998,7 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     if (realignFrame !== null) window.cancelAnimationFrame(realignFrame);
     if (realignTimer !== null) window.clearTimeout(realignTimer);
     cancelAlignmentCheck();
-    root.removeEventListener("scroll", handleScroll);
+    scrollEventTarget.removeEventListener("scroll", handleScroll);
     root.removeEventListener("wheel", handleWheel);
     root.removeEventListener("pointerdown", handlePointerDown);
     root.removeEventListener("pointermove", handlePointerMove);
