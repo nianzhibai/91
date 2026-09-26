@@ -30,6 +30,7 @@ import (
 	"github.com/video-site/backend/internal/drives/wopan"
 	"github.com/video-site/backend/internal/fingerprint"
 	"github.com/video-site/backend/internal/preview"
+	"github.com/video-site/backend/internal/readretry"
 )
 
 // guangYaPanLegacyRootPath keeps existing path-based mounts working until the
@@ -2258,22 +2259,23 @@ func (a *App) listDriveDirChildren(ctx context.Context, driveID, parentID string
 	if parentID == "" {
 		parentID = drv.RootID()
 	}
-	// p115 快路径：避免拉全部分页文件
-	if fast, ok := drv.(interface {
-		ListDirsOnly(ctx context.Context, dirID string) ([]drives.Entry, error)
-	}); ok {
-		entries, err := fast.ListDirsOnly(ctx, parentID)
-		if err != nil {
-			return nil, fmt.Errorf("list drive %s parent %s dirs-only: %w", driveID, parentID, err)
+	// This interactive operation owns its transport retries. The scanner owns
+	// retries for background discovery; adding them to Driver.List would stack
+	// both policies. Keep one deadline across requests and backoff waits.
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	entries, err := readretry.Do(ctx, func() ([]drives.Entry, error) {
+		// p115 fast path avoids fetching pages of files just to show directories.
+		if fast, ok := drv.(interface {
+			ListDirsOnly(context.Context, string) ([]drives.Entry, error)
+		}); ok {
+			return fast.ListDirsOnly(ctx, parentID)
 		}
-		out := make([]api.DriveDirEntry, 0, len(entries))
-		for _, e := range entries {
-			out = append(out, api.DriveDirEntry{ID: e.ID, Name: e.Name})
-		}
-		return out, nil
-	}
-	// 通用路径
-	entries, err := drv.List(ctx, parentID)
+		return drv.List(ctx, parentID)
+	}, readretry.Options{OnRetry: func(retry int, delay time.Duration, err error) {
+		log.Printf("[dirtree] drive=%s directory=%s read failed; retry=%d/%d delay=%s: %v",
+			driveID, parentID, retry, readretry.MaxRetries, delay, err)
+	}})
 	if err != nil {
 		return nil, fmt.Errorf("list drive %s parent %s: %w", driveID, parentID, err)
 	}

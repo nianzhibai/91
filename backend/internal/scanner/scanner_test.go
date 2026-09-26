@@ -14,6 +14,7 @@ import (
 
 	"github.com/video-site/backend/internal/catalog"
 	"github.com/video-site/backend/internal/drives"
+	"github.com/video-site/backend/internal/readretry"
 )
 
 func TestRunIgnoresRemoteThumbnailFromDriveEntry(t *testing.T) {
@@ -1143,18 +1144,52 @@ func TestScanRetriesDirectoryTimeoutThenProtectsFailedSubtree(t *testing.T) {
 		errors:    map[string]error{"timed-out-dir": &net.DNSError{IsTimeout: true}},
 		listCalls: map[string]int{},
 	}
-	result, err := New(cat, drv, []string{".mp4"}, nil, nil).Scan(ctx, "")
+	scan := New(cat, drv, []string{".mp4"}, nil, nil)
+	var waits []time.Duration
+	scan.RetryWait = func(ctx context.Context, delay time.Duration) error {
+		waits = append(waits, delay)
+		return ctx.Err()
+	}
+	result, err := scan.Scan(ctx, "")
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
-	if drv.listCalls["timed-out-dir"] != directoryListTimeoutRetries+1 {
-		t.Fatalf("timeout list calls = %d, want %d", drv.listCalls["timed-out-dir"], directoryListTimeoutRetries+1)
+	if drv.listCalls["timed-out-dir"] != readretry.MaxRetries+1 {
+		t.Fatalf("timeout list calls = %d, want %d", drv.listCalls["timed-out-dir"], readretry.MaxRetries+1)
+	}
+	if len(waits) != 2 || waits[0] < time.Second || waits[1] < 3*time.Second {
+		t.Fatalf("retry delays = %v", waits)
 	}
 	if _, failed := result.Snapshot.FailedDirIDs["timed-out-dir"]; !failed {
 		t.Fatalf("failed dirs = %#v, want timed-out-dir", result.Snapshot.FailedDirIDs)
 	}
 	if result.Stats.Added != 1 {
 		t.Fatalf("added = %d, want healthy sibling", result.Stats.Added)
+	}
+}
+
+func TestDiscoveryCancellationDuringTransportBackoff(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	drv := &discoveryTestSource{
+		entries:   map[string][]drives.Entry{"root": {{ID: "broken", Name: "Broken", IsDir: true}}},
+		errors:    map[string]error{"broken": io.ErrUnexpectedEOF},
+		listCalls: map[string]int{},
+	}
+	scan := New(nil, drv, []string{".mp4"}, nil, nil)
+	scan.RetryWait = func(ctx context.Context, delay time.Duration) error {
+		if delay < time.Second {
+			t.Errorf("backoff = %s", delay)
+		}
+		cancel()
+		return readretry.Wait(ctx, delay)
+	}
+	snapshot, _, err := scan.Discover(ctx, "")
+	if !errors.Is(err, context.Canceled) || drv.listCalls["broken"] != 1 {
+		t.Fatalf("calls=%d error=%v", drv.listCalls["broken"], err)
+	}
+	if len(snapshot.Issues) != 0 || len(snapshot.FailedDirIDs) != 0 {
+		t.Fatal("canceled read backoff became a failed directory")
 	}
 }
 

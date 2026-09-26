@@ -56,6 +56,11 @@ func TestScannerRetries115DirectoryTimeouts(t *testing.T) {
 			}))
 			driver.listTimeout = 20 * time.Millisecond
 			scan := scanner.New(nil, driver, []string{".mp4"}, nil, nil)
+			var waits []time.Duration
+			scan.RetryWait = func(ctx context.Context, delay time.Duration) error {
+				waits = append(waits, delay)
+				return ctx.Err()
+			}
 			snapshot, stats, err := scan.Discover(ctx, "")
 			if calls != tt.wantCalls {
 				t.Fatalf("directory requests = %d, want %d", calls, tt.wantCalls)
@@ -68,6 +73,18 @@ func TestScannerRetries115DirectoryTimeouts(t *testing.T) {
 					t.Fatal("scan cancellation must not become a directory failure")
 				}
 				return
+			}
+			if len(waits) != tt.wantCalls-1 {
+				t.Fatalf("backoff waits = %d, want %d", len(waits), tt.wantCalls-1)
+			}
+			for i, delay := range waits {
+				base := time.Second
+				if i == 1 {
+					base = 3 * time.Second
+				}
+				if delay < base || delay >= base+base/4 {
+					t.Fatalf("retry %d delay = %s", i+1, delay)
+				}
 			}
 			if err != nil {
 				t.Fatalf("discover: %v", err)

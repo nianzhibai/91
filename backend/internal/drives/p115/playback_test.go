@@ -131,8 +131,10 @@ func TestPlaybackReadRetriesAreBoundedAndPreserveRejections(t *testing.T) {
 			}
 			t.Run(stage+"/"+failure, func(t *testing.T) {
 				calls := 0
+				var attempts []time.Time
 				d := newP115ListTestDriver(p115RoundTripFunc(func(r *http.Request) (*http.Response, error) {
 					calls++
+					attempts = append(attempts, time.Now())
 					switch failure {
 					case "network":
 						return nil, io.ErrUnexpectedEOF
@@ -152,13 +154,22 @@ func TestPlaybackReadRetriesAreBoundedAndPreserveRejections(t *testing.T) {
 				_, err := d.StreamURL(context.Background(), "file")
 				wantCalls := 1
 				if failure == "network" {
-					wantCalls = 2
+					wantCalls = 3
 					if !errors.Is(err, io.ErrUnexpectedEOF) {
 						t.Fatalf("network cause lost: %v", err)
 					}
 				}
 				if err == nil || calls != wantCalls {
 					t.Fatalf("calls=%d want=%d err=%v", calls, wantCalls, err)
+				}
+				for i := 1; i < len(attempts); i++ {
+					minimum := time.Second
+					if i == 2 {
+						minimum = 3 * time.Second
+					}
+					if attempts[i].Sub(attempts[i-1]) < minimum {
+						t.Errorf("retry %d had no backoff", i)
+					}
 				}
 				if _, limited := drives.RateLimitRetryAfter(err); limited != (failure == "throttle") {
 					t.Fatalf("incorrect throttling classification: %v", err)

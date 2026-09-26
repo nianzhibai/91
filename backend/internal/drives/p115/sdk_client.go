@@ -3,14 +3,12 @@ package p115
 import (
 	"context"
 	"errors"
-	"io"
-	"net"
 	"net/http"
-	"syscall"
 	"time"
 
 	sdk "github.com/SheltonZhu/115driver/pkg/driver"
 	"github.com/go-resty/resty/v2"
+	"github.com/video-site/backend/internal/readretry"
 )
 
 const p115ReadTimeout = 15 * time.Second
@@ -39,17 +37,17 @@ func (d *Driver) newSDKClient(ctx context.Context) *sdk.Pan115Client {
 // mutations on transport errors could repeat a completed operation.
 func (d *Driver) newSDKReadClient(ctx context.Context) *sdk.Pan115Client {
 	client := d.newSDKClient(ctx)
-	client.Client.SetRetryCount(1).
-		SetRetryWaitTime(200 * time.Millisecond).
-		SetRetryMaxWaitTime(200 * time.Millisecond).
+	client.Client.SetRetryCount(readretry.MaxRetries).
+		SetRetryWaitTime(time.Second).
+		SetRetryMaxWaitTime(4 * time.Second).
+		SetRetryAfter(func(_ *resty.Client, response *resty.Response) (time.Duration, error) {
+			return readretry.Delay(response.Request.Attempt), nil
+		}).
 		AddRetryCondition(func(_ *resty.Response, err error) bool {
 			if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return false
 			}
-			var networkErr net.Error
-			return (errors.As(err, &networkErr) && networkErr.Timeout()) ||
-				errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
-				errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE)
+			return readretry.Transient(err)
 		})
 	return client
 }

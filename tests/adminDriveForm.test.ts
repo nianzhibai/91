@@ -1281,7 +1281,7 @@ test("drive detail refresh state uses the detail skeleton without list actions",
   );
   assert.doesNotMatch(drivesPageLoadingSource, /admin-drive-detail-loading__tree/);
   assert.doesNotMatch(adminCss, /admin-drive-detail-loading__tree/);
-  assert.match(skipDirsPanelSource, /const showLoading = open && !loaded && !error/);
+  assert.match(skipDirsPanelSource, /const showLoading = open && \(status === "idle" \|\| status === "loading"\)/);
   assert.match(skipDirsPanelSource, /\{showLoading && <SkipDirsLoadingIndicator \/>\}/);
   assert.match(
     skipDirsLoadingIndicatorSource,
@@ -1416,7 +1416,7 @@ test("drive directory rows use folder icons and independent expand and hide butt
   assert.match(skipDirsPanelSource, /aria-expanded=\{open\}/);
   assert.match(skipDirsPanelSource, /<span className="admin-skipdirs-name">\{name\}<\/span>\s*<\/button>/);
   assert.match(skipDirsPanelSource, /const dimmed = ancestorSkipped \|\| isSelected/);
-  assert.match(skipDirsPanelSource, /listDriveDirChildren\(driveId, id \|\| undefined\)/);
+  assert.match(skipDirsPanelSource, /useDirectoryChildren\(driveId, id, open\)/);
   assert.match(adminCss, /\.admin-skipdirs-row\s*\{[^}]*height:\s*32px;[^}]*18px/s);
   assert.match(adminCss, /\.admin-skipdirs-toggle\s*\{[^}]*min-width:\s*0/s);
   assert.match(adminCss, /\.admin-drive-detail-layout\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1\.2fr\) minmax\(0, 1fr\)/s);

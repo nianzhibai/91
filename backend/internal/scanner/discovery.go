@@ -5,13 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"path"
 	"strings"
 	"time"
 
 	"github.com/video-site/backend/internal/applog"
 	"github.com/video-site/backend/internal/drives"
+	"github.com/video-site/backend/internal/readretry"
 )
 
 func (s *Scanner) discover(ctx context.Context, startDirID string, stats *Stats, progress progressFunc) (Snapshot, error) {
@@ -142,10 +142,8 @@ func appendDirID(ancestorDirIDs []string, dirID string) []string {
 	return append(out, dirID)
 }
 
-const directoryListTimeoutRetries = 2
-
 func (s *Scanner) listDirectory(ctx context.Context, dirID string) ([]drives.Entry, error) {
-	timeoutRetries := 0
+	transportRetries := 0
 	for {
 		entries, err := s.Drive.List(ctx, dirID)
 		if err == nil {
@@ -180,36 +178,25 @@ func (s *Scanner) listDirectory(ctx context.Context, dirID string) ([]drives.Ent
 			}
 			continue
 		}
-		if isDirectoryRequestTimeout(err) && timeoutRetries < directoryListTimeoutRetries {
-			timeoutRetries++
+		if readretry.Transient(err) && transportRetries < readretry.MaxRetries {
+			transportRetries++
+			delay := readretry.Delay(transportRetries)
 			log.Printf(
-				"[%s] drive=%s directory=%s request timed out; retry=%d/%d",
-				s.logPrefix(), s.Drive.ID(), dirID, timeoutRetries, directoryListTimeoutRetries,
+				"[%s] drive=%s directory=%s read failed; retry=%d/%d delay=%s: %v",
+				s.logPrefix(), s.Drive.ID(), dirID, transportRetries, readretry.MaxRetries, delay, err,
 			)
+			if waitErr := s.waitForRetry(ctx, delay); waitErr != nil {
+				return nil, waitErr
+			}
 			continue
 		}
 		return nil, err
 	}
 }
 
-func isDirectoryRequestTimeout(err error) bool {
-	if errors.Is(err, context.DeadlineExceeded) {
-		return true
-	}
-	var networkError net.Error
-	return errors.As(err, &networkError) && networkError.Timeout()
-}
-
 func (s *Scanner) waitForRetry(ctx context.Context, duration time.Duration) error {
 	if s.RetryWait != nil {
 		return s.RetryWait(ctx, duration)
 	}
-	timer := time.NewTimer(duration)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
+	return readretry.Wait(ctx, duration)
 }

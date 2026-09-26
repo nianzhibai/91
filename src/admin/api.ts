@@ -944,10 +944,11 @@ export type DriveDirEntry = {
  * 列指定 drive 在 parentId 目录下的直接子目录。
  * parentId 留空 → 走 drive 的 RootID。
  */
-export function listDriveDirChildren(id: string, parentId?: string) {
+export function listDriveDirChildren(id: string, parentId?: string, signal?: AbortSignal) {
   const qs = parentId ? `?parent=${encodeURIComponent(parentId)}` : "";
   return request<DriveDirEntry[]>(
-    `/drives/${encodeURIComponent(id)}/dirtree${qs}`
+    `/drives/${encodeURIComponent(id)}/dirtree${qs}`,
+    { signal }
   );
 }
 

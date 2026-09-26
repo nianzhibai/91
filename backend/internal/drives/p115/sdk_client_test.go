@@ -148,3 +148,28 @@ func TestSDKOperationsKeepConcurrentRequestsIndependent(t *testing.T) {
 	close(release)
 	wg.Wait()
 }
+
+func TestSDKWritesDoNotRetryTransportFailures(t *testing.T) {
+	for _, operation := range []string{"rename", "remove"} {
+		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
+			calls := 0
+			d := newP115ListTestDriver(p115RoundTripFunc(func(r *http.Request) (*http.Response, error) {
+				calls++
+				return nil, io.ErrUnexpectedEOF
+			}))
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			var err error
+			switch operation {
+			case "rename":
+				err = d.Rename(ctx, "file", "new.mp4")
+			case "remove":
+				err = d.Remove(ctx, "file")
+			}
+			if !errors.Is(err, io.ErrUnexpectedEOF) || calls != 1 {
+				t.Fatalf("calls=%d error=%v, want one attempt ending in EOF", calls, err)
+			}
+		})
+	}
+}

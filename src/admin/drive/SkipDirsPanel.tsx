@@ -4,6 +4,7 @@ import * as api from "../api";
 import { SkipDirsIcon } from "../icons/SkipDirsIcon";
 import { useToast } from "@/components/ToastContext";
 import { SkipDirsLoadingIndicator } from "./SkipDirsLoadingIndicator";
+import { useDirectoryChildren } from "./useDirectoryChildren";
 
 const AUTO_SAVE_DELAY_MS = 300;
 const AUTO_SAVE_RETRY_BASE_MS = 1000;
@@ -222,6 +223,7 @@ export function SkipDirsPanel({ drive, onSaved }: SkipDirsPanelProps) {
 
       <div className="admin-detail-tree-container">
         <DirTreeNode
+          key={drive.id}
           driveId={drive.id}
           id=""
           name={drive.name || "存储"}
@@ -261,37 +263,14 @@ function DirTreeNode({
   disabled,
 }: DirTreeNodeProps) {
   const [open, setOpen] = useState(!!initiallyOpen);
-  const [loading, setLoading] = useState(false);
-  const [loaded, setLoaded] = useState(false);
-  const [children, setChildren] = useState<api.DriveDirEntry[]>([]);
-  const [error, setError] = useState("");
+  const { status, children, error, retry } = useDirectoryChildren(driveId, id, open);
+  const loaded = status === "success";
 
   const isRoot = depth === 0;
   const isSelected = id !== "" && selected.has(id);
   const dimmed = ancestorSkipped || isSelected;
   const visibilityLabel = `${isSelected ? "取消隐藏目录" : "隐藏目录"} ${name}`;
-  const showLoading = open && !loaded && !error;
-
-  const loadChildren = useCallback(async () => {
-    if (loaded || loading) return;
-    setLoading(true);
-    setError("");
-    try {
-      const data = await api.listDriveDirChildren(driveId, id || undefined);
-      setChildren(data ?? []);
-      setLoaded(true);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "加载失败");
-    } finally {
-      setLoading(false);
-    }
-  }, [driveId, id, loaded, loading]);
-
-  useEffect(() => {
-    if (open && !loaded) {
-      void loadChildren();
-    }
-  }, [open, loaded, loadChildren]);
+  const showLoading = open && (status === "idle" || status === "loading");
 
   function handleToggleOpen() {
     setOpen((v) => !v);
@@ -338,8 +317,13 @@ function DirTreeNode({
       {open && (
         <div style={{ "--depth": depth } as CSSProperties}>
           {showLoading && <SkipDirsLoadingIndicator />}
-          {error && <div className="admin-skipdirs-status is-error">{error}</div>}
-          {loaded && !error && children.length === 0 && (
+          {status === "error" && (
+            <div className="admin-skipdirs-status is-error" role="alert">
+              <span>{error}</span>{" "}
+              <button type="button" className="admin-btn" onClick={retry}>重试</button>
+            </div>
+          )}
+          {loaded && children.length === 0 && (
             <div className="admin-skipdirs-status">无子目录</div>
           )}
           {children.map((child) => (
