@@ -9,8 +9,10 @@ import { useDirectoryChildren } from "./useDirectoryChildren";
 const AUTO_SAVE_DELAY_MS = 300;
 const AUTO_SAVE_RETRY_BASE_MS = 1000;
 const AUTO_SAVE_RETRY_MAX_MS = 8000;
+const SAVE_SUCCESS_DISPLAY_MS = 2000;
 
-type SaveStatus = "idle" | "pending" | "saving" | "saved" | "deferred" | "error";
+type SaveStatus = "idle" | "pending" | "saving" | "saved" | "error";
+type RegisterDirectoryFailure = (id: string, retry: () => void) => () => void;
 
 function normalizeDirIds(ids: Iterable<string>): string[] {
   return Array.from(
@@ -33,6 +35,10 @@ export function SkipDirsPanel({ drive, onSaved }: SkipDirsPanelProps) {
     () => new Set(normalizeDirIds(drive.skipDirIds ?? []))
   );
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
+  const [failedDirectories, setFailedDirectories] = useState<Map<string, () => void>>(
+    () => new Map()
+  );
+  const hasFailedDirectories = failedDirectories.size > 0;
   const selectedRef = useRef(selected);
   const draftRevisionRef = useRef(0);
   const savedRevisionRef = useRef(0);
@@ -50,6 +56,22 @@ export function SkipDirsPanel({ drive, onSaved }: SkipDirsPanelProps) {
 
   onSavedRef.current = onSaved;
   showRef.current = show;
+
+  const registerDirectoryFailure = useCallback<RegisterDirectoryFailure>((id, retry) => {
+    setFailedDirectories((current) => new Map(current).set(id, retry));
+    return () => {
+      setFailedDirectories((current) => {
+        if (current.get(id) !== retry) return current;
+        const next = new Map(current);
+        next.delete(id);
+        return next;
+      });
+    };
+  }, []);
+
+  function retryFailedDirectories() {
+    for (const retry of failedDirectories.values()) retry();
+  }
 
   const enqueueSave = useCallback(() => {
     const driveId = drive.id;
@@ -105,7 +127,7 @@ export function SkipDirsPanel({ drive, onSaved }: SkipDirsPanelProps) {
         savedRevisionRef.current = requestRevision;
         if (mountedRef.current) {
           setSelected(next);
-          setSaveStatus(response.deferred ? "deferred" : "saved");
+          setSaveStatus("saved");
         }
         return;
       }
@@ -116,7 +138,7 @@ export function SkipDirsPanel({ drive, onSaved }: SkipDirsPanelProps) {
       if (currentKey === savedKey) {
         savedRevisionRef.current = draftRevisionRef.current;
         if (mountedRef.current) {
-          setSaveStatus(response.deferred ? "deferred" : "saved");
+          setSaveStatus("saved");
         }
       } else if (mountedRef.current) {
         setSaveStatus("pending");
@@ -138,6 +160,14 @@ export function SkipDirsPanel({ drive, onSaved }: SkipDirsPanelProps) {
     [enqueueSave]
   );
   scheduleSaveRef.current = scheduleSave;
+
+  useEffect(() => {
+    if (saveStatus !== "saved") return;
+    const timer = window.setTimeout(() => {
+      setSaveStatus((current) => current === "saved" ? "idle" : current);
+    }, SAVE_SUCCESS_DISPLAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [drive.id, saveStatus]);
 
   const serverSkipDirKey = dirIdsKey(drive.skipDirIds ?? []);
 
@@ -188,16 +218,15 @@ export function SkipDirsPanel({ drive, onSaved }: SkipDirsPanelProps) {
     saveStatus === "idle"
       ? null
       : {
-          pending: "保存中…",
-          saving: "保存中…",
+          pending: "保存中",
+          saving: "保存中",
           saved: "已保存",
-          deferred: "已保存，任务结束后生效",
-          error: "保存失败，正在重试…",
+          error: "保存失败，正在重试",
         }[saveStatus];
   const saveStatusClass =
     saveStatus === "error"
       ? "is-error"
-      : saveStatus === "saved" || saveStatus === "deferred"
+      : saveStatus === "saved"
         ? "is-saved"
         : saveStatus === "pending" || saveStatus === "saving"
           ? "is-saving"
@@ -210,15 +239,30 @@ export function SkipDirsPanel({ drive, onSaved }: SkipDirsPanelProps) {
           <SkipDirsIcon />
           <span>扫描跳过目录</span>
         </div>
-        {saveStatusText && (
-          <span
-            className={`admin-skipdirs-autosave ${saveStatusClass}`.trim()}
-            role="status"
-            aria-live="polite"
-          >
-            {saveStatusText}
-          </span>
-        )}
+        <div className={`admin-skipdirs-header-actions${hasFailedDirectories ? " has-retry" : ""}`}>
+          {saveStatusText && (
+            <span
+              className={`admin-skipdirs-autosave ${saveStatusClass}`.trim()}
+              role="status"
+              aria-live="polite"
+              title={saveStatusText}
+            >
+              {saveStatusText}
+            </span>
+          )}
+          {hasFailedDirectories && (
+            <div className="admin-skipdirs-retry-slot">
+              <button
+                type="button"
+                className="admin-btn admin-skipdirs-retry"
+                onClick={retryFailedDirectories}
+                title="重试加载失败的目录"
+              >
+                重试
+              </button>
+            </div>
+          )}
+        </div>
       </header>
 
       <div className="admin-detail-tree-container">
@@ -233,6 +277,7 @@ export function SkipDirsPanel({ drive, onSaved }: SkipDirsPanelProps) {
           selected={selected}
           onToggle={toggle}
           disabled={false}
+          registerFailure={registerDirectoryFailure}
         />
       </div>
     </div>
@@ -249,6 +294,7 @@ type DirTreeNodeProps = {
   selected: Set<string>;
   onToggle: (id: string) => void;
   disabled: boolean;
+  registerFailure: RegisterDirectoryFailure;
 };
 
 function DirTreeNode({
@@ -261,6 +307,7 @@ function DirTreeNode({
   selected,
   onToggle,
   disabled,
+  registerFailure,
 }: DirTreeNodeProps) {
   const [open, setOpen] = useState(!!initiallyOpen);
   const { status, children, error, retry } = useDirectoryChildren(driveId, id, open);
@@ -271,6 +318,10 @@ function DirTreeNode({
   const dimmed = ancestorSkipped || isSelected;
   const visibilityLabel = `${isSelected ? "取消隐藏目录" : "隐藏目录"} ${name}`;
   const showLoading = open && (status === "idle" || status === "loading");
+
+  useEffect(() => {
+    if (open && status === "error") return registerFailure(id, retry);
+  }, [id, open, status, retry, registerFailure]);
 
   function handleToggleOpen() {
     setOpen((v) => !v);
@@ -315,12 +366,14 @@ function DirTreeNode({
       )}
 
       {open && (
-        <div style={{ "--depth": depth } as CSSProperties}>
+        <div
+          className={`admin-skipdirs-children${isRoot ? " is-root" : ""}`}
+          style={{ "--depth": depth } as CSSProperties}
+        >
           {showLoading && <SkipDirsLoadingIndicator />}
           {status === "error" && (
             <div className="admin-skipdirs-status is-error" role="alert">
-              <span>{error}</span>{" "}
-              <button type="button" className="admin-btn" onClick={retry}>重试</button>
+              {error}
             </div>
           )}
           {loaded && children.length === 0 && (
@@ -337,6 +390,7 @@ function DirTreeNode({
               selected={selected}
               onToggle={onToggle}
               disabled={disabled}
+              registerFailure={registerFailure}
             />
           ))}
         </div>

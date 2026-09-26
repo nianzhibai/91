@@ -1460,10 +1460,10 @@ test("drive skip directory selections auto-save without polling away local edits
     skipDirsPanelSource,
     /draftRevisionRef\.current !== savedRevisionRef\.current/
   );
-  assert.match(skipDirsPanelSource, /保存失败，正在重试…/);
+  assert.match(skipDirsPanelSource, /error: "保存失败，正在重试"/);
   assert.match(skipDirsPanelSource, /saved: "已保存"/);
   assert.doesNotMatch(skipDirsPanelSource, /已自动保存并生效/);
-  assert.match(skipDirsPanelSource, /已保存，任务结束后生效/);
+  assert.doesNotMatch(skipDirsPanelSource, /已保存，任务结束后生效/);
   assert.doesNotMatch(skipDirsPanelSource, /drive\.scanGenerationStatus\?\.state/);
   assert.match(skipDirsPanelSource, /disabled=\{disabled\}/);
   assert.doesNotMatch(skipDirsPanelSource, /等待任务完成后再修改跳过目录/);

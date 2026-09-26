@@ -7693,22 +7693,58 @@ body.admin-mobile-nav-open {
   padding: 2px 0;
   max-height: 320px;
   overflow: auto;
-  scrollbar-gutter: stable;
+  scrollbar-width: none;
+}
+
+.admin-detail-tree-container::-webkit-scrollbar {
+  display: none;
 }
 
 /* ----- 扫描跳过目录树 ----- */
+.admin-skipdirs-panel {
+  --admin-skipdirs-retry-height: calc(var(--font-xs) * var(--line-normal) + 6px);
+}
+
 .admin-skipdirs-panel .admin-detail-card__title {
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+}
+
+.admin-skipdirs-panel .admin-detail-card__title-left {
+  flex-shrink: 0;
+}
+
+.admin-skipdirs-header-actions {
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: var(--admin-skipdirs-retry-height);
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  margin-inline-start: auto;
+}
+
+.admin-skipdirs-header-actions.has-retry {
+  /* Match the directory row's end padding and border. */
+  margin-inline-end: calc(var(--space-1) + 1px);
+}
+
+.admin-skipdirs-retry-slot {
+  display: flex;
+  justify-content: center;
+  flex: 0 0 28px;
+  width: 28px;
 }
 
 .admin-skipdirs-autosave {
-  margin-left: auto;
-  min-width: 7.5em;
+  min-width: 0;
   color: var(--text-faint);
   font-size: var(--font-xs);
   font-weight: var(--weight-regular);
   text-align: right;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .admin-skipdirs-autosave.is-saving {
@@ -7730,8 +7766,8 @@ body.admin-mobile-nav-open {
   height: 32px;
   min-width: 0;
   margin: 1px 0;
-  padding: 0 4px;
-  padding-inline-start: min(calc(4px + var(--depth) * 18px), 35%);
+  padding: 0 var(--space-1);
+  padding-inline-start: min(calc(var(--space-1) + var(--depth) * 18px), 35%);
   border: 1px solid transparent;
   border-radius: 6px;
   transition: background var(--transition-fast), border-color var(--transition-fast);
@@ -7838,6 +7874,7 @@ body.admin-mobile-nav-open {
     height: 36px;
   }
 
+  .admin-skipdirs-retry-slot,
   .admin-skipdirs-visibility {
     flex-basis: 36px;
     width: 36px;
@@ -7848,12 +7885,25 @@ body.admin-mobile-nav-open {
   font-size: var(--font-xs);
   color: var(--text-faint);
   padding: 6px 8px;
-  padding-inline-start: min(calc(34px + var(--depth, 0) * 18px), 45%);
+  padding-inline-start: 0;
   overflow-wrap: anywhere;
+}
+
+.admin-skipdirs-children:not(.is-root) > .admin-skipdirs-status {
+  padding-inline-start: min(calc(34px + var(--depth) * 18px), 45%);
 }
 
 .admin-skipdirs-status.is-error {
   color: var(--danger);
+}
+
+.admin-btn.admin-skipdirs-retry {
+  flex-shrink: 0;
+  height: var(--admin-skipdirs-retry-height);
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+  font-size: var(--font-xs);
+  line-height: var(--line-normal);
 }
 
 /* =========================================================
