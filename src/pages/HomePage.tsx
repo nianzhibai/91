@@ -8,7 +8,7 @@ import { InfiniteFeedStatus } from "@/components/InfiniteFeedStatus";
 import { ListingLoadError } from "@/components/ListingLoadError";
 import { PromoStrip } from "@/components/PromoStrip";
 import { SearchPanel } from "@/components/SearchPanel";
-import { SortToolbar, type ViewMode } from "@/components/SortToolbar";
+import { SortToolbar } from "@/components/SortToolbar";
 import { TagCloud } from "@/components/TagCloud";
 import { VideoGrid } from "@/components/VideoGrid";
 import { VirtualVideoGrid } from "@/components/VirtualVideoGrid";
@@ -20,11 +20,9 @@ import {
 import {
   readHomeFeed,
   readListingSort,
-  readListingView,
+  normalizeListingSearchParams,
   withHomeFeed,
   withListingNavigation,
-  withListingPage,
-  withListingView,
   type HomeFeedKey,
 } from "@/lib/listingSearchParams";
 import { MOBILE_VIDEO_PAGE_SIZE, useIsMobile } from "@/lib/responsive";
@@ -51,7 +49,6 @@ export default function HomePage() {
   const hasActiveTag = activeTag.length > 0;
   const hasActiveFilter = hasActiveSearch || hasActiveTag;
   const searchSort = readListingSort(searchParams);
-  const searchView = readListingView(searchParams);
   const feed = readHomeFeed(searchParams);
   const isMobile = useIsMobile();
   const eagerCount = isMobile ? 2 : 4;
@@ -113,9 +110,9 @@ export default function HomePage() {
   }, [activeSearchQuery, activeTag]);
 
   useEffect(() => {
-    // 无限滚动没有页码；清理旧书签或外部链接遗留的 page 参数。
-    if (!searchParams.has("page")) return;
-    setSearchParams((current) => withListingPage(current, 1), { replace: true });
+    // 无限滚动只保留卡片网格，清理旧链接的页码和视图参数。
+    if (!searchParams.has("page") && !searchParams.has("view")) return;
+    setSearchParams(normalizeListingSearchParams, { replace: true });
   }, [searchParams, setSearchParams]);
 
   // 换 tab、排序、搜索或标签都会生成一个新结果集，直接回到顶部再累积。
@@ -146,15 +143,6 @@ export default function HomePage() {
     [setSearchParams]
   );
 
-  const handleSearchViewChange = useCallback(
-    (nextView: ViewMode) => {
-      setSearchParams((current) => withListingView(current, nextView), {
-        replace: true,
-      });
-    },
-    [setSearchParams]
-  );
-
   const handleFeedChange = useCallback(
     (nextFeed: HomeFeedKey) => {
       setSearchParams((current) => withHomeFeed(current, nextFeed), {
@@ -181,10 +169,8 @@ export default function HomePage() {
         {hasActiveFilter ? (
           <SortToolbar
             sort={searchSort}
-            view={searchView}
             sortDisabled={homeFeed.initialLoading}
             onSortChange={handleSearchSortChange}
-            onViewChange={handleSearchViewChange}
           />
         ) : (
           <HomeFeedTabs
@@ -197,7 +183,6 @@ export default function HomePage() {
           <VideoGrid
             videos={[]}
             loading
-            compact={hasActiveFilter && searchView === "compact"}
             skeletonCount={activeFeedSource.batchSize}
           />
         ) : homeFeed.failed && !feedHasContent ? (
@@ -218,7 +203,6 @@ export default function HomePage() {
               videos={feedItems}
               snapshotRef={gridRef}
               initialSnapshot={gridSnapshot}
-              compact={hasActiveFilter && searchView === "compact"}
               eagerCount={eagerCount}
               highPriorityCount={1}
               key={`${activeFeedSource.key}:${homeFeed.feedToken}`}

@@ -22,7 +22,7 @@ test("video skeleton mirrors thumbnail, title, and metadata structure", () => {
   assert.match(videoGridSource, /className="skeleton-card__thumb"/);
   assert.match(videoGridSource, /className="skeleton-card__title"/);
   assert.match(videoGridSource, /className="skeleton-card__meta"/);
-  assert.match(videoGridSource, /className=\{`video-grid-loading \$\{compact \? "is-compact" : ""\}`\}/);
+  assert.match(videoGridSource, /className="video-grid-loading"/);
 
   const skeleton = ruleBody(videoCardCss, ".skeleton-card");
   const pink = ruleBody(videoCardCss, ':root[data-theme="pink"] .skeleton-card');
@@ -41,7 +41,7 @@ test("video skeleton mirrors thumbnail, title, and metadata structure", () => {
   );
   assert.match(pink, /--skeleton-shimmer-base\s*:\s*rgba\(255,\s*91,\s*138,\s*0\.12\)/);
   assert.match(sky, /--skeleton-shimmer-base\s*:\s*rgba\(60,\s*100,\s*170,\s*0\.13\)/);
-  assert.match(videoCardCss, /\.video-grid-loading\.is-compact \.skeleton-card/);
+  assert.doesNotMatch(videoCardCss, /is-compact/);
 });
 
 test("background list revalidation stays interactive while transitions remain blocking", () => {

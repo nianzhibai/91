@@ -6,17 +6,15 @@ import { InfiniteFeedStatus } from "@/components/InfiniteFeedStatus";
 import { ListingLoadError } from "@/components/ListingLoadError";
 import { PromoStrip } from "@/components/PromoStrip";
 import { SearchPanel } from "@/components/SearchPanel";
-import { SortToolbar, type ViewMode } from "@/components/SortToolbar";
+import { SortToolbar } from "@/components/SortToolbar";
 import { TagCloud } from "@/components/TagCloud";
 import { VideoGrid } from "@/components/VideoGrid";
 import { VirtualVideoGrid } from "@/components/VirtualVideoGrid";
 import { listingFeedSource } from "@/lib/infiniteFeedSource";
 import {
   readListingSort,
-  readListingView,
+  normalizeListingSearchParams,
   withListingNavigation,
-  withListingPage,
-  withListingView,
 } from "@/lib/listingSearchParams";
 import { MOBILE_VIDEO_PAGE_SIZE, useIsMobile } from "@/lib/responsive";
 import { useRouteActivity } from "@/lib/routeActivity";
@@ -39,7 +37,6 @@ export default function ListingPage() {
   const keyword = params.get("q") ?? "";
   const tag = params.get("tag") ?? "";
   const sort = readListingSort(params);
-  const view = readListingView(params);
   const isMobile = useIsMobile();
   const pageSize = isMobile ? MOBILE_VIDEO_PAGE_SIZE : DESKTOP_PAGE_SIZE;
   const source = useMemo(
@@ -84,10 +81,10 @@ export default function ListingPage() {
       : "视频列表";
   }, [keyword, tag]);
 
-  // 无限滚动没有页码，旧链接里的 page 参数只会让 URL 与实际内容不符。
+  // 无限滚动只保留卡片网格，清理旧链接的页码和视图参数。
   useEffect(() => {
-    if (!params.has("page")) return;
-    setParams((current) => withListingPage(current, 1), { replace: true });
+    if (!params.has("page") && !params.has("view")) return;
+    setParams(normalizeListingSearchParams, { replace: true });
   }, [params, setParams]);
 
   // 换排序/换标签是一次全新的列表，回到顶部再开始累积。平滑滚动会被虚拟
@@ -109,15 +106,6 @@ export default function ListingPage() {
     [setParams]
   );
 
-  const handleViewChange = useCallback(
-    (nextView: ViewMode) => {
-      setParams((current) => withListingView(current, nextView), {
-        replace: true,
-      });
-    },
-    [setParams]
-  );
-
   const { loadingMore } = listing;
 
   return (
@@ -135,17 +123,14 @@ export default function ListingPage() {
       <div className="container page-section listing-primary-section">
         <SortToolbar
           sort={sort}
-          view={view}
           sortDisabled={listing.initialLoading}
           onSortChange={handleSortChange}
-          onViewChange={handleViewChange}
         />
 
         {showSkeleton ? (
           <VideoGrid
             videos={[]}
             loading
-            compact={view === "compact"}
             skeletonCount={pageSize}
           />
         ) : showEmptyError ? (
@@ -167,7 +152,6 @@ export default function ListingPage() {
               snapshotRef={gridRef}
               initialSnapshot={gridSnapshot}
               key={`${queryKey}:${listing.feedToken}`}
-              compact={view === "compact"}
               eagerCount={eagerCount}
               highPriorityCount={1}
               hasMore={listing.hasMore}

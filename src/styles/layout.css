@@ -114,7 +114,7 @@
   padding: 72px 16px 24px;
 }
 
-/* 文字 + 下划线的内容切换栏，首页和详情页推荐栏共用。 */
+/* 首页、视频排序和详情页推荐栏共用的文字 + 下划线切换栏。 */
 .content-tabs {
   display: flex;
   align-items: center;

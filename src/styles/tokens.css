@@ -111,6 +111,7 @@
   --text-disabled: #4a4c55;
   --text-on-accent: #1a0f04;
   --text-on-dark: #ffffff;
+  --video-link-color: #ff8800;
 
   /* ----- 主色（暖橙） ----- */
   --accent: #ff8a3c;
@@ -215,6 +216,7 @@
   --text-disabled: #d6c5cc;
   --text-on-accent: #ffffff;
   --text-on-dark: #2a1820;
+  --video-link-color: #ff5b8a;
 
   /* ----- 主色（樱花粉） ----- */
   --accent: #ff5b8a;
@@ -321,6 +323,7 @@
   --text-disabled: #ccd4e2;
   --text-on-accent: #3a2400;
   --text-on-dark: #1b2547;
+  --video-link-color: #ff8800;
 
   /* ----- 主色（暖星黄） ----- */
   --accent: #ffc83d;

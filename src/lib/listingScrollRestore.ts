@@ -8,7 +8,8 @@ import {
  * 所以"后退回列表"能拿回当时的滚动位置，而"重新点进列表"是干净的新会话。
  */
 
-export const LISTING_SCROLL_STORAGE_PREFIX = "listing_scroll_v1:";
+// v2 only stores measurements from the responsive card grid.
+export const LISTING_SCROLL_STORAGE_PREFIX = "listing_scroll_v2:";
 
 export type ListingScrollEntry = {
   queryKey: string;

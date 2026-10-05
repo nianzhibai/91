@@ -1,13 +1,10 @@
 import type { SortKey } from "../types";
 
-export type ListingViewMode = "grid" | "compact";
-
 type ListingNavigationPatch = {
   q?: string | null;
   tag?: string | null;
   page?: number;
   sort?: SortKey;
-  view?: ListingViewMode;
 };
 
 export function readListingSort(params: URLSearchParams): SortKey {
@@ -55,20 +52,9 @@ export function withListingPage(
   return next;
 }
 
-export function readListingView(params: URLSearchParams): ListingViewMode {
-  return params.get("view") === "compact" ? "compact" : "grid";
-}
-
-export function withListingView(
-  params: URLSearchParams,
-  view: ListingViewMode
-): URLSearchParams {
-  const next = new URLSearchParams(params);
-  if (view === "compact") {
-    next.set("view", "compact");
-  } else {
-    next.delete("view");
-  }
+export function normalizeListingSearchParams(params: URLSearchParams): URLSearchParams {
+  const next = withListingPage(params, 1);
+  next.delete("view");
   return next;
 }
 
@@ -101,7 +87,6 @@ export function withListingNavigation(
   if (patch.tag !== undefined) next = withListingFilter(next, "tag", patch.tag);
   if (patch.sort !== undefined) next = withListingSort(next, patch.sort);
   if (patch.page !== undefined) next = withListingPage(next, patch.page);
-  if (patch.view !== undefined) next = withListingView(next, patch.view);
   return next;
 }
 

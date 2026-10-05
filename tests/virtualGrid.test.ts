@@ -41,7 +41,6 @@ test("a cold return restores the same visible rows and offsets from measured geo
     grid: {
       viewportWidth: 1440,
       columns: 4,
-      compact: false,
       scrollMargin: 223,
       measurements: original.takeSnapshot(),
     },
@@ -59,14 +58,13 @@ test("a cold return restores the same visible rows and offsets from measured geo
 
 test("row measurements only apply to the viewport and grid layout that produced them", () => {
   const snapshot = {
-    viewportWidth: 1440, columns: 4, compact: false, scrollMargin: 223,
+    viewportWidth: 1440, columns: 4, scrollMargin: 223,
     measurements: [],
   };
   assert.equal(matchingVirtualGridSnapshot(snapshot, snapshot), snapshot);
   for (const layout of [
     { ...snapshot, viewportWidth: 1200 },
     { ...snapshot, columns: 2 },
-    { ...snapshot, compact: true },
   ]) {
     assert.equal(matchingVirtualGridSnapshot(snapshot, layout), null);
   }
@@ -76,7 +74,7 @@ test("malformed grid geometry cannot corrupt otherwise usable listing history", 
   assert.equal(parseVirtualGridSnapshot(null), null);
   assert.equal(parseVirtualGridSnapshot({}), null);
   const grid = {
-    viewportWidth: 1440, columns: 4, compact: false, scrollMargin: 223,
+    viewportWidth: 1440, columns: 4, scrollMargin: 223,
     measurements: [{ index: 0, key: "v1", start: 223, size: -20, end: 203, lane: 0 }],
   };
   assert.equal(parseVirtualGridSnapshot(grid), null);
@@ -115,19 +113,15 @@ test("each row maps to its own slice of the list", () => {
 
 test("grid columns are known before the first browser paint", () => {
   assert.equal(
-    virtualGridColumns({ compact: false, mobile: false, tablet: false }),
+    virtualGridColumns({ mobile: false, tablet: false }),
     4
   );
   assert.equal(
-    virtualGridColumns({ compact: false, mobile: false, tablet: true }),
+    virtualGridColumns({ mobile: false, tablet: true }),
     3
   );
   assert.equal(
-    virtualGridColumns({ compact: false, mobile: true, tablet: true }),
-    1
-  );
-  assert.equal(
-    virtualGridColumns({ compact: true, mobile: false, tablet: false }),
+    virtualGridColumns({ mobile: true, tablet: true }),
     1
   );
 });

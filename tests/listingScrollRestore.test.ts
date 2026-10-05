@@ -42,6 +42,14 @@ const throwingStorage: ListingScrollStorage = {
 
 test("a saved entry round-trips through storage under its history key", () => {
   const storage = memoryStorage();
+  storage.setItem("listing_scroll_v1:history-1", JSON.stringify({
+    queryKey: QUERY_KEY,
+    feedToken: FEED_TOKEN,
+    requestedCount: 60,
+    scrollY: 1_800,
+  }));
+  assert.equal(readListingScrollEntry(storage, "history-1"), null,
+    "Measurements from retired layouts must not be restored");
   writeListingScrollEntry(storage, "history-1", {
     queryKey: QUERY_KEY,
     feedToken: FEED_TOKEN,

@@ -30,10 +30,6 @@ const layoutCss = readFileSync(
   new URL("../src/styles/layout.css", import.meta.url),
   "utf8"
 );
-const searchCss = readFileSync(
-  new URL("../src/styles/search.css", import.meta.url),
-  "utf8"
-);
 const typesSource = readFileSync(new URL("../src/types.ts", import.meta.url), "utf8");
 
 function ruleBody(css: string, selector: string): string {
@@ -69,14 +65,12 @@ test("listing page keeps the public discovery layout and empty semantics", () =>
 
 test("public listing query control state is restored from the URL", () => {
   assert.match(listingPageSource, /const sort = readListingSort\(params\)/);
-  assert.match(listingPageSource, /const view = readListingView\(params\)/);
   assert.match(listingPageSource, /withListingNavigation\(current, \{ sort: nextSort, page: 1 \}\)/);
-  assert.match(listingPageSource, /withListingView\(current, nextView\)/);
   // 列表页改为无限滚动后没有页码，旧链接里的 page 参数会被清掉。
-  assert.match(listingPageSource, /if \(!params\.has\("page"\)\) return;/);
+  assert.match(listingPageSource, /if \(!params\.has\("page"\) && !params\.has\("view"\)\) return;/);
   assert.match(
     listingPageSource,
-    /withListingPage\(current, 1\), \{ replace: true \}/
+    /setParams\(normalizeListingSearchParams, \{ replace: true \}\)/
   );
   assert.doesNotMatch(listingPageSource, /<Pagination/);
   assert.doesNotMatch(listingPageSource, /sessionStorage|localStorage/);
@@ -131,13 +125,13 @@ test("home filters use the shared snapshot-based infinite listing contract", () 
   assert.doesNotMatch(homePageSource, /useListingQuery|<Pagination|displayedSearchPage/);
 });
 
-test("sort toolbar has no outer frame around its controls", () => {
-  const toolbar = ruleBody(searchCss, ".sort-toolbar");
-  const group = ruleBody(searchCss, ".sort-toolbar__group");
-
-  assert.match(toolbar, /padding\s*:\s*0/);
-  assert.doesNotMatch(toolbar, /background\s*:/);
-  assert.doesNotMatch(toolbar, /border\s*:/);
-  assert.match(group, /background\s*:\s*var\(--bg-sunken\)/);
-  assert.match(group, /border\s*:\s*1px solid var\(--border-subtle\)/);
+test("sort tabs share the home tab design without view controls", () => {
+  assert.match(sortToolbarSource, /className="content-tabs sort-toolbar"/);
+  assert.match(sortToolbarSource, /className="content-tabs__tab"/);
+  assert.match(sortToolbarSource, /role="tablist"/);
+  assert.match(sortToolbarSource, /aria-selected=\{sort === option\.key\}/);
+  assert.doesNotMatch(sortToolbarSource, /ViewMode|onViewChange|LayoutGrid|视图切换/);
+  const tab = ruleBody(layoutCss, ".content-tabs__tab");
+  assert.match(tab, /background\s*:\s*transparent/);
+  assert.match(tab, /border\s*:\s*0/);
 });

@@ -105,8 +105,8 @@ test("search, tag, and combined results use the same infinite listing", () => {
   );
   assert.match(
     homePageSource,
-    /<VirtualVideoGrid[\s\S]*?videos=\{feedItems\}[\s\S]*?compact=\{hasActiveFilter && searchView === "compact"\}[\s\S]*?onLoadMore=\{homeFeed\.loadMore\}/
+    /<VirtualVideoGrid[\s\S]*?videos=\{feedItems\}[\s\S]*?onLoadMore=\{homeFeed\.loadMore\}/
   );
-  assert.match(homePageSource, /if \(!searchParams\.has\("page"\)\) return;/);
+  assert.match(homePageSource, /if \(!searchParams\.has\("page"\) && !searchParams\.has\("view"\)\) return;/);
   assert.doesNotMatch(homePageSource, /useListingQuery|<Pagination/);
 });

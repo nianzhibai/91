@@ -1,8 +1,6 @@
 import {
   memo,
-  useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -11,7 +9,7 @@ import { Link, useSearchParams } from "react-router";
 import { fetchTags, readCachedTags, type TagItem } from "@/data/videos";
 import { withListingNavigation } from "@/lib/listingSearchParams";
 
-const TAG_PLACEHOLDER_COUNT = 16;
+const TAG_PLACEHOLDER_COUNT = 12;
 
 type TagCloudStatus = "loading" | "ready" | "error";
 
@@ -32,21 +30,10 @@ export const TagCloud = memo(function TagCloud({
     initialTagsRef.current === null ? "loading" : "ready"
   );
   const [retryVersion, setRetryVersion] = useState(0);
-  const [hasMoreRight, setHasMoreRight] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
   const visibleTags = useMemo(
     () => tags.filter((tag) => typeof tag.count !== "number" || tag.count > 0),
     [tags]
   );
-
-  const updateScrollOverflow = useCallback(() => {
-    const slider = containerRef.current;
-    if (!slider) return;
-
-    const remaining = slider.scrollWidth - slider.clientWidth - slider.scrollLeft;
-    const nextHasMoreRight = remaining > 1;
-    setHasMoreRight((current) => current === nextHasMoreRight ? current : nextHasMoreRight);
-  }, []);
 
   useEffect(() => {
     if (initialTagsRef.current !== null && retryVersion === 0) return;
@@ -67,92 +54,6 @@ export const TagCloud = memo(function TagCloud({
     };
   }, [retryVersion]);
 
-  useLayoutEffect(() => {
-    updateScrollOverflow();
-  }, [updateScrollOverflow, visibleTags]);
-
-  useEffect(() => {
-    const slider = containerRef.current;
-    if (!slider) return;
-
-    let isDown = false;
-    let startX = 0;
-    let scrollLeft = 0;
-    let isDragging = false;
-
-    const handleMouseDown = (e: MouseEvent) => {
-      isDown = true;
-      isDragging = false;
-      slider.classList.add("is-dragging");
-      startX = e.pageX - slider.offsetLeft;
-      scrollLeft = slider.scrollLeft;
-    };
-
-    const handleMouseLeave = () => {
-      isDown = false;
-      slider.classList.remove("is-dragging");
-    };
-
-    const handleMouseUp = () => {
-      isDown = false;
-      slider.classList.remove("is-dragging");
-    };
-
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!isDown) return;
-      e.preventDefault();
-      const x = e.pageX - slider.offsetLeft;
-      const walk = (x - startX) * 1.5;
-      if (Math.abs(x - startX) > 10) {
-        isDragging = true;
-      }
-      slider.scrollLeft = scrollLeft - walk;
-    };
-
-    const handleWheel = (e: WheelEvent) => {
-      if (e.deltaY !== 0) {
-        e.preventDefault();
-        slider.scrollLeft += e.deltaY;
-      }
-    };
-
-    const handleClick = (e: MouseEvent) => {
-      if (isDragging) {
-        e.preventDefault();
-        e.stopPropagation();
-        isDragging = false;
-      }
-    };
-
-    const resizeObserver = typeof ResizeObserver === "undefined"
-      ? null
-      : new ResizeObserver(updateScrollOverflow);
-
-    slider.addEventListener("mousedown", handleMouseDown);
-    slider.addEventListener("mouseleave", handleMouseLeave);
-    slider.addEventListener("mouseup", handleMouseUp);
-    slider.addEventListener("mousemove", handleMouseMove);
-    slider.addEventListener("wheel", handleWheel, { passive: false });
-    slider.addEventListener("click", handleClick, { capture: true });
-    slider.addEventListener("scroll", updateScrollOverflow, { passive: true });
-    window.addEventListener("resize", updateScrollOverflow);
-    resizeObserver?.observe(slider);
-    if (slider.firstElementChild) resizeObserver?.observe(slider.firstElementChild);
-    updateScrollOverflow();
-
-    return () => {
-      slider.removeEventListener("mousedown", handleMouseDown);
-      slider.removeEventListener("mouseleave", handleMouseLeave);
-      slider.removeEventListener("mouseup", handleMouseUp);
-      slider.removeEventListener("mousemove", handleMouseMove);
-      slider.removeEventListener("wheel", handleWheel);
-      slider.removeEventListener("click", handleClick, { capture: true });
-      slider.removeEventListener("scroll", updateScrollOverflow);
-      window.removeEventListener("resize", updateScrollOverflow);
-      resizeObserver?.disconnect();
-    };
-  }, [status, updateScrollOverflow]);
-
   if (status === "ready" && visibleTags.length === 0) return null;
 
   const loading = status === "loading" && visibleTags.length === 0;
@@ -169,7 +70,8 @@ export const TagCloud = memo(function TagCloud({
     <Link
       key={tag.id}
       to={buildTagHref(tag.label)}
-      className={`tag-chip ${activeTag === tag.label ? "is-active" : ""}`}
+      className={`tag-cloud__link${activeTag === tag.label ? " is-active" : ""}`}
+      aria-current={activeTag === tag.label ? "true" : undefined}
       onClick={onTagSelect}
     >
       {tag.label}
@@ -177,8 +79,8 @@ export const TagCloud = memo(function TagCloud({
   );
 
   return (
-    <div
-      className={`tag-cloud-container${loading ? " is-loading" : ""}${hasMoreRight ? " has-more-right" : ""}`}
+    <nav
+      className="tag-cloud-container"
       aria-label="热门标签"
       aria-busy={loading ? "true" : undefined}
     >
@@ -194,20 +96,16 @@ export const TagCloud = memo(function TagCloud({
           </button>
         </div>
       ) : (
-        <div className="tag-cloud__grid" ref={containerRef}>
-          <div className="tag-cloud__row">
-            {loading
-              ? Array.from({ length: TAG_PLACEHOLDER_COUNT }, (_, item) => (
-                  <span
-                    key={item}
-                    className="tag-chip tag-chip--placeholder"
-                    aria-hidden="true"
-                  />
-                ))
-              : visibleTags.map(renderTag)}
-          </div>
-        </div>
+        loading
+          ? Array.from({ length: TAG_PLACEHOLDER_COUNT }, (_, item) => (
+              <span
+                key={item}
+                className="tag-cloud__placeholder"
+                aria-hidden="true"
+              />
+            ))
+          : visibleTags.map(renderTag)
       )}
-    </div>
+    </nav>
   );
 });

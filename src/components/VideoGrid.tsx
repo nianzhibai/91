@@ -7,7 +7,6 @@ type Props = {
   videos: VideoItem[];
   loading?: boolean;
   refreshMode?: "blocking" | "background";
-  compact?: boolean;
   emptyText?: string;
   eagerCount?: number;
   highPriorityCount?: number;
@@ -18,7 +17,6 @@ export function VideoGrid({
   videos,
   loading,
   refreshMode,
-  compact,
   emptyText = "暂时没有视频",
   eagerCount = 0,
   highPriorityCount = 0,
@@ -34,7 +32,7 @@ export function VideoGrid({
   if (loading) {
     return (
       <div
-        className={`video-grid-loading ${compact ? "is-compact" : ""}`}
+        className="video-grid-loading"
         aria-busy="true"
         role="status"
         aria-label="正在加载视频列表"
@@ -64,7 +62,7 @@ export function VideoGrid({
       className={`video-grid-region ${blockingRefresh ? "is-busy" : ""}`}
       aria-busy={blockingRefresh || backgroundRefresh || undefined}
     >
-      <div className={`video-grid ${compact ? "is-compact" : ""}`}>
+      <div className="video-grid">
         {(videos ?? []).map((v, index) => (
           <VideoCard
             key={v.id}

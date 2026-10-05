@@ -165,7 +165,7 @@ test("layout measurement stays off the per-frame scroll path", () => {
   assert.match(virtualGridSource, /ref=\{virtualizer\.measureElement\}/);
   assert.match(virtualGridSource, /data-index=\{virtualRow\.index\}/);
   assert.match(virtualGridSource, /useState\(readResponsiveGridColumns\)/);
-  assert.match(virtualGridSource, /const columns = compact \? 1 : responsiveColumns/);
+  assert.match(virtualGridSource, /const columns = useResponsiveGridColumns\(routeActive\)/);
   assert.match(virtualGridSource, /const nextMargin = rect\.top \+ window\.scrollY;/);
   assert.match(virtualGridSource, /new ResizeObserver\(\(\[entry\]\) =>/);
   assert.match(virtualGridSource, /observer\?\.disconnect\(\)/);
@@ -173,10 +173,10 @@ test("layout measurement stays off the per-frame scroll path", () => {
   const capture = virtualGridSource.match(/const capture = \(\) => \{([\s\S]*?)\n    \};/)?.[1];
   assert.ok(capture);
   assert.doesNotMatch(capture, /querySelector|getBoundingClientRect/);
-  // 只有断点/视图变化清空测量缓存，追加视频不会重测全部旧行。
+  // 只有断点改变列数时清空测量缓存，追加视频不会重测全部旧行。
   assert.match(
     virtualGridSource,
-    /if \(previousLayoutIdentityRef\.current === layoutIdentity\) return;[\s\S]*?virtualizer\.measure\(\);[\s\S]*?\}, \[layoutIdentity, virtualizer\]\)/
+    /if \(previousColumnsRef\.current === columns\) return;[\s\S]*?virtualizer\.measure\(\);[\s\S]*?\}, \[columns, virtualizer\]\)/
   );
 });
 

@@ -4,7 +4,6 @@ import type { VirtualItem } from "@tanstack/react-virtual";
 export type VirtualGridSnapshot = {
   viewportWidth: number;
   columns: number;
-  compact: boolean;
   scrollMargin: number;
   measurements: VirtualItem[];
 };
@@ -23,7 +22,6 @@ export function parseVirtualGridSnapshot(
     snapshot.viewportWidth <= 0 ||
     !Number.isInteger(snapshot.columns) ||
     snapshot.columns <= 0 ||
-    typeof snapshot.compact !== "boolean" ||
     !Number.isFinite(snapshot.scrollMargin) ||
     snapshot.scrollMargin < 0 ||
     !Array.isArray(snapshot.measurements) ||
@@ -45,13 +43,12 @@ export function parseVirtualGridSnapshot(
 
 export function matchingVirtualGridSnapshot(
   snapshot: VirtualGridSnapshot | null | undefined,
-  layout: { viewportWidth: number; columns: number; compact: boolean }
+  layout: { viewportWidth: number; columns: number }
 ): VirtualGridSnapshot | null {
   if (
     !snapshot ||
     snapshot.viewportWidth !== layout.viewportWidth ||
-    snapshot.columns !== layout.columns ||
-    snapshot.compact !== layout.compact
+    snapshot.columns !== layout.columns
   ) {
     return null;
   }
@@ -71,11 +68,9 @@ function toCount(value: number): number {
 
 /** 与视频网格 CSS 断点一致；首帧即可按正确列数折行。 */
 export function virtualGridColumns(input: {
-  compact: boolean;
   mobile: boolean;
   tablet: boolean;
 }): number {
-  if (input.compact) return 1;
   if (input.mobile) return 1;
   if (input.tablet) return 3;
   return 4;
