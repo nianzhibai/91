@@ -156,7 +156,7 @@ test("the scrollbar grows with loaded content and keeps only a fixed tail row", 
   const row = ruleBody(videoCardCss, ".video-grid--virtual-row");
   assert.match(row, /position\s*:\s*absolute/);
   // 行间距做进行自身的下内边距，测到的行高才等于"行 + 间距"。
-  assert.match(row, /padding-bottom\s*:\s*var\(--space-4\)/);
+  assert.match(row, /padding-bottom\s*:\s*var\(--video-grid-gap\)/);
   const tail = ruleBody(videoCardCss, ".video-grid-virtual-tail");
   assert.match(tail, /position\s*:\s*absolute/);
 });

@@ -76,7 +76,7 @@ export function virtualGridColumns(input: {
   tablet: boolean;
 }): number {
   if (input.compact) return 1;
-  if (input.mobile) return 2;
+  if (input.mobile) return 1;
   if (input.tablet) return 3;
   return 4;
 }

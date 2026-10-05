@@ -2731,7 +2731,7 @@ func TestHandleVideoRecommendationsAreIndependentAndPreferReadyThumbnails(t *tes
 		t.Fatalf("decode compact payload: %v", err)
 	}
 	for _, item := range compactPayload {
-		for _, unusedField := range []string{"tags", "favorites", "comments", "likes", "dislikes"} {
+		for _, unusedField := range []string{"tags", "description", "fileId", "previewLocal"} {
 			if _, found := item[unusedField]; found {
 				t.Fatalf("recommendation card still contains unused field %q", unusedField)
 			}

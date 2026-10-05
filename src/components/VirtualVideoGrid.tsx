@@ -36,10 +36,10 @@ import { VideoCard } from "./VideoCard";
  */
 
 const DEFAULT_OVERSCAN_ROWS = 2;
-const ESTIMATED_ROW_HEIGHT = 260;
-const ESTIMATED_COMPACT_ROW_HEIGHT = 120;
-const MOBILE_GRID_QUERY = "(max-width: 640px)";
-const TABLET_GRID_QUERY = "(max-width: 1024px)";
+const ESTIMATED_ROW_HEIGHT = 280;
+const ESTIMATED_COMPACT_ROW_HEIGHT = 150;
+const MOBILE_GRID_QUERY = "(max-width: 767px)";
+const TABLET_GRID_QUERY = "(max-width: 991px)";
 const TAIL_ROW_HEIGHT = 56;
 const TAIL_ROW_KEY = "video-grid-tail";
 

@@ -101,6 +101,49 @@ func TestVideoFeedUsesAnIdempotentSnapshotCursor(t *testing.T) {
 	}
 }
 
+func TestVideoFeedsReturnDisplayedCountersFromTheCatalog(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+
+	now := time.Now()
+	videos := make(map[string]*catalog.Video)
+	for index := 0; index < 3; index++ {
+		id := "counters-" + strconv.Itoa(index)
+		video := &catalog.Video{
+			ID: id, DriveID: "drive", FileID: "file-" + id, Title: id,
+			Views: 100 + index, Favorites: 20 + index, Comments: 3 + index,
+			Likes: 40 + index, Dislikes: 5 + index,
+			PublishedAt: now.Add(time.Duration(index) * time.Minute),
+			CreatedAt:   now, UpdatedAt: now,
+		}
+		if err := cat.UpsertVideo(ctx, video); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+		videos[id] = video
+	}
+
+	server := &Server{Catalog: cat}
+	for _, kind := range []string{"listing", "latest", "recommend"} {
+		t.Run(kind, func(t *testing.T) {
+			feed := requestVideoFeed(t, server, "/api/feed?kind="+kind+"&count=3")
+			if len(feed.Items) != 3 {
+				t.Fatalf("items = %d, want 3", len(feed.Items))
+			}
+			for _, item := range feed.Items {
+				want := videos[item.ID]
+				if want == nil || item.Views != want.Views || item.Favorites != want.Favorites ||
+					item.Comments != want.Comments || item.Likes != want.Likes || item.Dislikes != want.Dislikes {
+					t.Fatalf("displayed counters for %s = %#v, want %#v", item.ID, item, want)
+				}
+			}
+		})
+	}
+}
+
 func TestVideoFeedAvoidsCompletedSnapshotsAndKeepsRecommendationsPrivate(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
@@ -136,7 +179,7 @@ func TestVideoFeedAvoidsCompletedSnapshotsAndKeepsRecommendationsPrivate(t *test
 	if err != nil {
 		t.Fatalf("encode compact item: %v", err)
 	}
-	for _, unused := range []string{"tags", "likes", "comments", "description", "fileId"} {
+	for _, unused := range []string{"tags", "description", "fileId", "previewLocal"} {
 		if strings.Contains(string(encoded), `"`+unused+`"`) {
 			t.Fatalf("compact feed item still contains %q: %s", unused, encoded)
 		}

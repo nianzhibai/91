@@ -1,55 +1,29 @@
-/* Shared press feedback for grid, recommendation, and collection cards. */
+/* Cards use title underlines for feedback without moving their thumbnails. */
 .video-card__link,
+.video-card__title-link,
 .vd-rail__link,
 .vd-collection-item__link {
   -webkit-tap-highlight-color: transparent;
 }
 
-.thumb-frame,
-.vd-rail__thumb,
-.vd-collection-item__thumb {
-  transition: transform var(--transition-fast);
+.vd-rail__title,
+.vd-collection-item__title {
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
 }
 
-/* Use ::before so the grid thumbnail keeps its separate bottom gradient. */
-.thumb-frame::before,
-.vd-rail__thumb::before,
-.vd-collection-item__thumb::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 5;
-  border-radius: inherit;
-  background: color-mix(in srgb, var(--accent) 15%, transparent);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity var(--transition-fast);
+.vd-rail__link:focus-visible .vd-rail__title,
+.vd-rail__link[data-title-pressed="true"] .vd-rail__title,
+.vd-collection-item__link:focus-visible .vd-collection-item__title,
+.vd-collection-item__link[data-title-pressed="true"] .vd-collection-item__title {
+  text-decoration-line: underline;
 }
 
-.video-card__link:active .thumb-frame,
-.vd-rail__link:active .vd-rail__thumb,
-.vd-collection-item__link:active .vd-collection-item__thumb {
-  transform: scale(0.985);
-}
-
-.video-card__link:active .thumb-frame::before,
-.vd-rail__link:active .vd-rail__thumb::before,
-.vd-collection-item__link:active .vd-collection-item__thumb::before {
-  opacity: 1;
-  transition-duration: 0ms;
-}
-
-.video-card__link:active .video-title,
-.vd-rail__link:active:not([aria-current="page"]) .vd-rail__title,
-.vd-collection-item__link:active:not([aria-current="page"]) .vd-collection-item__title {
-  color: var(--accent);
-  transition-duration: 0ms;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .video-card__link:active .thumb-frame,
-  .vd-rail__link:active .vd-rail__thumb,
-  .vd-collection-item__link:active .vd-collection-item__thumb {
-    transform: none;
+@media (hover: hover) and (pointer: fine) {
+  .vd-rail__title:hover,
+  .vd-rail__thumb:hover + .vd-rail__body .vd-rail__title,
+  .vd-collection-item__title:hover,
+  .vd-collection-item__thumb:hover + .vd-collection-item__body .vd-collection-item__title {
+    text-decoration-line: underline;
   }
 }

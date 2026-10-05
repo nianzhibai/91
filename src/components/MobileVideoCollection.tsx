@@ -12,21 +12,15 @@ import { createPortal } from "react-dom";
 import { Link, useLocation, useNavigate } from "react-router";
 import { ArrowUpDown, ChevronRight, Eye, X } from "lucide-react";
 import type {
-  PreviewState,
   VideoCollectionItem,
   VideoCollectionSummary,
 } from "@/types";
 import { formatCount } from "@/lib/format";
-import { previewController } from "@/lib/previewController";
-import {
-  shouldInterceptPreviewTap,
-  TOUCH_PREVIEW_DELAY_MS,
-} from "@/lib/previewIntent";
 import { useDocumentScrollLock } from "@/lib/useDocumentScrollLock";
 import { supportsNativeBack } from "@/lib/nativeBack";
 import { useNativeBackHandler } from "@/lib/useNativeBack";
 import { useInViewport } from "@/lib/useInViewport";
-import { useIsActivePreview, usePreviewEnabled } from "@/lib/useIsActivePreview";
+import { useCardPreview } from "@/lib/useCardPreview";
 import { useLazyVideoCollection } from "@/lib/useLazyVideoCollection";
 import {
   resolveVideoReturnPath,
@@ -37,6 +31,7 @@ import {
   type VideoDetailNavigationState,
 } from "@/lib/videoListingBackground";
 import { PreviewVideo } from "./PreviewVideo";
+import { PreviewLoader } from "./PreviewLoader";
 import { VideoThumbnail } from "./VideoThumbnail";
 
 type Props = {
@@ -643,21 +638,13 @@ const CollectionItem = forwardRef<HTMLLIElement, CollectionItemProps>(
     { video, current, navigationState, replaceHistory, onSelect },
     forwardedRef
   ) {
-    const [previewState, setPreviewState] = useState<PreviewState>("idle");
-    const [shouldRenderPreview, setShouldRenderPreview] = useState(false);
-    const [progress, setProgress] = useState(0);
+    const [titlePressed, setTitlePressed] = useState(false);
     const rootRef = useRef<HTMLLIElement | null>(null);
-    const videoRef = useRef<HTMLVideoElement | null>(null);
-    const previewIntentTimerRef = useRef<number | null>(null);
-    const touchPreviewArmedRef = useRef(false);
-    const lastPointerTypeRef = useRef("");
-    const previewIsActive = useIsActivePreview(video.id);
-    const previewEnabled = usePreviewEnabled();
-
-    useEffect(() => {
-      if (!previewEnabled) cleanupPreview();
-    }, [previewEnabled, video.id]);
     const inView = useInViewport(rootRef);
+    const {
+      previewEnabled, previewState, shouldRenderPreview, showPreviewLoader,
+      videoRef, startPreview, stopPreview, handlePreviewPlay, finishPreviewLoader,
+    } = useCardPreview({ id: video.id, src: video.previewSrc, inView });
     const setRootRef = useCallback(
       (node: HTMLLIElement | null) => {
         rootRef.current = node;
@@ -670,98 +657,12 @@ const CollectionItem = forwardRef<HTMLLIElement, CollectionItemProps>(
       [forwardedRef]
     );
 
-    useEffect(() => {
-      if (
-        !previewIsActive &&
-        (shouldRenderPreview || touchPreviewArmedRef.current)
-      ) {
-        cleanupPreview();
-      }
-      // cleanupPreview intentionally reads the current media ref and state.
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [previewIsActive, video.id]);
-
-    useEffect(() => {
-      if (!inView && (shouldRenderPreview || touchPreviewArmedRef.current)) {
-        cleanupPreview();
-      }
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [inView]);
-
-    useEffect(() => {
-      return () => cleanupPreview();
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
-
-    function cleanupPreview() {
-      clearPreviewIntentTimer();
-      touchPreviewArmedRef.current = false;
-      const element = videoRef.current;
-      if (element) {
-        try {
-          element.pause();
-          element.removeAttribute("src");
-          element.load();
-        } catch {
-          // The media element may already be detached while the sheet closes.
-        }
-      }
-      setShouldRenderPreview(false);
-      setPreviewState("idle");
-      setProgress(0);
-      if (previewController.getActiveId() === video.id) {
-        previewController.setActiveId(null);
-      }
+    function handlePointerEnter(event: React.PointerEvent<HTMLDivElement>) {
+      if (event.pointerType !== "touch") startPreview();
     }
 
-    function startTouchPreviewIntent() {
-      if (!previewController.isEnabled() || !video.previewSrc) return;
-      clearPreviewIntentTimer();
-      touchPreviewArmedRef.current = true;
-      previewController.setActiveId(video.id);
-      setPreviewState("intent");
-      previewIntentTimerRef.current = window.setTimeout(() => {
-        previewIntentTimerRef.current = null;
-        if (
-          !previewController.isEnabled() ||
-          !touchPreviewArmedRef.current ||
-          previewController.getActiveId() !== video.id
-        ) {
-          return;
-        }
-        setShouldRenderPreview(true);
-        setPreviewState("loading");
-      }, TOUCH_PREVIEW_DELAY_MS);
-    }
-
-    function clearPreviewIntentTimer() {
-      if (previewIntentTimerRef.current === null) return;
-      window.clearTimeout(previewIntentTimerRef.current);
-      previewIntentTimerRef.current = null;
-    }
-
-    function handleClickCapture(event: React.MouseEvent<HTMLAnchorElement>) {
-      if (!video.previewSrc) return;
-      const previewActive =
-        previewController.getActiveId() === video.id &&
-        (touchPreviewArmedRef.current || shouldRenderPreview);
-      if (
-        !shouldInterceptPreviewTap({
-          previewEnabled: previewController.isEnabled() && Boolean(video.previewSrc),
-          pointerType: lastPointerTypeRef.current,
-          canHover: window.matchMedia("(hover: hover) and (pointer: fine)")
-            .matches,
-          previewActive,
-        })
-      ) {
-        if (touchPreviewArmedRef.current && !shouldRenderPreview) {
-          cleanupPreview();
-        }
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      startTouchPreviewIntent();
+    function handlePointerLeave(event: React.PointerEvent<HTMLDivElement>) {
+      if (event.pointerType !== "touch") stopPreview();
     }
 
     return (
@@ -769,61 +670,60 @@ const CollectionItem = forwardRef<HTMLLIElement, CollectionItemProps>(
         ref={setRootRef}
         className="vd-collection-item"
         data-preview-enabled={previewEnabled}
-        onPointerDown={(event) => {
-          lastPointerTypeRef.current = event.pointerType;
-        }}
       >
         <Link
           to={video.href}
           replace={replaceHistory}
           state={navigationState}
           className="vd-collection-item__link"
+          data-title-pressed={titlePressed || undefined}
           aria-current={current ? "page" : undefined}
-          onClickCapture={handleClickCapture}
-          onClick={onSelect}
+          onClick={(event) => {
+            stopPreview();
+            onSelect(event);
+          }}
         >
-          <div className="vd-collection-item__thumb">
+          <div
+            className="vd-collection-item__thumb"
+            onPointerEnter={handlePointerEnter}
+            onPointerLeave={handlePointerLeave}
+            onTouchStart={startPreview}
+          >
             <VideoThumbnail src={video.thumbnail} />
             {previewEnabled && shouldRenderPreview && video.previewSrc && (
               <PreviewVideo
                 ref={videoRef}
                 src={video.previewSrc}
                 state={previewState}
-                onCanPlay={() => setPreviewState("playing")}
-                onError={() => setPreviewState("error")}
-                onTimeUpdate={setProgress}
+                onPlay={handlePreviewPlay}
+                onEnded={stopPreview}
+                onError={stopPreview}
               />
             )}
-            {previewEnabled && previewState === "loading" && <span className="preview-loader" />}
-            {previewEnabled && previewState === "error" && (
-              <span className="preview-error">预览加载失败</span>
+            {previewEnabled && shouldRenderPreview && showPreviewLoader && (
+              <PreviewLoader onFinish={finishPreviewLoader} />
             )}
-            {previewEnabled && previewState === "playing" && (
-              <>
-                <div className="preview-progress" aria-hidden="true">
-                  <div
-                    className="preview-progress__bar"
-                    style={{ width: `${Math.min(100, progress * 100)}%` }}
-                  />
-                </div>
-                <span className="preview-tag" aria-hidden="true">
-                  预览
-                </span>
-              </>
-            )}
-            {video.duration && (!previewEnabled || previewState !== "playing") && (
+            {video.duration && (
               <span className="vd-collection-item__duration">
                 {video.duration}
               </span>
             )}
-            {current && (!previewEnabled || previewState !== "playing") && (
+            {current && (
               <span className="vd-collection-item__current-thumb">
                 当前视频
               </span>
             )}
           </div>
           <div className="vd-collection-item__body">
-            <h3 className="vd-collection-item__title">{video.title}</h3>
+            <h3
+              className="vd-collection-item__title"
+              onPointerDown={() => setTitlePressed(true)}
+              onPointerUp={() => setTitlePressed(false)}
+              onPointerCancel={() => setTitlePressed(false)}
+              onPointerLeave={() => setTitlePressed(false)}
+            >
+              {video.title}
+            </h3>
             <div className="vd-collection-item__meta">
               {video.publishedAt && <span>{video.publishedAt}</span>}
               <span>

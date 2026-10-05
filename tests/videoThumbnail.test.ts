@@ -79,21 +79,14 @@ test("only likely first-viewport thumbnails receive eager and high priority hint
   );
 });
 
-test("preview loading uses an indeterminate indicator instead of fake progress", () => {
-  assert.match(css, /\.preview-loader\s*\{[^}]*width:\s*30%[^}]*animation:\s*preview-loading 1\.1s ease-in-out infinite/s);
-  assert.match(css, /@keyframes preview-loading/);
-  assert.doesNotMatch(css, /@keyframes preview-progress[\s\S]*?width:\s*100%/);
+test("preview startup uses the shared white top bar and removes it after fading", () => {
+  assert.match(css, /\.preview-loader\s*\{[^}]*top:\s*0;[^}]*height:\s*3px;[^}]*background:\s*#ffffff94;[^}]*preview-startup-fill 2s/s);
+  assert.match(css, /@keyframes preview-startup-fade/);
+  const loader = readFileSync(new URL("../src/components/PreviewLoader.tsx", import.meta.url), "utf8");
+  assert.match(loader, /event\.animationName === "preview-startup-fade"\) onFinish\(\)/);
 });
 
-test("preview badge tightly wraps its label", () => {
-  const rule = css.match(/\.preview-tag\s*\{[^}]*\}/s)?.[0] ?? "";
-  assert.match(rule, /display:\s*inline-flex/);
-  assert.match(rule, /width:\s*max-content/);
-  assert.match(rule, /padding:\s*3px 6px/);
-  assert.match(rule, /line-height:\s*1/);
-  assert.match(rule, /letter-spacing:\s*0/);
-  assert.doesNotMatch(
-    css,
-    /\.source-badge,\s*\.preview-tag\s*\{[^}]*height:/s
-  );
+test("previews have no playback bar, label or error overlay", () => {
+  assert.doesNotMatch(css, /\.preview-tag|\.preview-progress|\.preview-error/);
+  assert.doesNotMatch(cardSource, /className="preview-tag"|onTimeUpdate/);
 });

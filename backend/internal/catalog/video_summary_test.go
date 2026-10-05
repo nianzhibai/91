@@ -33,6 +33,10 @@ func TestVisibleVideoSummariesByIDsReturnsOnlyVisibleCardsInSnapshotOrder(t *tes
 			PreviewStatus:      "ready",
 			PreviewUpdatedAt:   publishedAt,
 			Views:              100 + index,
+			Favorites:          20 + index,
+			Comments:           3 + index,
+			Likes:              40 + index,
+			Dislikes:           5 + index,
 			Badges:             []string{"badge-" + id},
 			Description:        "detail-only description",
 			PublishedAt:        publishedAt,
@@ -61,6 +65,7 @@ func TestVisibleVideoSummariesByIDsReturnsOnlyVisibleCardsInSnapshotOrder(t *tes
 	second := summaries[0]
 	if second.Title != "Title second" || second.Author != "Author second" ||
 		second.DurationSeconds != 121 || second.ThumbnailURL != "/p/thumb/second" ||
+		second.Favorites != 21 || second.Comments != 4 || second.Likes != 41 || second.Dislikes != 6 ||
 		second.Views != 101 || !second.PublishedAt.Equal(base.Add(time.Minute)) {
 		t.Fatalf("second summary = %#v", second)
 	}

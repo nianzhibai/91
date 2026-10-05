@@ -39,7 +39,6 @@ import {
   scrollPageTo,
   usePageScrollRoot,
 } from "@/lib/pageScroll";
-import { previewController } from "@/lib/previewController";
 import { watchPreviewSettings } from "@/lib/previewSettings";
 import { RouteActivityProvider } from "@/lib/routeActivity";
 import { useDocumentScrollLock } from "@/lib/useDocumentScrollLock";
@@ -340,10 +339,6 @@ function VideoDetailForeground() {
   // The listing remains the document underneath this fixed foreground. Freeze
   // its exact scroll position until the detail history layer is removed.
   useDocumentScrollLock(true);
-
-  useLayoutEffect(() => {
-    previewController.setActiveId(null);
-  }, []);
 
   useEffect(() => {
     return () => {

@@ -42,8 +42,13 @@ export function VideoGrid({
         {Array.from({ length: skeletonCount }).map((_, i) => (
           <div key={i} className="skeleton-card" aria-hidden="true">
             <span className="skeleton-card__thumb" />
-            <span className="skeleton-card__title" />
-            <span className="skeleton-card__meta" />
+            <div className="skeleton-card__body">
+              <span className="skeleton-card__title" />
+              <span className="skeleton-card__meta" />
+              <span className="skeleton-card__meta" />
+              <span className="skeleton-card__meta" />
+              <span className="skeleton-card__meta" />
+            </div>
           </div>
         ))}
       </div>

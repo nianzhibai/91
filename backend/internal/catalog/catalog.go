@@ -198,6 +198,10 @@ type VideoSummary struct {
 	ThumbnailUpdatedAt time.Time
 	PreviewUpdatedAt   time.Time
 	Views              int
+	Favorites          int
+	Comments           int
+	Likes              int
+	Dislikes           int
 	Badges             []string
 	PublishedAt        time.Time
 }
@@ -2936,7 +2940,9 @@ const videoSummaryCols = `
 videos.id, videos.title, COALESCE(videos.author, ''),
 COALESCE(videos.duration_seconds, 0), COALESCE(videos.thumbnail_url, ''),
 COALESCE(videos.thumbnail_updated_at, 0), COALESCE(videos.preview_updated_at, 0),
-COALESCE(videos.views, 0), COALESCE(videos.badges, '[]'), videos.published_at
+COALESCE(videos.views, 0), COALESCE(videos.favorites, 0),
+COALESCE(videos.comments, 0), COALESCE(videos.likes, 0), COALESCE(videos.dislikes, 0),
+COALESCE(videos.badges, '[]'), videos.published_at
 `
 
 // ListRecommendationCandidates loads one small, latest-first candidate window
@@ -4278,6 +4284,10 @@ func scanVideoSummary(row rowScanner) (*VideoSummary, error) {
 		&thumbnailUpdatedAt,
 		&previewUpdatedAt,
 		&video.Views,
+		&video.Favorites,
+		&video.Comments,
+		&video.Likes,
+		&video.Dislikes,
 		&badgesJSON,
 		&publishedAt,
 	); err != nil {

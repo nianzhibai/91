@@ -4,15 +4,15 @@ import type { PreviewState } from "@/types";
 type Props = {
   src: string;
   state: PreviewState;
-  onCanPlay: () => void;
+  onPlay: () => void;
+  onEnded: () => void;
   onError: () => void;
-  onTimeUpdate?: (progress: number) => void; // 0~1
 };
 
 // The card owns activation; the media element owns releasing its source on unmount.
 export const PreviewVideo = forwardRef<HTMLVideoElement, Props>(
   function PreviewVideo(
-    { src, state, onCanPlay, onError, onTimeUpdate },
+    { src, state, onPlay, onEnded, onError },
     ref
   ) {
     const mediaRef = useRef<HTMLVideoElement>(null);
@@ -35,18 +35,11 @@ export const PreviewVideo = forwardRef<HTMLVideoElement, Props>(
         src={src}
         muted
         autoPlay
-        loop
         playsInline
         preload="metadata"
-        onCanPlay={onCanPlay}
+        onPlay={onPlay}
+        onEnded={onEnded}
         onError={onError}
-        onTimeUpdate={(e) => {
-          if (!onTimeUpdate) return;
-          const el = e.currentTarget;
-          if (el.duration > 0) {
-            onTimeUpdate(el.currentTime / el.duration);
-          }
-        }}
         aria-hidden="true"
       />
     );

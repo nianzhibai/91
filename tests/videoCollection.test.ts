@@ -27,8 +27,8 @@ const collectionHookSource = readFileSync(
   new URL("../src/lib/useLazyVideoCollection.ts", import.meta.url),
   "utf8"
 );
-const activePreviewHookSource = readFileSync(
-  new URL("../src/lib/useIsActivePreview.ts", import.meta.url),
+const cardPreviewHookSource = readFileSync(
+  new URL("../src/lib/useCardPreview.ts", import.meta.url),
   "utf8"
 );
 const dataSource = readFileSync(
@@ -184,8 +184,9 @@ test("desktop tab switches preserve both list instances", () => {
   assert.doesNotMatch(railSource, /\{showCollection \? \(/);
   assert.match(
     railSource,
-    /previewController\.setActiveId\(null\);\s*setActiveView\(nextView\)/
+    /active=\{!showCollection\}/
   );
+  assert.match(railSource, /active=\{showCollection && desktop\}/);
   assert.match(
     railSource,
     /collectionViewActive \|\|[\s\S]*?collectionLoadStartedFor === videoId/
@@ -206,10 +207,10 @@ test("desktop collection creates thumbnail resources only near the viewport", ()
     /<VideoThumbnail[\s\S]*?src=\{video\.thumbnail\}[\s\S]*?enabled=\{thumbnailActivated\}/
   );
   assert.match(
-    activePreviewHookSource,
-    /function useIsActivePreview\(videoID: string\): boolean[\s\S]*?previewController\.getActiveId\(\) === videoID/
+    cardPreviewHookSource,
+    /if \(!previewEnabled \|\| !active \|\| !inView\) stopPreview\(\)/
   );
-  assert.match(railSource, /import \{ useIsActivePreview, usePreviewEnabled \}/);
+  assert.match(railSource, /import \{ useCardPreview \}/);
   assert.doesNotMatch(railSource, /function useActivePreviewId/);
   assert.doesNotMatch(railSource, /media\.addEventListener\("change", update\)/);
 });
@@ -224,10 +225,7 @@ test("desktop and mobile collections request previews and share preview behavior
     railSource,
     /variant="collection"[\s\S]*?shouldRenderPreview && video\.previewSrc[\s\S]*?<PreviewVideo/
   );
-  assert.match(
-    railSource,
-    /previewController\.setActiveId\(video\.id\)/
-  );
+  assert.match(railSource, /useCardPreview\(\{ id: video\.id, src: video\.previewSrc, inView, active \}\)/);
   assert.match(
     componentSource,
     /useLazyVideoCollection\(\s*videoId,\s*open,\s*\{ includePreview: true \}\s*\)/
@@ -238,22 +236,18 @@ test("desktop and mobile collections request previews and share preview behavior
   );
   assert.match(
     componentSource,
-    /onPointerDown=\{\(event\)[\s\S]*?lastPointerTypeRef\.current = event\.pointerType[\s\S]*?onClickCapture=\{handleClickCapture\}/
+    /className="vd-collection-item__thumb"[\s\S]*?onPointerEnter=\{handlePointerEnter\}[\s\S]*?onTouchStart=\{startPreview\}/
   );
   assert.match(
     componentSource,
-    /shouldInterceptPreviewTap\([\s\S]*?previewActive/
+    /onClick=\{\(event\) => \{\s*stopPreview\(\);\s*onSelect\(event\)/
   );
-  assert.match(componentSource, /previewController\.setActiveId\(video\.id\)/);
-  assert.match(componentSource, /import \{ useIsActivePreview, usePreviewEnabled \}/);
-  assert.match(
-    componentSource,
-    /function startTouchPreviewIntent\(\)[\s\S]*?setPreviewState\("intent"\)[\s\S]*?window\.setTimeout\([\s\S]*?setShouldRenderPreview\(true\)[\s\S]*?TOUCH_PREVIEW_DELAY_MS/
-  );
-  assert.match(
-    railSource,
-    /function startTouchPreviewIntent\(\)[\s\S]*?setPreviewState\("intent"\)[\s\S]*?window\.setTimeout\([\s\S]*?TOUCH_PREVIEW_DELAY_MS/
-  );
+  assert.match(componentSource, /import \{ useCardPreview \}/);
+  for (const source of [componentSource, railSource]) {
+    assert.doesNotMatch(source, /setActiveId|getActiveId|shouldInterceptPreviewTap|TOUCH_PREVIEW_DELAY_MS/);
+    assert.match(source, /onPlay=\{handlePreviewPlay\}[\s\S]*?onEnded=\{stopPreview\}/);
+    assert.match(source, /<PreviewLoader onFinish=\{finishPreviewLoader\}/);
+  }
 });
 
 test("recommendation rail omits retired quality metadata", () => {

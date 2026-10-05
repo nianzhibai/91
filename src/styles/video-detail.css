@@ -2286,17 +2286,6 @@
   height: 100%;
   object-fit: cover;
   display: block;
-  transition: transform var(--transition-normal);
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .vd-rail__item[data-preview-enabled="true"] .vd-rail__link:hover .vd-rail__thumb img {
-    transform: scale(1.04);
-  }
-}
-
-.vd-rail__item[data-preview-enabled="false"] .vd-rail__thumb img {
-  transition: none;
 }
 
 .vd-rail__duration,
@@ -2354,12 +2343,6 @@
   overflow: hidden;
   word-break: break-word;
   transition: color var(--transition-fast);
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .vd-rail__link:hover .vd-rail__title {
-    color: var(--accent);
-  }
 }
 
 .vd-rail__link[aria-current="page"] .vd-rail__title {

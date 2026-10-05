@@ -65,7 +65,7 @@ test("video cards start independent detail and recommendation requests for confi
   );
   assert.match(
     cardSource,
-    /if \(\s*!shouldInterceptPreviewTap\([\s\S]*?prepareConfirmedDetailNavigation\(\);\s*return;[\s\S]*?event\.preventDefault\(\);[\s\S]*?startTouchPreviewIntent\(\)/
+    /function handleDetailNavigation\(\) \{\s*stopPreview\(\);\s*prepareConfirmedDetailNavigation\(\)/
   );
   assert.match(
     detailPageSource,
@@ -101,20 +101,18 @@ test("same-video overlay history does not restart detail navigation effects", ()
   );
 });
 
-test("a touch preview intent delays media creation but still arms navigation", () => {
+test("listing previews start on touch contact and leave clicks to the detail link", () => {
   assert.match(
     cardSource,
-    /function startTouchPreviewIntent\(\)[\s\S]*?touchPreviewArmedRef\.current = true;[\s\S]*?setPreviewState\("intent"\);[\s\S]*?window\.setTimeout\([\s\S]*?startPreviewNow\(\{ requireInView: false \}\);[\s\S]*?TOUCH_PREVIEW_DELAY_MS/
+    /function handleTouchStart\(\)[\s\S]*?startPreview\(\)/
   );
   assert.match(
     cardSource,
-    /const previewActive =[\s\S]*?touchPreviewArmedRef\.current \|\| shouldRenderPreview[\s\S]*?cleanup\(\);[\s\S]*?prepareConfirmedDetailNavigation\(\)/
+    /useCardPreview\(\{ id: video\.id, src: video\.previewSrc, inView, active: routeActive \}\)/
   );
-  const touchPreviewIntentBlock = cardSource.match(
-    /function startTouchPreviewIntent\(\)([\s\S]*?)\n  function clearPreviewIntentTimer/
-  )?.[1];
-  assert.ok(touchPreviewIntentBlock);
-  assert.doesNotMatch(touchPreviewIntentBlock, /prefetchVideoRecommendations/);
+  assert.match(cardSource, /onTouchStart=\{handleTouchStart\}/);
+  assert.match(cardSource, /onClick=\{handleDetailNavigation\}/);
+  assert.doesNotMatch(cardSource, /setTimeout|TOUCH_PREVIEW_DELAY_MS|HOVER_DELAY_MS|onClickCapture|preventDefault/);
 });
 
 test("recommendation prefetch is shared and consumed by one navigation", async () => {

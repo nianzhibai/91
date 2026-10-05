@@ -44,22 +44,18 @@ function mockPreviewPage(t: TestContext) {
 
 test("previews stay inactive until the global policy has loaded", () => {
   assert.equal(previewController.isEnabled(), false);
-  previewController.setActiveId("already-generated");
-  assert.equal(previewController.getActiveId(), null);
 });
 
-test("disabling previews clears the active card and notifies all subscribers", () => {
+test("preview policy changes notify every independent card", () => {
   applyPreviewEnabled(true);
-  previewController.setActiveId("already-generated");
-  const updates: Array<string | null> = [];
-  const unsubscribe = previewController.subscribe(id => updates.push(id));
+  const updates: boolean[] = [];
+  const unsubscribe = previewController.subscribe(enabled => updates.push(enabled));
   applyPreviewEnabled(false);
-  previewController.setActiveId("another-generated-video");
-  assert.equal(previewController.getActiveId(), null);
-  assert.deepEqual(updates, [null]);
+  assert.equal(previewController.isEnabled(), false);
+  assert.deepEqual(updates, [false]);
   applyPreviewEnabled(true);
-  assert.equal(previewController.getActiveId(), null);
-  assert.deepEqual(updates, [null, null]);
+  assert.equal(previewController.isEnabled(), true);
+  assert.deepEqual(updates, [false, true]);
   unsubscribe();
   applyPreviewEnabled(false);
 });
@@ -71,10 +67,8 @@ test("public preview settings synchronize without trusting cached media URLs", a
     return Response.json({ previewEnabled: false });
   });
   applyPreviewEnabled(true);
-  previewController.setActiveId("already-generated");
   await syncPreviewSettings();
   assert.equal(previewController.isEnabled(), false);
-  assert.equal(previewController.getActiveId(), null);
 });
 
 test("a delayed settings response cannot undo a freshly saved global switch", async (t) => {
@@ -106,10 +100,8 @@ test("saving config immediately updates the shared frontend policy", async (t) =
   const result = { settings: { previewEnabled: false, telegramEnabled: false }, restartRequired: false };
   t.mock.method(globalThis, "fetch", async () => Response.json(result));
   applyPreviewEnabled(true);
-  previewController.setActiveId("already-generated");
   assert.deepEqual(await updateConfigYAML("preview: {enabled: false}", "version"), result);
   assert.equal(previewController.isEnabled(), false);
-  assert.equal(previewController.getActiveId(), null);
 });
 
 test("preview synchronization is limited to authenticated listing and detail routes", () => {
@@ -277,34 +269,40 @@ test("a timed-out request disables previews and polling retries", async (t) => {
   assert.equal(previewController.isEnabled(), true);
 });
 
-test("every card surface gates media, delayed intent, overlays and touch interception", () => {
+test("every card surface shares independent previews and normal link navigation", () => {
+  const hook = readFileSync(new URL("../src/lib/useCardPreview.ts", import.meta.url), "utf8");
+  assert.match(hook, /const previewEnabled = usePreviewEnabled\(\)/);
+  assert.match(hook, /!previewController\.isEnabled\(\) \|\| !src \|\| !active/);
+  assert.match(hook, /if \(!previewEnabled \|\| !active \|\| !inView\) stopPreview\(\)/);
+  assert.doesNotMatch(hook, /getActiveId|setActiveId|setTimeout/);
   for (const file of ["VideoCard", "RecommendedRail", "MobileVideoCollection"]) {
     const source = readFileSync(new URL(`../src/components/${file}.tsx`, import.meta.url), "utf8");
-    assert.match(source, /const previewEnabled = usePreviewEnabled\(\)/);
+    assert.match(source, /useCardPreview\(\{ id: video\.id, src: video\.previewSrc, inView/);
     assert.match(source, /data-preview-enabled=\{previewEnabled\}/);
-    assert.match(source, /if \(!previewEnabled\) cleanup(?:Preview)?\(\)/);
-    assert.match(source, /!previewController\.isEnabled\(\) \|\| !video\.previewSrc/);
-    assert.match(source, /previewEnabled: previewController\.isEnabled\(\) && Boolean\(video\.previewSrc\)/);
+    assert.match(source, /onTouchStart=\{(?:handleTouchStart|startPreview)\}/);
+    assert.doesNotMatch(source, /shouldInterceptPreviewTap|onClickCapture|useIsActivePreview\(|getActiveId|setActiveId|onBlur=/);
     assert.match(source, /previewEnabled && shouldRenderPreview &&/);
     assert.doesNotMatch(source, /\{previewState === "(?:loading|playing|error)"/);
   }
 });
 
-test("card interaction feedback stays independent of preview-only animation", () => {
+test("card feedback underlines titles without transforming thumbnails", () => {
   const cards = readFileSync(new URL("../src/styles/video-card.css", import.meta.url), "utf8");
   const detail = readFileSync(new URL("../src/styles/video-detail.css", import.meta.url), "utf8");
   const interactions = readFileSync(new URL("../src/styles/video-card-interactions.css", import.meta.url), "utf8");
-  assert.match(cards, /\.video-card:hover\s*\{/);
-  assert.match(interactions, /\.video-card__link:active \.thumb-frame/);
-  assert.match(interactions, /\.vd-rail__link:active \.vd-rail__thumb/);
-  assert.match(interactions, /\.vd-collection-item__link:active \.vd-collection-item__thumb/);
+  assert.doesNotMatch(cards, /\.video-card:hover\s*\{/);
+  assert.doesNotMatch(interactions, /\.video-card__link:active \.thumb-frame/);
+  assert.doesNotMatch(interactions, /\.thumb-frame::before/);
+  assert.doesNotMatch(interactions, /transform:|::before/);
+  assert.match(interactions, /\.vd-rail__link:focus-visible \.vd-rail__title/);
+  assert.match(interactions, /\.vd-collection-item__link\[data-title-pressed="true"\] \.vd-collection-item__title/);
   assert.doesNotMatch(interactions, /data-preview-enabled/);
-  assert.match(cards, /\.video-card:hover \.video-title\s*\{/);
+  assert.match(cards, /\.video-card__title-link:hover\s*\{/);
   assert.doesNotMatch(cards, /\.video-card\[data-preview-enabled="true"\]:(?:active|focus-within)/);
   assert.doesNotMatch(cards, /\.video-card\[data-preview-enabled="false"\](?:,|::after)/);
-  assert.match(cards, /\.video-card\[data-preview-enabled="true"\]:hover \.thumb-image/);
+  assert.doesNotMatch(cards, /\.video-card\[data-preview-enabled="true"\]:hover \.thumb-image/);
   assert.match(cards, /\[data-preview-enabled="false"\][\s\S]*?transition: none/);
-  assert.match(detail, /\.vd-rail__item\[data-preview-enabled="true"\] \.vd-rail__link:hover \.vd-rail__thumb img/);
-  assert.match(detail, /\.vd-rail__link:hover \.vd-rail__title\s*\{/);
+  assert.doesNotMatch(detail, /\.vd-rail__item\[data-preview-enabled="true"\] \.vd-rail__link:hover \.vd-rail__thumb img/);
+  assert.doesNotMatch(detail, /\.vd-rail__link:hover \.vd-rail__title\s*\{/);
   assert.doesNotMatch(detail, /\[data-preview-enabled="false"\] \.vd-rail__(?:title|link)/);
 });

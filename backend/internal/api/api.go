@@ -145,8 +145,9 @@ type VideoDTO struct {
 }
 
 // VideoCardDTO is the compact transport used by infinite listing feeds. The
-// omitted reaction, tag, storage and processing fields are loaded by the video
-// detail endpoint when the user actually opens a card.
+// omitted tag, storage and processing fields are loaded by the video detail
+// endpoint when the user actually opens a card. Displayed counters travel with
+// the feed so rendering a card does not require a detail request.
 type VideoCardDTO struct {
 	ID              string   `json:"id"`
 	Href            string   `json:"href"`
@@ -159,6 +160,10 @@ type VideoCardDTO struct {
 	Badges          []string `json:"badges"`
 	Author          string   `json:"author"`
 	Views           int      `json:"views"`
+	Favorites       int      `json:"favorites"`
+	Comments        int      `json:"comments"`
+	Likes           int      `json:"likes"`
+	Dislikes        int      `json:"dislikes"`
 	PublishedAt     string   `json:"publishedAt"`
 }
 
@@ -1898,6 +1903,10 @@ func mapVideoSummaries(videos []*catalog.VideoSummary) []VideoCardDTO {
 			Badges:          badges,
 			Author:          video.Author,
 			Views:           video.Views,
+			Favorites:       video.Favorites,
+			Comments:        video.Comments,
+			Likes:           video.Likes,
+			Dislikes:        video.Dislikes,
 			PublishedAt:     video.PublishedAt.Format("2006-01-02"),
 		})
 	}
