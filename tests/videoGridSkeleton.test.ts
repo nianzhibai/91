@@ -33,7 +33,7 @@ test("video skeleton mirrors thumbnail, title, and metadata structure", () => {
   assert.match(thumb, /height\s*:\s*135px/);
   assert.match(
     videoCardCss,
-    /\.skeleton-card__title\s*\{\s*margin-top:[^}]*width:\s*100%;[^}]*height:\s*23px;[^}]*border-radius:\s*var\(--radius-xs\)/s
+    /\.skeleton-card__title\s*\{\s*margin-top:[^}]*width:\s*100%;[^}]*height:\s*1lh;[^}]*border-radius:\s*var\(--radius-xs\)/s
   );
   assert.match(
     videoCardCss,
