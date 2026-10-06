@@ -34,7 +34,7 @@ test("all admin routes use the shared flex page contract", () => {
   assert.match(pageSources.crawlers, /className="admin-page admin-page--with-floating-actions admin-crawlers-page"/);
   assert.match(pageSources.crawlerLoading, /className="admin-page admin-page--with-floating-actions admin-crawlers-page"/);
   assert.match(pageSources.videos, /className="admin-page admin-page--with-floating-actions admin-videos-page"/);
-  assert.match(pageSources.tags, /`admin-page admin-page--with-floating-actions admin-tags-page/);
+  assert.match(pageSources.tags, /className="admin-page admin-page--with-floating-actions admin-tags-page/);
   assert.match(
     pageSources.users,
     /className="admin-page admin-page--with-floating-actions"/

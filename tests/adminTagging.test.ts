@@ -11,10 +11,6 @@ const tagsPageSource = readFileSync(
   new URL("../src/admin/TagsPage.tsx", import.meta.url),
   "utf8"
 );
-const searchPanelSource = readFileSync(
-  new URL("../src/components/SearchPanel.tsx", import.meta.url),
-  "utf8"
-);
 const adminCss = readFileSync(
   new URL("../src/styles/admin.css", import.meta.url),
   "utf8"
@@ -72,10 +68,10 @@ test("admin tags manage custom and generated tags", () => {
   assert.match(tagsPageSource, /<div className="admin-tags-main">/);
   assert.ok(
     tagsPageSource.indexOf('className="admin-tags-filter-panel"') <
-      tagsPageSource.indexOf('className="admin-tags-search search-panel--transparent"'),
-    "tag source filter should appear before search"
+      tagsPageSource.indexOf('className="admin-tags-toolbar-actions"'),
+    "tag source filter should appear before the toolbar actions"
   );
-  assert.match(tagsPageSource, /<SearchPanel[\s\S]*?className="admin-tags-search search-panel--transparent"[\s\S]*?value=\{searchQuery\}[\s\S]*?onSearch=\{setSearchQuery\}[\s\S]*?variant="uiverse"[\s\S]*?placeholder=""/);
+  assert.doesNotMatch(tagsPageSource, /SearchPanel|admin-tags-search|searchQuery|setSearchQuery/);
   assert.doesNotMatch(tagsPageSource, /搜索标签名或包含词|搜索标签名或规则词/);
   assert.match(tagsPageSource, /admin-tags-filter-tab__text/);
   assert.doesNotMatch(tagsPageSource, /admin-tags-filter-tab__count/);
@@ -83,9 +79,9 @@ test("admin tags manage custom and generated tags", () => {
   assert.doesNotMatch(tagsPageSource, /aria-label=\{`全部 \(\$\{stats\.total\}\)`\}/);
   assert.match(tagsPageSource, /添加标签/);
   assert.match(tagsPageSource, /onClick=\{openCreateModal\}/);
-  assert.match(tagsPageSource, /className="admin-btn admin-create-fab admin-tags-toolbar-actions__create"\s+onClick=\{openCreateModal\}/);
+  assert.match(tagsPageSource, /className="admin-btn admin-tags-toolbar-actions__create"\s+onClick=\{openCreateModal\}/);
   assert.match(tagsPageSource, /<Plus size="1em" aria-hidden="true" \/>\s*新增标签/);
-  assert.match(tagsPageSource, /\{!selectMode && \(\s*<div className="admin-tags-toolbar-actions" data-admin-floating-actions>[\s\S]*?<button[\s\S]*?data-admin-floating-actions[\s\S]*?admin-create-fab/);
+  assert.match(tagsPageSource, /\{!selectMode && \(\s*<div className="admin-tags-toolbar-actions" data-admin-floating-actions>[\s\S]*?<button[\s\S]*?admin-tags-toolbar-actions__create/);
   assert.match(tagsPageSource, /const createLabelExists = useMemo/);
   assert.match(tagsPageSource, /tag\.label\.trim\(\)\.toLowerCase\(\) === cleanLabel/);
   assert.match(tagsPageSource, /if \(createLabelExists\) return;/);
@@ -141,9 +137,6 @@ test("admin tags manage custom and generated tags", () => {
   assert.doesNotMatch(tagsPageSource, /admin-tag-card__alias-pill/);
   assert.doesNotMatch(tagsPageSource, /function tagDisplayAliases/);
   assert.match(tagsPageSource, /avCodePrefixes: joinRuleTerms\(rules\.avCodePrefixes\)/);
-  assert.match(tagsPageSource, /tagRuleTerms\(t\)\.some/);
-  assert.match(searchPanelSource, /const SEARCH_DEBOUNCE_MS = 500;/);
-  assert.match(searchPanelSource, /window\.setTimeout\(\(\) => \{\s*commitSearch\(keyword\);/);
   assert.doesNotMatch(tagsPageSource, /ADMIN_SEARCH_DEBOUNCE_MS|searchInput|setSearchInput/);
   assert.match(
     tagsPageSource,

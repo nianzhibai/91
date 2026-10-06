@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
-import { Film, Plus, RefreshCw } from "lucide-react";
-import { SearchPanel } from "@/components/SearchPanel";
+import { Film, Plus, RefreshCw, Trash2 } from "lucide-react";
 import * as api from "./api";
 import { useToast } from "@/components/ToastContext";
 import { ConfirmModal } from "./ConfirmModal";
@@ -40,7 +39,6 @@ export function TagsPage() {
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirmState>(null);
-  const [searchQuery, setSearchQuery] = useState("");
   const [filterSource, setFilterSource] = useState<string>("all");
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -162,15 +160,9 @@ export function TagsPage() {
   }, [tags]);
 
   const filteredTags = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
     const matches = tags.filter((t) => {
       if (!isSupportedTag(t)) return false;
-      const matchesSearch =
-        !query ||
-        t.label.toLowerCase().includes(query) ||
-        tagRuleTerms(t).some((term) => term.toLowerCase().includes(query));
-      const matchesSource = filterSource === "all" || tagSourceKey(t) === filterSource;
-      return matchesSearch && matchesSource;
+      return filterSource === "all" || tagSourceKey(t) === filterSource;
     });
 
     if (filterSource !== "all") return matches;
@@ -182,11 +174,9 @@ export function TagsPage() {
         return rankDelta || a.index - b.index;
       })
       .map(({ tag }) => tag);
-  }, [tags, searchQuery, filterSource]);
-  const hasActiveSearch = searchQuery.trim().length > 0;
+  }, [tags, filterSource]);
   const tagsEmpty = !loading && !loadError && stats.total === 0;
   const resultsEmpty = !tagsEmpty && !loading && !loadError && filteredTags.length === 0;
-  const searchEmpty = hasActiveSearch && resultsEmpty;
 
   const totalPages = Math.max(1, Math.ceil(filteredTags.length / pageSize));
   const currentPage = Math.min(page, totalPages);
@@ -200,7 +190,7 @@ export function TagsPage() {
 
   useEffect(() => {
     setPage(1);
-  }, [searchQuery, filterSource, pageSize]);
+  }, [filterSource, pageSize]);
 
   useEffect(() => {
     setPage((p) => Math.min(Math.max(1, p), totalPages));
@@ -240,7 +230,7 @@ export function TagsPage() {
   return (
     <section
       ref={floatingActionPageRef}
-      className={`admin-page admin-page--with-floating-actions admin-tags-page${searchEmpty ? " is-search-empty" : ""}`}
+      className="admin-page admin-page--with-floating-actions admin-tags-page"
     >
       {tagsResource.ready && tagsResource.error && (
         <div className="admin-detail-error" role="alert">
@@ -278,20 +268,11 @@ export function TagsPage() {
               </div>
             </aside>
 
-            <SearchPanel
-              className="admin-tags-search search-panel--transparent"
-              value={searchQuery}
-              onSearch={setSearchQuery}
-              variant="uiverse"
-              placeholder=""
-            />
-
             {!selectMode && (
               <div className="admin-tags-toolbar-actions" data-admin-floating-actions>
                 <button
-                  data-admin-floating-actions
                   type="button"
-                  className="admin-btn admin-create-fab admin-tags-toolbar-actions__create"
+                  className="admin-btn admin-tags-toolbar-actions__create"
                   onClick={openCreateModal}
                 >
                   <Plus size="1em" aria-hidden="true" />
@@ -303,6 +284,7 @@ export function TagsPage() {
                     className="admin-btn admin-tags-toolbar-actions__toggle"
                     onClick={toggleSelectMode}
                   >
+                    <Trash2 size="1em" aria-hidden="true" />
                     批量删除
                   </button>
                 )}
@@ -829,22 +811,11 @@ function matchRulesFromDraft(draft: RuleDraft, isAV: boolean): api.TagMatchRules
   };
 }
 
-function tagRuleTerms(tag: api.AdminTag): string[] {
-  return ruleTerms(tag.matchRules ?? {});
-}
-
 function hasRuleTerms(rules: api.TagMatchRules): boolean {
   return [
     ...(rules.keywords ?? []),
     ...(rules.avCodePrefixes ?? []),
   ].length > 0;
-}
-
-function ruleTerms(rules: api.TagMatchRules): string[] {
-  return [
-    ...(rules.keywords ?? []),
-    ...(rules.avCodePrefixes ?? []),
-  ];
 }
 
 function joinRuleTerms(terms?: string[]): string {

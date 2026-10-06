@@ -8309,7 +8309,7 @@ body.admin-mobile-nav-open {
 
 .admin-tags-toolbar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(240px, 360px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
   gap: var(--space-3);
   width: min(100%, var(--tags-cards-width));
@@ -8318,15 +8318,35 @@ body.admin-mobile-nav-open {
 }
 
 .admin-tags-toolbar-actions {
-  grid-column: 3;
-  grid-row: 2;
-  justify-self: end;
+  position: fixed;
+  right: var(--space-7);
+  bottom: var(--space-5);
+  z-index: calc(var(--z-nav) + 2);
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: var(--space-2);
+  gap: 0;
   flex-wrap: wrap;
+  width: max-content;
+  max-width: calc(100vw - (var(--space-7) * 2));
   min-width: 0;
+  padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: transparent;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.34);
+  overflow: hidden;
+}
+
+.admin-tags-toolbar-actions .admin-btn {
+  position: relative;
+  width: auto;
+  min-width: 0;
+  min-height: 44px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .admin-btn.admin-tags-toolbar-actions__toggle {
@@ -8334,17 +8354,24 @@ body.admin-mobile-nav-open {
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .admin-btn.admin-tags-toolbar-actions__toggle:hover:not(:disabled) {
+  .admin-tags-toolbar-actions .admin-btn:hover:not(:disabled),
+  .admin-tags-toolbar-actions
+    .admin-btn.admin-tags-toolbar-actions__toggle:hover:not(:disabled) {
+    border-color: transparent;
     background: transparent;
+    box-shadow: none;
   }
 }
 
-.admin-tags-search {
-  grid-column: 2;
-  grid-row: 2;
-  justify-self: center;
-  min-width: 0;
-  margin-top: 0;
+.admin-tags-toolbar-actions .admin-btn + .admin-btn::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 1px;
+  height: 18px;
+  transform: translateY(-50%);
+  background: var(--border-subtle);
 }
 
 .admin-tags-filter-tabs {
@@ -8491,69 +8518,10 @@ body.admin-mobile-nav-open {
     max-width: 100%;
   }
 
-  .admin-tags-search {
-    grid-column: 1;
-    grid-row: 2;
-    min-width: 0;
-  }
-
   .admin-tags-toolbar-actions {
-    position: fixed;
     right: var(--space-3);
     bottom: calc(var(--space-3) + env(safe-area-inset-bottom));
-    z-index: calc(var(--z-nav) + 2);
-    grid-column: 1;
-    grid-row: 3;
-    justify-self: end;
-    width: max-content;
     max-width: calc(100vw - (var(--space-3) * 2));
-    padding: 0;
-    border: 1px solid var(--border-subtle);
-    border-radius: 12px;
-    background: var(--bg-surface);
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.34);
-    justify-content: flex-end;
-    gap: 0;
-    overflow: hidden;
-  }
-
-  .admin-tags-toolbar-actions .admin-btn {
-    position: relative;
-    right: auto;
-    bottom: auto;
-    z-index: auto;
-    width: auto;
-    min-width: 0;
-    min-height: 44px;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    box-shadow: none;
-  }
-
-  @media (hover: hover) and (pointer: fine) {
-    .admin-tags-toolbar-actions .admin-btn:hover:not(:disabled),
-    .admin-tags-toolbar-actions
-      .admin-btn.admin-tags-toolbar-actions__toggle:hover:not(:disabled) {
-      border-color: transparent;
-      background: var(--bg-elevated);
-      box-shadow: none;
-    }
-  }
-
-  .admin-tags-toolbar-actions .admin-btn + .admin-btn::before {
-    content: "";
-    position: absolute;
-    left: 0;
-    top: 50%;
-    width: 1px;
-    height: 18px;
-    transform: translateY(-50%);
-    background: var(--border-subtle);
-  }
-
-  .admin-tags-toolbar-actions__create > svg {
-    display: none;
   }
 
   .admin-tags-filter-panel {

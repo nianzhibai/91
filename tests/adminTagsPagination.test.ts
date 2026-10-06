@@ -59,11 +59,8 @@ test("admin tags loading keeps the fixed controls and leaves the card area blank
 });
 
 test("admin tag empty states distinguish an empty catalog from no results", () => {
-  assert.match(tagsPageSource, /const hasActiveSearch = searchQuery\.trim\(\)\.length > 0;/);
   assert.match(tagsPageSource, /const tagsEmpty = !loading && !loadError && stats\.total === 0;/);
   assert.match(tagsPageSource, /const resultsEmpty = !tagsEmpty && !loading && !loadError && filteredTags\.length === 0;/);
-  assert.match(tagsPageSource, /const searchEmpty = hasActiveSearch && resultsEmpty;/);
-  assert.match(tagsPageSource, /searchEmpty \? " is-search-empty" : ""/);
   assert.match(
     tagsPageSource,
     /tagsEmpty \? \(\s*<AdminEmptyVisual[\s\S]*?variant="empty"[\s\S]*?text="当前没有标签"[\s\S]*?admin-tags-empty-state[\s\S]*?\) : resultsEmpty \? \(\s*<AdminEmptyVisual[\s\S]*?variant="no-results"[\s\S]*?text="未查询到"[\s\S]*?admin-tags-empty-state[\s\S]*?\) : \(\s*<div className="admin-tags-board" aria-busy=\{loading \|\| tagsResource\.refreshing \|\| undefined\}>/
@@ -71,7 +68,7 @@ test("admin tag empty states distinguish an empty catalog from no results", () =
   assert.doesNotMatch(tagsPageSource, /没有找到匹配的标签。|className="admin-card admin-empty"/);
   assert.match(
     tagsPageSource,
-    /className=\{`admin-page admin-page--with-floating-actions admin-tags-page\$\{searchEmpty \? " is-search-empty" : ""\}`\}/
+    /className="admin-page admin-page--with-floating-actions admin-tags-page"/
   );
   assert.match(
     adminCss,
