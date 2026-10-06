@@ -9,8 +9,6 @@ import { Link, useSearchParams } from "react-router";
 import { fetchTags, readCachedTags, type TagItem } from "@/data/videos";
 import { withListingNavigation } from "@/lib/listingSearchParams";
 
-const TAG_PLACEHOLDER_COUNT = 12;
-
 type TagCloudStatus = "loading" | "ready" | "error";
 
 type TagCloudProps = {
@@ -54,9 +52,9 @@ export const TagCloud = memo(function TagCloud({
     };
   }, [retryVersion]);
 
+  if (status === "loading") return null;
   if (status === "ready" && visibleTags.length === 0) return null;
 
-  const loading = status === "loading" && visibleTags.length === 0;
   const failed = status === "error" && visibleTags.length === 0;
 
   const buildTagHref = (label: string) => {
@@ -82,7 +80,6 @@ export const TagCloud = memo(function TagCloud({
     <nav
       className="tag-cloud-container"
       aria-label="热门标签"
-      aria-busy={loading ? "true" : undefined}
     >
       {failed ? (
         <div className="tag-cloud__error" role="status">
@@ -96,15 +93,7 @@ export const TagCloud = memo(function TagCloud({
           </button>
         </div>
       ) : (
-        loading
-          ? Array.from({ length: TAG_PLACEHOLDER_COUNT }, (_, item) => (
-              <span
-                key={item}
-                className="tag-cloud__placeholder"
-                aria-hidden="true"
-              />
-            ))
-          : visibleTags.map(renderTag)
+        visibleTags.map(renderTag)
       )}
     </nav>
   );

@@ -109,13 +109,12 @@ test("home and list pages load the shared tag cloud independently from video res
   assert.match(tagCloudSource, /if \(initialTagsRef\.current !== null && retryVersion === 0\) return/);
   assert.match(tagCloudSource, /setStatus\("ready"\)/);
   assert.match(tagCloudSource, /setStatus\("error"\)/);
+  assert.match(tagCloudSource, /if \(status === "loading"\) return null/);
   assert.match(tagCloudSource, /if \(status === "ready" && visibleTags\.length === 0\) return null/);
-  assert.match(tagCloudSource, /const loading = status === "loading" && visibleTags\.length === 0/);
   assert.match(tagCloudSource, /const failed = status === "error" && visibleTags\.length === 0/);
   assert.match(tagCloudSource, /标签加载失败/);
   assert.match(tagCloudSource, /重新加载/);
   assert.match(tagCloudSource, /setRetryVersion\(\(current\) => current \+ 1\)/);
-  assert.match(tagCloudSource, /const TAG_PLACEHOLDER_COUNT = 12;/);
   assert.match(tagCloudSource, /type TagCloudProps = \{/);
   assert.match(tagCloudSource, /linkBasePath\?: string;/);
   assert.match(tagCloudSource, /onTagSelect\?: \(\) => void;/);
@@ -126,9 +125,7 @@ test("home and list pages load the shared tag cloud independently from video res
   assert.doesNotMatch(tagCloudSource, /热搜榜|tag-cloud__title/);
   assert.match(tagCloudSource, /aria-current=\{activeTag === tag\.label \? "true" : undefined\}/);
   assert.doesNotMatch(tagCloudSource, /addEventListener|ResizeObserver/);
-  assert.match(tagCloudSource, /aria-busy=\{loading \? "true" : undefined\}/);
-  assert.match(tagCloudSource, /Array\.from\(\{ length: TAG_PLACEHOLDER_COUNT \}/);
-  assert.match(tagCloudSource, /tag-cloud__placeholder/);
+  assert.doesNotMatch(tagCloudSource, /aria-busy|TAG_PLACEHOLDER_COUNT|tag-cloud__placeholder/);
   assert.doesNotMatch(tagCloudSource, /setTimeout/);
   assert.match(tagCloudSource, /visibleTags\.map\(renderTag\)/);
   assert.doesNotMatch(tagCloudSource, /const row[12] = visibleTags\.filter/);
@@ -139,14 +136,13 @@ test("home and list pages load the shared tag cloud independently from video res
   const tagCloudError = ruleBody(searchCss, ".tag-cloud__error");
   const tagCloudRetry = ruleBody(searchCss, ".tag-cloud__retry");
   const tagCloudLink = ruleBody(searchCss, ".tag-cloud__link");
-  const tagPlaceholder = ruleBody(searchCss, ".tag-cloud__placeholder::before");
   assert.match(tagCloudContainer, /min-height\s*:\s*24px/);
   assert.doesNotMatch(tagCloudContainer, /mask-image|overflow/);
   assert.match(tagCloudError, /flex-wrap\s*:\s*wrap/);
   assert.match(tagCloudRetry, /color\s*:\s*var\(--accent\)/);
   assert.match(tagCloudLink, /overflow-wrap\s*:\s*anywhere/);
   assert.doesNotMatch(tagCloudLink, /background\s*:|border\s*:/);
-  assert.doesNotMatch(tagPlaceholder, /animation\s*:/);
+  assert.doesNotMatch(searchCss, /tag-cloud__placeholder|\.tag-cloud-container\[aria-busy/);
 
   const searchForm = ruleBody(searchCss, ".search-panel__form");
   const searchInput = ruleBody(searchCss, ".search-panel__input");
