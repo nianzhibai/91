@@ -181,13 +181,15 @@ body.shorts-document-scroll::before {
   pointer-events: auto;
 }
 
-@media (max-width: 367px) {
+/* 手机布局及触屏横屏统一把全屏按钮放在音量按钮下方。 */
+@media (max-width: 640px), (hover: none) and (pointer: coarse) {
   .shorts-header {
     grid-template-columns: 44px minmax(0, 1fr) 44px;
   }
 
   .shorts-header__actions {
     width: 44px;
+    justify-self: end;
   }
 
   .shorts-header__fullscreen {
