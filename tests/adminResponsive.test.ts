@@ -377,8 +377,8 @@ test("admin video management separates source navigation from the modal advanced
   assert.match(currentActions, /justify-self\s*:\s*start/);
   assert.match(currentActions, /display\s*:\s*inline-flex/);
   assert.doesNotMatch(advancedToggle, /grid-column|grid-row|justify-self/);
-  assert.match(desktopSearchAction, /height\s*:\s*32px/);
-  assert.match(desktopSearchAction, /border-radius\s*:\s*var\(--radius-pill\)/);
+  assert.match(desktopSearchAction, /height\s*:\s*40px/);
+  assert.match(desktopSearchAction, /border-radius\s*:\s*var\(--radius-sm\)/);
   assert.match(desktopSearchAction, /background\s*:\s*transparent/);
   assert.match(desktopSearchAction, /box-shadow\s*:\s*none/);
   assert.match(desktopSearchActionHover, /background\s*:\s*transparent/);
@@ -1035,11 +1035,11 @@ test("blacklist source files can be deleted by one serialized background task", 
   assert.match(status, /font-size\s*:\s*var\(--font-xs\)/);
   assert.match(button, /flex\s*:\s*none/);
   assert.match(deleteAllButtonSource, /admin-videos-filter__search-action/);
-  assert.match(searchAction, /height\s*:\s*32px/);
-  assert.match(searchAction, /border-radius\s*:\s*var\(--radius-pill\)/);
+  assert.match(searchAction, /height\s*:\s*40px/);
+  assert.match(searchAction, /border-radius\s*:\s*var\(--radius-sm\)/);
   assert.match(searchAction, /background\s*:\s*transparent/);
   assert.match(searchAction, /color\s*:\s*var\(--text-muted\)/);
-  assert.match(searchAction, /font-size\s*:\s*var\(--font-xs\)/);
+  assert.match(searchAction, /font-size\s*:\s*var\(--font-sm\)/);
   assert.match(searchActionHover, /border-color\s*:\s*var\(--border-strong\)/);
   assert.match(searchActionHover, /color\s*:\s*var\(--text-strong\)/);
   assert.match(rowActions, /display\s*:\s*flex/);
@@ -1060,31 +1060,17 @@ test("admin video management controls wrap instead of covering text on mobile", 
   const css = mobileCss();
   const pagination = ruleBody(adminCss, ".admin-table-pagination");
   const paginationInfo = ruleBody(adminCss, ".admin-list-pagination__info");
-  const currentFilter = allRuleBodies(css, ".admin-videos-filter--current");
+  const currentFilter = ruleBodyByContains(css, ".admin-videos-filter--current");
   const currentFilterField = ruleBodyByContains(css, ".admin-videos-filter--current .admin-videos-filter__search");
-  const currentFilterActions = ruleBodyByContains(
-    css,
-    ".admin-videos-filter--current .admin-videos-filter__current-actions"
+  const currentFilterActions = ruleBody(adminCss, ".admin-videos-filter__current-actions");
+  const currentFilterActionButton = lastRuleBody(
+    adminCss,
+    ".admin-videos-filter__search-action"
   );
-  const currentFilterActionButton = ruleBodyByContains(
-    css,
-    ".admin-videos-filter--current .admin-videos-filter__current-actions .admin-btn"
-  );
-  const currentFilterActionDivider = ruleBodyByContains(
-    css,
-    ".admin-videos-filter__current-actions"
-  );
-  const blacklistFilter = allRuleBodies(css, ".admin-videos-filter--blacklist");
+  const blacklistFilter = ruleBodyByContains(css, ".admin-videos-filter--blacklist");
   const blacklistFilterField = ruleBodyByContains(css, ".admin-videos-filter--blacklist .admin-videos-filter__search");
-  const blacklistFilterActions = ruleBodyByContains(css, ".admin-videos-filter--blacklist .admin-videos-filter__actions");
-  const blacklistFilterBatch = ruleBodyByContains(
-    css,
-    ".admin-videos-filter--blacklist .admin-videos-filter__actions .admin-videos-filter__batch"
-  );
-  const mobileFloatingActionIcons = ruleBodyByContains(
-    css,
-    ".admin-videos-filter--current .admin-video-advanced-toggle > svg"
-  );
+  const blacklistFilterActions = ruleBody(adminCss, ".admin-videos-filter__actions");
+  const blacklistFilterBatch = lastRuleBody(adminCss, ".admin-videos-filter__search-action");
   const bulkToolbar = ruleBodyByContains(css, ".admin-videos-current .admin-videos-list-toolbar");
   const blacklistBulkToolbar = ruleBodyByContains(css, ".admin-videos-blacklist .admin-videos-list-toolbar");
   const bulkActions = allRuleBodies(css, ".admin-videos-bulk-actions");
@@ -1136,51 +1122,28 @@ test("admin video management controls wrap instead of covering text on mobile", 
   assert.match(paginationInfo, /white-space\s*:\s*nowrap/);
   assert.doesNotMatch(css, /\.admin-list-pagination__info\s*\{[^}]*order\s*:/s);
   assert.match(currentFilter, /display\s*:\s*grid/);
-  assert.match(currentFilter, /grid-template-columns\s*:\s*minmax\(0,\s*1fr\)/);
+  assert.match(currentFilter, /grid-template-columns\s*:\s*minmax\(0,\s*1fr\)\s+auto/);
   assert.match(currentFilterField, /min-width\s*:\s*0/);
-  assert.match(currentFilterActions, /position\s*:\s*fixed/);
-  assert.match(currentFilterActions, /right\s*:\s*var\(--space-3\)/);
-  assert.match(currentFilterActions, /bottom\s*:\s*calc\(var\(--space-3\)\s*\+\s*env\(safe-area-inset-bottom\)\)/);
-  assert.match(currentFilterActions, /width\s*:\s*max-content/);
-  assert.match(currentFilterActions, /border\s*:\s*1px solid var\(--border-subtle\)/);
-  assert.match(currentFilterActions, /background\s*:\s*var\(--bg-surface\)/);
-  assert.match(currentFilterActions, /overflow\s*:\s*hidden/);
-  assert.match(currentFilterActionButton, /position\s*:\s*relative/);
-  assert.match(currentFilterActionButton, /min-height\s*:\s*44px/);
-  assert.match(currentFilterActionButton, /width\s*:\s*auto/);
-  assert.match(currentFilterActionButton, /min-width\s*:\s*0/);
-  assert.match(currentFilterActionButton, /padding\s*:\s*0 14px/);
-  assert.match(currentFilterActionButton, /border\s*:\s*0/);
-  assert.match(currentFilterActionButton, /border-radius\s*:\s*0/);
+  assert.match(currentFilterActions, /grid-column\s*:\s*2/);
+  assert.match(currentFilterActions, /display\s*:\s*inline-flex/);
+  assert.match(currentFilterActions, /justify-self\s*:\s*start/);
+  assert.match(currentFilterActionButton, /min-height\s*:\s*32px/);
+  assert.match(currentFilterActionButton, /height\s*:\s*32px/);
+  assert.match(currentFilterActionButton, /padding\s*:\s*0 10px/);
+  assert.match(currentFilterActionButton, /border\s*:\s*1px solid var\(--border-default\)/);
+  assert.match(currentFilterActionButton, /border-radius\s*:\s*var\(--radius-sm\)/);
   assert.match(currentFilterActionButton, /background\s*:\s*transparent/);
   assert.match(currentFilterActionButton, /box-shadow\s*:\s*none/);
-  assert.match(currentFilterActionDivider, /content\s*:\s*""/);
-  assert.match(currentFilterActionDivider, /height\s*:\s*18px/);
   assert.match(blacklistFilter, /display\s*:\s*grid/);
-  assert.match(blacklistFilter, /grid-template-columns\s*:\s*minmax\(0,\s*1fr\)/);
+  assert.match(blacklistFilter, /grid-template-columns\s*:\s*minmax\(0,\s*1fr\)\s+auto/);
   assert.match(blacklistFilterField, /min-width\s*:\s*0/);
-  assert.match(blacklistFilterActions, /position\s*:\s*fixed/);
-  assert.match(blacklistFilterActions, /right\s*:\s*var\(--space-3\)/);
-  assert.match(blacklistFilterActions, /bottom\s*:\s*calc\(var\(--space-3\)\s*\+\s*env\(safe-area-inset-bottom\)\)/);
-  assert.match(blacklistFilterActions, /grid-column\s*:\s*auto/);
-  assert.match(blacklistFilterActions, /width\s*:\s*max-content/);
-  assert.match(blacklistFilterActions, /max-width\s*:\s*calc\(100vw\s*-\s*\(var\(--space-3\)\s*\*\s*2\)\)/);
-  assert.match(blacklistFilterActions, /border\s*:\s*1px solid var\(--border-subtle\)/);
-  assert.match(blacklistFilterActions, /background\s*:\s*var\(--bg-surface\)/);
-  assert.match(blacklistFilterActions, /overflow\s*:\s*hidden/);
-  assert.match(blacklistFilterBatch, /position\s*:\s*relative/);
-  assert.match(blacklistFilterBatch, /min-height\s*:\s*44px/);
-  assert.match(blacklistFilterBatch, /border\s*:\s*0/);
-  assert.match(blacklistFilterBatch, /border-radius\s*:\s*0/);
+  assert.match(blacklistFilterActions, /grid-column\s*:\s*2/);
+  assert.match(blacklistFilterActions, /display\s*:\s*inline-flex/);
+  assert.match(blacklistFilterBatch, /min-height\s*:\s*32px/);
+  assert.match(blacklistFilterBatch, /border\s*:\s*1px solid var\(--border-default\)/);
+  assert.match(blacklistFilterBatch, /border-radius\s*:\s*var\(--radius-sm\)/);
   assert.match(blacklistFilterBatch, /background\s*:\s*transparent/);
   assert.match(blacklistFilterBatch, /box-shadow\s*:\s*none/);
-  assert.match(blacklistFilterBatch, /white-space\s*:\s*nowrap/);
-  assert.match(mobileFloatingActionIcons, /display\s*:\s*none/);
-  assert.match(
-    css,
-    /\.admin-videos-filter--current \.admin-video-advanced-toggle > svg,\s*\.admin-videos-filter--blacklist \.admin-blacklist-source-delete__button > svg\s*\{[^}]*display\s*:\s*none/s
-  );
-  assert.match(css, /\.admin-videos-current\.has-bulk-actions \.admin-videos-filter__current-actions,[\s\S]*?\.admin-videos-blacklist\.has-bulk-actions \.admin-videos-filter__actions\s*\{[^}]*display\s*:\s*none/s);
   assert.match(bulkToolbar, /position\s*:\s*fixed/);
   assert.match(bulkToolbar, /bottom\s*:\s*calc\(var\(--space-3\)\s*\+\s*env\(safe-area-inset-bottom\)\)/);
   assert.match(bulkToolbar, /margin\s*:\s*0/);

@@ -620,7 +620,7 @@ function CurrentVideosTab({
       ))}
       <div className="admin-page__actions admin-videos-filter admin-videos-filter--current">
         <SearchBox keyword={searchKeyword} onSearch={handleSearch} />
-        <div className="admin-videos-filter__current-actions" data-admin-floating-actions>
+        <div className="admin-videos-filter__current-actions">
           <button
             type="button"
             className="admin-btn admin-videos-filter__search-action admin-video-advanced-toggle"
@@ -1024,13 +1024,7 @@ function BlacklistTab({
         {hasBlacklistActions && (
           <div
             className="admin-videos-filter__actions admin-blacklist-source-delete"
-            data-admin-floating-actions
           >
-            {sourceDeleteStatus?.running && (
-              <span className="admin-blacklist-source-delete__status">
-                正在删除 {sourceDeleteStatus.processed}/{sourceDeleteStatus.total}
-              </span>
-            )}
             <button
               type="button"
               className="admin-btn admin-videos-filter__batch admin-videos-filter__search-action admin-blacklist-source-delete__button"
@@ -1041,6 +1035,11 @@ function BlacklistTab({
               {sourceDeleteStatus?.running ? "删除中" : "删除全部"}
             </button>
           </div>
+        )}
+        {hasBlacklistActions && sourceDeleteStatus?.running && (
+          <span className="admin-blacklist-source-delete__status" role="status">
+            正在删除 {sourceDeleteStatus.processed}/{sourceDeleteStatus.total}
+          </span>
         )}
       </div>
 

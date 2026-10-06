@@ -273,7 +273,7 @@ test("empty video tabs use the correct visual and distinguish search misses", ()
   assert.match(currentSource, /\{selectedIds\.size > 0 && \(\s*<div className="admin-videos-list-toolbar"/);
   assert.match(
     blacklistSource,
-    /\{hasBlacklistActions && \(\s*<div[\s\S]*?className="admin-videos-filter__actions admin-blacklist-source-delete"[\s\S]*?data-admin-floating-actions[\s\S]*?删除全部/
+    /\{hasBlacklistActions && \(\s*<div[\s\S]*?className="admin-videos-filter__actions admin-blacklist-source-delete"[\s\S]*?删除全部/
   );
   assert.match(blacklistSource, /\{selectedIds\.size > 0 && \(\s*<div[\s\S]*?className="admin-videos-list-toolbar"/);
   assert.doesNotMatch(blacklistSource, /selectMode|批量选择|退出选择/);

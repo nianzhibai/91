@@ -4589,15 +4589,15 @@ body.admin-mobile-nav-open {
 
 @media (min-width: 769px) {
   .admin-videos-filter__search-action {
-    min-height: 32px;
-    height: 32px;
-    padding: 0 12px;
+    min-height: 40px;
+    height: 40px;
+    padding: 0 16px;
     border: 1px solid var(--border-default);
-    border-radius: var(--radius-pill);
+    border-radius: var(--radius-sm);
     background: transparent;
     box-shadow: none;
     color: var(--text-muted);
-    font-size: var(--font-xs);
+    font-size: var(--font-sm);
   }
 
   @media (hover: hover) and (pointer: fine) {
@@ -4997,6 +4997,9 @@ body.admin-mobile-nav-open {
 }
 
 .admin-blacklist-source-delete__status {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  min-width: 0;
   color: var(--text-faint);
   font-size: var(--font-xs);
   line-height: 1.35;
@@ -5105,148 +5108,49 @@ body.admin-mobile-nav-open {
     min-width: 0;
   }
 
+  .admin-videos-filter--current,
   .admin-videos-filter--blacklist {
     display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    align-items: center;
-    gap: 6px;
-  }
-
-  .admin-videos-filter--current {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
     gap: 6px;
   }
 
   .admin-videos-filter--blacklist .admin-videos-filter__search,
   .admin-videos-filter--current .admin-videos-filter__search {
+    --height-of-input: 32px;
     grid-column: 1;
     min-width: 0;
+    width: 100%;
+  }
+
+  .admin-videos-filter__search .search-panel__uiverse-input {
+    padding-block: 0;
+  }
+
+  .admin-videos-filter__search-action {
+    min-height: 32px;
+    height: 32px;
+    padding: 0 10px;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    box-shadow: none;
+    color: var(--text-muted);
+    font-size: var(--font-xs);
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .admin-videos-filter__search-action:hover:not(:disabled) {
+      border-color: var(--border-strong);
+      background: transparent;
+      box-shadow: none;
+      color: var(--text-strong);
+    }
   }
 
   .admin-video-advanced-filters__grid {
     grid-template-columns: minmax(0, 1fr);
-  }
-
-  .admin-videos-filter--blacklist .admin-videos-filter__actions,
-  .admin-videos-filter--current .admin-videos-filter__current-actions {
-    position: fixed;
-    right: var(--space-3);
-    bottom: calc(var(--space-3) + env(safe-area-inset-bottom));
-    z-index: calc(var(--z-nav) + 2);
-    display: flex;
-    grid-column: auto;
-    justify-self: auto;
-    align-items: stretch;
-    width: max-content;
-    max-width: calc(100vw - (var(--space-3) * 2));
-    padding: 0;
-    border: 1px solid var(--border-subtle);
-    border-radius: 12px;
-    background: var(--bg-surface);
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.34);
-    gap: 0;
-    overflow: hidden;
-  }
-
-  .admin-videos-filter--current .admin-videos-filter__current-actions .admin-btn {
-    position: relative;
-    grid-column: auto;
-    grid-row: auto;
-    justify-self: auto;
-    justify-content: center;
-    min-height: 44px;
-    width: auto;
-    min-width: 0;
-    max-width: none;
-    padding: 0 14px;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    box-shadow: none;
-    white-space: nowrap;
-  }
-
-  @media (hover: hover) and (pointer: fine) {
-    .admin-videos-filter--current
-      .admin-videos-filter__current-actions
-      .admin-btn:hover:not(:disabled) {
-      border-color: transparent;
-      background: var(--bg-elevated);
-      box-shadow: none;
-    }
-  }
-
-  .admin-videos-filter--current
-    .admin-videos-filter__current-actions
-    .admin-btn
-    + .admin-btn::before {
-    content: "";
-    position: absolute;
-    left: 0;
-    top: 50%;
-    width: 1px;
-    height: 18px;
-    background: var(--border-subtle);
-    transform: translateY(-50%);
-  }
-
-  .admin-videos-filter--blacklist .admin-videos-filter__actions .admin-videos-filter__batch {
-    position: relative;
-    grid-column: auto;
-    justify-self: auto;
-    justify-content: center;
-    min-height: 44px;
-    width: auto;
-    min-width: 76px;
-    max-width: none;
-    padding: 0 14px;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    box-shadow: none;
-    white-space: nowrap;
-  }
-
-  @media (hover: hover) and (pointer: fine) {
-    .admin-videos-filter--blacklist
-      .admin-videos-filter__actions
-      .admin-videos-filter__batch:hover:not(:disabled) {
-      border-color: transparent;
-      background: var(--bg-elevated);
-      box-shadow: none;
-    }
-  }
-
-  .admin-videos-filter--current .admin-video-advanced-toggle > svg,
-  .admin-videos-filter--blacklist .admin-blacklist-source-delete__button > svg {
-    display: none;
-  }
-
-  .admin-videos-filter--blacklist
-    .admin-videos-filter__actions
-    .admin-videos-filter__batch
-    + .admin-videos-filter__batch::before {
-    content: "";
-    position: absolute;
-    left: 0;
-    top: 50%;
-    width: 1px;
-    height: 18px;
-    background: var(--border-subtle);
-    transform: translateY(-50%);
-  }
-
-  .admin-videos-filter--blacklist .admin-blacklist-source-delete__status {
-    flex: 1 0 100%;
-    padding: 8px 12px 0;
-    text-align: center;
-  }
-
-  .admin-videos-current.has-bulk-actions .admin-videos-filter__current-actions,
-  .admin-videos-blacklist.has-bulk-actions .admin-videos-filter__actions {
-    display: none;
   }
 
   .admin-table-pagination {
@@ -5386,14 +5290,6 @@ body.admin-mobile-nav-open {
     white-space: nowrap;
   }
 
-  .admin-blacklist-source-delete {
-    flex-wrap: wrap;
-  }
-
-  .admin-blacklist-source-delete__status {
-    width: 100%;
-    text-align: right;
-  }
 }
 
 @media (max-width: 520px) {
