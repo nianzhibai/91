@@ -92,11 +92,11 @@ test("tag selection toggles through the shared listing query instead of rebuildi
   );
 });
 
-test("list search updates the shared listing query instead of rebuilding it", () => {
+test("list search clears the selected tag through shared listing navigation", () => {
   assert.match(searchPanelSource, /navigationPath = "\/list"/);
   assert.match(
     searchPanelSource,
-    /withListingNavigation\(params, \{ q, page: 1 \}\)/
+    /withListingNavigation\(params,\s*\{\s*q,\s*tag: q \? null : undefined,\s*page: 1,\s*\}\)/
   );
   assert.match(
     searchPanelSource,

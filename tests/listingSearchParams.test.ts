@@ -66,21 +66,22 @@ test("tag navigation preserves the current keyword and sort while resetting the 
   assert.equal(cleared.get("page"), null);
 });
 
-test("search navigation preserves the current tag and sort while resetting the page", () => {
+test("search navigation clears the current tag and preserves sort while resetting the page", () => {
   const original = new URLSearchParams(
     "q=旧关键字&tag=推荐&sort=recent&page=8"
   );
   const next = withListingNavigation(original, {
     q: "新关键字",
+    tag: null,
     page: 1,
   });
 
   assert.equal(next.get("q"), "新关键字");
-  assert.equal(next.get("tag"), "推荐");
+  assert.equal(next.get("tag"), null);
   assert.equal(next.get("sort"), "recent");
   assert.equal(next.get("page"), null);
 
-  const cleared = withListingNavigation(next, { q: null, page: 1 });
+  const cleared = withListingNavigation(original, { q: null, page: 1 });
   assert.equal(cleared.get("q"), null);
   assert.equal(cleared.get("tag"), "推荐");
   assert.equal(cleared.get("sort"), "recent");

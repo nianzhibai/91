@@ -35,7 +35,11 @@ export const SearchPanel = memo(function SearchPanel({
       onSearch(q);
       return;
     }
-    const next = withListingNavigation(params, { q, page: 1 });
+    const next = withListingNavigation(params, {
+      q,
+      tag: q ? null : undefined,
+      page: 1,
+    });
     const query = next.toString();
     navigate(query ? `${navigationPath}?${query}` : navigationPath);
   }, [navigate, navigationPath, onSearch, params]);
