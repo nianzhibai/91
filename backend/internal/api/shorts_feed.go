@@ -16,12 +16,13 @@ import (
 )
 
 const (
-	defaultShortsBatchSize = 5
-	maxShortsBatchSize     = 20
-	shortsFeedLookupChunk  = 32
-	shortsFeedTTL          = 24 * time.Hour
-	maxShortsFeedSessions  = 64
-	shortsLinkPrewarmCount = 2
+	defaultShortsBatchSize   = 5
+	maxShortsBatchSize       = 20
+	shortsFeedLookupChunk    = 32
+	shortsLatestSnapshotSize = 100
+	shortsFeedTTL            = 24 * time.Hour
+	maxShortsFeedSessions    = 64
+	shortsLinkPrewarmCount   = 2
 	// Slightly longer than proxy link resolution's hard timeout so a timed-out
 	// provider call keeps occupying its global slot until the detached resolver
 	// actually exits.
@@ -106,7 +107,13 @@ func (s *Server) handleShortsNext(w http.ResponseWriter, r *http.Request) {
 		if mode == "recommend" {
 			videoIDs, err = s.Catalog.ListVisibleVideoIDs(r.Context())
 		} else {
-			videoIDs, err = s.Catalog.ListVideoIDs(r.Context(), catalog.ListParams{Sort: mode})
+			limit := 0
+			if mode == "latest" {
+				limit = shortsLatestSnapshotSize
+			}
+			videoIDs, err = s.Catalog.ListVideoIDs(r.Context(), catalog.ListParams{
+				Sort: mode, LikedOnly: mode == "hot",
+			}, limit)
 		}
 		if err != nil {
 			writeErr(w, r, http.StatusInternalServerError, err)
@@ -131,6 +138,11 @@ func (s *Server) handleShortsNext(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, r, http.StatusGone, err)
 			return
 		}
+		// Rebuild full-library snapshots created before the latest feed was bounded.
+		if mode == "latest" && len(videoIDs) > shortsLatestSnapshotSize {
+			writeErr(w, r, http.StatusGone, errShortsFeedExpired)
+			return
+		}
 	}
 
 	if cursor > len(videoIDs) {
@@ -143,6 +155,7 @@ func (s *Server) handleShortsNext(w http.ResponseWriter, r *http.Request) {
 		videoIDs,
 		cursor,
 		count,
+		mode == "hot",
 	)
 	if err != nil {
 		writeErr(w, r, http.StatusInternalServerError, err)
@@ -345,12 +358,13 @@ func (s *Server) pruneShortsFeedsLocked(now time.Time) {
 }
 
 // loadShortsFeedBatch advances over snapshot entries that are no longer
-// visible and records the precise resume cursor after each returned item.
+// eligible and records the precise resume cursor after each returned item.
 func (s *Server) loadShortsFeedBatch(
 	ctx context.Context,
 	videoIDs []string,
 	cursor int,
 	count int,
+	likedOnly bool,
 ) ([]*catalog.Video, []int, int, error) {
 	videos := make([]*catalog.Video, 0, count)
 	itemCursors := make([]int, 0, count)
@@ -366,6 +380,9 @@ func (s *Server) loadShortsFeedBatch(
 		}
 		visibleByID := make(map[string]*catalog.Video, len(visible))
 		for _, video := range visible {
+			if likedOnly && video.Likes <= 0 {
+				continue
+			}
 			visibleByID[video.ID] = video
 		}
 

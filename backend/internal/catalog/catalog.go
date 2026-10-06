@@ -2650,6 +2650,7 @@ type ListParams struct {
 	SourceKind            string // telegram; import provenance independent of current drive
 	Tag                   string
 	Sort                  string // latest | hot | recent
+	LikedOnly             bool
 	ThumbnailReadyOnly    bool
 	PreferReadyThumbnails bool
 	SkipTotal             bool
@@ -2724,6 +2725,9 @@ func buildVideoListQuery(p ListParams) videoListQuery {
 	if p.ThumbnailReadyOnly {
 		where = append(where, "COALESCE(thumbnail_url, '') != ''")
 	}
+	if p.LikedOnly {
+		where = append(where, "videos.likes > 0")
+	}
 	where = append(where, "COALESCE(hidden, 0) = 0")
 	where = append(where, activeDriveWhereSQL)
 	where = append(where, uniqueVideoWhereSQL)
@@ -2790,15 +2794,18 @@ func (c *Catalog) ListVideos(ctx context.Context, p ListParams) ([]*Video, int, 
 	return out, total, nil
 }
 
-// ListVideoIDs freezes the complete ordered identity set for one public-list
-// query. Feed handlers page through this immutable ID slice instead of applying
-// OFFSET repeatedly to a live, mutable ordering.
-func (c *Catalog) ListVideoIDs(ctx context.Context, p ListParams) ([]string, error) {
+// ListVideoIDs freezes the ordered identity set for one public-list query.
+// A positive limit bounds the snapshot; zero leaves it unbounded. Feed handlers
+// page through this immutable ID slice instead of applying OFFSET repeatedly
+// to a live, mutable ordering.
+func (c *Catalog) ListVideoIDs(ctx context.Context, p ListParams, limit int) ([]string, error) {
 	query := buildVideoListQuery(p)
-	rows, err := c.db.QueryContext(ctx,
-		"SELECT videos.id FROM videos"+query.whereSQL+query.orderBy,
-		query.args...,
-	)
+	querySQL := "SELECT videos.id FROM videos" + query.whereSQL + query.orderBy
+	if limit > 0 {
+		querySQL += " LIMIT ?"
+		query.args = append(query.args, limit)
+	}
+	rows, err := c.db.QueryContext(ctx, querySQL, query.args...)
 	if err != nil {
 		return nil, err
 	}

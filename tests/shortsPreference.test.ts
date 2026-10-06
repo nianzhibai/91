@@ -688,7 +688,7 @@ test("shorts empty library reuses the homepage empty visual", () => {
   );
   assert.match(
     shortsPageSource,
-    /\{empty && items\.length === 0 && \([\s\S]*?<AdminEmptyVisual[\s\S]*?variant="empty"[\s\S]*?text="当前库中没有视频"[\s\S]*?className="shorts-empty__visual"/
+    /\{empty && items\.length === 0 && \([\s\S]*?<AdminEmptyVisual[\s\S]*?variant="empty"[\s\S]*?text=\{mode === "hot" \? "暂无最热视频" : "当前库中没有视频"\}[\s\S]*?className="shorts-empty__visual"/
   );
   assert.match(
     shortsPageSource,

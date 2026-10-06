@@ -1273,7 +1273,7 @@ function ShortsPlayback({
             <div className="shorts-empty">
               <AdminEmptyVisual
                 variant="empty"
-                text="当前库中没有视频"
+                text={mode === "hot" ? "暂无最热视频" : "当前库中没有视频"}
                 className="shorts-empty__visual"
               />
             </div>

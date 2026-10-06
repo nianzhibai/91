@@ -169,8 +169,8 @@ export type ShortsBatchOutcome =
 
 /**
  * 向后端 token/cursor feed 请求下一批视频。令牌因后端重启或超时失效时
- * 自动开新一轮；快照里剩下的视频全部被删除/隐藏时换新快照重试。只有
- * 真实空库才返回 empty。每次请求游标变化都先经 commitFeed 通知调用方，
+ * 自动开新一轮；快照里剩下的视频全部失去资格时换新快照重试。只有
+ * 当前栏目没有可用视频才返回 empty。每次请求游标变化都先经 commitFeed 通知调用方，
  * 让内存中的续播游标与这里的恢复流程保持同步。
  */
 export async function requestShortsBatch(options: {

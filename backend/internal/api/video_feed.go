@@ -154,7 +154,7 @@ func (s *Server) newVideoFeedSnapshot(r *http.Request) (videoFeedSnapshotSeed, e
 			params.Sort = "latest"
 			params.PreferReadyThumbnails = true
 		}
-		videoIDs, err := s.Catalog.ListVideoIDs(r.Context(), params)
+		videoIDs, err := s.Catalog.ListVideoIDs(r.Context(), params, 0)
 		if err != nil {
 			return videoFeedSnapshotSeed{}, err
 		}

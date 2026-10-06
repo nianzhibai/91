@@ -39,7 +39,7 @@ export function useShortsFeed(
   const hasLoadedBatchRef = useRef(false);
   // 后端报告"本轮已耗尽"，下次请求前会自动重置
   const [roundComplete, setRoundComplete] = useState(false);
-  // 没有任何视频可放（库为空 / 全部隐藏）
+  // 当前栏目没有可用视频（库为空 / 全部隐藏 / 最热栏目没有获赞视频）
   const [empty, setEmpty] = useState(false);
   // 请求失败和真实空库必须分开，不能再把断网误报为"没有视频"。
   const [loadError, setLoadError] = useState(false);
@@ -128,8 +128,8 @@ export function useShortsFeed(
 
       if (outcome.kind === "empty") {
         setEmpty(true);
-        // 库在旧队列播放期间可能被清空。丢弃已经失效的队列并停止换轮，
-        // 否则末条视频的预取 effect 会持续请求同一个空库。
+        // 当前栏目在旧队列播放期间可能已无可用视频。丢弃旧队列并停止换轮，
+        // 否则末条视频的预取 effect 会持续请求同一个空栏目。
         onQueueResetRef.current();
         setItems([]);
         persistedFeedHighPositionRef.current = -1;
