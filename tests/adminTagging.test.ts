@@ -50,7 +50,7 @@ test("admin tags API treats a legacy null collection as empty", async () => {
   }
 });
 
-test("admin tags keep builtin, user, and auto-generated tag management", () => {
+test("admin tags manage custom and generated tags", () => {
   assert.match(apiSource, /export type TagMatchRules/);
   assert.match(apiSource, /matchRules\?: \{/);
   assert.match(apiSource, /keywords\?: string\[\]/);
@@ -120,7 +120,7 @@ test("admin tags keep builtin, user, and auto-generated tag management", () => {
   assert.doesNotMatch(tagsPageSource, /关闭后扫描只匹配已有标签。/);
   assert.doesNotMatch(tagsPageSource, /<strong>\{autoGenerateTagsEnabled \? "开启" : "关闭"\}<\/strong>/);
   assert.doesNotMatch(tagsPageSource, /AI 辅助打标|AI 打标|tagging\.llm/);
-  assert.match(tagsPageSource, /const TAG_SOURCE_FILTERS = \["builtin", "user", "generated"\]/);
+  assert.match(tagsPageSource, /const TAG_SOURCE_FILTERS = \["user", "generated"\]/);
   assert.match(tagsPageSource, /function tagSourceKey/);
   assert.match(tagsPageSource, /tag\.crawlerOwned \|\| tag\.source === "generated" \? "generated" : tag\.source/);
   assert.match(tagsPageSource, /source === "crawler" \|\| source === "generated"/);
@@ -134,8 +134,8 @@ test("admin tags keep builtin, user, and auto-generated tag management", () => {
   assert.match(tagsPageSource, /return "爬虫脚本"/);
   assert.match(tagsPageSource, /return "crawler"/);
   assert.match(tagsPageSource, /tag\.source === "generated"/);
-  assert.match(tagsPageSource, /return "AV"/);
-  assert.match(tagsPageSource, /return "av"/);
+  assert.doesNotMatch(tagsPageSource, /return "AV"/);
+  assert.doesNotMatch(tagsPageSource, /return "av"/);
   assert.doesNotMatch(tagsPageSource, /const displayAliases = tagDisplayAliases\(tag\);/);
   assert.doesNotMatch(tagsPageSource, /admin-tag-card__aliases/);
   assert.doesNotMatch(tagsPageSource, /admin-tag-card__alias-pill/);
@@ -236,8 +236,7 @@ test("admin tag dialogs use the lightweight modal style", () => {
 test("admin tag source badges share one readable palette across themes", () => {
   const badge = ruleBody(adminCss, ".admin-tag-card__source-badge");
   const userBadge = ruleBody(adminCss, '.admin-tag-card__source-badge[data-source="user"]');
-  const builtinBadge = ruleBody(adminCss, '.admin-tag-card__source-badge[data-source="builtin"]');
-  const avBadge = ruleBody(adminCss, '.admin-tag-card__source-badge[data-source="generated"]');
+  const generatedBadge = ruleBody(adminCss, '.admin-tag-card__source-badge[data-source="generated"]');
   const crawlerBadge = ruleBody(adminCss, '.admin-tag-card__source-badge[data-source="crawler"]');
   const darkTokens = ruleBody(tokensCss, ':root[data-theme="dark"]');
   const pinkTokens = ruleBody(tokensCss, ':root[data-theme="pink"]');
@@ -252,20 +251,16 @@ test("admin tag source badges share one readable palette across themes", () => {
 
   assert.match(userBadge, /--tag-source-bg\s*:\s*var\(--tag-source-user-bg\)/);
   assert.match(userBadge, /--tag-source-fg\s*:\s*var\(--tag-source-user-fg\)/);
-  assert.match(builtinBadge, /--tag-source-bg\s*:\s*var\(--tag-source-builtin-bg\)/);
-  assert.match(builtinBadge, /--tag-source-fg\s*:\s*var\(--tag-source-builtin-fg\)/);
-  assert.match(adminCss, /\.admin-tag-card__source-badge\[data-source="av"\],\s*\.admin-tag-card__source-badge\[data-source="generated"\]/s);
-  assert.match(avBadge, /--tag-source-bg\s*:\s*var\(--tag-source-av-bg\)/);
-  assert.match(avBadge, /--tag-source-fg\s*:\s*var\(--tag-source-av-fg\)/);
+  assert.doesNotMatch(adminCss, /data-source="av"/);
+  assert.match(generatedBadge, /--tag-source-bg\s*:\s*var\(--tag-source-generated-bg\)/);
+  assert.match(generatedBadge, /--tag-source-fg\s*:\s*var\(--tag-source-generated-fg\)/);
   assert.match(crawlerBadge, /--tag-source-bg\s*:\s*var\(--tag-source-crawler-bg\)/);
   assert.match(crawlerBadge, /--tag-source-fg\s*:\s*var\(--tag-source-crawler-fg\)/);
 
   assert.match(darkTokens, /--tag-source-user-bg\s*:\s*#dff3ec/);
   assert.match(darkTokens, /--tag-source-user-fg\s*:\s*#126b47/);
-  assert.match(darkTokens, /--tag-source-builtin-bg\s*:\s*#e3ecf9/);
-  assert.match(darkTokens, /--tag-source-builtin-fg\s*:\s*#245ca8/);
-  assert.match(darkTokens, /--tag-source-av-bg\s*:\s*#f9eddc/);
-  assert.match(darkTokens, /--tag-source-av-fg\s*:\s*#7a4a00/);
+  assert.match(darkTokens, /--tag-source-generated-bg\s*:\s*#f9eddc/);
+  assert.match(darkTokens, /--tag-source-generated-fg\s*:\s*#7a4a00/);
   assert.match(darkTokens, /--tag-source-crawler-bg\s*:\s*#eeeafc/);
   assert.match(darkTokens, /--tag-source-crawler-fg\s*:\s*#62429b/);
   assert.doesNotMatch(pinkTokens, /--tag-source-/);
@@ -330,4 +325,10 @@ test("admin videos render tag assignment source and evidence", () => {
   assert.match(videosPageSource, /tagAssignmentSourceLabel/);
   assert.match(videosPageSource, /tagAssignmentTitle/);
   assert.match(videosPageSource, /video\.tagEvidence\?\.\[label\]/);
+});
+
+test("tag management has no built-in source category", () => {
+ assert.doesNotMatch(tagsPageSource, /builtin|内置/);
+ assert.doesNotMatch(adminCss, /data-source="builtin"/);
+ assert.doesNotMatch(tokensCss, /tag-source-builtin-/);
 });

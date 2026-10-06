@@ -18,7 +18,6 @@ const (
 	DefaultNightlyDisabled       = false
 	DefaultNightlyStartTime      = "01:00"
 	DefaultNightlyTimezone       = schedule.DefaultTimezone
-	DefaultBuiltinTagsEnabled    = true
 	DefaultGenerationConcurrency = 1
 	MaxGenerationConcurrency     = 5
 )
@@ -40,7 +39,6 @@ type Config struct {
 	Generation   Generation   `yaml:"generation"`
 	Proxy        Proxy        `yaml:"proxy"`
 	Nightly      Nightly      `yaml:"nightly"`
-	Tags         Tags         `yaml:"tags"`
 	RemoteUpload RemoteUpload `yaml:"remote_upload"`
 	// Telegram configuration is persisted in YAML and applied without restarting.
 	Telegram Telegram `yaml:"telegram"`
@@ -114,30 +112,6 @@ func setScalarValue(parent *yaml.Node, key, value string) {
 	parent.Content = append(parent.Content,
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value},
-	)
-}
-
-func setBooleanValue(parent *yaml.Node, key string, value bool) {
-	rendered := "false"
-	if value {
-		rendered = "true"
-	}
-	if parent.Kind != yaml.MappingNode {
-		parent.Kind = yaml.MappingNode
-		parent.Content = nil
-	}
-	for i := 0; i+1 < len(parent.Content); i += 2 {
-		if parent.Content[i].Value == key {
-			parent.Content[i+1].Kind = yaml.ScalarNode
-			parent.Content[i+1].Tag = "!!bool"
-			parent.Content[i+1].Value = rendered
-			parent.Content[i+1].Content = nil
-			return
-		}
-	}
-	parent.Content = append(parent.Content,
-		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
-		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: rendered},
 	)
 }
 
@@ -247,16 +221,6 @@ type Nightly struct {
 	Timezone string `yaml:"timezone,omitempty"`
 	// CronHour 仅用于读取旧版配置。启动迁移会把它转换为 start_time。
 	CronHour int `yaml:"cron_hour,omitempty"`
-}
-
-// Tags controls the built-in tag catalog. A pointer preserves the distinction
-// between an omitted legacy field and an explicit false value during migration.
-type Tags struct {
-	BuiltinPackEnabled *bool `yaml:"builtin_pack_enabled,omitempty"`
-}
-
-func (t Tags) IsBuiltinPackEnabled() bool {
-	return t.BuiltinPackEnabled == nil || *t.BuiltinPackEnabled
 }
 
 func NormalizeNightlyStartTime(value string) (string, error) {
@@ -419,10 +383,6 @@ func (c *Config) applyDefaults() error {
 			return fmt.Errorf("nightly.timezone: %w", err)
 		}
 		c.Nightly.Timezone = timezone
-	}
-	if c.Tags.BuiltinPackEnabled == nil {
-		enabled := DefaultBuiltinTagsEnabled
-		c.Tags.BuiltinPackEnabled = &enabled
 	}
 	if c.RemoteUpload.DiskReserveBytes <= 0 {
 		c.RemoteUpload.DiskReserveBytes = 1 << 30

@@ -67,9 +67,6 @@ func TestConfigSavePersistsAndHotUpdatesRuntimeSettings(t *testing.T) {
 	if !next.Settings.NightlyDisabled || !app.nightlyRunner.Disabled() {
 		t.Fatalf("live scheduler disabled state was not applied: %#v", next.Settings)
 	}
-	if next.Settings.BuiltinTagsEnabled {
-		t.Fatalf("updated settings = %#v, want built-in tags disabled", next.Settings)
-	}
 	if next.RestartRequired {
 		t.Fatal("preview concurrency should hot update without a restart")
 	}
@@ -84,12 +81,8 @@ func TestConfigSavePersistsAndHotUpdatesRuntimeSettings(t *testing.T) {
 	if latePreview.Limiter != previews || lateThumb.Limiter != thumbnails || lateFingerprint.Config.Limiter != fingerprints {
 		t.Fatal("late attached drive did not receive live global limits")
 	}
-	enabled, err := cat.BuiltinTagsEnabled(context.Background())
-	if err != nil || enabled {
-		t.Fatalf("catalog built-in setting = %v, %v; want disabled", enabled, err)
-	}
-	if tagCacheInvalidations != 1 {
-		t.Fatalf("tag cache invalidations = %d, want 1", tagCacheInvalidations)
+	if tagCacheInvalidations != 0 {
+		t.Fatalf("configuration changes invalidated tags: %d", tagCacheInvalidations)
 	}
 	reloaded, err := config.NewManager(path)
 	if err != nil {
@@ -129,10 +122,7 @@ func TestMigratedRuntimeSettingsCanBeRemovedFromSQLite(t *testing.T) {
 	if err := cat.SetSetting(ctx, legacyNightlyStartTimeSetting, "03:20"); err != nil {
 		t.Fatal(err)
 	}
-	if err := cat.SetSetting(ctx, legacyBuiltinTagsEnabledSetting, "false"); err != nil {
-		t.Fatal(err)
-	}
-	if err := cat.DeleteSettings(ctx, legacyNightlyStartTimeSetting, legacyBuiltinTagsEnabledSetting); err != nil {
+	if err := cat.DeleteSettings(ctx, legacyNightlyStartTimeSetting); err != nil {
 		t.Fatal(err)
 	}
 	legacy, err := loadLegacyRuntimeSettings(ctx, cat)

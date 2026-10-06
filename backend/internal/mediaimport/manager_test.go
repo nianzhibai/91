@@ -29,6 +29,9 @@ func TestManagerDownloadsValidatesAndFinalizesVideo(t *testing.T) {
 			uploaded <- video
 		},
 	})
+	if _, err := cat.CreateTagAndClassify(context.Background(), "奶子", "user"); err != nil {
+		t.Fatal(err)
+	}
 	manager.client = server.Client()
 	startTestManager(t, manager)
 

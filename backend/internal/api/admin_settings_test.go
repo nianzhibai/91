@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -59,15 +58,11 @@ func TestPutSettingsRejectsBuiltinTagConfigOutsideConfigYAML(t *testing.T) {
 		if recorder.Code != http.StatusBadRequest {
 			t.Fatalf("body %s: status = %d, response=%s; want 400", body, recorder.Code, recorder.Body.String())
 		}
-		if !strings.Contains(recorder.Body.String(), "config.yaml") {
-			t.Fatalf("body %s: response does not identify config.yaml ownership: %s", body, recorder.Body.String())
+		if !strings.Contains(recorder.Body.String(), "retired") {
+			t.Fatalf("body %s: response does not identify retired tag configuration: %s", body, recorder.Body.String())
 		}
 	}
 
-	enabled, err := cat.BuiltinTagsEnabled(context.Background())
-	if err != nil || !enabled {
-		t.Fatalf("builtin setting after rejected requests = %v, %v; want enabled", enabled, err)
-	}
 	if tagChanges != 0 {
 		t.Fatalf("tag cache invalidations = %d, want 0", tagChanges)
 	}

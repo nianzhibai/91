@@ -72,9 +72,6 @@ func TestConfigYAMLPutValidatesPersistsAndPublishes(t *testing.T) {
 	if !response.Settings.NightlyDisabled {
 		t.Fatalf("published settings = %#v, want nightly disabled", response.Settings)
 	}
-	if response.Settings.BuiltinTagsEnabled {
-		t.Fatalf("published settings = %#v, want built-in tags disabled", response.Settings)
-	}
 	if response.Settings.PreviewConcurrency != 3 || response.Settings.ThumbnailConcurrency != 2 || response.Settings.FingerprintConcurrency != 4 {
 		t.Fatalf("published settings = %#v, want preview concurrency 3", response.Settings)
 	}

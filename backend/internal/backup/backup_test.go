@@ -1155,8 +1155,11 @@ func TestSelectiveUploadStorageRestoreMergesTargetContent(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	backupTagID, err := env.cat.CreateTagAndClassify(ctx, "backupmerge", "user")
+	backupTag, err := env.cat.EnsureTag(ctx, "backupmerge", "user")
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.cat.ClassifyTagByID(ctx, backupTag.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := env.cat.CreateRemoteUploadJob(
@@ -1179,7 +1182,7 @@ func TestSelectiveUploadStorageRestoreMergesTargetContent(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := env.cat.DeleteTag(ctx, int64(backupTagID)); err != nil {
+	if _, err := env.cat.DeleteTag(ctx, backupTag.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := env.cat.MarkRemoteUploadCanceled(ctx, "source-upload-job"); err != nil {

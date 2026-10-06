@@ -1364,7 +1364,6 @@ export type ConfigSaveResult = {
     nightlyDisabled: boolean;
     nightlyStartTime: string;
     nightlyTimezone: string;
-    builtinTagsEnabled: boolean;
     previewEnabled: boolean;
     previewConcurrency: number;
     thumbnailConcurrency: number;

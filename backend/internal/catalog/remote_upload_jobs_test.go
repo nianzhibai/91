@@ -13,6 +13,8 @@ func TestRemoteUploadJobLifecycleClearsSensitiveURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open catalog: %v", err)
 	}
+	seedCustomTagRules(t, cat)
+
 	defer cat.Close()
 
 	job, err := cat.CreateRemoteUploadJob(

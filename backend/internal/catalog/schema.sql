@@ -120,7 +120,7 @@ CREATE TABLE IF NOT EXISTS tags (
     -- 匹配规则 JSON：{"keywords":[],"matchAvCode":bool,"avCodePrefixes":[]}
     -- 普通标签规则为空时按标签名匹配。
     match_rules TEXT NOT NULL DEFAULT '{}',
-    source      TEXT NOT NULL DEFAULT 'user',     -- builtin / user / generated
+    source      TEXT NOT NULL DEFAULT 'user',     -- user / generated
     origin      TEXT NOT NULL DEFAULT '',         -- crawler 等来源型标签标记；不参与匹配来源归一
     created_at  INTEGER NOT NULL,
     updated_at  INTEGER NOT NULL

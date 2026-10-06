@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/video-site/backend/internal/fixedtags"
 	"github.com/video-site/backend/internal/tagging"
 )
 
@@ -58,34 +57,20 @@ func (c *Catalog) Matcher(ctx context.Context) (*tagging.Matcher, error) {
 }
 
 func (c *Catalog) buildMatcher(ctx context.Context) (*tagging.Matcher, error) {
-	builtinTagsEnabled, err := c.BuiltinTagsEnabled(ctx)
-	if err != nil {
-		return nil, err
-	}
-	avEnabled, err := c.avCodeMatchingEnabled(ctx)
-	if err != nil {
-		return nil, err
-	}
 	rows, err := c.db.QueryContext(ctx,
-		`SELECT label, COALESCE(match_rules, '{}'), source, COALESCE(origin, '') FROM tags ORDER BY id ASC`)
+		`SELECT label, COALESCE(match_rules, '{}'), COALESCE(origin, '') FROM tags ORDER BY id ASC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var tagRules []tagging.TagRule
 	for rows.Next() {
-		var label, rulesJSON, source, origin string
-		if err := rows.Scan(&label, &rulesJSON, &source, &origin); err != nil {
+		var label, rulesJSON, origin string
+		if err := rows.Scan(&label, &rulesJSON, &origin); err != nil {
 			return nil, err
 		}
 		origin = strings.ToLower(strings.TrimSpace(origin))
-		if origin == avSeriesOrigin || origin == telegramTagOrigin {
-			continue
-		}
-		if !builtinTagsEnabled && normalizeTagSource(source) == fixedtags.SourceBuiltin {
-			continue
-		}
-		if !avEnabled && strings.EqualFold(label, avTagLabel) {
+		if origin == telegramTagOrigin {
 			continue
 		}
 		var rule tagging.Rule
@@ -162,9 +147,7 @@ func (c *Catalog) LookupTagLabel(ctx context.Context, label string) (string, boo
 }
 
 // LookupUserSelectableTagLabel resolves a label that may be assigned explicitly
-// by a user. Generated tags describe crawler provenance or derived AV series and
-// are maintained by their respective pipelines; the AV umbrella is inferred
-// from a code and is therefore not an upload choice either.
+// by a user. Generated provenance tags are maintained by their import pipelines.
 func (c *Catalog) LookupUserSelectableTagLabel(ctx context.Context, label string) (string, bool, error) {
 	label = cleanTagLabel(label)
 	if label == "" {
@@ -184,14 +167,7 @@ func (c *Catalog) LookupUserSelectableTagLabel(ctx context.Context, label string
 }
 
 func isUserSelectableTag(tag Tag) bool {
-	switch normalizeTagSource(tag.Source) {
-	case "user":
-		return true
-	case "builtin":
-		return !strings.EqualFold(tag.Label, avTagLabel)
-	default:
-		return false
-	}
+	return normalizeTagSource(tag.Source) == "user"
 }
 
 // MatchTags 对一段文本运行标签匹配，返回命中的标签名。
@@ -204,75 +180,22 @@ func (c *Catalog) MatchTags(ctx context.Context, text string) ([]string, error) 
 }
 
 // MatchTagAssignments matches video metadata against the existing tag pool.
-// The only tag definition it may create is an AV series label such as FC2PPV,
-// and only while the built-in AV mechanism is enabled.
+// Matching never creates tag definitions; recognized codes only add AV.
 func (c *Catalog) MatchTagAssignments(ctx context.Context, title, fileName, author, dirName string, ancestorDirNames ...string) ([]TagAssignment, error) {
 	matcher, err := c.Matcher(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return c.matchTagAssignmentsWithMatcher(ctx, matcher, title, fileName, author, dirName, ancestorDirNames...)
+	return matchTagAssignmentsWithMatcher(matcher, title, fileName, author, dirName, ancestorDirNames...), nil
 }
 
-func (c *Catalog) matchTagAssignmentsWithMatcher(ctx context.Context, matcher *tagging.Matcher, title, fileName, author, dirName string, ancestorDirNames ...string) ([]TagAssignment, error) {
+func matchTagAssignmentsWithMatcher(matcher *tagging.Matcher, title, fileName, author, dirName string, ancestorDirNames ...string) []TagAssignment {
 	matches := matcher.Match(matchFields(title, fileName, author, dirName, ancestorDirNames...)...)
 	out := make([]TagAssignment, 0, len(matches))
-	seen := map[string]struct{}{}
 	for _, m := range matches {
-		seen[strings.ToLower(strings.TrimSpace(m.Label))] = struct{}{}
 		out = append(out, TagAssignment{Label: m.Label, Source: "auto", Evidence: m.Evidence()})
 	}
-	series, evidence, err := c.matchAVSeriesAssignment(ctx, title, fileName, author, dirName, ancestorDirNames...)
-	if err != nil {
-		return nil, err
-	}
-	if series != "" {
-		key := strings.ToLower(series)
-		if _, ok := seen[key]; !ok {
-			out = append(out, TagAssignment{Label: series, Source: "auto", Evidence: evidence})
-		}
-	}
-	return out, nil
-}
-
-func (c *Catalog) matchAVSeriesAssignment(ctx context.Context, title, fileName, author, dirName string, ancestorDirNames ...string) (string, string, error) {
-	enabled, err := c.avCodeMatchingEnabled(ctx)
-	if err != nil || !enabled {
-		return "", "", err
-	}
-	avCodes, err := c.avCodeMatcher(ctx)
-	if err != nil {
-		return "", "", err
-	}
-	for _, field := range matchFields(title, fileName, author, dirName, ancestorDirNames...) {
-		code := avCodes.Find(field.Text)
-		if code == "" {
-			continue
-		}
-		series := avCodes.SeriesOf(code)
-		if series == "" {
-			continue
-		}
-		tag, err := c.ensureAVSeriesTag(ctx, series)
-		if err != nil {
-			return "", "", err
-		}
-		evidence := code
-		if field.Name != "" {
-			evidence = field.Name + ":" + code
-		}
-		return tag.Label, evidence, nil
-	}
-	return "", "", nil
-}
-
-func (c *Catalog) avCodeMatcher(ctx context.Context) (*tagging.AVCodeMatcher, error) {
-	tag, err := c.getTagByLabel(ctx, avTagLabel)
-	if err != nil {
-		return nil, err
-	}
-	rule := effectiveRule(avTagLabel, tag.MatchRules)
-	return tagging.NewAVCodeMatcher(rule.AVCodePrefixes), nil
+	return out
 }
 
 func (c *Catalog) ensureTag(ctx context.Context, label string, source string) (Tag, error) {
@@ -300,7 +223,7 @@ func (c *Catalog) EnsureCrawlerTag(ctx context.Context, label string) (Tag, erro
 
 func (c *Catalog) markTagOrigin(ctx context.Context, tagID int64, origin string) error {
 	origin = strings.TrimSpace(strings.ToLower(origin))
-	if origin != "crawler" && origin != avSeriesOrigin {
+	if origin != "crawler" {
 		origin = ""
 	}
 	res, err := c.db.ExecContext(ctx, `
@@ -346,14 +269,14 @@ func (c *Catalog) ensureTagWithRules(ctx context.Context, label string, rule tag
 	if source == "" {
 		source = "user"
 	}
-	if source != fixedtags.SourceBuiltin && source != "user" {
+	if source != "user" {
 		return Tag{}, ErrInvalidTagSource
 	}
 	return c.ensureTagDefinition(ctx, label, rule, source)
 }
 
-// ensureTagDefinition persists definitions for explicit user/builtin tags and
-// the dedicated crawler/AV-series creators. It never derives labels from text.
+// ensureTagDefinition persists definitions for explicit user tags and
+// the crawler import pipeline. It never derives labels from text.
 func (c *Catalog) ensureTagDefinition(ctx context.Context, label string, rule tagging.Rule, source string) (Tag, error) {
 	label = cleanTagLabel(label)
 	if label == "" {
@@ -362,19 +285,7 @@ func (c *Catalog) ensureTagDefinition(ctx context.Context, label string, rule ta
 	if isAVCodePollutedLabel(label) {
 		label = avTagLabel
 		rule = avTagRule
-		source = fixedtags.SourceBuiltin
-	}
-	if source == "builtin" && !fixedtags.IsBuiltinLabel(label) {
-		return Tag{}, ErrInvalidTagSource
-	}
-	if source == fixedtags.SourceBuiltin {
-		enabled, err := c.BuiltinTagsEnabled(ctx)
-		if err != nil {
-			return Tag{}, err
-		}
-		if !enabled {
-			return Tag{}, ErrBuiltinTagsDisabled
-		}
+		source = "user"
 	}
 	if source == "generated" {
 		tag, err := c.getTagByLabel(ctx, label)
@@ -399,42 +310,6 @@ VALUES (?, ?, ?, ?, ?)`, label, string(rulesJSON), source, now, now)
 	}
 	changed := inserted
 	if !inserted {
-		if source == fixedtags.SourceBuiltin {
-			res, err := c.db.ExecContext(ctx, `
-UPDATE tags
-   SET source = ?, updated_at = ?
- WHERE label = ? COLLATE NOCASE
-   AND source != ?
-   AND source != 'user'`,
-				source, now, label, source)
-			if err != nil {
-				return Tag{}, err
-			}
-			if n, err := res.RowsAffected(); err == nil && n > 0 {
-				changed = true
-			}
-		}
-		if strings.EqualFold(label, avTagLabel) && source == fixedtags.SourceBuiltin {
-			current, err := c.getTagByLabel(ctx, label)
-			if err != nil {
-				return Tag{}, err
-			}
-			legacyMissingPrefixes := current.MatchRules.IsEmpty() ||
-				(current.MatchRules.MatchAVCode && len(current.MatchRules.AVCodePrefixes) == 0)
-			if legacyMissingPrefixes {
-				res, err := c.db.ExecContext(ctx, `
-UPDATE tags
-   SET match_rules = ?, updated_at = ?
- WHERE label = ? COLLATE NOCASE`,
-					string(rulesJSON), now, label)
-				if err != nil {
-					return Tag{}, err
-				}
-				if n, err := res.RowsAffected(); err == nil && n > 0 {
-					changed = true
-				}
-			}
-		}
 		if !rule.IsEmpty() {
 			// 升级回填：已有行没有显式规则时补上默认规则。
 			res, err := c.db.ExecContext(ctx, `
@@ -455,89 +330,9 @@ UPDATE tags SET match_rules = ?, updated_at = ?
 			return Tag{}, err
 		}
 	}
-	if strings.EqualFold(label, avTagLabel) && (source == fixedtags.SourceBuiltin || source == "user") {
-		if err := c.setAVCodeMatchingDisabled(ctx, false); err != nil {
-			return Tag{}, err
-		}
-	}
 	return c.getTagByLabel(ctx, label)
 }
 
-func (c *Catalog) ensureAVSeriesTag(ctx context.Context, series string) (Tag, error) {
-	series = strings.ToUpper(cleanTagLabel(series))
-	if series == "" {
-		return Tag{}, errors.New("AV series tag label is required")
-	}
-	tag, err := c.ensureTagDefinition(ctx, series, tagging.Rule{Keywords: []string{series}}, "generated")
-	if err != nil {
-		return Tag{}, err
-	}
-	if tag.Source == "generated" {
-		if err := c.markTagOrigin(ctx, tag.ID, avSeriesOrigin); err != nil {
-			return Tag{}, err
-		}
-	}
-	return c.getTagByLabel(ctx, series)
-}
-
-func (c *Catalog) avCodeMatchingEnabled(ctx context.Context) (bool, error) {
-	builtinTagsEnabled, err := c.BuiltinTagsEnabled(ctx)
-	if err != nil || !builtinTagsEnabled {
-		return false, err
-	}
-	disabled, err := c.avCodeMatchingDisabled(ctx)
-	if err != nil || disabled {
-		return false, err
-	}
-	if _, err := c.getTagByLabel(ctx, avTagLabel); errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	} else if err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-func (c *Catalog) avCodeMatchingDisabled(ctx context.Context) (bool, error) {
-	raw, err := c.GetSetting(ctx, settingAVCodeMatchingDisabled, "false")
-	if err != nil {
-		return false, err
-	}
-	return parseSettingBool(raw, false), nil
-}
-
-func (c *Catalog) setAVCodeMatchingDisabled(ctx context.Context, disabled bool) error {
-	current, err := c.avCodeMatchingDisabled(ctx)
-	if err != nil {
-		return err
-	}
-	if current == disabled {
-		return nil
-	}
-	value := "false"
-	if disabled {
-		value = "true"
-	}
-	if err := c.SetSetting(ctx, settingAVCodeMatchingDisabled, value); err != nil {
-		return err
-	}
-	return c.bumpTagRulesVersion(ctx)
-}
-
-func setAVCodeMatchingDisabledTx(ctx context.Context, tx *sql.Tx, disabled bool) error {
-	value := "false"
-	if disabled {
-		value = "true"
-	}
-	_, err := tx.ExecContext(ctx, `
-INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
-ON CONFLICT(key) DO UPDATE SET
-  value = excluded.value,
-  updated_at = excluded.updated_at`, settingAVCodeMatchingDisabled, value, time.Now().UnixMilli())
-	return err
-}
-
-// matchFields keeps directory names separate so compact matching cannot join
-// words across directory boundaries. Nearer directories take evidence priority.
 func matchFields(title, fileName, author, dirName string, ancestorDirNames ...string) []tagging.Field {
 	fields := []tagging.Field{
 		{Name: "标题", Text: title},

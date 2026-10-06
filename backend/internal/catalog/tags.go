@@ -7,8 +7,7 @@ import (
 )
 
 var ErrUnknownTag = errors.New("unknown tag")
-var ErrInvalidTagSource = errors.New("tag source must be builtin or user")
-var ErrBuiltinTagsDisabled = errors.New("built-in tags are disabled")
+var ErrInvalidTagSource = errors.New("tag source must be user")
 
 const avTagLabel = "AV"
 
@@ -25,13 +24,8 @@ func avRuleFromPrefixes(prefixes []string) tagging.Rule {
 // settingTagRulesVersion 是标签规则版本号（settings 表）。任何标签的创建、
 // 规则修改、删除都会 +1；Matcher 缓存据此失效重建。
 const (
-	settingTagRulesVersion        = "tags.rules_version"
-	settingAVCodeMatchingDisabled = "tags.av_code_matching_disabled"
-	settingBuiltinTagPackInit     = "tags.builtin_pack_initialized_v1"
-	settingBuiltinTagsEnabled     = "tags.builtin_pack_enabled"
+	settingTagRulesVersion = "tags.rules_version"
 )
-
-const avSeriesOrigin = "av_series"
 
 type Tag struct {
 	ID           int64        `json:"id"`

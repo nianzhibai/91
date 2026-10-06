@@ -36,11 +36,6 @@ nightly:
   start_time: "01:00"
   timezone: "Asia/Shanghai"
 
-# 标签：热更新
-tags:
-  # 启用内置标签包
-  builtin_pack_enabled: true
-
 # 媒体生成：热更新；各类并发数独立，所有来源共享，范围 1–5
 generation:
   thumbnail_concurrency: 1

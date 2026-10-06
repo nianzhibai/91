@@ -56,6 +56,9 @@ func (f *fakeRemoteUploadService) Cancel(
 
 func TestCreateRemoteUploadReturnsAcceptedRedactedJob(t *testing.T) {
 	cat := openRemoteUploadAPICatalog(t)
+	if _, err := cat.CreateTagAndClassify(context.Background(), "奶子", "user"); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now()
 	service := &fakeRemoteUploadService{
 		createJob: &catalog.RemoteUploadJob{

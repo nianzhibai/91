@@ -23,7 +23,7 @@ export function TelegramSettingsSection({
     <div className="admin-telegram-settings" hidden={!active}>
       <SettingsSection
         id="config-telegram"
-        index="04"
+        index="03"
         icon={<TelegramIcon size={16} />}
         title="Telegram"
         description="管理机器人连接与视频接收"

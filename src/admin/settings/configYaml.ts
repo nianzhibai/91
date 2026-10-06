@@ -19,7 +19,6 @@ export type SettingsDraft = TelegramDraft & {
   nightlyDisabled: boolean;
   nightlyStartTime: string;
   nightlyTimezone: string;
-  builtinTagsEnabled: boolean;
   previewConcurrency: number;
   thumbnailConcurrency: number;
   fingerprintConcurrency: number;
@@ -33,7 +32,6 @@ export const DEFAULT_DRAFT: SettingsDraft = {
   nightlyDisabled: false,
   nightlyStartTime: "01:00",
   nightlyTimezone: "Asia/Shanghai",
-  builtinTagsEnabled: true,
   previewConcurrency: 1,
   thumbnailConcurrency: 1,
   fingerprintConcurrency: 1,
@@ -177,30 +175,12 @@ function draftFromDocument(document: ReturnType<typeof configDocument>): Setting
     "fingerprint_concurrency", DEFAULT_DRAFT.fingerprintConcurrency
   );
 
-  const tagsNode = document.get("tags", true);
-  if (
-    tagsNode !== undefined &&
-    tagsNode !== null &&
-    !isMap(tagsNode) &&
-    !(isScalar(tagsNode) && tagsNode.value === null)
-  ) {
-    throw new Error("tags 必须是映射对象");
-  }
-  const configuredBuiltinTags = document.getIn(["tags", "builtin_pack_enabled"]);
-  let builtinTagsEnabled = DEFAULT_DRAFT.builtinTagsEnabled;
-  if (configuredBuiltinTags !== undefined && configuredBuiltinTags !== null) {
-    if (typeof configuredBuiltinTags !== "boolean") {
-      throw new Error("tags.builtin_pack_enabled 必须是布尔值");
-    }
-    builtinTagsEnabled = configuredBuiltinTags;
-  }
   return {
     ...telegramDraftFromDocument(document),
     previewEnabled,
     nightlyDisabled,
     nightlyStartTime,
     nightlyTimezone,
-    builtinTagsEnabled,
     previewConcurrency,
     thumbnailConcurrency,
     fingerprintConcurrency,
@@ -708,23 +688,6 @@ function nightlyDisabledEdits(
   );
 }
 
-function builtinTagsEnabledEdits(
-  source: string,
-  document: ReturnType<typeof configDocument>,
-  value: boolean
-) {
-  return booleanFieldEdits(
-    source,
-    document,
-    {
-      section: "tags",
-      key: "builtin_pack_enabled",
-      path: "tags.builtin_pack_enabled",
-    },
-    value
-  );
-}
-
 function replaceIntegerPairValue(
   source: string,
   pair: ParsedPair,
@@ -937,14 +900,6 @@ export function applyVisualFields(
       );
     }
   }
-  if (fields.has("builtinTagsEnabled")) {
-    const document = configDocument(updated);
-    updated = applySourceEdits(
-      updated,
-      builtinTagsEnabledEdits(updated, document, draft.builtinTagsEnabled)
-    );
-  }
-
   for (const field of TELEGRAM_FIELDS) {
     if (!fields.has(field)) continue;
     updated = applySourceEdits(updated, telegramSettingEdits(
@@ -971,9 +926,6 @@ export function changedVisualFields(saved: SettingsDraft, draft: SettingsDraft) 
   }
   if (saved.nightlyTimezone !== draft.nightlyTimezone) {
     fields.add("nightlyTimezone");
-  }
-  if (saved.builtinTagsEnabled !== draft.builtinTagsEnabled) {
-    fields.add("builtinTagsEnabled");
   }
   if (saved.previewConcurrency !== draft.previewConcurrency) {
     fields.add("previewConcurrency");

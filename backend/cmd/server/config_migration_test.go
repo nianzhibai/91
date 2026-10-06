@@ -39,9 +39,6 @@ func TestStartupConfigMigrationImportsLegacyValuesBeforeAddingDefaults(t *testin
 			if err := cat.SetSetting(ctx, legacyNightlyStartTimeSetting, "03:25"); err != nil {
 				t.Fatal(err)
 			}
-			if err := cat.SetSetting(ctx, legacyBuiltinTagsEnabledSetting, "false"); err != nil {
-				t.Fatal(err)
-			}
 			db, err := sql.Open("sqlite", dbPath)
 			if err != nil {
 				t.Fatal(err)
@@ -58,7 +55,7 @@ func TestStartupConfigMigrationImportsLegacyValuesBeforeAddingDefaults(t *testin
 			if err != nil {
 				t.Fatal(err)
 			}
-			if cfg.Nightly.StartTime != "03:25" || cfg.Generation.PreviewConcurrency != 4 || cfg.Tags.IsBuiltinPackEnabled() != explicit {
+			if cfg.Nightly.StartTime != "03:25" || cfg.Generation.PreviewConcurrency != 4 {
 				t.Fatal("startup defaults overwrote migrated or explicit runtime settings")
 			}
 			if explicit {
@@ -75,7 +72,7 @@ func TestStartupConfigMigrationImportsLegacyValuesBeforeAddingDefaults(t *testin
 			if err != nil || stored.Version != "" {
 				t.Fatalf("legacy Telegram settings were not cleared: %v", err)
 			}
-			for _, key := range []string{legacyNightlyStartTimeSetting, legacyBuiltinTagsEnabledSetting} {
+			for _, key := range []string{legacyNightlyStartTimeSetting, "tags.builtin_pack_enabled"} {
 				if value, err := cat.GetSetting(ctx, key, "missing"); err != nil || value != "missing" {
 					t.Fatalf("legacy runtime setting %s was not cleared: %v", key, err)
 				}

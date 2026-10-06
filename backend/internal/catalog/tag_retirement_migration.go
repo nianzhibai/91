@@ -2,11 +2,28 @@ package catalog
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"log"
+	"strings"
+
+	"github.com/video-site/backend/internal/tagging"
 )
 
+const retiredGeneratedTagIDsSQL = `
+SELECT t.id
+  FROM tags t
+ WHERE lower(trim(COALESCE(t.source, ''))) = 'generated'
+   AND lower(trim(COALESCE(t.origin, ''))) != 'crawler'
+   AND NOT EXISTS (
+     SELECT 1
+       FROM video_tags vt_crawler
+      WHERE vt_crawler.tag_id = t.id
+        AND lower(trim(COALESCE(vt_crawler.source, ''))) = 'crawler'
+   )`
+
 // removeAutomaticTaggingArtifacts removes the retired "create new labels from
-// content" model. It preserves builtin/user tag definitions plus crawler-owned
+// content" model. It preserves user tag definitions plus crawler-owned
 // tags, and leaves engine assignments that point at preserved tags for the
 // subsequent existing-tag retag pass to refresh.
 func (c *Catalog) removeAutomaticTaggingArtifacts(ctx context.Context) error {
@@ -16,25 +33,12 @@ func (c *Catalog) removeAutomaticTaggingArtifacts(ctx context.Context) error {
 	}
 	defer tx.Rollback()
 
-	generatedTagFilter := `
-SELECT t.id
-  FROM tags t
- WHERE lower(trim(COALESCE(t.source, ''))) = 'generated'
-   AND lower(trim(COALESCE(t.origin, ''))) != 'crawler'
-   AND lower(trim(COALESCE(t.origin, ''))) != '` + avSeriesOrigin + `'
-   AND NOT EXISTS (
-     SELECT 1
-       FROM video_tags vt_crawler
-      WHERE vt_crawler.tag_id = t.id
-        AND lower(trim(COALESCE(vt_crawler.source, ''))) = 'crawler'
-   )`
-
 	affectedRows, err := tx.QueryContext(ctx, `
 SELECT DISTINCT vt.video_id
   FROM video_tags vt
   LEFT JOIN tags t ON t.id = vt.tag_id
  WHERE lower(trim(COALESCE(vt.source, ''))) IN ('series', 'propagated')
-    OR vt.tag_id IN (`+generatedTagFilter+`)`)
+    OR vt.tag_id IN (`+retiredGeneratedTagIDsSQL+`)`)
 	if err != nil {
 		return err
 	}
@@ -55,6 +59,10 @@ SELECT DISTINCT vt.video_id
 		return err
 	}
 
+	if err := mergeRetiredAVSeriesAssignmentsTx(ctx, tx); err != nil {
+		return err
+	}
+
 	removedAssignments := int64(0)
 	res, err := tx.ExecContext(ctx, `
 DELETE FROM video_tags
@@ -65,7 +73,7 @@ DELETE FROM video_tags
 	if n, err := res.RowsAffected(); err == nil {
 		removedAssignments += n
 	}
-	res, err = tx.ExecContext(ctx, `DELETE FROM video_tags WHERE tag_id IN (`+generatedTagFilter+`)`)
+	res, err = tx.ExecContext(ctx, `DELETE FROM video_tags WHERE tag_id IN (`+retiredGeneratedTagIDsSQL+`)`)
 	if err != nil {
 		return err
 	}
@@ -73,7 +81,7 @@ DELETE FROM video_tags
 		removedAssignments += n
 	}
 
-	res, err = tx.ExecContext(ctx, `DELETE FROM tags WHERE id IN (`+generatedTagFilter+`)`)
+	res, err = tx.ExecContext(ctx, `DELETE FROM tags WHERE id IN (`+retiredGeneratedTagIDsSQL+`)`)
 	if err != nil {
 		return err
 	}
@@ -143,6 +151,94 @@ DELETE FROM settings WHERE key IN (
 			if err := c.bumpTagRulesVersion(ctx); err != nil {
 				return err
 			}
+		}
+	}
+	return nil
+}
+
+// Preserve the AV classification of legacy series-only videos, including
+// manually curated videos. User-defined and crawler-owned labels are excluded.
+// A deliberately disabled or deleted AV rule must not be restored by migration.
+func mergeRetiredAVSeriesAssignmentsTx(ctx context.Context, tx *sql.Tx) error {
+	av, err := getTagByLabelTxRaw(ctx, tx, avTagLabel)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	allowedPrefixes := make(map[string]bool)
+	for _, prefix := range effectiveRule(av.Label, av.MatchRules).AVCodePrefixes {
+		allowedPrefixes[prefix] = true
+	}
+	if len(allowedPrefixes) == 0 {
+		return nil
+	}
+	rows, err := tx.QueryContext(ctx, `
+SELECT vt.video_id, t.label, COALESCE(vt.source, ''), COALESCE(vt.evidence, ''), vt.created_at
+  FROM video_tags vt
+  JOIN tags t ON t.id = vt.tag_id
+ WHERE lower(trim(COALESCE(t.origin, ''))) = 'av_series'
+   AND t.id IN (`+retiredGeneratedTagIDsSQL+`)
+ ORDER BY vt.video_id, t.id`)
+	if err != nil {
+		return err
+	}
+	type legacyAssignment struct {
+		videoID, source, evidence string
+		createdAt                 int64
+	}
+	var assignments []legacyAssignment
+	for rows.Next() {
+		var assignment legacyAssignment
+		var label string
+		if err := rows.Scan(&assignment.videoID, &label, &assignment.source, &assignment.evidence, &assignment.createdAt); err != nil {
+			rows.Close()
+			return err
+		}
+		if allowedPrefixes[tagging.NormalizeAVCodePrefix(label)] {
+			assignments = append(assignments, assignment)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, assignment := range assignments {
+		source := normalizeVideoTagSource(assignment.source)
+		var existingSource, existingEvidence string
+		err := tx.QueryRowContext(ctx, `
+SELECT COALESCE(source, ''), COALESCE(evidence, '')
+  FROM video_tags WHERE video_id = ? AND tag_id = ?`, assignment.videoID, av.ID).Scan(&existingSource, &existingEvidence)
+		if errors.Is(err, sql.ErrNoRows) {
+			if _, err := tx.ExecContext(ctx, `
+INSERT INTO video_tags (video_id, tag_id, source, evidence, created_at)
+VALUES (?, ?, ?, ?, ?)`, assignment.videoID, av.ID, source, assignment.evidence, assignment.createdAt); err != nil {
+				return err
+			}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		// An assignment scheduled for cleanup cannot block a surviving one,
+		// even when normalization gives it the same or a higher priority.
+		existingSource = strings.ToLower(strings.TrimSpace(existingSource))
+		existingSourceRetired := existingSource == "series" || existingSource == "propagated"
+		if !existingSourceRetired && (!shouldReplaceVideoTagAssignment(existingSource, source) || normalizeVideoTagSource(existingSource) == source) {
+			continue
+		}
+		evidence := assignment.evidence
+		if strings.TrimSpace(evidence) == "" {
+			evidence = existingEvidence
+		}
+		if _, err := tx.ExecContext(ctx, `
+UPDATE video_tags SET source = ?, evidence = ? WHERE video_id = ? AND tag_id = ?`,
+			source, evidence, assignment.videoID, av.ID); err != nil {
+			return err
 		}
 	}
 	return nil

@@ -80,9 +80,7 @@ func cleanRuleTerms(terms []string) []string {
 // 使用 auto/manual/crawler/telegram/legacy 等独立来源。
 func normalizeTagSource(source string) string {
 	switch strings.ToLower(strings.TrimSpace(source)) {
-	case "system", "builtin":
-		return "builtin"
-	case "user":
+	case "system", "builtin", "user":
 		return "user"
 	default:
 		return "generated"

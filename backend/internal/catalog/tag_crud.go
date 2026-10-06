@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -37,9 +36,6 @@ func (c *Catalog) UpdateTag(ctx context.Context, tagID int64, rule tagging.Rule)
 			string(rulesJSON), time.Now().UnixMilli(), tagID); err != nil {
 			return Tag{}, err
 		}
-		if err := c.setAVCodeMatchingDisabled(ctx, len(prefixes) == 0); err != nil {
-			return Tag{}, err
-		}
 		if err := c.bumpTagRulesVersion(ctx); err != nil {
 			return Tag{}, err
 		}
@@ -59,24 +55,14 @@ func (c *Catalog) UpdateTag(ctx context.Context, tagID int64, rule tagging.Rule)
 }
 
 // UpdateTagAndReconcile saves one rule and refreshes only assignments owned by
-// that rule. Ordinary tags use the single-tag keyword reconciler; AV uses its
-// scoped umbrella-and-series reconciler. Neither path runs unrelated tag rules
-// or startup cleanup.
+// that rule, including AV. It does not run unrelated tag rules or startup cleanup.
 func (c *Catalog) UpdateTagAndReconcile(ctx context.Context, tagID int64, rule tagging.Rule) (Tag, int, error) {
 	c.tagMaintenanceMu.Lock()
 	defer c.tagMaintenanceMu.Unlock()
 
-	previousTag, err := c.getTagByID(ctx, tagID)
-	if err != nil {
-		return Tag{}, 0, err
-	}
 	tag, err := c.UpdateTag(ctx, tagID, rule)
 	if err != nil {
 		return Tag{}, 0, err
-	}
-	if strings.EqualFold(tag.Label, avTagLabel) {
-		changed, err := c.reconcileAVTagAssignments(ctx, previousTag, tag)
-		return tag, changed, err
 	}
 	changed, err := c.reconcileTagAssignments(ctx, tag)
 	return tag, changed, err
@@ -174,7 +160,7 @@ func (c *Catalog) DeleteTag(ctx context.Context, tagID int64) (int, error) {
 	}
 	defer tx.Rollback()
 
-	tag, err := c.getTagByIDTx(ctx, tx, tagID)
+	_, err = c.getTagByIDTx(ctx, tx, tagID)
 	if err != nil {
 		return 0, err
 	}
@@ -205,16 +191,6 @@ func (c *Catalog) DeleteTag(ctx context.Context, tagID int64) (int, error) {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM tags WHERE id = ?`, tagID); err != nil {
 		return 0, err
 	}
-	if strings.EqualFold(tag.Label, avTagLabel) {
-		avSeriesVideoIDs, err := cleanupGeneratedAVSeriesTagsTx(ctx, tx)
-		if err != nil {
-			return 0, err
-		}
-		videoIDs = append(videoIDs, avSeriesVideoIDs...)
-		if err := setAVCodeMatchingDisabledTx(ctx, tx, true); err != nil {
-			return 0, err
-		}
-	}
 
 	affectedVideoIDs := uniqueStrings(videoIDs)
 	for _, videoID := range affectedVideoIDs {
@@ -231,149 +207,6 @@ func (c *Catalog) DeleteTag(ctx context.Context, tagID int64) (int, error) {
 		return 0, err
 	}
 	return len(affectedVideoIDs), nil
-}
-
-func cleanupGeneratedAVSeriesTagsTx(ctx context.Context, tx *sql.Tx) ([]string, error) {
-	rows, err := tx.QueryContext(ctx, `
-SELECT DISTINCT vt.video_id
-  FROM video_tags vt
-  JOIN tags t ON t.id = vt.tag_id
- WHERE lower(trim(COALESCE(t.source, ''))) = 'generated'
-   AND lower(trim(COALESCE(t.origin, ''))) = ?`, avSeriesOrigin)
-	if err != nil {
-		return nil, err
-	}
-	var videoIDs []string
-	for rows.Next() {
-		var videoID string
-		if err := rows.Scan(&videoID); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		videoIDs = append(videoIDs, videoID)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, err
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if _, err := tx.ExecContext(ctx, `
-DELETE FROM video_tags
- WHERE tag_id IN (
-       SELECT id
-         FROM tags
-        WHERE lower(trim(COALESCE(source, ''))) = 'generated'
-          AND lower(trim(COALESCE(origin, ''))) = ?
- )`, avSeriesOrigin); err != nil {
-		return nil, err
-	}
-	if _, err := tx.ExecContext(ctx, `
-DELETE FROM tags
- WHERE lower(trim(COALESCE(source, ''))) = 'generated'
-   AND lower(trim(COALESCE(origin, ''))) = ?`, avSeriesOrigin); err != nil {
-		return nil, err
-	}
-	return videoIDs, nil
-}
-
-func (c *Catalog) cleanupInvalidAVSeriesTags(ctx context.Context) error {
-	allowedLabels := map[string]struct{}{}
-	avCodes, err := c.avCodeMatcher(ctx)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	for _, prefix := range avCodes.Prefixes() {
-		allowedLabels[strings.ToLower(prefix)] = struct{}{}
-	}
-
-	rows, err := c.db.QueryContext(ctx, `
-SELECT id, label
-  FROM tags
- WHERE lower(trim(COALESCE(source, ''))) = 'generated'
-   AND lower(trim(COALESCE(origin, ''))) = ?`, avSeriesOrigin)
-	if err != nil {
-		return err
-	}
-	var tagIDs []int64
-	for rows.Next() {
-		var tagID int64
-		var label string
-		if err := rows.Scan(&tagID, &label); err != nil {
-			rows.Close()
-			return err
-		}
-		if _, ok := allowedLabels[strings.ToLower(tagging.NormalizeAVCodePrefix(label))]; !ok {
-			tagIDs = append(tagIDs, tagID)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return err
-	}
-	if err := rows.Close(); err != nil {
-		return err
-	}
-	if len(tagIDs) == 0 {
-		return nil
-	}
-
-	args := make([]any, 0, len(tagIDs))
-	for _, tagID := range tagIDs {
-		args = append(args, tagID)
-	}
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(args)), ",")
-	tx, err := c.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	affectedRows, err := tx.QueryContext(ctx, `SELECT DISTINCT video_id FROM video_tags WHERE tag_id IN (`+placeholders+`)`, args...)
-	if err != nil {
-		return err
-	}
-	var videoIDs []string
-	for affectedRows.Next() {
-		var videoID string
-		if err := affectedRows.Scan(&videoID); err != nil {
-			affectedRows.Close()
-			return err
-		}
-		videoIDs = append(videoIDs, videoID)
-	}
-	if err := affectedRows.Err(); err != nil {
-		affectedRows.Close()
-		return err
-	}
-	if err := affectedRows.Close(); err != nil {
-		return err
-	}
-
-	if _, err := tx.ExecContext(ctx, `DELETE FROM video_tags WHERE tag_id IN (`+placeholders+`)`, args...); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM tags WHERE id IN (`+placeholders+`)`, args...); err != nil {
-		return err
-	}
-	for _, videoID := range uniqueStrings(videoIDs) {
-		manual := hasManualTagsTx(ctx, tx, videoID)
-		if err := syncVideoTagsJSONTx(ctx, tx, videoID, manual); err != nil {
-			return err
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	if err := c.bumpTagRulesVersion(ctx); err != nil {
-		return err
-	}
-	log.Printf("[catalog] removed %d invalid AV series tag(s)", len(tagIDs))
-	return nil
 }
 
 func (c *Catalog) ListTags(ctx context.Context) ([]Tag, error) {

@@ -15,7 +15,6 @@ import { buildConfigDiff } from "../src/admin/settings/configDiff";
 const nightlyDisabled = new Set<VisualField>(["nightlyDisabled"]);
 const nightlyStartTime = new Set<VisualField>(["nightlyStartTime"]);
 const nightlyTimezone = new Set<VisualField>(["nightlyTimezone"]);
-const builtinTagsEnabled = new Set<VisualField>(["builtinTagsEnabled"]);
 const previewConcurrency = new Set<VisualField>(["previewConcurrency"]);
 
 test("global preview switch defaults on and rejects non-boolean YAML", () => {
@@ -68,13 +67,6 @@ function updateStartTime(source: string, value = "02:00") {
   );
 }
 
-function updateBuiltinTags(source: string, value = false) {
-  return applyVisualFields(
-    source,
-    settingsDraft({ builtinTagsEnabled: value }),
-    builtinTagsEnabled
-  );
-}
 
 function updateTimezone(source: string, value = "Asia/Shanghai") {
   return applyVisualFields(
@@ -183,7 +175,7 @@ test("visual config returns the exact source when no visual field is dirty", () 
   assert.equal(
     applyVisualFields(
       source,
-      settingsDraft({ nightlyStartTime: "02:00", builtinTagsEnabled: false }),
+      settingsDraft({ nightlyStartTime: "02:00" }),
       new Set()
     ),
     source
@@ -272,49 +264,6 @@ test("visual config inserts nightly disabled into block, flow, and empty mapping
   );
 });
 
-test("visual config reads the built-in tag switch from config.yaml", () => {
-  assert.equal(parseConfig("{}\n").draft.builtinTagsEnabled, true);
-  assert.equal(
-    parseConfig("tags:\n  builtin_pack_enabled: false\n").draft.builtinTagsEnabled,
-    false
-  );
-  assert.throws(
-    () => parseConfig('tags:\n  builtin_pack_enabled: "false"\n'),
-    /tags\.builtin_pack_enabled 必须是布尔值/
-  );
-  assert.throws(() => parseConfig("tags: false\n"), /tags 必须是映射对象/);
-});
-
-test("visual config updates only the built-in tag boolean in the original YAML", () => {
-  const source = [
-    "tags:",
-    "  # keep the tag comment",
-    "  builtin_pack_enabled: true # hot reload",
-    "future:",
-    "  keep: yes",
-    "",
-  ].join("\n");
-  assert.equal(
-    updateBuiltinTags(source),
-    source.replace("builtin_pack_enabled: true", "builtin_pack_enabled: false")
-  );
-});
-
-test("visual config inserts the built-in tag field into block, flow, and empty mappings", () => {
-  assert.equal(
-    updateBuiltinTags("tags:\n  future: keep\ntail: ok\n"),
-    "tags:\n  future: keep\n  builtin_pack_enabled: false\ntail: ok\n"
-  );
-  assert.equal(
-    updateBuiltinTags("tags: { future: keep }\ntail: ok\n"),
-    "tags: { future: keep, builtin_pack_enabled: false }\ntail: ok\n"
-  );
-  assert.equal(
-    updateBuiltinTags("head: ok\n"),
-    "head: ok\ntags:\n  builtin_pack_enabled: false\n"
-  );
-});
-
 test("visual config reads and validates global preview concurrency", () => {
   assert.equal(parseConfig("{}\n").draft.previewConcurrency, 1);
   assert.equal(
@@ -368,7 +317,6 @@ test("visual config applies multiple missing YAML fields without overlapping edi
     "nightlyStartTime",
     "nightlyTimezone",
     "previewConcurrency",
-    "builtinTagsEnabled",
   ]);
   assert.equal(
     applyVisualFields(
@@ -377,11 +325,10 @@ test("visual config applies multiple missing YAML fields without overlapping edi
         nightlyDisabled: true,
         nightlyStartTime: "03:30",
         previewConcurrency: 3,
-        builtinTagsEnabled: false,
       }),
       fields
     ),
-    "head: ok\nnightly:\n  disabled: true\n  start_time: 03:30\n  timezone: Asia/Shanghai\ngeneration:\n  preview_concurrency: 3\ntags:\n  builtin_pack_enabled: false\n"
+    "head: ok\nnightly:\n  disabled: true\n  start_time: 03:30\n  timezone: Asia/Shanghai\ngeneration:\n  preview_concurrency: 3\n"
   );
 });
 
@@ -392,16 +339,6 @@ test("changed visual fields includes the nightly stop switch", () => {
       settingsDraft({ nightlyDisabled: true })
     ),
     new Set<VisualField>(["nightlyDisabled"])
-  );
-});
-
-test("changed visual fields includes the real config.yaml built-in tag field", () => {
-  assert.deepEqual(
-    changedVisualFields(
-      settingsDraft(),
-      settingsDraft({ builtinTagsEnabled: false })
-    ),
-    new Set<VisualField>(["builtinTagsEnabled"])
   );
 });
 

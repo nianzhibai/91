@@ -35,7 +35,7 @@ func (a *AdminServer) handlePutSettings(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if _, ok := raw["builtinTagsEnabled"]; ok {
-		writeErr(w, r, http.StatusBadRequest, errors.New("builtinTagsEnabled is managed by config.yaml"))
+		writeErr(w, r, http.StatusBadRequest, errors.New("built-in tags have been retired"))
 		return
 	}
 

@@ -32,7 +32,6 @@ type LiveSettings struct {
 	NightlyDisabled        bool   `json:"nightlyDisabled"`
 	NightlyStartTime       string `json:"nightlyStartTime"`
 	NightlyTimezone        string `json:"nightlyTimezone"`
-	BuiltinTagsEnabled     bool   `json:"builtinTagsEnabled"`
 	PreviewConcurrency     int    `json:"previewConcurrency"`
 }
 
@@ -40,8 +39,7 @@ type LiveSettings struct {
 // settings implementation. They are consulted only when config.yaml does not
 // yet contain the corresponding field.
 type LegacyRuntimeSettings struct {
-	NightlyStartTime   *string
-	BuiltinTagsEnabled *bool
+	NightlyStartTime *string
 }
 
 type SaveResult struct {
@@ -95,7 +93,6 @@ func DefaultLiveSettings() LiveSettings {
 		NightlyDisabled:        DefaultNightlyDisabled,
 		NightlyStartTime:       DefaultNightlyStartTime,
 		NightlyTimezone:        DefaultNightlyTimezone,
-		BuiltinTagsEnabled:     DefaultBuiltinTagsEnabled,
 		PreviewConcurrency:     DefaultGenerationConcurrency,
 		ThumbnailConcurrency:   DefaultGenerationConcurrency,
 		FingerprintConcurrency: DefaultGenerationConcurrency,
@@ -112,7 +109,6 @@ func liveSettingsFromConfig(cfg *Config) LiveSettings {
 		NightlyDisabled:        cfg.Nightly.Disabled,
 		NightlyStartTime:       cfg.Nightly.StartTime,
 		NightlyTimezone:        cfg.Nightly.Timezone,
-		BuiltinTagsEnabled:     cfg.Tags.IsBuiltinPackEnabled(),
 		PreviewConcurrency:     cfg.Generation.PreviewConcurrency,
 		ThumbnailConcurrency:   cfg.Generation.ThumbnailConcurrency,
 		FingerprintConcurrency: cfg.Generation.FingerprintConcurrency,
@@ -268,15 +264,7 @@ func (m *Manager) MigrateLegacyRuntimeSettings(legacy LegacyRuntimeSettings) (bo
 		setScalarValue(nightly, "timezone", parsed.Nightly.Timezone)
 		changed = true
 	}
-	tags, tagsExist := mappingValue(document, "tags")
-	_, builtinTagsExist := mappingValue(tags, "builtin_pack_enabled")
-	if !tagsExist || !builtinTagsExist {
-		enabled := parsed.Tags.IsBuiltinPackEnabled()
-		if legacy.BuiltinTagsEnabled != nil {
-			enabled = *legacy.BuiltinTagsEnabled
-		}
-		tags = ensureMappingValue(document, "tags")
-		setBooleanValue(tags, "builtin_pack_enabled", enabled)
+	if deleteMappingValue(document, "tags") {
 		changed = true
 	}
 
@@ -474,7 +462,7 @@ func removeLiveDocumentValues(document any) {
 	removeNestedValue(root, "nightly", "cron_hour")
 	removeNestedValue(root, "nightly", "timezone")
 	removeNestedValue(root, "nightly", "disabled")
-	removeNestedValue(root, "tags", "builtin_pack_enabled")
+	delete(root, "tags")
 	removeNestedValue(root, "preview", "enabled")
 	removeNestedValue(root, "generation", "preview_concurrency")
 	removeNestedValue(root, "generation", "thumbnail_concurrency")

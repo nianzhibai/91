@@ -16,6 +16,7 @@ func openTagMaintenanceTestCatalog(t *testing.T) (*Catalog, context.Context) {
 	if err != nil {
 		t.Fatalf("open catalog: %v", err)
 	}
+	seedCustomTagRules(t, cat)
 	t.Cleanup(func() {
 		if err := cat.Close(); err != nil {
 			t.Fatalf("close catalog: %v", err)
@@ -237,7 +238,7 @@ func hasTagLabel(tags []Tag, label string) bool {
 	return false
 }
 
-func TestAVCodesGenerateSeriesTagsWhileAVEnabled(t *testing.T) {
+func TestAVCodesOnlyAssignAVAndDoNotCreateTags(t *testing.T) {
 	cat, ctx := openTagMaintenanceTestCatalog(t)
 	codes := []string{"FC2PPV-3259498", "FC2PPV-4162750", "FC2PPV-4768873"}
 	for i, code := range codes {
@@ -247,8 +248,8 @@ func TestAVCodesGenerateSeriesTagsWhileAVEnabled(t *testing.T) {
 		if err != nil {
 			t.Fatalf("match assignments for %s: %v", code, err)
 		}
-		if !sameStrings(assignmentLabels(assignments), []string{"AV", "FC2PPV"}) {
-			t.Fatalf("assignments for %s = %#v, want AV + FC2PPV", code, assignments)
+		if !sameStrings(assignmentLabels(assignments), []string{"AV"}) {
+			t.Fatalf("assignments for %s = %#v, want AV only", code, assignments)
 		}
 		if _, err := cat.ReplaceAutoVideoTags(ctx, id, assignments); err != nil {
 			t.Fatalf("attach AV tags for %s: %v", id, err)
@@ -263,24 +264,25 @@ func TestAVCodesGenerateSeriesTagsWhileAVEnabled(t *testing.T) {
 		if !hasTag(video.Tags, "AV") {
 			t.Fatalf("%s tags = %#v, want AV", id, video.Tags)
 		}
-		if !hasTag(video.Tags, "FC2PPV") {
-			t.Fatalf("%s tags = %#v, want FC2PPV", id, video.Tags)
+		if hasTag(video.Tags, "FC2PPV") {
+			t.Fatalf("%s unexpectedly has a series tag: %#v", id, video.Tags)
 		}
 	}
 	metadata, err := cat.ListVideoTagMetadata(ctx, []string{"fc2ppv-a"})
 	if err != nil {
 		t.Fatalf("FC2PPV metadata: %v", err)
 	}
-	if got := metadata["fc2ppv-a"]["FC2PPV"]; got.Source != "auto" || got.Evidence != "标题:FC2PPV-3259498" {
-		t.Fatalf("FC2PPV metadata = %#v, want auto title evidence", got)
+	if got := metadata["fc2ppv-a"]["AV"]; got.Source != "auto" || got.Evidence != "标题:FC2PPV-3259498" {
+		t.Fatalf("AV metadata = %#v, want auto title evidence", got)
 	}
-	var source, origin string
-	if err := cat.db.QueryRowContext(ctx,
-		`SELECT source, origin FROM tags WHERE label = 'FC2PPV'`).Scan(&source, &origin); err != nil {
-		t.Fatalf("read FC2PPV tag: %v", err)
+	if _, err := cat.getTagByLabel(ctx, "FC2PPV"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("matching created FC2PPV tag: %v", err)
 	}
-	if source != "generated" || origin != avSeriesOrigin {
-		t.Fatalf("FC2PPV tag source/origin = %q/%q, want generated/%s", source, origin, avSeriesOrigin)
+	if err := cat.ReconcileVideoTags(ctx); err != nil {
+		t.Fatalf("retag videos: %v", err)
+	}
+	if _, err := cat.getTagByLabel(ctx, "FC2PPV"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("retagging created FC2PPV tag: %v", err)
 	}
 }
 
@@ -293,7 +295,7 @@ func TestUpdateAVTagAndReconcileOnlyChangesAVScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("match old AV prefix: %v", err)
 	}
-	if !sameStrings(assignmentLabels(assignments), []string{"AV", "OBA"}) {
+	if !sameStrings(assignmentLabels(assignments), []string{"AV"}) {
 		t.Fatalf("old AV assignments = %#v", assignments)
 	}
 	if _, err := cat.ReplaceAutoVideoTags(ctx, "old-av-prefix", assignments); err != nil {
@@ -326,7 +328,7 @@ func TestUpdateAVTagAndReconcileOnlyChangesAVScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update and reconcile AV prefixes: %v", err)
 	}
-	if changed < 4 || stringSliceContains(updated.MatchRules.AVCodePrefixes, "OBA") || !stringSliceContains(updated.MatchRules.AVCodePrefixes, "FHD") {
+	if changed != 2 || stringSliceContains(updated.MatchRules.AVCodePrefixes, "OBA") || !stringSliceContains(updated.MatchRules.AVCodePrefixes, "FHD") {
 		t.Fatalf("updated AV = %#v, changed = %d", updated, changed)
 	}
 
@@ -341,19 +343,14 @@ func TestUpdateAVTagAndReconcileOnlyChangesAVScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get new-prefix video: %v", err)
 	}
-	if !sameStrings(newVideo.Tags, []string{"AV", "FHD"}) {
-		t.Fatalf("new-prefix tags = %#v, want AV + FHD", newVideo.Tags)
+	if !sameStrings(newVideo.Tags, []string{"AV"}) {
+		t.Fatalf("new-prefix tags = %#v, want AV only", newVideo.Tags)
 	}
 	if _, err := cat.getTagByLabel(ctx, "OBA"); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("removed AV series OBA still exists: %v", err)
 	}
-	fhd := mustTagByLabel(t, ctx, cat, "FHD")
-	var origin string
-	if err := cat.db.QueryRowContext(ctx, `SELECT COALESCE(origin, '') FROM tags WHERE id = ?`, fhd.ID).Scan(&origin); err != nil {
-		t.Fatalf("read FHD origin: %v", err)
-	}
-	if fhd.Source != "generated" || origin != avSeriesOrigin {
-		t.Fatalf("FHD source/origin = %q/%q", fhd.Source, origin)
+	if _, err := cat.getTagByLabel(ctx, "FHD"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("editing AV created FHD series tag: %v", err)
 	}
 	if _, err := cat.getTagByID(ctx, orphan.ID); err != nil {
 		t.Fatalf("AV reconcile removed unrelated generated tag: %v", err)
@@ -365,8 +362,8 @@ func TestUpdateAVTagAndReconcileOnlyChangesAVScope(t *testing.T) {
 	if got := metadata["old-av-prefix"]["unrelated-tag"]; got.Source != "auto" || got.Evidence != "must survive AV reconcile" {
 		t.Fatalf("unrelated metadata = %#v", got)
 	}
-	if got := metadata["new-av-prefix"]["FHD"]; got.Source != "auto" || got.Evidence != "标题:FHD-78824" {
-		t.Fatalf("FHD metadata = %#v", got)
+	if got := metadata["new-av-prefix"]["AV"]; got.Source != "auto" || got.Evidence != "标题:FHD-78824" {
+		t.Fatalf("AV metadata = %#v", got)
 	}
 }
 
@@ -404,7 +401,7 @@ func TestUpdateAVTagAndReconcileCanDisableAllPrefixes(t *testing.T) {
 	}
 }
 
-func TestUpdateAVTagAndReconcileHandlesUserTagSeriesCollision(t *testing.T) {
+func TestUpdateAVTagAndReconcilePreservesUserPrefixTags(t *testing.T) {
 	cat, ctx := openTagMaintenanceTestCatalog(t)
 	oba, err := cat.EnsureTag(ctx, "OBA", "user")
 	if err != nil {
@@ -459,7 +456,7 @@ func TestUpdateAVTagAndReconcileHandlesUserTagSeriesCollision(t *testing.T) {
 	}
 }
 
-func TestDeletingAVTagDisablesAVCodeSeriesGeneration(t *testing.T) {
+func TestDeletingAVTagDisablesAVCodeMatching(t *testing.T) {
 	cat, ctx := openTagMaintenanceTestCatalog(t)
 	seedTagMaintenanceVideo(t, cat, "disabled-av", "FC2PPV-4162750", "FC2PPV-4162750.mp4")
 	av := mustTagByLabel(t, ctx, cat, "AV")
@@ -498,9 +495,7 @@ func TestDeletingAVTagDisablesAVCodeSeriesGeneration(t *testing.T) {
 func TestPostStartupMaintenanceRemovesInvalidAVSeriesTags(t *testing.T) {
 	cat, ctx := openTagMaintenanceTestCatalog(t)
 	seedTagMaintenanceVideo(t, cat, "invalid-av-series", "ordinary title", "ordinary.mp4")
-	if _, err := cat.ensureAVSeriesTag(ctx, "FINAL"); err != nil {
-		t.Fatalf("ensure invalid AV series tag: %v", err)
-	}
+	seedRetiredAVSeriesTag(t, cat, "FINAL")
 	if _, err := cat.AddVideoTagAssignments(ctx, "invalid-av-series", []TagAssignment{{
 		Label: "FINAL", Source: "auto", Evidence: "旧版本误生成",
 	}}); err != nil {

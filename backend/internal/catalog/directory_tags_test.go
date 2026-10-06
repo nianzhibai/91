@@ -50,6 +50,8 @@ func TestStoredDirectoryNamesSupportTagEditsAndRetagging(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	seedCustomTagRules(t, cat)
+
 	t.Cleanup(func() {
 		if cat != nil {
 			_ = cat.Close()
@@ -84,20 +86,20 @@ func TestStoredDirectoryNamesSupportTagEditsAndRetagging(t *testing.T) {
 			t.Fatalf("tags = %#v, want %#v", video.Tags, want)
 		}
 	}
-	assertTags("AV", "ABP")
+	assertTags("AV")
 	if count, err := cat.CreateTagAndClassify(ctx, "旅行", "user"); err != nil || count != 1 {
 		t.Fatalf("classify new tag = %d, %v", count, err)
 	}
-	assertTags("AV", "ABP", "旅行")
+	assertTags("AV", "旅行")
 	travel := mustTagByLabel(t, ctx, cat, "旅行")
 	for _, keyword := range []string{"别处", "旅行"} {
 		if _, _, err := cat.UpdateTagAndReconcile(ctx, travel.ID, tagging.Rule{Keywords: []string{keyword}}); err != nil {
 			t.Fatal(err)
 		}
 		if keyword == "别处" {
-			assertTags("AV", "ABP")
+			assertTags("AV")
 		} else {
-			assertTags("AV", "ABP", "旅行")
+			assertTags("AV", "旅行")
 		}
 	}
 	av := mustTagByLabel(t, ctx, cat, "AV")
@@ -108,7 +110,7 @@ func TestStoredDirectoryNamesSupportTagEditsAndRetagging(t *testing.T) {
 		if prefix == "SSNI" {
 			assertTags("旅行")
 		} else {
-			assertTags("AV", "ABP", "旅行")
+			assertTags("AV", "旅行")
 		}
 	}
 	if _, err := cat.ReplaceAutoVideoTags(ctx, "directory-video", nil); err != nil {
@@ -117,7 +119,7 @@ func TestStoredDirectoryNamesSupportTagEditsAndRetagging(t *testing.T) {
 	if err := cat.ReconcileVideoTags(ctx); err != nil {
 		t.Fatal(err)
 	}
-	assertTags("AV", "ABP", "旅行")
+	assertTags("AV", "旅行")
 }
 
 func TestVideoDriveMigrationReplacesAncestorDirectoryNames(t *testing.T) {

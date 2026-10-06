@@ -1331,6 +1331,12 @@ func TestHandleUploadVideoSavesFileVideoTagsAndQueuesPreview(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open catalog: %v", err)
 	}
+	for _, label := range []string{"奶子", "女大", "人妻", "后入", "制服", "美臀", "口交"} {
+		if _, err := cat.CreateTagAndClassify(ctx, label, "user"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	t.Cleanup(func() {
 		if err := cat.Close(); err != nil {
 			t.Fatalf("close catalog: %v", err)
@@ -1894,6 +1900,10 @@ func TestHandleUploadTagsReturnsManagedUserChoices(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open catalog: %v", err)
 	}
+	if _, err := cat.CreateTagAndClassify(context.Background(), "奶子", "user"); err != nil {
+		t.Fatal(err)
+	}
+
 	t.Cleanup(func() { _ = cat.Close() })
 	if _, err := cat.CreateTagAndClassify(ctx, "自定义上传", "user"); err != nil {
 		t.Fatalf("create user tag: %v", err)
@@ -1936,6 +1946,10 @@ func TestInvalidateTagCachePublishesCatalogChangesImmediately(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open catalog: %v", err)
 	}
+	if _, err := cat.CreateTagAndClassify(context.Background(), "美臀", "user"); err != nil {
+		t.Fatal(err)
+	}
+
 	t.Cleanup(func() { _ = cat.Close() })
 	server := &Server{Catalog: cat}
 
@@ -1945,8 +1959,16 @@ func TestInvalidateTagCachePublishesCatalogChangesImmediately(t *testing.T) {
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"label":"美臀"`) {
 		t.Fatalf("initial tags status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
-	if _, err := cat.SetBuiltinTagsEnabled(ctx, false); err != nil {
-		t.Fatalf("disable builtin tags: %v", err)
+	tags, err := cat.ListTags(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tag := range tags {
+		if tag.Label == "美臀" {
+			if _, err := cat.DeleteTag(ctx, tag.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 
 	server.InvalidateTagCache()

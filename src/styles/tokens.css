@@ -136,10 +136,8 @@
   /* ----- 标签来源徽标（三套主题统一使用不透明淡色底） ----- */
   --tag-source-user-bg: #dff3ec;
   --tag-source-user-fg: #126b47;
-  --tag-source-builtin-bg: #e3ecf9;
-  --tag-source-builtin-fg: #245ca8;
-  --tag-source-av-bg: #f9eddc;
-  --tag-source-av-fg: #7a4a00;
+  --tag-source-generated-bg: #f9eddc;
+  --tag-source-generated-fg: #7a4a00;
   --tag-source-crawler-bg: #eeeafc;
   --tag-source-crawler-fg: #62429b;
 

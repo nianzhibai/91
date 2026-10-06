@@ -15,6 +15,8 @@ func TestOpenDropsTagAliasesWithoutChangingRulesOrAssignments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open catalog: %v", err)
 	}
+	seedCustomTagRules(t, cat)
+
 	t.Cleanup(func() { _ = cat.Close() })
 	if hasColumn(t, cat, "tags", "aliases") {
 		t.Fatal("new catalog contains retired aliases column")

@@ -6163,8 +6163,7 @@ body.admin-mobile-nav-open {
   }
 
   #config-automation .admin-config-section__body,
-  #config-preview .admin-config-section__body,
-  #config-tags .admin-config-section__body {
+  #config-preview .admin-config-section__body {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -8658,15 +8657,9 @@ body.admin-mobile-nav-open {
   --tag-source-fg: var(--tag-source-user-fg);
 }
 
-.admin-tag-card__source-badge[data-source="builtin"] {
-  --tag-source-bg: var(--tag-source-builtin-bg);
-  --tag-source-fg: var(--tag-source-builtin-fg);
-}
-
-.admin-tag-card__source-badge[data-source="av"],
 .admin-tag-card__source-badge[data-source="generated"] {
-  --tag-source-bg: var(--tag-source-av-bg);
-  --tag-source-fg: var(--tag-source-av-fg);
+  --tag-source-bg: var(--tag-source-generated-bg);
+  --tag-source-fg: var(--tag-source-generated-fg);
 }
 
 .admin-tag-card__source-badge[data-source="crawler"] {

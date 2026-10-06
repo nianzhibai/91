@@ -15,12 +15,10 @@ import {
   Loader2,
   RefreshCw,
   SlidersHorizontal,
-  Tags,
 } from "lucide-react";
 import { TelegramIcon } from "@/components/icons/TelegramIcon";
 import { useSearchParams } from "react-router";
 import { TelegramSettingsSection } from "./settings/TelegramSettingsSection";
-import { invalidateTagsCache } from "@/data/videos";
 import * as api from "./api";
 import { useToast } from "@/components/ToastContext";
 import {
@@ -74,7 +72,7 @@ type PendingSave = {
 };
 
 type EditorTab = "visual" | "source";
-type SectionID = "config-automation" | "config-preview" | "config-tags" | "config-telegram";
+type SectionID = "config-automation" | "config-preview" | "config-telegram";
 
 const NIGHTLY_TIMEZONE_OPTIONS = [
   "Asia/Shanghai",
@@ -120,11 +118,6 @@ const SECTION_META: Array<{
     id: "config-preview",
     title: "媒体生成",
     icon: Film,
-  },
-  {
-    id: "config-tags",
-    title: "内置标签",
-    icon: Tags,
   },
   {
     id: "config-telegram",
@@ -396,15 +389,12 @@ export function SettingsPage() {
 
       const response = await api.updateConfigYAML(pendingSave.after, pendingSave.version);
       const visual = parseConfig(pendingSave.after).draft;
-      const builtinTagsChanged =
-        loaded.visual.builtinTagsEnabled !== visual.builtinTagsEnabled;
       setLoaded({ content: pendingSave.after, version: response.version, visual });
       setWorkingYAML(pendingSave.after);
       setDraft(visual);
       setSourceTouched(false);
       setSourceError("");
       setPendingSave(null);
-      if (builtinTagsChanged) invalidateTagsCache();
       show(
         response.restartRequired
           ? "配置已保存；部分字段需重启服务后生效"
@@ -755,38 +745,6 @@ export function SettingsPage() {
                         disabled={controlsDisabled}
                         onClick={() =>
                           updateVisualField("previewEnabled", !draft.previewEnabled)
-                        }
-                      >
-                        <span className="toggle-switch__dot" />
-                      </button>
-                    </div>
-                  </SettingsRow>
-                </SettingsSection>
-              )}
-              {activeSection === "config-tags" && (
-                <SettingsSection
-                  id="config-tags"
-                  index="03"
-                  icon={<Tags size={16} />}
-                  title="内置标签"
-                  description="管理系统内置标签"
-                >
-                  <SettingsRow
-                    label="内置标签"
-                    labelID="builtin-tags-label"
-                    layout="inline"
-                  >
-                    <div className="admin-config-control admin-config-control--switch">
-                      <button
-                        id="builtin-tags-toggle"
-                        type="button"
-                        className={`toggle-switch ${draft.builtinTagsEnabled ? "is-on" : ""}`}
-                        role="switch"
-                        aria-checked={draft.builtinTagsEnabled}
-                        aria-labelledby="builtin-tags-label"
-                        disabled={controlsDisabled}
-                        onClick={() =>
-                          updateVisualField("builtinTagsEnabled", !draft.builtinTagsEnabled)
                         }
                       >
                         <span className="toggle-switch__dot" />

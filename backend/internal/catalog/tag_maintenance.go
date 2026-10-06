@@ -28,8 +28,7 @@ func (c *Catalog) CountVideosForRetag(ctx context.Context) (int, error) {
 }
 
 // RetagVideosBatch recalculates engine-managed assignments for one page of
-// videos using the existing tag matcher. It may create AV series labels while
-// the built-in AV matching mechanism is enabled.
+// videos using the existing tag matcher without creating new tag definitions.
 // 返回 (本批处理数, 最后一个 id, 是否已到结尾)。
 func (c *Catalog) RetagVideosBatch(ctx context.Context, matcher *tagging.Matcher, afterID string, limit int) (int, string, bool, error) {
 	if limit <= 0 {
@@ -71,11 +70,7 @@ SELECT id, title, COALESCE(author, ''), COALESCE(file_name, ''), COALESCE(dir_na
 		if batch[i].manual {
 			continue
 		}
-		assignments, err := c.matchTagAssignmentsWithMatcher(ctx, matcher, batch[i].title, batch[i].fileName, batch[i].author, batch[i].dirName, batch[i].ancestorDirNames...)
-		if err != nil {
-			return 0, afterID, false, err
-		}
-		batch[i].assignments = assignments
+		batch[i].assignments = matchTagAssignmentsWithMatcher(matcher, batch[i].title, batch[i].fileName, batch[i].author, batch[i].dirName, batch[i].ancestorDirNames...)
 	}
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -104,7 +99,7 @@ SELECT id, title, COALESCE(author, ''), COALESCE(file_name, ''), COALESCE(dir_na
 }
 
 // PruneUnreferencedTags 删除零引用的 generated 标签，包括没有任何视频引用的
-// 爬虫来源标签。builtin / user 标签即使零引用也保留（人工维护语义）。
+// 爬虫来源标签。user 标签即使零引用也保留（人工维护语义）。
 func (c *Catalog) PruneUnreferencedTags(ctx context.Context) (int, error) {
 	res, err := c.db.ExecContext(ctx, `
 DELETE FROM tags
@@ -123,11 +118,11 @@ DELETE FROM tags
 }
 
 // ReconcileVideoTags refreshes assignments from current rules and removes
-// unreferenced generated tags. Only AV matching can derive new series labels.
+// unreferenced generated tags.
 func (c *Catalog) ReconcileVideoTags(ctx context.Context) error {
 	c.tagMaintenanceMu.Lock()
 	defer c.tagMaintenanceMu.Unlock()
-	if err := c.cleanupInvalidAVSeriesTags(ctx); err != nil {
+	if err := c.removeAutomaticTaggingArtifacts(ctx); err != nil {
 		return err
 	}
 	matcher, err := c.Matcher(ctx)

@@ -268,28 +268,6 @@ func TestParseNightlyDisabled(t *testing.T) {
 	}
 }
 
-func TestParseBuiltinTagConfiguration(t *testing.T) {
-	defaults, err := Parse([]byte("{}"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !defaults.Tags.IsBuiltinPackEnabled() {
-		t.Fatal("built-in tags should default to enabled")
-	}
-
-	disabled, err := Parse([]byte("tags:\n  builtin_pack_enabled: false\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if disabled.Tags.IsBuiltinPackEnabled() {
-		t.Fatal("explicitly disabled built-in tags were enabled")
-	}
-
-	if _, err := Parse([]byte("tags:\n  builtin_pack_enabled: not-a-boolean\n")); err == nil {
-		t.Fatal("non-boolean built-in tag configuration was accepted")
-	}
-}
-
 func TestParseRejectsInvalidNightlyStartTime(t *testing.T) {
 	_, err := Parse([]byte("nightly:\n  start_time: \"24:00\"\n"))
 	if !errors.Is(err, ErrInvalidNightlyStartTime) {
@@ -425,6 +403,14 @@ func TestGenerationConcurrencyDefaultsAndValidation(t *testing.T) {
 	for _, value := range []string{"-1", "17"} {
 		if _, err := Parse([]byte("preview:\n  ffmpeg_threads: " + value + "\n")); err == nil {
 			t.Fatalf("accepted threads=%s", value)
+		}
+	}
+}
+
+func TestParseIgnoresRetiredTagConfiguration(t *testing.T) {
+	for _, source := range []string{"{}", "tags: {builtin_pack_enabled: false}", "tags: {builtin_pack_enabled: legacy-value}", "tags: false"} {
+		if _, err := Parse([]byte(source)); err != nil {
+			t.Fatalf("retired configuration blocked parsing: %v", err)
 		}
 	}
 }

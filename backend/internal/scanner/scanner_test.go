@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/video-site/backend/internal/tagging"
 	"io"
 	"log"
 	"net"
@@ -514,6 +515,7 @@ func TestRunDoesNotCreateTagFromDirectoryName(t *testing.T) {
 			t.Fatalf("close catalog: %v", err)
 		}
 	})
+
 	now := time.Now()
 	for _, id := range []string{"existing-1", "existing-2"} {
 		if err := cat.UpsertVideo(ctx, &catalog.Video{
@@ -571,6 +573,21 @@ func TestRunMapsAVCodeDirectoryToExistingAVTag(t *testing.T) {
 			t.Fatalf("close catalog: %v", err)
 		}
 	})
+	if _, err := cat.EnsureTag(ctx, "AV", "user"); err != nil {
+		t.Fatal(err)
+	}
+	managedTags, err := cat.ListTags(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tag := range managedTags {
+		if tag.Label == "AV" {
+			if _, err := cat.UpdateTag(ctx, tag.ID, tagging.Rule{MatchAVCode: true, AVCodePrefixes: []string{"SSNI"}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
 	now := time.Now()
 	for _, id := range []string{"existing-1", "existing-2"} {
 		if err := cat.UpsertVideo(ctx, &catalog.Video{
@@ -612,8 +629,8 @@ func TestRunMapsAVCodeDirectoryToExistingAVTag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get video: %v", err)
 	}
-	if !sameStrings(got.Tags, []string{"AV", "SSNI"}) {
-		t.Fatalf("tags = %#v, want AV + SSNI", got.Tags)
+	if !sameStrings(got.Tags, []string{"AV"}) {
+		t.Fatalf("tags = %#v, want AV only", got.Tags)
 	}
 }
 

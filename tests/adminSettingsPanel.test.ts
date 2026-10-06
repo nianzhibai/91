@@ -118,7 +118,7 @@ test("media generation uses one column on mobile and three concurrency columns o
   );
   const mediaSection = pageSource.slice(
     pageSource.indexOf('activeSection === "config-preview"'),
-    pageSource.indexOf('activeSection === "config-tags"')
+    pageSource.indexOf('<TelegramSettingsSection')
   );
   assert.match(mediaSection, /GENERATION_FIELDS\.map[\s\S]*?label="预览视频"/);
   assert.match(
@@ -127,18 +127,11 @@ test("media generation uses one column on mobile and three concurrency columns o
   );
   assert.match(
     adminCss,
-    /@media \(min-width: 769px\)[\s\S]*?#config-preview \.admin-config-section__body,\s*#config-tags \.admin-config-section__body\s*\{[^}]*grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\);/s
+    /@media \(min-width: 769px\)[\s\S]*?#config-preview \.admin-config-section__body\s*\{[^}]*grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\);/s
   );
   assert.match(
     adminCss,
     /#config-preview \.admin-config-row\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*wrap;[^}]*justify-content:\s*space-between;/s
-  );
-});
-
-test("desktop built-in tags use the same column width as the preview switch", () => {
-  assert.match(
-    adminCss,
-    /@media \(min-width: 769px\)[\s\S]*?#config-preview \.admin-config-section__body,\s*#config-tags \.admin-config-section__body\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\);/s
   );
 });
 
@@ -206,7 +199,7 @@ test("desktop schedule keeps three-column widths with its switch on the second r
   );
   assert.match(
     adminCss,
-    /@media \(min-width: 769px\)[\s\S]*?#config-automation \.admin-config-section__body,\s*#config-preview \.admin-config-section__body,\s*#config-tags \.admin-config-section__body\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\);/s
+    /@media \(min-width: 769px\)[\s\S]*?#config-automation \.admin-config-section__body,\s*#config-preview \.admin-config-section__body\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\);/s
   );
   assert.match(
     adminCss,
@@ -217,44 +210,10 @@ test("desktop schedule keeps three-column widths with its switch on the second r
 test("configuration switches keep their labels without status text above them", () => {
   assert.doesNotMatch(pageSource, /admin-config-control__status|待开启|待关闭|已开启|已关闭|待恢复|待移除|已启用|已移除/);
   assert.doesNotMatch(adminCss, /admin-config-control__status/);
-  for (const label of ["nightly-enabled-label", "preview-enabled-label", "builtin-tags-label"]) {
+  for (const label of ["nightly-enabled-label", "preview-enabled-label"]) {
     assert.ok(pageSource.includes(`labelID="${label}"`));
     assert.ok(pageSource.includes(`aria-labelledby="${label}"`));
   }
-});
-
-test("built-in tag changes use the configuration draft and shared save review", () => {
-  assert.match(pageSource, /id: "config-tags"/);
-  assert.match(pageSource, /title="内置标签"/);
-  assert.match(pageSource, /description="管理系统内置标签"/);
-  assert.match(pageSource, /label="内置标签"/);
-  assert.doesNotMatch(pageSource, /内置标签开关/);
-  assert.doesNotMatch(pageSource, /自定义标签不受影响/);
-  assert.doesNotMatch(pageSource, /builtin-tags-description/);
-  assert.doesNotMatch(pageSource, /api\.getSettings\(\)|api\.updateSettings\(/);
-  assert.doesNotMatch(pageSource, /builtinTagsChange\b|builtinTagsDirty/);
-  assert.match(pageSource, /role="switch"/);
-  assert.match(pageSource, /aria-checked=\{draft\.builtinTagsEnabled\}/);
-  assert.match(
-    pageSource,
-    /updateVisualField\("builtinTagsEnabled", !draft\.builtinTagsEnabled\)/
-  );
-  assert.match(
-    pageSource,
-    /api\.updateConfigYAML\(pendingSave\.after, pendingSave\.version\)[\s\S]*?builtinTagsChanged[\s\S]*?invalidateTagsCache\(\)/
-  );
-  assert.doesNotMatch(pageSource, /ConfirmModal|removeBuiltinTagsConfirmOpen/);
-  assert.match(configYamlSource, /builtinTagsEnabled: boolean/);
-  assert.match(configYamlSource, /\["tags", "builtin_pack_enabled"\]/);
-  assert.match(configYamlSource, /builtinTagsEnabledEdits/);
-  assert.match(configYamlSource, /key: "builtin_pack_enabled"/);
-  assert.match(configYamlSource, /`\$\{field\.key\}: \$\{rendered\}`/);
-  assert.match(diffModalSource, /const hasChanges = diff\.additions \+ diff\.deletions > 0/);
-  assert.match(diffModalSource, /aria-label="config\.yaml 变更对比"/);
-  assert.doesNotMatch(diffModalSource, /settingChanges|应用设置|Database|TriangleAlert/);
-  assert.doesNotMatch(adminCss, /admin-config-diff-settings|admin-config-diff-setting__/);
-  assert.match(apiSource, /settings:\s*\{[\s\S]*?builtinTagsEnabled: boolean/);
-  assert.match(adminCss, /\.admin-config-control--switch\s*\{[^}]*display:\s*flex/s);
 });
 
 test("configuration panel keeps the CPA workspace mounted while loading", () => {
@@ -496,7 +455,6 @@ test("configuration section navigation directly renders the selected panel", () 
   assert.match(pageSource, /onClick=\{\(\) => setActiveSection\(section\.id\)\}/);
   assert.match(pageSource, /activeSection === "config-automation"/);
   assert.match(pageSource, /activeSection === "config-preview"/);
-  assert.match(pageSource, /activeSection === "config-tags"/);
   assert.doesNotMatch(pageSource, /activeSection === "config-dedupe"/);
   assert.doesNotMatch(pageSource, /scrollTo\(/);
   assert.doesNotMatch(pageSource, /handleSectionsScroll/);
@@ -517,7 +475,6 @@ test("compact configuration rows stay inline on mobile", () => {
   assert.match(markup, /class="admin-config-row admin-config-row--inline"/);
   assert.match(pageSource, /label="启动时间"[\s\S]*?layout="inline"/);
   assert.match(pageSource, /label=\{label\}[\s\S]*?layout="inline"/);
-  assert.match(pageSource, /label="内置标签"[\s\S]*?layout="inline"/);
   assert.match(
     adminCss,
     /@media \(max-width: 768px\)[\s\S]*?\.admin-config-row--inline\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto;[^}]*align-items:\s*center;/s
@@ -535,4 +492,10 @@ test("media settings expose the only global preview generation switch", () => {
   assert.match(pageSource, /id="preview-enabled-toggle"/);
   assert.match(pageSource, /aria-checked=\{draft\.previewEnabled\}/);
   assert.match(pageSource, /updateVisualField\("previewEnabled", !draft\.previewEnabled\)/);
+});
+
+test("settings no longer offer built-in tag controls", () => {
+ assert.doesNotMatch(pageSource, /config-tags|builtinTagsEnabled|内置标签/);
+ assert.doesNotMatch(configYamlSource, /builtinTagsEnabled|builtin_pack_enabled/);
+ assert.doesNotMatch(apiSource, /builtinTagsEnabled/);
 });

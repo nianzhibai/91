@@ -2,15 +2,12 @@ package catalog
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"time"
 
-	"github.com/video-site/backend/internal/fixedtags"
 	"github.com/video-site/backend/internal/tagging"
 )
 
@@ -263,19 +260,7 @@ CREATE TABLE IF NOT EXISTS deleted_videos (
 	if err := c.normalizeRetiredVideoTagSources(ctx); err != nil {
 		return err
 	}
-	if err := c.migrateBuiltinTagLabels(ctx); err != nil {
-		return err
-	}
-	if err := c.demoteRetiredBuiltinTags(ctx); err != nil {
-		return err
-	}
-	if err := c.initializeBuiltinTagPackOnce(ctx); err != nil {
-		return err
-	}
 	if err := c.removeAutomaticTaggingArtifacts(ctx); err != nil {
-		return err
-	}
-	if err := c.cleanupInvalidAVSeriesTags(ctx); err != nil {
 		return err
 	}
 	if err := c.clearVolatileOneDriveThumbnails(ctx); err != nil {
@@ -361,25 +346,39 @@ func (c *Catalog) removeRetiredTagRuleFields(ctx context.Context) error {
 	return c.bumpTagRulesVersion(ctx)
 }
 
-// normalizeStoredTagSources 把历史标签来源收敛为三类。视频与标签的关联来源
+// normalizeStoredTagSources 将旧内置标签迁移为自定义标签，保留规则和关联。视频与标签的关联来源
 // video_tags.source 独立记录 auto/manual/crawler/telegram 等关联来源。
 func (c *Catalog) normalizeStoredTagSources(ctx context.Context) error {
-	if _, err := c.db.ExecContext(ctx, `
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `
 UPDATE tags
    SET source = CASE
-       WHEN lower(trim(COALESCE(source, ''))) IN ('system', 'builtin') THEN 'builtin'
-       WHEN lower(trim(COALESCE(source, ''))) = 'user' THEN 'user'
+       WHEN lower(trim(COALESCE(source, ''))) IN ('system', 'builtin', 'user') THEN 'user'
        ELSE 'generated'
    END
  WHERE source IS NULL
     OR source != CASE
-       WHEN lower(trim(COALESCE(source, ''))) IN ('system', 'builtin') THEN 'builtin'
-       WHEN lower(trim(COALESCE(source, ''))) = 'user' THEN 'user'
+       WHEN lower(trim(COALESCE(source, ''))) IN ('system', 'builtin', 'user') THEN 'user'
        ELSE 'generated'
-   END`); err != nil {
+   END`)
+	if err != nil {
 		return fmt.Errorf("normalize tag sources: %w", err)
 	}
-	return nil
+	if _, err := tx.ExecContext(ctx, `DELETE FROM settings WHERE key IN ('tags.builtin_pack_enabled', 'tags.builtin_pack_initialized_v1', 'tags.av_code_matching_disabled')`); err != nil {
+		return err
+	}
+	if n, err := result.RowsAffected(); err != nil {
+		return err
+	} else if n > 0 {
+		if err := bumpTagRulesVersionTx(ctx, tx); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (c *Catalog) dropTagTombstones(ctx context.Context) error {
@@ -447,130 +446,6 @@ DELETE FROM video_tags
 		}
 	}
 	return nil
-}
-
-// migrateBuiltinTagLabels handles builtin-label renames while preserving
-// existing video assignments.
-func (c *Catalog) migrateBuiltinTagLabels(ctx context.Context) error {
-	tx, err := c.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	videoIDs, err := mergeBuiltinTagLabelTx(ctx, tx, "臀", "美臀")
-	if err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	for _, videoID := range uniqueStrings(videoIDs) {
-		if err := c.syncVideoTagsJSON(ctx, videoID, c.hasManualTags(ctx, videoID)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// demoteRetiredBuiltinTags keeps tags.source=builtin limited to fixedtags.All.
-// Retired builtin labels are kept as generated until the retired generated-tag
-// cleanup removes ordinary generated labels.
-func (c *Catalog) demoteRetiredBuiltinTags(ctx context.Context) error {
-	labels := fixedtags.Labels
-	if len(labels) == 0 {
-		if _, err := c.db.ExecContext(ctx, `UPDATE tags SET source = 'generated', updated_at = ? WHERE source = 'builtin'`, time.Now().UnixMilli()); err != nil {
-			return fmt.Errorf("demote retired builtin tags: %w", err)
-		}
-		return nil
-	}
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(labels)), ",")
-	now := time.Now().UnixMilli()
-	tagArgs := make([]any, 0, len(labels)+1)
-	tagArgs = append(tagArgs, now)
-	for _, label := range labels {
-		tagArgs = append(tagArgs, label)
-	}
-	if _, err := c.db.ExecContext(ctx, `
-UPDATE tags
-   SET source = 'generated',
-       updated_at = ?
- WHERE source = 'builtin'
-   AND label COLLATE NOCASE NOT IN (`+placeholders+`)`, tagArgs...); err != nil {
-		return fmt.Errorf("demote retired builtin tags: %w", err)
-	}
-	return nil
-}
-
-func mergeBuiltinTagLabelTx(ctx context.Context, tx *sql.Tx, oldLabel, newLabel string) ([]string, error) {
-	var oldID int64
-	var oldSource string
-	err := tx.QueryRowContext(ctx, `SELECT id, source FROM tags WHERE label = ? COLLATE NOCASE`, oldLabel).Scan(&oldID, &oldSource)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if normalizeTagSource(oldSource) != "builtin" {
-		return nil, nil
-	}
-	videoIDs, err := videoIDsForTagIDTx(ctx, tx, oldID)
-	if err != nil {
-		return nil, err
-	}
-
-	var newID int64
-	var newSource string
-	err = tx.QueryRowContext(ctx, `SELECT id, source FROM tags WHERE label = ? COLLATE NOCASE`, newLabel).Scan(&newID, &newSource)
-	if errors.Is(err, sql.ErrNoRows) {
-		_, err = tx.ExecContext(ctx,
-			`UPDATE tags SET label = ?, source = 'builtin', updated_at = ? WHERE id = ?`,
-			newLabel, time.Now().UnixMilli(), oldID)
-		return videoIDs, err
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	if normalizeTagSource(newSource) != "builtin" {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE tags SET source = 'builtin', updated_at = ? WHERE id = ?`,
-			time.Now().UnixMilli(), newID); err != nil {
-			return nil, err
-		}
-	}
-	if _, err := tx.ExecContext(ctx, `
-INSERT OR IGNORE INTO video_tags (video_id, tag_id, source, evidence, created_at)
-SELECT video_id, ?, source, evidence, created_at
-  FROM video_tags
- WHERE tag_id = ?`, newID, oldID); err != nil {
-		return nil, err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM video_tags WHERE tag_id = ?`, oldID); err != nil {
-		return nil, err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM tags WHERE id = ?`, oldID); err != nil {
-		return nil, err
-	}
-	return videoIDs, nil
-}
-
-func videoIDsForTagIDTx(ctx context.Context, tx *sql.Tx, tagID int64) ([]string, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT video_id FROM video_tags WHERE tag_id = ?`, tagID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var videoIDs []string
-	for rows.Next() {
-		var videoID string
-		if err := rows.Scan(&videoID); err != nil {
-			return nil, err
-		}
-		videoIDs = append(videoIDs, videoID)
-	}
-	return videoIDs, rows.Err()
 }
 
 func (c *Catalog) purgeLegacySourceDeletedTombstones(ctx context.Context) error {
@@ -1374,101 +1249,6 @@ UPDATE videos
    )
 `, time.Now().UnixMilli())
 	return err
-}
-
-// initializeBuiltinTagPackOnce runs the one-time legacy tag-pool reset:
-// keep administrator-created tags, drop non-user tags, then add the current
-// builtin pack. After the marker is written, deleted builtin tags are treated
-// as deliberate user edits and are not restored by startup or nightly work.
-// A persisted disabled pack is intentionally left empty during initialization.
-func (c *Catalog) initializeBuiltinTagPackOnce(ctx context.Context) error {
-	marker, err := c.GetSetting(ctx, settingBuiltinTagPackInit, "")
-	if err != nil {
-		return err
-	}
-	if parseSettingBool(marker, false) {
-		return nil
-	}
-	if err := c.resetNonUserTagsForBuiltinInit(ctx); err != nil {
-		return err
-	}
-	enabled, err := c.BuiltinTagsEnabled(ctx)
-	if err != nil {
-		return err
-	}
-	if enabled {
-		if err := c.seedBuiltinTagPack(ctx); err != nil {
-			return err
-		}
-	}
-	return c.SetSetting(ctx, settingBuiltinTagPackInit, "1")
-}
-
-func (c *Catalog) resetNonUserTagsForBuiltinInit(ctx context.Context) error {
-	tx, err := c.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	builtinPlaceholders := placeholders(len(fixedtags.Labels))
-	resetFilterWithAlias := `lower(trim(COALESCE(t.source, ''))) != 'user'`
-	resetFilter := `lower(trim(COALESCE(source, ''))) != 'user'`
-	args := make([]any, 0, len(fixedtags.Labels))
-	if builtinPlaceholders != "" {
-		resetFilterWithAlias += ` OR t.label COLLATE NOCASE IN (` + builtinPlaceholders + `)`
-		resetFilter += ` OR label COLLATE NOCASE IN (` + builtinPlaceholders + `)`
-		for _, label := range fixedtags.Labels {
-			args = append(args, label)
-		}
-	}
-
-	rows, err := tx.QueryContext(ctx, `
-SELECT DISTINCT vt.video_id
-  FROM video_tags vt
-  JOIN tags t ON t.id = vt.tag_id
- WHERE `+resetFilterWithAlias, args...)
-	if err != nil {
-		return err
-	}
-	var videoIDs []string
-	for rows.Next() {
-		var videoID string
-		if err := rows.Scan(&videoID); err != nil {
-			rows.Close()
-			return err
-		}
-		videoIDs = append(videoIDs, videoID)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return err
-	}
-	if err := rows.Close(); err != nil {
-		return err
-	}
-
-	if _, err := tx.ExecContext(ctx, `
-DELETE FROM video_tags
- WHERE tag_id IN (
-       SELECT id
-         FROM tags
-        WHERE `+resetFilter+`
- )`, args...); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `
-DELETE FROM tags
- WHERE `+resetFilter, args...); err != nil {
-		return err
-	}
-	for _, videoID := range uniqueStrings(videoIDs) {
-		manual := hasManualTagsTx(ctx, tx, videoID)
-		if err := syncVideoTagsJSONTx(ctx, tx, videoID, manual); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
 }
 
 func placeholders(n int) string {

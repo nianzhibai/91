@@ -15,12 +15,11 @@ import { useAuth } from "./AuthContext";
 const DESKTOP_TAGS_PAGE_SIZE = 24;
 const MOBILE_TAGS_PAGE_SIZE = 8;
 const TAGS_MOBILE_QUERY = "(max-width: 640px)";
-const TAG_SOURCE_FILTERS = ["builtin", "user", "generated"];
+const TAG_SOURCE_FILTERS = ["user", "generated"];
 const TAG_DISPLAY_GROUP_ORDER: Record<string, number> = {
-  builtin: 0,
-  user: 1,
-  crawler: 2,
-  av: 3,
+  user: 0,
+  crawler: 1,
+  generated: 2,
 };
 
 type DeleteConfirmState =
@@ -883,27 +882,23 @@ function isAVTag(tag: api.AdminTag): boolean {
 
 function sourceLabel(source: string): string {
   if (source === "crawler" || source === "generated") return "自动生成";
-  if (source === "builtin") return "内置";
   if (source === "user") return "自定义";
   return source || "未知";
 }
 
 function tagCardSourceLabel(tag: api.AdminTag): string {
   if (tag.crawlerOwned || tag.source === "crawler") return "爬虫脚本";
-  if (tag.source === "generated") return "AV";
   return sourceLabel(tag.source);
 }
 
 function tagCardSourceKey(tag: api.AdminTag): string {
   if (tag.crawlerOwned || tag.source === "crawler") return "crawler";
-  if (tag.source === "generated") return "av";
   return tag.source || "";
 }
 
 function tagDisplayGroupKey(tag: api.AdminTag): string {
-  if (tag.source === "builtin" || tag.source === "user") return tag.source;
+  if (tag.source === "user") return tag.source;
   if (tag.crawlerOwned || tag.source === "crawler") return "crawler";
-  if (tag.source === "generated") return "av";
   return tag.source || "";
 }
 
@@ -916,5 +911,5 @@ function tagSourceKey(tag: api.AdminTag): string {
 }
 
 function isSupportedTag(tag: api.AdminTag): boolean {
-  return tag.source === "builtin" || tag.source === "user" || tag.source === "generated" || tag.crawlerOwned === true;
+  return tag.source === "user" || tag.source === "generated" || tag.crawlerOwned === true;
 }

@@ -3950,12 +3950,16 @@ func TestHandleDeleteTagRemovesTagFromVideos(t *testing.T) {
 	}
 }
 
-func TestHandleDeleteTagAllowsBuiltinTag(t *testing.T) {
+func TestHandleDeleteTagAllowsCustomTag(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
 	if err != nil {
 		t.Fatalf("open catalog: %v", err)
 	}
+	if _, err := cat.CreateTagAndClassify(context.Background(), "奶子", "user"); err != nil {
+		t.Fatal(err)
+	}
+
 	t.Cleanup(func() { _ = cat.Close() })
 	tags, err := cat.ListTags(ctx)
 	if err != nil {
@@ -3969,7 +3973,7 @@ func TestHandleDeleteTagAllowsBuiltinTag(t *testing.T) {
 		}
 	}
 	if builtinID == 0 {
-		t.Fatal("奶子 builtin tag missing")
+		t.Fatal("custom tag missing")
 	}
 	req := requestWithRouteParam(
 		http.MethodDelete,

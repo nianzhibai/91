@@ -10,9 +10,8 @@ import (
 )
 
 const (
-	legacyNightlyStartTimeSetting   = "automation.nightly_start_time"
-	legacyBuiltinTagsEnabledSetting = "tags.builtin_pack_enabled"
-	legacySettingMissing            = "\x00video-site-config-setting-missing\x00"
+	legacyNightlyStartTimeSetting = "automation.nightly_start_time"
+	legacySettingMissing          = "\x00video-site-config-setting-missing\x00"
 )
 
 func (a *App) liveConfigSettings() config.LiveSettings {
@@ -41,24 +40,8 @@ func (a *App) applyLiveConfig(ctx context.Context, settings config.LiveSettings)
 	thumbnails.SetLimit(settings.ThumbnailConcurrency)
 	previews.SetLimit(settings.PreviewConcurrency)
 	fingerprints.SetLimit(settings.FingerprintConcurrency)
-	if a.cat == nil {
-		a.applyPreviewEnabled(ctx, settings.PreviewEnabled)
-		return nil
-	}
-	changed, err := a.cat.SetBuiltinTagsEnabled(ctx, settings.BuiltinTagsEnabled)
-	if err != nil {
-		return fmt.Errorf("apply built-in tag configuration: %w", err)
-	}
+
 	a.applyPreviewEnabled(ctx, settings.PreviewEnabled)
-	if !changed {
-		return nil
-	}
-	if a.onTagsChanged != nil {
-		a.onTagsChanged()
-	}
-	if settings.BuiltinTagsEnabled {
-		a.startTagRetag(ctx)
-	}
 	return nil
 }
 
@@ -91,11 +74,6 @@ func loadLegacyRuntimeSettings(ctx context.Context, cat *catalog.Catalog) (confi
 			legacy.NightlyStartTime = &normalized
 		}
 	}
-	builtinTagsEnabled, err := cat.BuiltinTagsEnabled(ctx)
-	if err != nil {
-		return legacy, err
-	}
-	legacy.BuiltinTagsEnabled = &builtinTagsEnabled
 	return legacy, nil
 }
 

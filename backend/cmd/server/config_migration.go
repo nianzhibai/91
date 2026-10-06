@@ -22,7 +22,7 @@ func migrateApplicationConfig(ctx context.Context, cat *catalog.Catalog, manager
 	if _, err := manager.MigrateLegacyRuntimeSettings(legacy); err != nil {
 		return fmt.Errorf("migrate runtime settings: %w", err)
 	}
-	if err := cat.DeleteSettings(ctx, legacyNightlyStartTimeSetting, legacyBuiltinTagsEnabledSetting); err != nil {
+	if err := cat.DeleteSettings(ctx, legacyNightlyStartTimeSetting); err != nil {
 		return fmt.Errorf("remove migrated SQLite configuration: %w", err)
 	}
 	if err := migrateTelegramConfig(ctx, cat, manager); err != nil {

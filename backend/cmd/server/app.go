@@ -60,8 +60,8 @@ type App struct {
 	// configManager 将 config.yaml 的已校验热更新字段发布给运行时消费者；
 	// 文件本身是唯一持久化事实来源。
 	configManager *config.Manager
-	// onTagsChanged invalidates the API read cache after a config-driven tag
-	// catalog mutation. It is installed before the HTTP server starts serving.
+	// onTagsChanged invalidates the API read cache after tag memberships change.
+	// It is installed before the HTTP server starts serving.
 	onTagsChanged func()
 
 	// crawlerUploader 把脚本爬虫保存在本地的视频上传到每个爬虫配置的目标 drive。
