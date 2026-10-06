@@ -28,6 +28,7 @@ type ShortsKeyboardSeekTarget = ShortsKeyboardSeekPreview & {
 };
 
 export type ShortsKeyboardOptions = {
+  resetKey?: string;
   /** 滚动容器：用于定位目标 slide 与当前屏的点赞按钮 */
   containerRef: React.RefObject<HTMLDivElement | null>;
   activeIndexRef: React.MutableRefObject<number>;
@@ -67,12 +68,14 @@ export function useShortsKeyboard(options: ShortsKeyboardOptions) {
     },
     []
   );
-  // 监听只绑定一次；回调经由这里读取每次渲染的最新配置。
+  // 同一队列内只绑定一次；回调经由这里读取每次渲染的最新配置。
   const optionsRef = useRef(options);
   optionsRef.current = options;
 
   // 键盘快捷键监听
   useEffect(() => {
+    setKeyboardSeekPreview(null);
+    setKeyboardFastPlaybackIndex(null);
     const { activeIndexRef, itemsLengthRef, containerRef } = optionsRef.current;
     const getCurrentVideoAtIndex = (videoIndex: number) =>
       optionsRef.current.getVideoAtIndex(videoIndex);
@@ -449,7 +452,7 @@ export function useShortsKeyboard(options: ShortsKeyboardOptions) {
       keyboardSeekTargetRef.current = null;
       keyboardSeekHeldKeysRef.current.clear();
     };
-  }, []);
+  }, [options.resetKey]);
 
   return {
     keyboardSeekPreview,

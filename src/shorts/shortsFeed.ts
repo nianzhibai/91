@@ -3,6 +3,33 @@ import type { ShortsFeedItem, ShortsNextResponse } from "@/data/videos";
 // 只保存固定大小的服务端 feed 令牌和已实际看到的游标。
 export const SHORTS_FEED_STORAGE_KEY = "shorts_feed_v2";
 
+export const SHORTS_FEED_TABS = [
+  { key: "latest", label: "最新" },
+  { key: "hot", label: "最热" },
+  { key: "recommend", label: "推荐" },
+] as const;
+
+export type ShortsFeedMode = (typeof SHORTS_FEED_TABS)[number]["key"];
+
+export function readShortsFeedMode(params: URLSearchParams): ShortsFeedMode {
+  const mode = params.get("feed");
+  return mode === "latest" || mode === "hot" ? mode : "recommend";
+}
+
+export function withShortsFeedMode(
+  params: URLSearchParams,
+  mode: ShortsFeedMode
+): URLSearchParams {
+  const next = new URLSearchParams(params);
+  if (mode === "recommend") next.delete("feed");
+  else next.set("feed", mode);
+  return next;
+}
+
+function shortsFeedStorageKey(mode: ShortsFeedMode): string {
+  return mode === "recommend" ? SHORTS_FEED_STORAGE_KEY : `${SHORTS_FEED_STORAGE_KEY}_${mode}`;
+}
+
 // 每次向后端取多少条续到队列尾。值不要太大避免一次返回过多浪费；
 // 也不要太小导致频繁请求和滑动卡顿。
 export const BATCH_SIZE = 5;
@@ -31,9 +58,9 @@ export function shortsQueueItemKey(item: {
   return `${item.feedToken}:${item.feedCursor}`;
 }
 
-export function loadShortsFeedState(): ShortsFeedState {
+export function loadShortsFeedState(mode: ShortsFeedMode = "recommend"): ShortsFeedState {
   try {
-    const raw = localStorage.getItem(SHORTS_FEED_STORAGE_KEY);
+    const raw = localStorage.getItem(shortsFeedStorageKey(mode));
     if (!raw) return EMPTY_SHORTS_FEED;
     const parsed = JSON.parse(raw);
     if (
@@ -52,17 +79,17 @@ export function loadShortsFeedState(): ShortsFeedState {
   }
 }
 
-export function saveShortsFeedState(feed: ShortsFeedState) {
+export function saveShortsFeedState(feed: ShortsFeedState, mode: ShortsFeedMode = "recommend") {
   try {
-    localStorage.setItem(SHORTS_FEED_STORAGE_KEY, JSON.stringify(feed));
+    localStorage.setItem(shortsFeedStorageKey(mode), JSON.stringify(feed));
   } catch {
     // 隐私模式或存储不可用时只影响刷新后的续播，不影响当前 feed。
   }
 }
 
-export function clearShortsFeedState() {
+export function clearShortsFeedState(mode: ShortsFeedMode = "recommend") {
   try {
-    localStorage.removeItem(SHORTS_FEED_STORAGE_KEY);
+    localStorage.removeItem(shortsFeedStorageKey(mode));
   } catch {
     // ignore
   }

@@ -97,7 +97,7 @@ test("mobile shorts scrubbing time is shown at the top", () => {
 test("mobile shorts title stays plain text without creating a gesture dead zone", () => {
   assert.match(
     shortsPageSource,
-    /<h2 className="shorts-slide__title">\{item\.title\}<\/h2>/
+    /<h2\s+className="shorts-slide__title"[^>]*>\s*\{item\.title\}\s*<\/h2>/
   );
   assert.match(shortsPageSource, /<div className="shorts-slide__overlay">/);
   assert.doesNotMatch(shortsPageSource, /shorts-slide__title-link/);
@@ -128,7 +128,7 @@ test("low-height landscape shorts keep actions below the header", () => {
   );
   assert.match(
     shortsCssSource,
-    /@media \(orientation: landscape\) and \(max-height: 520px\) \{\s*\.shorts-slide__actions \{\s*top: calc\(env\(safe-area-inset-top\) \+ 68px\);\s*bottom: auto;\s*gap: 12px;\s*\}\s*\}/
+    /@media \(orientation: landscape\) and \(max-height: 520px\) \{\s*\.shorts-slide__actions \{\s*top: calc\(env\(safe-area-inset-top\) \+ 68px\);\s*bottom: auto;\s*gap: 12px;\s*\}/
   );
   assert.doesNotMatch(
     shortsCssSource,
@@ -662,17 +662,17 @@ test("shorts distinguishes feed failures from a genuinely empty library", () => 
   );
   assert.match(
     useShortsFeedSource,
-    /if \(outcome\.kind === "empty"\) \{\s*setEmpty\(true\);[\s\S]*?setItems\(\[\]\);\s*onQueueResetRef\.current\(\);[\s\S]*?setRoundComplete\(false\);\s*requestFeedRef\.current = EMPTY_SHORTS_FEED;\s*cancelPendingPersistedFeed\(\);\s*clearShortsFeedState\(\);\s*return;/
+    /if \(outcome\.kind === "empty"\) \{\s*setEmpty\(true\);[\s\S]*?onQueueResetRef\.current\(\);\s*setItems\(\[\]\);[\s\S]*?setRoundComplete\(false\);\s*requestFeedRef\.current = EMPTY_SHORTS_FEED;\s*cancelPendingPersistedFeed\(\);\s*clearShortsFeedState\(mode\);\s*return;/
   );
   assert.match(
     shortsPageSource,
-    /const handleQueueReset = useCallback\(\(\) => setActiveIndex\(0\), \[\]\);/
+    /const handleQueueReset = useCallback\(\(\) => \{[\s\S]*?setActiveIndex\(0\);/
   );
   assert.match(
     useShortsFeedSource,
-    /useEffect\(\(\) => \{\s*if \(empty\) return;\s*const active = items\[activeIndex\];/
+    /useEffect\(\(\) => \{\s*if \(empty \|\| queueMode !== mode\) return;\s*const active = items\[activeIndex\];/
   );
-  assert.match(useShortsFeedSource, /catch \{\s*setLoadError\(true\);/);
+  assert.match(useShortsFeedSource, /catch \{[\s\S]*?setLoadError\(true\);/);
   assert.match(shortsPageSource, /短视频加载失败，请检查网络后重试/);
   assert.match(shortsPageSource, /onClick=\{\(\) => void loadMore\(\)\}/);
   assert.doesNotMatch(
@@ -692,7 +692,7 @@ test("shorts empty library reuses the homepage empty visual", () => {
   );
   assert.match(
     shortsPageSource,
-    /\{items\.length > 0 && \(\s*<button[\s\S]*?aria-label=\{muted \? "取消静音" : "静音"\}/
+    /aria-label=\{muted \? "取消静音" : "静音"\}[\s\S]*?disabled=\{items\.length === 0\}/
   );
   assert.doesNotMatch(shortsPageSource, /当前没有可播放的视频/);
   assert.match(
@@ -721,7 +721,7 @@ test("shorts hidden overlay keeps only the concise confirmation", () => {
 test("shorts hide action is icon-only and advances by stable feed key", () => {
   assert.match(
     shortsPageSource,
-    /aria-label="不再展示"[\s\S]*?<EyeOff size=\{22\} \/>/
+    /aria-label="不再展示"[\s\S]*?<EyeOff\b/
   );
   assert.doesNotMatch(
     shortsPageSource,
@@ -750,7 +750,7 @@ test("shorts creates and copies the existing one-time video share", () => {
   );
   assert.match(
     shortsPageSource,
-    /aria-label="生成并复制一次性分享链接"[\s\S]*?disabled=\{isSharing\}[\s\S]*?onClick=\{handleShareClick\}[\s\S]*?<Share2 size=\{22\} \/>/
+    /aria-label="生成并复制一次性分享链接"[\s\S]*?disabled=\{isSharing\}[\s\S]*?onClick=\{handleShareClick\}[\s\S]*?<Forward\b/
   );
   assert.match(
     shortsPageSource,

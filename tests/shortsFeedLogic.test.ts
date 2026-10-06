@@ -12,8 +12,10 @@ import {
   loadShortsFeedState,
   mergeShortsQueue,
   planShortsPrefetch,
+  readShortsFeedMode,
   requestShortsBatch,
   saveShortsFeedState,
+  withShortsFeedMode,
   type QueuedShortsItem,
   type ShortsFeedCommitEvent,
   type ShortsFeedState,
@@ -71,6 +73,32 @@ function feedResponse(input: {
 test("shorts feed exposes a small initial batch and larger continuation batch", () => {
   assert.equal(INITIAL_BATCH_SIZE, 2);
   assert.equal(BATCH_SIZE, 5);
+});
+
+test("shorts mode defaults to recommendation and preserves other URL settings", () => {
+  assert.equal(readShortsFeedMode(new URLSearchParams()), "recommend");
+  assert.equal(readShortsFeedMode(new URLSearchParams("feed=unknown")), "recommend");
+  for (const mode of ["latest", "hot", "recommend"] as const) {
+    const params = withShortsFeedMode(new URLSearchParams("debug=1&feed=latest"), mode);
+    assert.equal(readShortsFeedMode(params), mode);
+    assert.equal(params.get("debug"), "1");
+    assert.equal(params.get("feed"), mode === "recommend" ? null : mode);
+  }
+});
+
+test("each shorts mode resumes and clears only its own bookmark", () => {
+  withMemoryLocalStorage(() => {
+    for (const mode of ["latest", "hot", "recommend"] as const) {
+      saveShortsFeedState({ feedToken: `${mode}-token`, cursor: 7 }, mode);
+    }
+    for (const mode of ["latest", "hot", "recommend"] as const) {
+      assert.deepEqual(loadShortsFeedState(mode), { feedToken: `${mode}-token`, cursor: 7 });
+    }
+    clearShortsFeedState("hot");
+    assert.deepEqual(loadShortsFeedState("hot"), EMPTY_SHORTS_FEED);
+    assert.equal(loadShortsFeedState("latest").feedToken, "latest-token");
+    assert.equal(loadShortsFeedState().feedToken, "recommend-token");
+  });
 });
 
 test("feed bookmark storage round-trips and rejects hostile payloads", () => {

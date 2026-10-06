@@ -62,10 +62,21 @@ type shortsFeedResponse struct {
 }
 
 // handleShortsNext serves an idempotent, body-free feed endpoint. A new feed
-// snapshots and shuffles the visible video IDs once. Later requests send only
+// snapshots the visible video IDs in the selected order once. Later requests send only
 // the opaque token and numeric cursor, so request size stays constant even for
 // libraries with many thousands of videos.
 func (s *Server) handleShortsNext(w http.ResponseWriter, r *http.Request) {
+	mode := strings.TrimSpace(r.URL.Query().Get("mode"))
+	if mode == "" {
+		mode = "recommend"
+	}
+	switch mode {
+	case "recommend", "latest", "hot":
+	default:
+		writeErr(w, r, http.StatusBadRequest, errors.New("invalid shorts mode"))
+		return
+	}
+
 	count, err := shortsQueryInt(r, "count", defaultShortsBatchSize)
 	if err != nil || count < 1 {
 		writeErr(w, r, http.StatusBadRequest, errors.New("invalid shorts count"))
@@ -92,15 +103,21 @@ func (s *Server) handleShortsNext(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, r, http.StatusBadRequest, errors.New("shorts cursor requires a feed token"))
 			return
 		}
-		videoIDs, err = s.Catalog.ListVisibleVideoIDs(r.Context())
+		if mode == "recommend" {
+			videoIDs, err = s.Catalog.ListVisibleVideoIDs(r.Context())
+		} else {
+			videoIDs, err = s.Catalog.ListVideoIDs(r.Context(), catalog.ListParams{Sort: mode})
+		}
 		if err != nil {
 			writeErr(w, r, http.StatusInternalServerError, err)
 			return
 		}
 		if len(videoIDs) > 0 {
-			rand.Shuffle(len(videoIDs), func(i, j int) {
-				videoIDs[i], videoIDs[j] = videoIDs[j], videoIDs[i]
-			})
+			if mode == "recommend" {
+				rand.Shuffle(len(videoIDs), func(i, j int) {
+					videoIDs[i], videoIDs[j] = videoIDs[j], videoIDs[i]
+				})
+			}
 			feedToken, err = newShortsFeedToken()
 			if err != nil {
 				writeErr(w, r, http.StatusInternalServerError, err)

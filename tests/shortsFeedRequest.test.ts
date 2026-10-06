@@ -31,12 +31,37 @@ test("shorts feed requests use a body-free token and cursor GET", async (t) => {
 
   assert.equal(
     requestPath,
-    "/api/shorts/next?cursor=42&count=5&feedToken=feed-token"
+    "/api/shorts/next?cursor=42&count=5&mode=recommend&feedToken=feed-token"
   );
   assert.equal(requestInit?.method, undefined);
   assert.equal(requestInit?.body, undefined);
   assert.equal(requestInit?.cache, "no-store");
   assert.equal(response.items[0]?.feedCursor, 43);
+});
+
+test("shorts feed requests select server ordering for every mode", async (t) => {
+  const paths: string[] = [];
+  t.mock.method(globalThis, "fetch", async (input) => {
+    paths.push(String(input));
+    return Response.json({ items: [], total: 0, feedToken: "", nextCursor: 0, roundComplete: true });
+  });
+  for (const mode of ["latest", "hot", "recommend"] as const) {
+    await fetchShortsNext("", 0, 2, mode);
+    assert.equal(new URL(paths.at(-1)!, "http://localhost").searchParams.get("mode"), mode);
+  }
+});
+
+test("shorts feed requests can be cancelled when the selected mode changes", async (t) => {
+  let requestSignal: AbortSignal | undefined;
+  t.mock.method(globalThis, "fetch", (_input, init) => new Promise<Response>((_resolve, reject) => {
+    requestSignal = init?.signal as AbortSignal;
+    requestSignal.addEventListener("abort", () => reject(requestSignal!.reason), { once: true });
+  }));
+  const controller = new AbortController();
+  const pending = fetchShortsNext("", 0, 2, "latest", { signal: controller.signal });
+  controller.abort();
+  await assert.rejects(pending, { name: "AbortError" });
+  assert.equal(requestSignal?.aborted, true);
 });
 
 test("shorts feed reports an expired server token without turning it into an empty list", async (t) => {

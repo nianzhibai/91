@@ -6,16 +6,18 @@ import {
   useRef,
   useState,
 } from "react";
-import { Link } from "react-router";
+import { Link, useLocation, useSearchParams } from "react-router";
 import {
   ChevronLeft,
+  ChevronUp,
+  ChevronDown,
   Heart,
   Play,
   Volume2,
   VolumeX,
   EyeOff,
   AlertCircle,
-  Share2,
+  Forward,
   Maximize,
 } from "lucide-react";
 import { hideVideo, setVideoLike, type ShortsItem } from "@/data/videos";
@@ -48,7 +50,11 @@ import {
 import { useShortsFeed } from "@/shorts/useShortsFeed";
 import {
   getShortsQueueTrimCount,
+  readShortsFeedMode,
+  SHORTS_FEED_TABS,
   shortsQueueItemKey,
+  withShortsFeedMode,
+  type ShortsFeedMode,
 } from "@/shorts/shortsFeed";
 import {
   useShortsKeyboard,
@@ -93,8 +99,33 @@ const SHORTS_BUFFERING_INDICATOR_DELAY_MS = 180;
 
 export default function ShortsPage() {
   const { ready, ...navigation } = useShortsNavigation();
+  const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const mode = readShortsFeedMode(searchParams);
+  const restoreTabFocusRef = useRef(false);
+  const handleModeChange = useCallback((next: ShortsFeedMode, restoreFocus = false) => {
+    if (next === mode) return;
+    restoreTabFocusRef.current = restoreFocus;
+    setSearchParams((current) => withShortsFeedMode(current, next), {
+      replace: true,
+      state: location.state,
+    });
+  }, [location.state, mode, setSearchParams]);
+
+  useLayoutEffect(() => {
+    if (!restoreTabFocusRef.current) return;
+    restoreTabFocusRef.current = false;
+    document.querySelector<HTMLButtonElement>('.shorts-header__tab[aria-selected="true"]')?.focus();
+  }, [mode]);
+
   if (!ready) return <div className="shorts-page" aria-busy="true" />;
-  return <ShortsPlayback {...navigation} />;
+  return (
+    <ShortsPlayback
+      {...navigation}
+      mode={mode}
+      onModeChange={handleModeChange}
+    />
+  );
 }
 
 function ShortsPlayback({
@@ -105,18 +136,15 @@ function ShortsPlayback({
   isFullscreen,
   fullscreenSupported,
   requestFullscreen,
-}: Omit<ReturnType<typeof useShortsNavigation>, "ready">) {
+  mode,
+  onModeChange,
+}: Omit<ReturnType<typeof useShortsNavigation>, "ready"> & {
+  mode: ShortsFeedMode;
+  onModeChange: (mode: ShortsFeedMode, restoreFocus?: boolean) => void;
+}) {
   const { isAdmin } = useAuth();
   // 当前在视口里的视频索引
   const [activeIndex, setActiveIndex] = useState(0);
-  // 队列因空库被丢弃时回到第一屏
-  const handleQueueReset = useCallback(() => setActiveIndex(0), []);
-  // 已加入页面的视频队列（按出现顺序）与拉取状态
-  const { items, loading, empty, loadError, loadMore, trimQueueBefore } =
-    useShortsFeed(activeIndex, handleQueueReset);
-  const activeItemKey = items[activeIndex]
-    ? shortsQueueItemKey(items[activeIndex])
-    : "";
   // 是否静音；首次必须静音才能 autoplay，用户点击后切换
   const [muted, setMuted] = useState(true);
   // iOS/WebKit 的有声播放授权按 media element 管理。iOS 分支始终复用
@@ -188,13 +216,13 @@ function ShortsPlayback({
   }, []);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const mediaParkingRef = useRef<HTMLDivElement | null>(null);
   // 承载滑动位移的轨道。它没有定位也没有常驻 transform，slide 的 offsetTop
   // 和 nextElementSibling 关系都不受影响；只有手势 / 落点动画进行中才会被
   // 写上 translate3d，落定立刻清掉——不给 WebKit 在 <video> 祖先上留常驻
   // 合成层（本页在 iOS 合成路径上踩过坑，见 .shorts-page 的注释）。
   const trackRef = useRef<HTMLDivElement | null>(null);
-  const itemsLengthRef = useRef(items.length);
-  itemsLengthRef.current = items.length;
+  const itemsLengthRef = useRef(0);
   // 整页只建一个 slide 观察器，新批次到达时增量补充观察目标。
   const slideObserverRef = useRef<IntersectionObserver | null>(null);
   const observedSlidesRef = useRef<WeakSet<Element>>(new WeakSet());
@@ -268,6 +296,53 @@ function ShortsPlayback({
   // Windows 短视频页只保留静音图标；不挂载桌面 hover 音量条，避免点击
   // 图标时因鼠标仍停留在按钮上而展开滑杆。
   const isWindowsShortsPlatform = isWindowsPlatform();
+
+  const handleQueueReset = useCallback(() => {
+    const root = containerRef.current;
+    const observer = slideObserverRef.current;
+    root?.querySelectorAll("[data-shorts-slide]").forEach((slide) => observer?.unobserve(slide));
+    observer?.takeRecords();
+    observedSlidesRef.current = new WeakSet();
+    slideVisibilityRef.current.clear();
+
+    // 旧插槽卸载前把 iOS video 移到仍连接在文档中的位置，保留有声播放授权。
+    for (const video of [iosSharedVideoRef.current, iosStandbyVideoRef.current]) {
+      if (!video) continue;
+      mediaParkingRef.current?.appendChild(video);
+      releaseVideoSource(video);
+      delete video.dataset.shortsVideoId;
+      normalizeVideoPlaybackRate(video);
+    }
+    videoRefs.current.forEach(releaseVideoSource);
+    videoRefs.current.clear();
+    videoRefCallbacks.current.clear();
+    iosSharedVideoSlots.current.clear();
+    iosSharedVideoSlotCallbacks.current.clear();
+    iosSharedVideoIndexRef.current = -1;
+    iosStandbyVideoIndexRef.current = -1;
+    activeIndexRef.current = 0;
+    browseDirectionRef.current = 1;
+    userPausedIndexRef.current = null;
+    viewportResizeAnchorIndexRef.current = null;
+    pendingQueueTrimRef.current = null;
+    queueTrimInProgressRef.current = false;
+    pagerGestureActiveRef.current = false;
+    if (useDocumentScroll) window.scrollTo({ top: 0, behavior: "auto" });
+    else if (root) root.scrollTop = 0;
+    setActiveIndex(0);
+    setActiveReadyForPreload(false);
+    setCacheableSourceIds(new Set());
+    setCacheWindowHighIndex(-1);
+    setHudText(null);
+  }, [useDocumentScroll]);
+
+  const { items, loading, empty, loadError, loadMore, trimQueueBefore } =
+    useShortsFeed(activeIndex, handleQueueReset, mode);
+  itemsLengthRef.current = items.length;
+  const activeItemKey = items[activeIndex]
+    ? shortsQueueItemKey(items[activeIndex])
+    : "";
+
   function getVideoAtIndex(index: number) {
     if (useIOSSharedVideo && index === activeIndexRef.current) {
       return iosSharedVideoRef.current ?? undefined;
@@ -318,6 +393,7 @@ function ShortsPlayback({
     keyboardFastPlaybackIndex,
     registerKeyboardLikeHandler,
   } = useShortsKeyboard({
+    resetKey: mode,
     containerRef,
     activeIndexRef,
     itemsLengthRef,
@@ -685,6 +761,7 @@ function ShortsPlayback({
   );
 
   useShortsSwipePager({
+    resetKey: mode,
     enabled: usePagerGestures,
     containerRef,
     trackRef,
@@ -939,16 +1016,18 @@ function ShortsPlayback({
   }, []);
 
   // 沉浸式：默认锁住 body 滚动；iPhone 浏览器里放开根页面滚动，让 Safari 工具栏能随刷动收起。
-  useEffect(() => {
+  useLayoutEffect(() => {
     const html = document.documentElement;
     const body = document.body;
     const prevHtmlOverflow = html.style.overflow;
+    const prevHtmlScrollbarGutter = html.style.scrollbarGutter;
     const prevBodyOverflow = body.style.overflow;
     const prevBodyBg = body.style.background;
     const prevScrollRestoration = window.history.scrollRestoration;
     // 清屏只改变路由 state。由翻页器管理位置，避免同页后退时浏览器
     // 恢复旧的文档滚动位置，把 iPhone 上正在看的视频跳回第一条。
     window.history.scrollRestoration = "manual";
+    html.style.scrollbarGutter = "auto";
     if (useDocumentScroll) {
       html.classList.add("shorts-document-scroll");
       body.classList.add("shorts-document-scroll");
@@ -984,6 +1063,7 @@ function ShortsPlayback({
       html.classList.remove("is-pager-driven");
       body.classList.remove("is-pager-driven");
       html.style.overflow = prevHtmlOverflow;
+      html.style.scrollbarGutter = prevHtmlScrollbarGutter;
       body.style.overflow = prevBodyOverflow;
       body.style.background = prevBodyBg;
       window.history.scrollRestoration = prevScrollRestoration;
@@ -1029,48 +1109,95 @@ function ShortsPlayback({
       }${legacyVideoTransitionEnabled ? " has-video-transition" : ""}`}
       data-clear-screen={clearScreen}
     >
+      <div className="shorts-media-parking" ref={mediaParkingRef} aria-hidden="true" />
       <header className="shorts-header">
         <Link
           to="/"
           className="shorts-header__back"
           aria-label="返回首页"
+          title="返回首页"
           onClick={handleBackToHomeClick}
         >
-          <ChevronLeft size={22} />
+          <ChevronLeft size={28} strokeWidth={2.5} />
+          <span className="shorts-header__back-label">返回首页</span>
         </Link>
+        <div className="shorts-header__tabs" role="tablist" aria-label="短视频排序">
+          {SHORTS_FEED_TABS.map((tab, index) => (
+            <button
+              key={tab.key}
+              id={`shorts-tab-${tab.key}`}
+              type="button"
+              role="tab"
+              className="shorts-header__tab"
+              aria-selected={mode === tab.key}
+              aria-controls="shorts-feed"
+              tabIndex={mode === tab.key ? 0 : -1}
+              onClick={(event) => onModeChange(tab.key, event.detail === 0)}
+              onKeyDown={(event) => {
+                let nextIndex: number;
+                switch (event.key) {
+                  case "ArrowLeft":
+                    nextIndex = (index + SHORTS_FEED_TABS.length - 1) % SHORTS_FEED_TABS.length;
+                    break;
+                  case "ArrowRight":
+                    nextIndex = (index + 1) % SHORTS_FEED_TABS.length;
+                    break;
+                  case "Home":
+                    nextIndex = 0;
+                    break;
+                  case "End":
+                    nextIndex = SHORTS_FEED_TABS.length - 1;
+                    break;
+                  default:
+                    return;
+                }
+                event.preventDefault();
+                event.stopPropagation();
+                onModeChange(SHORTS_FEED_TABS[nextIndex].key, true);
+              }}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
         <div className="shorts-header__actions">
           {fullscreenSupported && !isFullscreen && (
             <button
               type="button"
-              className="shorts-header__icon-btn"
+              className="shorts-header__icon-btn shorts-header__fullscreen"
               aria-label="进入全屏"
+              title="进入全屏"
               onClick={(event) => {
                 event.stopPropagation();
                 void requestFullscreen();
               }}
             >
-              <Maximize size={20} />
+              <Maximize size={24} strokeWidth={2.25} />
             </button>
           )}
-          {items.length > 0 && (
-            <button
-              type="button"
-              className="shorts-header__icon-btn"
-              aria-label={muted ? "取消静音" : "静音"}
-              onPointerDownCapture={stopHeaderControlPropagation}
-              onTouchStartCapture={stopHeaderControlPropagation}
-              onMouseDownCapture={stopHeaderControlPropagation}
-              onPointerDown={stopHeaderControlPropagation}
-              onTouchStart={stopHeaderControlPropagation}
-              onMouseDown={stopHeaderControlPropagation}
-              onClick={(e) => {
-                e.stopPropagation();
-                handleMuteButtonClick();
-              }}
-            >
-              {muted ? <VolumeX size={20} /> : <Volume2 size={20} />}
-            </button>
-          )}
+          <button
+            type="button"
+            className="shorts-header__icon-btn"
+            aria-label={muted ? "取消静音" : "静音"}
+            title={muted ? "取消静音" : "静音"}
+            disabled={items.length === 0}
+            onPointerDownCapture={stopHeaderControlPropagation}
+            onTouchStartCapture={stopHeaderControlPropagation}
+            onMouseDownCapture={stopHeaderControlPropagation}
+            onPointerDown={stopHeaderControlPropagation}
+            onTouchStart={stopHeaderControlPropagation}
+            onMouseDown={stopHeaderControlPropagation}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleMuteButtonClick();
+            }}
+          >
+            {muted ? (
+              <VolumeX size={26} strokeWidth={2.25} />
+            ) : (
+              <Volume2 size={26} strokeWidth={2.25} />
+            )}
+          </button>
         </div>
       </header>
 
@@ -1112,6 +1239,9 @@ function ShortsPlayback({
 
       <div
         className={`shorts-feed${usePagerGestures ? " is-pager-driven" : ""}`}
+        id="shorts-feed"
+        role="tabpanel"
+        aria-labelledby={`shorts-tab-${mode}`}
         ref={containerRef}
       >
         <div className="shorts-feed__track" ref={trackRef}>
@@ -1194,6 +1324,8 @@ function ShortsPlayback({
                 itemKey={itemKey}
                 index={index}
                 isActive={isActiveSlide}
+                canGoPrevious={index > 0}
+                canGoNext={index < items.length - 1}
                 // 固定 4 条视频窗口内才挂载 <video> 壳；
                 // 下一屏先用 metadata 轻量准备；当前屏缓冲健康后再全速预加载；
                 // 已缓冲过的窗口内视频保留 src，便于来回切换复用缓存。
@@ -1317,6 +1449,8 @@ type SlideProps = {
   itemKey: string;
   index: number;
   isActive: boolean;
+  canGoPrevious: boolean;
+  canGoNext: boolean;
   shouldMount: boolean;
   shouldLoad: boolean;
   shouldEagerLoad: boolean;
@@ -1383,6 +1517,8 @@ function ShortsSlideImpl({
   itemKey,
   index,
   isActive,
+  canGoPrevious,
+  canGoNext,
   shouldMount,
   shouldLoad,
   shouldEagerLoad,
@@ -1441,6 +1577,19 @@ function ShortsSlideImpl({
   const [playbackFailure, setPlaybackFailure] =
     useState<ShortsPlaybackFailure | null>(null);
   const [fastActive, setFastActive] = useState(false);
+  // 只改变内部播放器尺寸；外层 slide 的一屏高度仍由翻页器管理。
+  const [mediaAspectRatio, setMediaAspectRatio] = useState(9 / 16);
+  const hasMediaDimensionsRef = useRef(false);
+  const handlePosterLoad = useCallback(
+    (event: React.SyntheticEvent<HTMLImageElement>) => {
+      if (hasMediaDimensionsRef.current) return;
+      const { naturalWidth, naturalHeight } = event.currentTarget;
+      if (naturalWidth > 0 && naturalHeight > 0) {
+        setMediaAspectRatio(naturalWidth / naturalHeight);
+      }
+    },
+    []
+  );
 
   // 视频缓冲状态
   const [isBuffering, setIsBufferingState] = useState(false);
@@ -2123,6 +2272,10 @@ function ShortsSlideImpl({
       (isActiveRef.current && video.dataset.shortsVideoId === item.id);
     const handleLoaded = () => {
       if (!belongsToSlide()) return;
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        hasMediaDimensionsRef.current = true;
+        setMediaAspectRatio(video.videoWidth / video.videoHeight);
+      }
       if (Number.isFinite(video.duration) && video.duration > 0) {
         updateDuration(video.duration);
       } else {
@@ -2354,6 +2507,7 @@ function ShortsSlideImpl({
     video.addEventListener("loadedmetadata", warmFirstFrame);
     video.addEventListener("loadeddata", warmFirstFrame);
     video.addEventListener("loadedmetadata", handleLoaded);
+    video.addEventListener("resize", handleLoaded);
     video.addEventListener("durationchange", handleLoaded);
     video.addEventListener("timeupdate", handleTime);
     video.addEventListener("waiting", handleWaiting);
@@ -2375,6 +2529,7 @@ function ShortsSlideImpl({
       video.removeEventListener("loadedmetadata", warmFirstFrame);
       video.removeEventListener("loadeddata", warmFirstFrame);
       video.removeEventListener("loadedmetadata", handleLoaded);
+      video.removeEventListener("resize", handleLoaded);
       video.removeEventListener("durationchange", handleLoaded);
       video.removeEventListener("timeupdate", handleTime);
       video.removeEventListener("waiting", handleWaiting);
@@ -2762,6 +2917,16 @@ function ShortsSlideImpl({
     return 0;
   }
 
+  function goToAdjacentSlide(direction: -1 | 1) {
+    const slide = slideRef.current;
+    const target = direction === -1
+      ? slide?.previousElementSibling
+      : slide?.nextElementSibling;
+    if (target instanceof HTMLElement && target.matches("[data-shorts-slide]")) {
+      target.scrollIntoView({ behavior: "smooth" });
+    }
+  }
+
   // 远离视口的 slide 只保留空壳。属性照旧给全：高度来自 .shorts-slide 的
   // CSS，滚动高度和吸附点一格不差；data-shorts-slide 让 IntersectionObserver
   // 依然能观测到它，滑回来时才判定为活跃并重新长出内容。
@@ -2787,178 +2952,247 @@ function ShortsSlideImpl({
       data-feed-key={itemKey}
       data-active={isActive}
     >
-      {/* 服务端预模糊的小图：避免横屏视频两边出现刺眼黑边，也不创建大面积 GPU blur layer。 */}
       <div
-        className="shorts-slide__bg"
-        style={{
-          backgroundImage: `url(${item.backgroundPoster || item.poster})`,
-        }}
-        aria-hidden="true"
-      />
+        className="shorts-slide__layout"
+        style={{ "--shorts-media-aspect": mediaAspectRatio } as React.CSSProperties}
+      >
+        <div className="shorts-slide__content">
+          <div className="shorts-slide__main">
+            <div className="shorts-slide__player">
+              {/* 服务端预模糊的小图：避免横屏视频两边出现刺眼黑边，也不创建大面积 GPU blur layer。 */}
+              <div
+                className="shorts-slide__bg"
+                style={{
+                  backgroundImage: `url(${item.backgroundPoster || item.poster})`,
+                }}
+                aria-hidden="true"
+              />
 
-      {sharedVideoSlotRef && (
-        <div
-          ref={sharedVideoSlotRef}
-          className="shorts-slide__ios-video-slot"
-        />
-      )}
+              {sharedVideoSlotRef && (
+                <div
+                  ref={sharedVideoSlotRef}
+                  className="shorts-slide__ios-video-slot"
+                />
+              )}
 
-      {!usesSharedVideo && shouldMount ? (
-        <video
-          ref={setRef}
-          className="shorts-slide__video"
-          src={shouldLoad ? item.videoSrc : undefined}
-          poster={item.poster}
-          preload={shouldLoad ? (shouldEagerLoad ? "auto" : "metadata") : "none"}
-          autoPlay={isActive}
-          playsInline
-          loop
-          muted={muted}
-          controlsList="nodownload"
-          disablePictureInPicture
-          onContextMenu={(e) => e.preventDefault()}
-        />
-      ) : (
-        <img
-          className="shorts-slide__poster"
-          src={item.poster}
-          alt=""
-          aria-hidden="true"
-          loading="lazy"
-        />
-      )}
+              {!usesSharedVideo && shouldMount ? (
+                <video
+                  ref={setRef}
+                  className="shorts-slide__video"
+                  src={shouldLoad ? item.videoSrc : undefined}
+                  poster={item.poster}
+                  preload={shouldLoad ? (shouldEagerLoad ? "auto" : "metadata") : "none"}
+                  autoPlay={isActive}
+                  playsInline
+                  loop
+                  muted={muted}
+                  controlsList="nodownload"
+                  disablePictureInPicture
+                  onContextMenu={(e) => e.preventDefault()}
+                />
+              ) : (
+                <img
+                  className="shorts-slide__poster"
+                  src={item.poster}
+                  alt=""
+                  aria-hidden="true"
+                  loading="lazy"
+                  onLoad={handlePosterLoad}
+                />
+              )}
 
-      {(fastActive || keyboardFastPlayback) && (
-        <div className="shorts-slide__rate-hint" aria-hidden="true">
-          2x 速播放中
-        </div>
-      )}
+              {(fastActive || keyboardFastPlayback) && (
+                <div className="shorts-slide__rate-hint" aria-hidden="true">
+                  2x 速播放中
+                </div>
+              )}
 
 
 
-      {paused &&
-        !playbackFailure &&
-        isActive &&
-        !scrubbing &&
-        !isMarkedHidden && (
-        <div className="shorts-slide__paused" aria-hidden="true">
-          <span className="shorts-slide__paused-icon">
-            <Play size={22} fill="currentColor" strokeWidth={1.75} />
-          </span>
-        </div>
-      )}
+              {paused &&
+                !playbackFailure &&
+                isActive &&
+                !scrubbing &&
+                !isMarkedHidden && (
+                <div className="shorts-slide__paused" aria-hidden="true">
+                  <span className="shorts-slide__paused-icon">
+                    <Play size={22} fill="currentColor" strokeWidth={1.75} />
+                  </span>
+                </div>
+              )}
 
-      {/* 视频加载/缓冲旋转器 */}
-      {isBuffering &&
-        !playbackFailure &&
-        isActive &&
-        shouldLoad &&
-        !isMarkedHidden && (
-        <div className="shorts-slide__buffering" aria-hidden="true">
-          <ShortsLoadingSpinner size={30} />
-        </div>
-      )}
+              {/* 视频加载/缓冲旋转器 */}
+              {isBuffering &&
+                !playbackFailure &&
+                isActive &&
+                shouldLoad &&
+                !isMarkedHidden && (
+                <div className="shorts-slide__buffering" aria-hidden="true">
+                  <ShortsLoadingSpinner size={30} />
+                </div>
+              )}
 
-      {playbackFailure && isActive && !isMarkedHidden && (
-        <div
-          className="shorts-slide__playback-error"
-          role="alert"
-          data-playback-failure={playbackFailure}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <AlertCircle size={28} aria-hidden="true" />
-          <div className="shorts-slide__playback-error-title">播放失败</div>
-          <button
-            type="button"
-            className="shorts-slide__playback-retry"
-            onClick={handlePlaybackRetry}
-          >
-            重试播放
-          </button>
-        </div>
-      )}
+              {playbackFailure && isActive && !isMarkedHidden && (
+                <div
+                  className="shorts-slide__playback-error"
+                  role="alert"
+                  data-playback-failure={playbackFailure}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <AlertCircle size={28} aria-hidden="true" />
+                  <div className="shorts-slide__playback-error-title">播放失败</div>
+                  <button
+                    type="button"
+                    className="shorts-slide__playback-retry"
+                    onClick={handlePlaybackRetry}
+                  >
+                    重试播放
+                  </button>
+                </div>
+              )}
 
-      {/* 不再展示屏蔽遮罩 */}
-      {isMarkedHidden && (
-        <div className="shorts-slide__hidden-overlay" onClick={(e) => e.stopPropagation()}>
-          <EyeOff size={38} style={{ color: "#ff4060" }} />
-          <div className="shorts-slide__hidden-title">已隐藏该视频</div>
-        </div>
-      )}
+              {/* 不再展示屏蔽遮罩 */}
+              {isMarkedHidden && (
+                <div className="shorts-slide__hidden-overlay" onClick={(e) => e.stopPropagation()}>
+                  <EyeOff size={38} style={{ color: "#ff4060" }} />
+                  <div className="shorts-slide__hidden-title">已隐藏该视频</div>
+                </div>
+              )}
 
-      <div className="shorts-slide__overlay">
-        <h2 className="shorts-slide__title">{item.title}</h2>
-        <div className="shorts-slide__meta">
-          {item.sourceLabel && (
-            <span className="shorts-slide__meta-item">{item.sourceLabel}</span>
-          )}
-          {item.duration && (
-            <span className="shorts-slide__meta-item">{item.duration}</span>
-          )}
-          {item.tags && item.tags.length > 0 && (
-            <span className="shorts-slide__meta-item">
-              {item.tags.slice(0, 3).map((t) => `#${t}`).join(" ")}
-            </span>
-          )}
+              {/* 移动端左右滑动 / 拖动进度时的时间提示。独立于底部进度条，
+                  这样可以在触屏设备上放到页面顶部且不受底部容器定位限制。 */}
+              {scrubbing &&
+                !playbackFailure &&
+                isActive &&
+                shouldLoad &&
+                !isMarkedHidden && (
+                <div
+                  ref={progressTimeRef}
+                  className="shorts-slide__progress-time"
+                  aria-live="polite"
+                >
+                  {formatClock(currentTimeRef.current)} / {formatClock(duration)}
+                </div>
+              )}
+
+              {/* 进度条 */}
+              {isActive && shouldLoad && !isMarkedHidden && !playbackFailure && (
+                <div
+                  className={`shorts-slide__progress ${
+                    scrubbing ? "is-scrubbing" : ""
+                  }`}
+                  // 进度条自己就要吃掉整根手指：横向定位、纵向也不该误触发翻页。
+                  data-shorts-no-swipe=""
+                  onPointerDown={handleProgressPointerDown}
+                  onPointerMove={handleProgressPointerMove}
+                  onPointerUp={handleProgressPointerEnd}
+                  onPointerCancel={handleProgressPointerEnd}
+                  onLostPointerCapture={handleProgressPointerEnd}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div
+                    ref={progressTrackRef}
+                    className="shorts-slide__progress-track"
+                  >
+                    <div className="shorts-slide__progress-fill" />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="shorts-slide__overlay">
+              <h2 className="shorts-slide__title">{item.title}</h2>
+            </div>
+          </div>
+
+          <div className="shorts-slide__sidebar">
+            {/* 右下角操作栏 */}
+            <aside
+              className="shorts-slide__actions"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* 云盘来源徽章同时是当前视频唯一的详情入口。 */}
+              <Link
+                to={detailPath}
+                className="shorts-drive-badge"
+                aria-label={`查看视频详情，来源：${item.sourceLabel || "本地"}`}
+                title={`查看视频详情 · 来源：${item.sourceLabel || "本地"}`}
+                onClick={(event) => onRouteClick(event, detailPath)}
+              >
+                {getDriveShortName(item.sourceLabel || "本地")}
+              </Link>
+
+              {/* 点赞 */}
+              <button
+                type="button"
+                data-shorts-like=""
+                className={`shorts-slide__action ${isLiked ? "is-liked" : ""}`}
+                aria-label={isLiked ? "取消点赞" : "点赞"}
+                title={isLiked ? "取消点赞" : "点赞"}
+                aria-pressed={isLiked}
+                onClick={handleHeartClick}
+              >
+                <Heart
+                  size={34}
+                  fill="currentColor"
+                  strokeWidth={1.5}
+                />
+              </button>
+
+              {/* 一次性分享 */}
+              <button
+                type="button"
+                className="shorts-slide__action"
+                aria-label="生成并复制一次性分享链接"
+                title="生成并复制一次性分享链接"
+                aria-busy={isSharing}
+                disabled={isSharing}
+                onClick={handleShareClick}
+              >
+                <Forward size={34} strokeWidth={3} />
+              </button>
+
+
+              {canHide && (
+                <button
+                  type="button"
+                  className="shorts-slide__action"
+                  aria-label="不再展示"
+                  title="不再展示"
+                  onClick={handleHideClick}
+                >
+                  <EyeOff size={30} strokeWidth={2.5} />
+                </button>
+              )}
+            </aside>
+
+            <nav className="shorts-slide__pager" aria-label="切换短视频">
+              <button
+                type="button"
+                aria-label="上一条视频"
+                disabled={!isActive || !canGoPrevious}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  goToAdjacentSlide(-1);
+                }}
+              >
+                <ChevronUp size={18} />
+              </button>
+              <button
+                type="button"
+                aria-label="下一条视频"
+                disabled={!isActive || !canGoNext}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  goToAdjacentSlide(1);
+                }}
+              >
+                <ChevronDown size={18} />
+              </button>
+            </nav>
+          </div>
         </div>
       </div>
-
-      {/* 右下角操作栏 */}
-      <aside
-        className="shorts-slide__actions"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* 云盘来源徽章同时是当前视频唯一的详情入口。 */}
-        <Link
-          to={detailPath}
-          className="shorts-drive-badge"
-          aria-label={`查看视频详情，来源：${item.sourceLabel || "本地"}`}
-          title={`查看视频详情 · 来源：${item.sourceLabel || "本地"}`}
-          onClick={(event) => onRouteClick(event, detailPath)}
-        >
-          {getDriveShortName(item.sourceLabel || "本地")}
-        </Link>
-
-        {/* 点赞 */}
-        <button
-          type="button"
-          data-shorts-like=""
-          className={`shorts-slide__action ${isLiked ? "is-liked" : ""}`}
-          aria-label={isLiked ? "取消点赞" : "点赞"}
-          aria-pressed={isLiked}
-          onClick={handleHeartClick}
-        >
-          <Heart
-            size={24}
-            fill={isLiked ? "currentColor" : "none"}
-            strokeWidth={2}
-          />
-        </button>
-
-        {/* 一次性分享 */}
-        <button
-          type="button"
-          className="shorts-slide__action"
-          aria-label="生成并复制一次性分享链接"
-          aria-busy={isSharing}
-          disabled={isSharing}
-          onClick={handleShareClick}
-        >
-          <Share2 size={22} />
-        </button>
-
-
-        {canHide && (
-          <button
-            type="button"
-            className="shorts-slide__action"
-            aria-label="不再展示"
-            onClick={handleHideClick}
-          >
-            <EyeOff size={22} />
-          </button>
-        )}
-      </aside>
 
       {/* 双击点赞时弹起的心形动画 */}
       {heartBurst && (
@@ -2969,46 +3203,6 @@ function ShortsSlideImpl({
           aria-hidden="true"
         >
           <Heart size={88} fill="currentColor" strokeWidth={0} />
-        </div>
-      )}
-
-      {/* 移动端左右滑动 / 拖动进度时的时间提示。独立于底部进度条，
-          这样可以在触屏设备上放到页面顶部且不受底部容器定位限制。 */}
-      {scrubbing &&
-        !playbackFailure &&
-        isActive &&
-        shouldLoad &&
-        !isMarkedHidden && (
-        <div
-          ref={progressTimeRef}
-          className="shorts-slide__progress-time"
-          aria-live="polite"
-        >
-          {formatClock(currentTimeRef.current)} / {formatClock(duration)}
-        </div>
-      )}
-
-      {/* 进度条 */}
-      {isActive && shouldLoad && !isMarkedHidden && !playbackFailure && (
-        <div
-          className={`shorts-slide__progress ${
-            scrubbing ? "is-scrubbing" : ""
-          }`}
-          // 进度条自己就要吃掉整根手指：横向定位、纵向也不该误触发翻页。
-          data-shorts-no-swipe=""
-          onPointerDown={handleProgressPointerDown}
-          onPointerMove={handleProgressPointerMove}
-          onPointerUp={handleProgressPointerEnd}
-          onPointerCancel={handleProgressPointerEnd}
-          onLostPointerCapture={handleProgressPointerEnd}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div
-            ref={progressTrackRef}
-            className="shorts-slide__progress-track"
-          >
-            <div className="shorts-slide__progress-fill" />
-          </div>
         </div>
       )}
     </article>
@@ -3171,7 +3365,7 @@ function getDriveShortName(source: string): string {
   if (s.includes("123")) return "123";
   if (s.includes("pikpak")) return "PikP";
   if (s.includes("quark") || s.includes("夸克")) return "Quak";
-  if (s.includes("onedrive")) return "OneDrive";
+  if (s.includes("onedrive")) return "OD";
   if (s.includes("wopan") || s.includes("沃盘")) return "沃盘";
   if (s.includes("guangyapan") || s.includes("guangya") || s.includes("光鸭")) return "光鸭";
   if (s.includes("webdav") || s.includes("web dav")) return "WebDAV";

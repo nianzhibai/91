@@ -9,6 +9,7 @@ import type {
   VideoReaction,
   VideoReactionCounts,
 } from "@/lib/videoReaction";
+import type { ShortsFeedMode } from "@/shorts/shortsFeed";
 import {
   filterDeletedVideos,
   isVideoDeleted,
@@ -726,18 +727,22 @@ export class ShortsFeedExpiredError extends Error {
 export async function fetchShortsNext(
   feedToken: string,
   cursor: number,
-  count: number
+  count: number,
+  mode: ShortsFeedMode = "recommend",
+  options: { signal?: AbortSignal } = {}
 ): Promise<ShortsNextResponse> {
   const params = new URLSearchParams({
     cursor: String(cursor),
     count: String(count),
+    mode,
   });
   if (feedToken) params.set("feedToken", feedToken);
 
   let result: ShortsNextResponse;
   try {
     result = await apiGet<ShortsNextResponse>(
-      `/api/shorts/next?${params.toString()}`
+      `/api/shorts/next?${params.toString()}`,
+      options
     );
   } catch (error) {
     if (error instanceof HTTPStatusError && error.status === 410) {

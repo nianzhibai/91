@@ -1011,6 +1011,8 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
 }
 
 export type ShortsSwipePagerOptions = {
+  /** 更换队列时取消旧队列的手势与动画。 */
+  resetKey?: string;
   /** 关闭时完全不挂监听，页面回到原生 scroll-snap。 */
   enabled: boolean;
   containerRef: React.RefObject<HTMLElement | null>;
@@ -1025,7 +1027,7 @@ export function useShortsSwipePager(options: ShortsSwipePagerOptions) {
   const optionsRef = useRef(options);
   optionsRef.current = options;
 
-  const { enabled, usesDocumentScroll } = options;
+  const { enabled, usesDocumentScroll, resetKey } = options;
 
   useEffect(() => {
     if (!enabled) return;
@@ -1041,5 +1043,5 @@ export function useShortsSwipePager(options: ShortsSwipePagerOptions) {
       onGestureActiveChange: (active) =>
         optionsRef.current.onGestureActiveChange?.(active),
     });
-  }, [enabled, usesDocumentScroll]);
+  }, [enabled, usesDocumentScroll, resetKey]);
 }
