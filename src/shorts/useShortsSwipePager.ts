@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { clamp } from "./mediaBuffer";
 import { classifyTouchSeekIntent } from "./slideGestures";
+import { isShortsSystemGestureStart } from "./gestureBoundary";
 
 /**
  * 移动端上下翻页手势控制器。
@@ -416,6 +417,8 @@ type PagerDrag = {
   samples: ShortsPagerSample[];
 };
 
+export type ShortsPagerGestureEnd = "release" | "cancel";
+
 export type ShortsSwipePagerHost = {
   /** slide 所在的滚动容器；同时也是触摸监听的挂载点。 */
   root: HTMLElement;
@@ -431,8 +434,9 @@ export type ShortsSwipePagerHost = {
    * 视觉位置，拖动中轨道 translate 一直在变，它会在一次滑动里反复翻转，
    * 每翻一次就是一整套暂停/起播/预载授权清零/媒体监听重建，全砸在跟手那几帧上。
    * douyin 同样只在 touchEnd 里推进 localIndex。
+   * 取消时传入 cancel，页面应丢弃拖动期间的观测结果。
    */
-  onGestureActiveChange?: (active: boolean) => void;
+  onGestureActiveChange?: (active: boolean, endReason?: ShortsPagerGestureEnd) => void;
 };
 
 /**
@@ -668,13 +672,13 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
   /** 正在驱动本次手势的那一个指针。 */
   let dragPointerId: number | null = null;
   let gestureActive = false;
-  const setGestureActive = (active: boolean) => {
+  const setGestureActive = (active: boolean, endReason?: ShortsPagerGestureEnd) => {
     if (gestureActive === active) return;
     gestureActive = active;
-    host.onGestureActiveChange?.(active);
+    host.onGestureActiveChange?.(active, endReason);
   };
 
-  /** 多指 / 取消等中断：就近吸附，不要停在两屏之间。 */
+  /** 多指等中断：就近吸附，不要停在两屏之间。 */
   const settleToNearest = () => {
     const slides = drag?.slides ?? readSlides();
     const slideTops = drag?.slideTops ?? readSlideTops();
@@ -683,11 +687,39 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     settleTo(slides[index] ?? null, false);
   };
 
+  /** 系统接管或失焦不是抬手提交：撤回未完成的翻页。 */
+  const cancelDrag = () => {
+    const current = drag;
+    const pointerId = dragPointerId;
+    drag = null;
+    dragPointerId = null;
+    if (pointerId !== null) {
+      try {
+        root.releasePointerCapture(pointerId);
+      } catch {
+        // 系统可能已经先释放了指针捕获。
+      }
+    }
+    if (current && !current.abandoned && (current.committed || current.interrupted)) {
+      const anchor = current.slides[current.anchorIndex];
+      const top = anchor ? readSlideTop(anchor) : getScrollTop();
+      // 取消直接恢复起始屏，避免回弹途中再次让相邻视频进入播放阈值。
+      clearTranslate();
+      setScrollTop(clamp(top, 0, getMaxScrollTop()));
+    }
+    setGestureActive(false, "cancel");
+  };
+
   const handlePointerDown = (event: PointerEvent) => {
     activePointers.add(event.pointerId);
     // 新的一次按下：上一次竖滑的合成 click 早该到了，守卫立刻失效，
     // 这样紧接着的这次轻点一定能穿到 slide 上。
     releaseClickGuard();
+    // 顶部起手属于系统栏手势；既不创建拖动，也不接住已提交的落点动画。
+    if (isShortsSystemGestureStart(event)) {
+      cancelDrag();
+      return;
+    }
     // 上一次的落点动画还在跑：接住它，用当前位置作为新手势的起点。
     // 打断过动画、或上一次手势被第二根手指顶掉，位置就停在两屏之间，
     // 这次手势无论走哪条分支收尾都得把它吸回吸附点。
@@ -824,7 +856,7 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     dragPointerId = null;
     const current = drag;
     drag = null;
-    setGestureActive(false);
+    setGestureActive(false, "release");
     if (!current || current.abandoned) return;
     if (!current.committed) {
       // 没构成滑动。若这一下只是"按住把飞行中的动画停下来"，同样要吸回
@@ -903,13 +935,15 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
   const handlePointerCancel = (event: PointerEvent) => {
     activePointers.delete(event.pointerId);
     if (dragPointerId !== null && event.pointerId !== dragPointerId) return;
-    dragPointerId = null;
-    const current = drag;
-    drag = null;
-    setGestureActive(false);
-    if (current && (current.committed || current.interrupted)) {
-      settleToNearest();
-    }
+    cancelDrag();
+  };
+
+  const handleBlur = () => {
+    // 通知栏等系统 UI 可能使窗口失焦，却不送达所有指针的结束事件。
+    activePointers.clear();
+    cancelDrag();
+    wheelState = INITIAL_SHORTS_WHEEL_STATE;
+    releaseClickGuard();
   };
 
   // ---- 兜底不变量：静止时绝不停在两条视频之间 ----
@@ -980,6 +1014,7 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
   root.addEventListener("pointercancel", handlePointerCancel);
   window.addEventListener("resize", handleViewportResize);
   window.addEventListener("orientationchange", handleViewportResize);
+  window.addEventListener("blur", handleBlur);
 
   return () => {
     // 落点动画进行中时位置早已提交，直接清干净即可；只有拖到一半被卸载
@@ -1007,6 +1042,7 @@ export function createShortsSwipePager(host: ShortsSwipePagerHost) {
     root.removeEventListener("pointercancel", handlePointerCancel);
     window.removeEventListener("resize", handleViewportResize);
     window.removeEventListener("orientationchange", handleViewportResize);
+    window.removeEventListener("blur", handleBlur);
   };
 }
 
@@ -1019,7 +1055,7 @@ export type ShortsSwipePagerOptions = {
   trackRef: React.RefObject<HTMLElement | null>;
   usesDocumentScroll: boolean;
   getAnchorSlide: () => HTMLElement | null;
-  onGestureActiveChange?: (active: boolean) => void;
+  onGestureActiveChange?: (active: boolean, endReason?: ShortsPagerGestureEnd) => void;
 };
 
 /** React 侧只负责生命周期；判定和动画全在 createShortsSwipePager 里。 */
@@ -1040,8 +1076,8 @@ export function useShortsSwipePager(options: ShortsSwipePagerOptions) {
       usesDocumentScroll,
       // 走 ref 读取，回调换引用不会重挂监听。
       getAnchorSlide: () => optionsRef.current.getAnchorSlide(),
-      onGestureActiveChange: (active) =>
-        optionsRef.current.onGestureActiveChange?.(active),
+      onGestureActiveChange: (active, endReason) =>
+        optionsRef.current.onGestureActiveChange?.(active, endReason),
     });
   }, [enabled, usesDocumentScroll, resetKey]);
 }

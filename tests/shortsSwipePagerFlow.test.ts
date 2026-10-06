@@ -6,7 +6,9 @@ import {
   SHORTS_PAGER_SETTLE_FALLBACK_MS,
   createShortsSwipePager,
   parseTranslateY,
+  type ShortsPagerGestureEnd,
 } from "../src/shorts/useShortsSwipePager";
+import { SHORTS_SYSTEM_GESTURE_TOP_PX } from "../src/shorts/gestureBoundary";
 
 // 事件序列级别的回归测试：判定公式已经在 shortsSwipePager.test.ts 里单独覆盖，
 // 这里验证把它们串起来的状态机——跟手位移、方向让路、多指中断、点击是否被吞，
@@ -26,6 +28,7 @@ type Harness = ReturnType<typeof createHarness>;
 type HarnessOptions = {
   slideCount?: number;
   usesDocumentScroll?: boolean;
+  viewportTop?: number;
 };
 
 function createHarness(options?: HarnessOptions) {
@@ -115,10 +118,11 @@ function createHarness(options?: HarnessOptions) {
     slides.push(slide);
   }
 
+  const capturedPointers: number[] = [];
   const root = {
     scrollTop: 0,
     clientHeight: SLIDE_HEIGHT,
-    setPointerCapture: () => undefined,
+    setPointerCapture: (id: number) => { capturedPointers.push(id); },
     releasePointerCapture: () => undefined,
     scrollHeight: slideCount * SLIDE_HEIGHT,
     getBoundingClientRect: () => ({ top: 0 }),
@@ -156,6 +160,7 @@ function createHarness(options?: HarnessOptions) {
 
   const fakeWindow = {
     innerHeight: SLIDE_HEIGHT,
+    visualViewport: { offsetTop: options?.viewportTop ?? 0 },
     get scrollY() {
       return documentScrollTop;
     },
@@ -199,11 +204,15 @@ function createHarness(options?: HarnessOptions) {
 
   let anchorIndex = 0;
   let gestureActive = false;
+  let gestureEndReason: ShortsPagerGestureEnd | undefined;
   const destroyPager = createShortsSwipePager({
     root: root as unknown as HTMLElement,
     track: track as unknown as HTMLElement,
     usesDocumentScroll,
-    onGestureActiveChange: active => { gestureActive = active; },
+    onGestureActiveChange: (active, endReason) => {
+      gestureActive = active;
+      if (!active) gestureEndReason = endReason;
+    },
     getAnchorSlide: () =>
       (slides[anchorIndex] ?? null) as unknown as HTMLElement | null,
   });
@@ -231,8 +240,10 @@ function createHarness(options?: HarnessOptions) {
     root,
     track,
     slides,
+    capturedPointers,
     prevented,
     get gestureActive() { return gestureActive; },
+    get gestureEndReason() { return gestureEndReason; },
     get clock() {
       return clock;
     },
@@ -410,6 +421,11 @@ function createHarness(options?: HarnessOptions) {
     resize() {
       const handler = windowListeners.get("resize");
       assert.ok(handler, "resize listener should be registered");
+      handler({});
+    },
+    blur() {
+      const handler = windowListeners.get("blur");
+      assert.ok(handler, "blur listener should be registered");
       handler({});
     },
     hasListeners() {
@@ -798,18 +814,145 @@ test("a multi-touch start is ignored outright", () => {
   });
 });
 
-test("a cancelled touch settles instead of freezing between videos", () => {
+test("a cancelled touch rolls back even after dragging past the neighbouring midpoint", () => {
   withHarness((h) => {
     h.pointerDown(200, 800);
     h.tick(16);
     h.pointerMove(200, 780);
     h.tick(16);
-    h.pointerMove(200, 500);
-    assert.equal(h.translate, -280);
+    h.pointerMove(200, 100);
+    assert.equal(h.translate, -680);
     h.pointerCancel();
+    assert.equal(h.gestureActive, false);
+    assert.equal(h.gestureEndReason, "cancel");
+    assert.equal(h.awaitingTransition, false);
+    assert.equal(h.root.scrollTop, 0);
     h.endTransition();
     assert.equal(h.root.scrollTop, 0);
     assert.equal(h.translate, 0);
+  });
+});
+
+test("downward cancellation restores the starting video instead of the previous video", () => {
+  withHarness(h => {
+    h.root.scrollTop = SLIDE_HEIGHT * 2;
+    h.pointerDown(200, 100);
+    h.tick(16);
+    h.pointerMove(200, 130);
+    h.tick(16);
+    h.pointerMove(200, 800);
+    assert.equal(h.translate, 670);
+    h.pointerCancel();
+    h.pointerUp(200, 800);
+    h.endTransition();
+    assert.equal(h.root.scrollTop, SLIDE_HEIGHT * 2);
+    assert.equal(h.translate, 0);
+    assert.equal(h.clickGuardActive(), false);
+  });
+});
+
+test("cancellation after queue trimming restores the same starting video node", () => {
+  withHarness(h => {
+    h.root.scrollTop = SLIDE_HEIGHT * 4;
+    h.pointerDown(200, 100);
+    h.tick(16);
+    h.pointerMove(200, 130);
+    h.tick(16);
+    h.pointerMove(200, 800);
+    h.trimLeading(2);
+    h.pointerCancel();
+    assert.equal(h.root.scrollTop, SLIDE_HEIGHT * 2);
+    assert.equal(h.transformStyle, "");
+    assert.equal(h.gestureEndReason, "cancel");
+  });
+});
+
+test("touches starting at the visible top edge never become page swipes", () => {
+  for (const viewportTop of [0, 40]) {
+    for (const startY of [0, SHORTS_SYSTEM_GESTURE_TOP_PX]) {
+      withHarness(h => {
+        h.root.scrollTop = SLIDE_HEIGHT * 2;
+        h.pointerDown(200, viewportTop + startY);
+        h.tick(16);
+        h.pointerMove(200, 100);
+        h.tick(16);
+        h.pointerMove(200, 700);
+        h.pointerUp(200, 700);
+        assert.equal(h.root.scrollTop, SLIDE_HEIGHT * 2);
+        assert.equal(h.transformWrites.length, 0);
+        assert.equal(h.gestureActive, false);
+        assert.deepEqual(h.capturedPointers, []);
+        assert.deepEqual(h.prevented, { touchmove: 0, touchend: 0 });
+        assert.equal(h.clickGuardActive(), false);
+
+        // 正常区域的下一次滑动仍能切屏。
+        flickToNext(h);
+        h.endTransition();
+        assert.equal(h.root.scrollTop, SLIDE_HEIGHT * 3);
+      }, { viewportTop });
+    }
+  }
+});
+
+test("the top boundary leaves mouse drags and touches just below it available", () => {
+  for (const pointerType of ["mouse", "touch"]) withHarness(h => {
+    h.root.scrollTop = SLIDE_HEIGHT * 2;
+    const startY = pointerType === "mouse" ? 0 : SHORTS_SYSTEM_GESTURE_TOP_PX + 1;
+    h.pointerDown(200, startY, { pointerType });
+    h.tick(16);
+    h.pointerMove(200, startY + 30);
+    h.tick(16);
+    h.pointerMove(200, startY + 80);
+    h.pointerUp(200, startY + 80);
+    h.endTransition();
+    assert.equal(h.root.scrollTop, SLIDE_HEIGHT);
+    assert.deepEqual(h.capturedPointers, [PRIMARY_POINTER]);
+    assert.equal(h.gestureEndReason, "release");
+  });
+});
+
+test("a system-edge touch leaves an already committed page animation running", () => {
+  withHarness(h => {
+    flickToNext(h);
+    h.setLiveTranslate(400);
+    const writes = h.transformWrites.length;
+    const transition = h.transitionSpec;
+    h.pointerDown(200, 10);
+    h.pointerMove(200, 600);
+    h.pointerCancel();
+    assert.equal(h.transformWrites.length, writes);
+    assert.equal(h.transitionSpec, transition);
+    assert.equal(h.awaitingTransition, true);
+    h.endTransition();
+    assert.equal(h.root.scrollTop, SLIDE_HEIGHT);
+  });
+});
+
+test("blur rolls back an unfinished swipe and clears pointers with missing end events", () => {
+  withHarness(h => {
+    h.pointerDown(200, 800);
+    h.tick(16);
+    h.pointerMove(200, 780);
+    h.tick(16);
+    h.pointerMove(200, 100);
+    h.blur();
+    h.pointerMove(200, 50);
+    assert.equal(h.gestureActive, false);
+    assert.equal(h.gestureEndReason, "cancel");
+    assert.equal(h.awaitingTransition, false);
+    h.endTransition();
+    assert.equal(h.root.scrollTop, 0);
+    assert.equal(h.translate, 0);
+
+    // 第一根手指没有发来 up/cancel，恢复后新指针也应正常工作。
+    h.pointerDown(200, 700, { id: SECOND_POINTER });
+    h.tick(16);
+    h.pointerMove(200, 670, SECOND_POINTER);
+    h.tick(16);
+    h.pointerMove(200, 620, SECOND_POINTER);
+    h.pointerUp(200, 620, SECOND_POINTER);
+    h.endTransition();
+    assert.equal(h.root.scrollTop, SLIDE_HEIGHT);
   });
 });
 

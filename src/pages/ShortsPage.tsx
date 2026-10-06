@@ -67,6 +67,7 @@ import {
   measureOffsetWithinSlide,
   readShortsSlideTopWithinTrack,
   useShortsSwipePager,
+  type ShortsPagerGestureEnd,
 } from "@/shorts/useShortsSwipePager";
 import { AdminEmptyVisual } from "@/admin/AdminEmptyVisual";
 import { useAuth } from "@/admin/AuthContext";
@@ -747,14 +748,19 @@ function ShortsPlayback({
   // 决定：这个 hook 只负责把手指位移写进同一个 scrollTop，播放 / 预载 /
   // iOS 共享元素那条链路完全不受影响。
   const handlePagerGestureActiveChange = useCallback(
-    (active: boolean) => {
+    (active: boolean, endReason?: ShortsPagerGestureEnd) => {
       pagerGestureActiveRef.current = active;
       if (!active) {
         const observer = slideObserverRef.current;
         if (!observer) return;
+        const entries = observer.takeRecords();
+        if (endReason === "cancel") {
+          slideVisibilityRef.current.clear();
+          return;
+        }
         // 松手前可能已经越过最后一个 IO 阈值，之后不会再收到通知。
         // 合并尚未分发的通知，再处理拖动期间每屏最后一次观测结果。
-        handleSlideIntersections(observer.takeRecords());
+        handleSlideIntersections(entries);
       }
     },
     [handleSlideIntersections]

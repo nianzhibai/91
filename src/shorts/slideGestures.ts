@@ -1,4 +1,5 @@
 import { clamp } from "./mediaBuffer";
+import { isShortsSystemGestureStart } from "./gestureBoundary";
 
 const SHORTS_SEEK_ACTIVATION_PX = 12;
 const SHORTS_SEEK_DIRECTION_LOCK_RATIO = 1.2;
@@ -166,7 +167,7 @@ export function createShortsSurfaceGestures(host: SurfaceGestureHost) {
       touches.set(event.pointerId, {
         x: event.clientX,
         y: event.clientY,
-        eligible: isSurfaceTarget(event.target),
+        eligible: isSurfaceTarget(event.target) && !isShortsSystemGestureStart(event),
       });
       if (touches.size > 1) {
         const canPinch = !multiTouch && touches.size === 2 &&
@@ -180,13 +181,19 @@ export function createShortsSurfaceGestures(host: SurfaceGestureHost) {
         return;
       }
     }
-    if (!isSurfaceTarget(event.target) || !event.isPrimary || (press && press.id !== event.pointerId)) {
+    if (
+      isShortsSystemGestureStart(event) || !isSurfaceTarget(event.target) ||
+      !event.isPrimary || (press && press.id !== event.pointerId)
+    ) {
       cancel();
     }
   }
 
   function handleDown(event: PointerEvent) {
-    if (!host.isEnabled() || multiTouch || !event.isPrimary || event.button !== 0 || !isSurfaceTarget(event.target)) return;
+    if (
+      !host.isEnabled() || multiTouch || !event.isPrimary || event.button !== 0 ||
+      !isSurfaceTarget(event.target) || isShortsSystemGestureStart(event)
+    ) return;
     endPress();
     const now = performance.now();
     const secondTap = Boolean(

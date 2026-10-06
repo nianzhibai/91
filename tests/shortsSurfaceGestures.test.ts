@@ -4,8 +4,9 @@ import {
   createShortsSurfaceGestures,
   SHORTS_DOUBLE_TAP_MS,
 } from "../src/shorts/slideGestures";
+import { SHORTS_SYSTEM_GESTURE_TOP_PX } from "../src/shorts/gestureBoundary";
 
-function createHarness() {
+function createHarness(options?: { viewportTop?: number }) {
   let now = 1_000;
   let nextTimer = 0;
   const timers = new Map<number, { at: number; run: () => void }>();
@@ -47,6 +48,7 @@ function createHarness() {
   };
   const browser = {
     ...eventTarget(),
+    visualViewport: { offsetTop: options?.viewportTop ?? 0 },
     setTimeout(run: () => void, delay: number) {
       const id = ++nextTimer;
       timers.set(id, { at: now + delay, run });
@@ -132,8 +134,8 @@ function createHarness() {
 }
 
 type Harness = ReturnType<typeof createHarness>;
-function withHarness(run: (h: Harness) => void) {
-  const h = createHarness();
+function withHarness(run: (h: Harness) => void, options?: { viewportTop?: number }) {
+  const h = createHarness(options);
   try { run(h); } finally { h.restore(); }
 }
 
@@ -254,6 +256,55 @@ test("multi-touch and pointer cancellation discard the whole tap sequence", () =
   assert.equal(h.state.singles + h.state.doubles.length, 0);
   h.tap(); h.pointer("pointerdown"); h.pointer("pointercancel"); h.advance(500);
   assert.equal(h.state.singles + h.state.doubles.length, 0);
+}));
+
+test("system-edge touches never pause, seek or enter long-press playback", () => {
+  for (const viewportTop of [0, 40]) withHarness(h => {
+    const startY = viewportTop + SHORTS_SYSTEM_GESTURE_TOP_PX;
+    h.pointer("pointerdown", 100, startY);
+    h.advance(500);
+    assert.equal(h.video.playbackRate, 1);
+    assert.equal(h.state.fast, false);
+    h.pointer("pointermove", 250, 200);
+    h.pointer("pointerup", 250, 200);
+    h.advance(500);
+    h.tap(100, startY);
+    h.advance(300);
+    assert.equal(h.state.singles, 0);
+    assert.equal(h.video.paused, false);
+    assert.deepEqual(h.state.seekPreviews, []);
+    assert.deepEqual(h.state.seekEnds, []);
+
+    h.tap();
+    h.advance(300);
+    assert.equal(h.state.singles, 1);
+  }, { viewportTop });
+});
+
+test("starting a system-edge gesture cancels a pending video tap", () => withHarness(h => {
+  h.tap();
+  h.advance(60);
+  h.pointer("pointerdown", 100, 10);
+  h.advance(500);
+  h.pointer("pointercancel", 100, 200);
+  assert.equal(h.state.singles, 0);
+  assert.equal(h.video.paused, false);
+}));
+
+test("a finger starting in the system-edge area cannot join a video pinch", () => withHarness(h => {
+  h.pointer("pointerdown", 100, 10);
+  h.pointer("pointerdown", 200, 200, { pointerId: 2, isPrimary: false });
+  h.pointer("pointermove", 400, 200, { pointerId: 2, isPrimary: false });
+  h.pointer("pointerup", 400, 200, { pointerId: 2, isPrimary: false });
+  h.pointer("pointerup", 100, 200);
+  assert.equal(h.state.pinchScale, null);
+  assert.deepEqual(h.state.clearChanges, []);
+}));
+
+test("mouse taps at the top edge still control playback", () => withHarness(h => {
+  h.tap(100, 10, { pointerType: "mouse" });
+  h.advance(300);
+  assert.equal(h.state.singles, 1);
 }));
 
 test("deactivation and disposal prevent delayed taps from affecting the next video", () => withHarness(h => {
