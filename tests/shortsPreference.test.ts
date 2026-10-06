@@ -441,7 +441,7 @@ test("desktop left-key seeking and held right-key playback keep distinct semanti
   );
   assert.match(
     shortsPageSource,
-    /\{\(fastActive \|\| keyboardFastPlayback\) && \([\s\S]*?2x 速播放中/
+    /\{\(fastActive \|\| keyboardFastPlayback\) && \([\s\S]*?2 倍速播放中/
   );
   assert.match(
     shortsPageSource,

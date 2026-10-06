@@ -3009,7 +3009,7 @@ function ShortsSlideImpl({
 
               {(fastActive || keyboardFastPlayback) && (
                 <div className="shorts-slide__rate-hint" aria-hidden="true">
-                  2x 速播放中
+                  2 倍速播放中
                 </div>
               )}
 
