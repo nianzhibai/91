@@ -4961,7 +4961,7 @@ body.admin-mobile-nav-open {
   padding: 2px 8px;
   border: 1px solid var(--warning-border, rgba(205, 132, 38, 0.38));
   border-radius: 999px;
-  background: var(--warning-soft, rgba(245, 158, 11, 0.12));
+  background: transparent;
   color: var(--warning-strong, #9a5b00);
   font-size: var(--font-xs);
   font-weight: 700;

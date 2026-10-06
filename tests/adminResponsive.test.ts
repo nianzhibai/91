@@ -905,7 +905,7 @@ test("blacklist duplicate reason renders as a compact pill", () => {
   const pill = ruleBody(adminCss, ".admin-blacklist-reason-pill");
 
   assert.match(videosPageSource, /admin-blacklist-reason-pill/);
-  assert.match(videosPageSource, /重复文件/);
+  assert.match(videosPageSource, /<span className="admin-blacklist-reason-pill">重复<\/span>/);
   assert.match(videosPageSource, /v\.canonicalVideoId/);
   assert.match(videosPageSource, /查看保留视频/);
   assert.doesNotMatch(videosPageSource, /保留视频不可用/);
