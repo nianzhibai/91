@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -455,6 +456,484 @@ func TestRemoveDeletedVideoDirectRestoresWithoutPayload(t *testing.T) {
 	}
 	if restored.PublishedAt.IsZero() || restored.PublishedAt.Year() == 1 {
 		t.Fatalf("fallback published_at = %v, want a usable timestamp", restored.PublishedAt)
+	}
+}
+
+func TestRestoreDeletedVideoSkipsMissingTags(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		keepTag bool
+		legacy  bool
+	}{
+		{name: "one deleted tag", keepTag: true},
+		{name: "all tags deleted"},
+		{name: "legacy payload", keepTag: true, legacy: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			cat, err := Open(t.TempDir() + "/catalog.db")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = cat.Close() })
+			now := time.Now()
+			video := &Video{
+				ID: "restore-missing-tags", DriveID: "local-upload", FileID: "retained.mp4",
+				FileName: "retained.mp4", Title: "已删除标签", Size: 1024,
+				Tags:        []string{"保留标签", "已删除标签"},
+				PublishedAt: now, CreatedAt: now, UpdatedAt: now,
+			}
+			if err := cat.UpsertVideo(ctx, video); err != nil {
+				t.Fatal(err)
+			}
+			if err := cat.DeleteVideoWithTombstone(ctx, video.ID); err != nil {
+				t.Fatal(err)
+			}
+			if test.legacy {
+				encoded, err := json.Marshal(video)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := cat.db.ExecContext(ctx, `UPDATE deleted_videos SET restore_payload = ? WHERE id = ?`, string(encoded), video.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			deleted := mustTagByLabel(t, ctx, cat, "已删除标签")
+			if _, err := cat.DeleteTag(ctx, deleted.ID); err != nil {
+				t.Fatal(err)
+			}
+			if !test.keepTag {
+				kept := mustTagByLabel(t, ctx, cat, "保留标签")
+				if _, err := cat.DeleteTag(ctx, kept.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result, err := cat.RestoreDeletedVideo(ctx, video.ID, func(string, string) (DeletedVideoSourceInfo, error) {
+				return DeletedVideoSourceInfo{Size: video.Size, ModTime: now}, nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var want []string
+			if test.keepTag {
+				want = []string{"保留标签"}
+			}
+			if result.Video == nil || !sameStrings(result.Video.Tags, want) {
+				t.Fatalf("restored tags = %#v, want %v", result.Video, want)
+			}
+			if _, found, err := cat.LookupTagLabel(ctx, "已删除标签"); err != nil || found {
+				t.Fatalf("deleted tag recreated: found=%v err=%v", found, err)
+			}
+			var tagsJSON string
+			if err := cat.db.QueryRowContext(ctx, `SELECT tags FROM videos WHERE id = ?`, video.ID).Scan(&tagsJSON); err != nil {
+				t.Fatal(err)
+			}
+			var persistedTags []string
+			if err := json.Unmarshal([]byte(tagsJSON), &persistedTags); err != nil || !sameStrings(persistedTags, want) {
+				t.Fatalf("video tag JSON = %q, want labels %v; err=%v", tagsJSON, want, err)
+			}
+			if !cat.hasManualTags(ctx, video.ID) {
+				t.Fatal("restore changed the manual tag lock")
+			}
+		})
+	}
+}
+
+func TestCompleteCrawlerRestoreRollsBackTagsAndSourceIdentity(t *testing.T) {
+	ctx := context.Background()
+	cat, err := Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+	if err := cat.UpsertDrive(ctx, &Drive{ID: "crawler-restore", Kind: "scriptcrawler", Name: "Crawler", RootID: "/"}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	video := &Video{
+		ID: "scriptcrawler-crawler-restore-source-1", DriveID: "crawler-restore", FileID: "retained.mp4",
+		FileName: "retained.mp4", Title: "Retained", Size: 1024, SampledSHA256: "before",
+		Tags: []string{"保留标签", "已删除标签"}, PublishedAt: now, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := cat.UpsertVideo(ctx, video); err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.MarkCrawlerSourceSeen(ctx, "scriptcrawler", video.DriveID, "source-1", "imported", video.ID, "before", video.Size); err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.DeleteVideoWithTombstone(ctx, video.ID); err != nil {
+		t.Fatal(err)
+	}
+	deletedTag := mustTagByLabel(t, ctx, cat, "已删除标签")
+	if _, err := cat.DeleteTag(ctx, deletedTag.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.RemoveDeletedVideo(ctx, video.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cat.db.ExecContext(ctx, `
+CREATE TRIGGER reject_crawler_restore_completion BEFORE DELETE ON deleted_videos
+WHEN OLD.restore_requested = 1
+BEGIN SELECT RAISE(ABORT, 'injected restore completion failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	video.SampledSHA256 = "after"
+	if err := cat.CompleteCrawlerRestore(ctx, video, "source-1"); err == nil {
+		t.Fatal("expected injected restore completion failure")
+	}
+	if _, err := cat.GetVideo(ctx, video.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("video escaped failed restore: %v", err)
+	}
+	var assignments int
+	if err := cat.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM video_tags WHERE video_id = ?`, video.ID).Scan(&assignments); err != nil || assignments != 0 {
+		t.Fatalf("assignments escaped failed restore: count=%d err=%v", assignments, err)
+	}
+	var fingerprint string
+	if err := cat.db.QueryRowContext(ctx, `SELECT sampled_sha256 FROM crawler_seen_sources WHERE drive_id = ? AND source_id = ?`, video.DriveID, "source-1").Scan(&fingerprint); err != nil || fingerprint != "before" {
+		t.Fatalf("source identity escaped failed restore: fingerprint=%q err=%v", fingerprint, err)
+	}
+	if deleted, err := cat.IsVideoDeleted(ctx, video.ID); err != nil || !deleted {
+		t.Fatalf("failed restore lost its tombstone: deleted=%v err=%v", deleted, err)
+	}
+}
+
+func TestCompleteCrawlerRestoreMatchesCurrentRulesForTaglessVideo(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		manual         bool
+		deletedTag     bool
+		missingPayload bool
+		sourceTag      bool
+		failCleanup    bool
+	}{
+		{name: "no historical assignments"},
+		{name: "historical tag deleted", deletedTag: true},
+		{name: "manual empty selection", manual: true},
+		{name: "missing payload", missingPayload: true},
+		{name: "surviving source assignment", sourceTag: true},
+		{name: "cleanup failure", failCleanup: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			cat, err := Open(filepath.Join(t.TempDir(), "catalog.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = cat.Close() })
+			if err := cat.UpsertDrive(ctx, &Drive{ID: "crawler-tagless", Kind: "scriptcrawler", Name: "Crawler", RootID: "/"}); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now()
+			video := &Video{
+				ID: "scriptcrawler-crawler-tagless-source-1", DriveID: "crawler-tagless", FileID: "retained.mp4",
+				FileName: "retained.mp4", Title: "travel clip", Size: 100, PublishedAt: now, CreatedAt: now,
+			}
+			if err := cat.UpsertVideo(ctx, video); err != nil {
+				t.Fatal(err)
+			}
+			var oldTag Tag
+			if test.deletedTag {
+				oldTag, err = cat.EnsureTag(ctx, "old-tag", "user")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := cat.AddVideoTagAssignments(ctx, video.ID, []TagAssignment{{Label: oldTag.Label, Source: "auto"}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.manual {
+				if err := cat.SetManualVideoTags(ctx, video.ID, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.sourceTag {
+				if _, err := cat.EnsureCrawlerTagForVideo(ctx, video.ID, "Crawler"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := cat.DeleteVideoWithTombstone(ctx, video.ID); err != nil {
+				t.Fatal(err)
+			}
+			if test.deletedTag {
+				if _, err := cat.DeleteTag(ctx, oldTag.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.missingPayload {
+				if _, err := cat.db.ExecContext(ctx, `UPDATE deleted_videos SET restore_payload = '' WHERE id = ?`, video.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Warm the matcher before creating a rule while the video is absent.
+			if _, err := cat.Matcher(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if count, err := cat.CreateTagAndClassify(ctx, "travel", "user"); err != nil || count != 0 {
+				t.Fatalf("classify absent video: count=%d err=%v", count, err)
+			}
+			if err := cat.RemoveDeletedVideo(ctx, video.ID); err != nil {
+				t.Fatal(err)
+			}
+			if test.failCleanup {
+				if _, err := cat.db.ExecContext(ctx, `
+CREATE TRIGGER reject_tagless_crawler_restore BEFORE DELETE ON deleted_videos
+WHEN OLD.restore_requested = 1
+BEGIN SELECT RAISE(ABORT, 'injected restore completion failure'); END`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Matching must use the restore transaction's connection and rules.
+			cat.db.SetMaxOpenConns(1)
+			err = cat.CompleteCrawlerRestore(ctx, video, "source-1")
+			if test.failCleanup {
+				if err == nil {
+					t.Fatal("expected injected restore completion failure")
+				}
+				if _, err := cat.GetVideo(ctx, video.ID); !errors.Is(err, sql.ErrNoRows) {
+					t.Fatalf("video escaped failed restore: %v", err)
+				}
+				var assignments int
+				if err := cat.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM video_tags WHERE video_id = ?`, video.ID).Scan(&assignments); err != nil || assignments != 0 {
+					t.Fatalf("automatic tags escaped failed restore: count=%d err=%v", assignments, err)
+				}
+				if deleted, err := cat.IsVideoDeleted(ctx, video.ID); err != nil || !deleted {
+					t.Fatalf("failed restore lost tombstone: deleted=%v err=%v", deleted, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			saved, err := cat.GetVideo(ctx, video.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []string{"travel"}
+			if test.manual {
+				want = nil
+			} else if test.sourceTag {
+				want = []string{"Crawler"}
+			}
+			if !sameStrings(saved.Tags, want) || cat.hasManualTags(ctx, video.ID) != test.manual {
+				t.Fatalf("restored tags=%v manual=%v, want %v manual=%v", saved.Tags, cat.hasManualTags(ctx, video.ID), want, test.manual)
+			}
+			metadata, err := cat.ListVideoTagMetadata(ctx, []string{video.ID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !test.manual && !test.sourceTag {
+				if got := metadata[video.ID]["travel"]; got.Source != "auto" || got.Evidence != "标题:travel" {
+					t.Fatalf("restored automatic assignment=%#v", got)
+				}
+			}
+			if test.deletedTag {
+				if _, found, err := cat.LookupTagLabel(ctx, oldTag.Label); err != nil || found {
+					t.Fatalf("deleted definition recreated: found=%v err=%v", found, err)
+				}
+			}
+			if deleted, err := cat.IsVideoDeleted(ctx, video.ID); err != nil || deleted {
+				t.Fatalf("successful restore retained tombstone: deleted=%v err=%v", deleted, err)
+			}
+		})
+	}
+}
+
+func TestCompleteCrawlerRestorePreservesExistingVideo(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		sourceChanged bool
+		failCleanup   bool
+	}{
+		{name: "unchanged source"},
+		{name: "changed source", sourceChanged: true},
+		{name: "cleanup failure", failCleanup: true},
+		{name: "changed source cleanup failure", sourceChanged: true, failCleanup: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			cat, err := Open(filepath.Join(t.TempDir(), "catalog.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = cat.Close() })
+			if err := cat.UpsertDrive(ctx, &Drive{ID: "crawler-partial", Kind: "scriptcrawler", Name: "Crawler", RootID: "/"}); err != nil {
+				t.Fatal(err)
+			}
+			for _, label := range []string{"old-tag", "manual-choice"} {
+				if _, err := cat.EnsureTag(ctx, label, "user"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			now := time.Now()
+			original := &Video{
+				ID: "scriptcrawler-crawler-partial-source-1", DriveID: "crawler-partial", FileID: "retained.mp4",
+				FileName: "retained.mp4", Title: "Original title", Size: 100,
+				SampledSHA256: "old-sample", PublishedAt: now, CreatedAt: now,
+			}
+			if err := cat.UpsertVideo(ctx, original); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := cat.AddVideoTagAssignments(ctx, original.ID, []TagAssignment{{Label: "old-tag", Source: "auto"}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := cat.MarkCrawlerSourceSeen(ctx, "scriptcrawler", original.DriveID, "source-1", "imported", original.ID, original.SampledSHA256, original.Size); err != nil {
+				t.Fatal(err)
+			}
+			if err := cat.DeleteVideoWithTombstone(ctx, original.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := cat.RemoveDeletedVideo(ctx, original.ID); err != nil {
+				t.Fatal(err)
+			}
+			// Simulate a row published before its pending tombstone was cleared,
+			// then changed by an administrator and background asset workers.
+			partial := *original
+			partial.Title = "Edited title"
+			partial.Description = "Edited description"
+			partial.ContentHash = "current-content"
+			partial.SampledSHA256 = "current-sample"
+			partial.DurationSeconds = 45
+			partial.ThumbnailURL = "/p/thumb/" + original.ID
+			partial.PreviewLocal = "/preview/current.mp4"
+			partial.PreviewStatus = "ready"
+			if err := cat.UpsertVideo(ctx, &partial); err != nil {
+				t.Fatal(err)
+			}
+			if err := cat.SetManualVideoTags(ctx, original.ID, []string{"manual-choice"}); err != nil {
+				t.Fatal(err)
+			}
+			before, err := cat.GetVideo(ctx, original.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeMetadata, err := cat.ListVideoTagMetadata(ctx, []string{original.ID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.failCleanup {
+				if _, err := cat.db.ExecContext(ctx, `
+CREATE TRIGGER reject_existing_crawler_restore BEFORE DELETE ON deleted_videos
+WHEN OLD.restore_requested = 1
+BEGIN SELECT RAISE(ABORT, 'injected restore completion failure'); END`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			verified := *original
+			if test.sourceChanged {
+				verified.Size = 200
+				verified.SampledSHA256 = ""
+			}
+			err = cat.CompleteCrawlerRestore(ctx, &verified, "source-1")
+			if test.failCleanup && err == nil {
+				t.Fatal("expected injected restore completion failure")
+			}
+			if !test.failCleanup && err != nil {
+				t.Fatal(err)
+			}
+			saved, err := cat.GetVideo(ctx, original.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if saved.Title != before.Title || saved.Description != before.Description || !sameStrings(saved.Tags, before.Tags) || !cat.hasManualTags(ctx, saved.ID) {
+				t.Fatalf("restore replaced current edits or manual tags: %#v", saved)
+			}
+			metadata, err := cat.ListVideoTagMetadata(ctx, []string{original.ID})
+			if err != nil || len(metadata[original.ID]) != 1 || metadata[original.ID]["manual-choice"] != beforeMetadata[original.ID]["manual-choice"] {
+				t.Fatalf("restore changed current assignments: %#v, err=%v", metadata, err)
+			}
+			if test.sourceChanged && !test.failCleanup {
+				if saved.Size != verified.Size || saved.ContentHash != "" || saved.SampledSHA256 != "" || saved.FingerprintStatus != "pending" || saved.DurationSeconds != 0 || saved.ThumbnailURL != "" || saved.PreviewLocal != "" || saved.PreviewStatus != "pending" {
+					t.Fatalf("changed source retained derived metadata: %#v", saved)
+				}
+			} else if saved.Size != before.Size || saved.ContentHash != before.ContentHash || saved.SampledSHA256 != before.SampledSHA256 || saved.DurationSeconds != before.DurationSeconds || saved.ThumbnailURL != before.ThumbnailURL || saved.PreviewLocal != before.PreviewLocal || saved.PreviewStatus != before.PreviewStatus || !saved.UpdatedAt.Equal(before.UpdatedAt) {
+				t.Fatalf("unchanged or rolled-back restore changed current metadata: %#v", saved)
+			}
+			if deleted, err := cat.IsVideoDeleted(ctx, original.ID); err != nil || deleted != test.failCleanup {
+				t.Fatalf("pending tombstone: deleted=%v err=%v, want %v", deleted, err, test.failCleanup)
+			}
+			var fingerprint string
+			var size int64
+			if err := cat.db.QueryRowContext(ctx, `SELECT sampled_sha256, size_bytes FROM crawler_seen_sources WHERE drive_id = ? AND source_id = 'source-1'`, original.DriveID).Scan(&fingerprint, &size); err != nil {
+				t.Fatal(err)
+			}
+			if test.failCleanup {
+				if fingerprint != original.SampledSHA256 || size != original.Size {
+					t.Fatalf("source identity escaped failed transaction: fingerprint=%q size=%d", fingerprint, size)
+				}
+			} else if size != verified.Size || (!test.sourceChanged && fingerprint != before.SampledSHA256) {
+				t.Fatalf("source identity used stale restore metadata: fingerprint=%q size=%d", fingerprint, size)
+			}
+		})
+	}
+}
+
+func TestCompleteCrawlerRestoreRejectsMismatchedSources(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		wrongFile bool
+		existing  bool
+	}{
+		{name: "verified file", wrongFile: true},
+		{name: "existing file", wrongFile: true, existing: true},
+		{name: "existing drive", existing: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			cat, err := Open(filepath.Join(t.TempDir(), "catalog.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = cat.Close() })
+			if err := cat.UpsertDrive(ctx, &Drive{ID: "crawler-mismatch", Kind: "scriptcrawler", Name: "Crawler", RootID: "/"}); err != nil {
+				t.Fatal(err)
+			}
+			video := &Video{
+				ID: "scriptcrawler-crawler-mismatch-source-1", DriveID: "crawler-mismatch", FileID: "retained.mp4",
+				FileName: "retained.mp4", Title: "Retained", Size: 100, PublishedAt: time.Now(),
+			}
+			if err := cat.UpsertVideo(ctx, video); err != nil {
+				t.Fatal(err)
+			}
+			if err := cat.DeleteVideoWithTombstone(ctx, video.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := cat.RemoveDeletedVideo(ctx, video.ID); err != nil {
+				t.Fatal(err)
+			}
+			mismatched := *video
+			if test.wrongFile {
+				mismatched.FileID = "other.mp4"
+			} else {
+				mismatched.DriveID = "other-drive"
+			}
+			verified := video
+			if test.existing {
+				if err := cat.UpsertVideo(ctx, &mismatched); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				verified = &mismatched
+			}
+			if err := cat.CompleteCrawlerRestore(ctx, verified, "source-1"); !errors.Is(err, ErrDeletedVideoNotRestorable) {
+				t.Fatalf("mismatched source restore: %v", err)
+			}
+			if deleted, err := cat.IsVideoDeleted(ctx, video.ID); err != nil || !deleted {
+				t.Fatalf("mismatched restore lost pending tombstone: deleted=%v err=%v", deleted, err)
+			}
+			if test.existing {
+				saved, err := cat.GetVideo(ctx, video.ID)
+				if err != nil || saved.DriveID != mismatched.DriveID || saved.FileID != mismatched.FileID {
+					t.Fatalf("mismatched existing row was changed: %#v, err=%v", saved, err)
+				}
+			} else if _, err := cat.GetVideo(ctx, video.ID); !errors.Is(err, sql.ErrNoRows) {
+				t.Fatalf("mismatched verified source created a video: %v", err)
+			}
+			var seen int
+			if err := cat.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM crawler_seen_sources WHERE drive_id = ?`, video.DriveID).Scan(&seen); err != nil || seen != 0 {
+				t.Fatalf("mismatched source identity published: count=%d err=%v", seen, err)
+			}
+		})
 	}
 }
 

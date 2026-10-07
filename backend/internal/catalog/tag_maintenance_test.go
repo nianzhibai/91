@@ -598,29 +598,6 @@ func TestUpdateTagSavesMatchRulesAndClassifiesExistingVideos(t *testing.T) {
 	if !sameStrings(video.Tags, []string{"display-label"}) {
 		t.Fatalf("classified tags = %#v, want display-label", video.Tags)
 	}
-
-	if _, err := cat.ensureTagDefinition(ctx, "orphan-auto", tagging.Rule{}, "generated"); err != nil {
-		t.Fatalf("ensure automatic orphan: %v", err)
-	}
-	if _, err := cat.EnsureCrawlerTag(ctx, "orphan-crawler"); err != nil {
-		t.Fatalf("ensure crawler orphan: %v", err)
-	}
-	if _, err := cat.EnsureTag(ctx, "orphan-user", "user"); err != nil {
-		t.Fatalf("ensure user orphan: %v", err)
-	}
-	pruned, err := cat.PruneUnreferencedTags(ctx)
-	if err != nil {
-		t.Fatalf("prune: %v", err)
-	}
-	if pruned != 2 {
-		t.Fatalf("pruned = %d, want generated and crawler orphan", pruned)
-	}
-	if _, err := cat.getTagByLabel(ctx, "orphan-user"); err != nil {
-		t.Fatalf("user orphan was pruned: %v", err)
-	}
-	if _, err := cat.getTagByLabel(ctx, "orphan-crawler"); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("crawler orphan was retained: %v", err)
-	}
 }
 
 func hasTag(labels []string, want string) bool {

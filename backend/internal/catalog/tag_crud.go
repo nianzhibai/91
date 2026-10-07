@@ -236,7 +236,8 @@ LEFT JOIN videos ON videos.id = representative.representative_id
 	AND COALESCE(videos.hidden, 0) = 0
 	AND `+uniqueVideoWhereSQL+`
 GROUP BY t.id, t.label, t.match_rules, t.source, t.origin
-ORDER BY cnt DESC, t.label ASC`)
+ORDER BY CASE WHEN t.source = 'user' THEN 0 ELSE 1 END,
+         t.label COLLATE NOCASE ASC`)
 	if err != nil {
 		return nil, err
 	}

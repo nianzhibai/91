@@ -18,7 +18,7 @@ const TAG_SOURCE_FILTERS = ["user", "generated"];
 const TAG_DISPLAY_GROUP_ORDER: Record<string, number> = {
   user: 0,
   crawler: 1,
-  generated: 2,
+  generated: 1,
 };
 
 type DeleteConfirmState =

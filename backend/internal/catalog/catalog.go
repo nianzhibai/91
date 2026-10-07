@@ -1500,19 +1500,13 @@ type deletedVideoRestorePayload struct {
 	TagAssignments []deletedVideoTagRestoreAssignment `json:"tagAssignments,omitempty"`
 }
 
-// deletedVideoTagRestoreAssignment keeps both sides of a tag relation. The tag
-// definition may be pruned when the video is tombstoned, while assignment
-// source/evidence determines whether future automatic retagging may replace it.
+// deletedVideoTagRestoreAssignment preserves assignment provenance. Restore
+// links only tag definitions that still exist in the managed catalog.
 type deletedVideoTagRestoreAssignment struct {
-	Label         string `json:"label"`
-	Source        string `json:"source"`
-	Evidence      string `json:"evidence,omitempty"`
-	CreatedAt     int64  `json:"createdAt,omitempty"`
-	TagMatchRules string `json:"tagMatchRules,omitempty"`
-	TagSource     string `json:"tagSource,omitempty"`
-	TagOrigin     string `json:"tagOrigin,omitempty"`
-	TagCreatedAt  int64  `json:"tagCreatedAt,omitempty"`
-	TagUpdatedAt  int64  `json:"tagUpdatedAt,omitempty"`
+	Label     string `json:"label"`
+	Source    string `json:"source"`
+	Evidence  string `json:"evidence,omitempty"`
+	CreatedAt int64  `json:"createdAt,omitempty"`
 }
 
 type DeleteVideoTombstoneOptions struct {
@@ -1583,12 +1577,6 @@ func deleteVideoWithTombstoneTx(ctx context.Context, tx *sql.Tx, restoreVideo *V
 
 	restoreVideo.ContentHash = normalizeContentHash(restoreVideo.ContentHash)
 
-	// 先记录这次视频关联的 tag_id，便于事务末尾清理孤儿自动生成标签。
-	tagIDs, err := collectVideoTagIDs(ctx, tx, restoreVideo.ID)
-	if err != nil {
-		return err
-	}
-
 	now := time.Now().UnixMilli()
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO deleted_videos (
@@ -1632,9 +1620,6 @@ ON CONFLICT(id) DO UPDATE SET
 	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
 		return sql.ErrNoRows
 	}
-	if err := pruneOrphanGeneratedTagsByID(ctx, tx, tagIDs); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -1645,12 +1630,6 @@ func (c *Catalog) DeleteVideo(ctx context.Context, id string) (resultErr error) 
 		return err
 	}
 	defer tx.Rollback()
-
-	// 先记录这次视频关联的 tag_id，便于事务末尾清理孤儿自动生成标签。
-	tagIDs, err := collectVideoTagIDs(ctx, tx, id)
-	if err != nil {
-		return err
-	}
 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM video_tags WHERE video_id = ?`, id); err != nil {
 		return err
@@ -1670,11 +1649,6 @@ func (c *Catalog) DeleteVideo(ctx context.Context, id string) (resultErr error) 
 	}
 	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
 		return sql.ErrNoRows
-	}
-
-	// 自动生成标签在视频删完后若不再被引用就一起回收；内置和自定义标签保留。
-	if err := pruneOrphanGeneratedTagsByID(ctx, tx, tagIDs); err != nil {
-		return err
 	}
 
 	return tx.Commit()
@@ -2156,7 +2130,7 @@ func (c *Catalog) restoreDeletedVideoDirect(
 	video := directRestoreVideo(deleted, payload.Video, source)
 
 	// Normal tombstoning removes these relations. Clear any orphaned rows left by
-	// an interrupted legacy/manual repair before recreating the exact tag set.
+	// an interrupted legacy/manual repair before restoring surviving tag links.
 	for _, statement := range []string{
 		`DELETE FROM video_tags WHERE video_id = ?`,
 		`DELETE FROM video_shares WHERE video_id = ?`,
@@ -2283,24 +2257,83 @@ SELECT id,
 	return out, rows.Err()
 }
 
-// CompleteCrawlerRestore removes the internal pending tombstone after the
-// caller has verified the local source and restored the catalog row.
-func (c *Catalog) CompleteCrawlerRestore(ctx context.Context, id string) error {
-	id = strings.TrimSpace(id)
-	if id == "" {
+// CompleteCrawlerRestore publishes a verified retained source, its surviving
+// tag assignments, and its source identity in the same transaction that removes
+// the pending tombstone. Already restored rows retain their current edits and
+// assignments. Historical payloads never create tag definitions.
+func (c *Catalog) CompleteCrawlerRestore(ctx context.Context, video *Video, sourceID string) (resultErr error) {
+	defer c.notifyDriveWrite(&resultErr, "", driveevents.MediaChanged)
+	if video == nil || strings.TrimSpace(video.ID) == "" || strings.TrimSpace(sourceID) == "" {
 		return sql.ErrNoRows
 	}
-	res, err := c.db.ExecContext(ctx, `
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var encoded, fileID string
+	if err := tx.QueryRowContext(ctx, `
+SELECT COALESCE(restore_payload, ''), COALESCE(file_id, '')
+  FROM deleted_videos
+ WHERE id = ? AND drive_id = ?
+   AND COALESCE(source_deleted, 0) = 0
+   AND COALESCE(restore_requested, 0) = 1`, video.ID, video.DriveID).Scan(&encoded, &fileID); err != nil {
+		return err
+	}
+	if video.FileID != fileID {
+		return fmt.Errorf("%w: verified video source does not match tombstone", ErrDeletedVideoNotRestorable)
+	}
+	existing, existingErr := scanVideo(tx.QueryRowContext(ctx,
+		`SELECT `+allVideoCols+` FROM videos WHERE id = ?`, video.ID))
+	switch {
+	case existingErr == nil:
+		if existing.DriveID != video.DriveID || existing.FileID != video.FileID {
+			return fmt.Errorf("%w: existing video source does not match tombstone", ErrDeletedVideoNotRestorable)
+		}
+		// A partially completed restore may have acquired newer edits and tags.
+		// Only refresh derived metadata when the verified source size changed.
+		if existing.Size != video.Size {
+			if err := resetPartiallyRestoredVideoSourceTx(ctx, tx, video.ID, DeletedVideoSourceInfo{Size: video.Size}); err != nil {
+				return err
+			}
+			existing, err = scanVideo(tx.QueryRowContext(ctx,
+				`SELECT `+allVideoCols+` FROM videos WHERE id = ?`, video.ID))
+			if err != nil {
+				return err
+			}
+		}
+		video = existing
+	case errors.Is(existingErr, sql.ErrNoRows):
+		payload, err := decodeDeletedVideoRestorePayload(video.ID, encoded)
+		if err != nil {
+			return err
+		}
+		if _, err := upsertVideoRow(ctx, tx, video); err != nil {
+			return err
+		}
+		if err := restoreDeletedVideoTagsTx(ctx, tx, video, payload); err != nil {
+			return err
+		}
+		if err := matchTaglessVideoTx(ctx, tx, video); err != nil {
+			return err
+		}
+	default:
+		return existingErr
+	}
+	if err := markCrawlerSourceSeen(ctx, tx, "scriptcrawler", video.DriveID, sourceID, "imported", video.ID, video.SampledSHA256, video.Size); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `
 DELETE FROM deleted_videos
  WHERE id = ?
-   AND COALESCE(restore_requested, 0) = 1`, id)
+   AND COALESCE(restore_requested, 0) = 1`, video.ID)
 	if err != nil {
 		return err
 	}
 	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
 		return sql.ErrNoRows
 	}
-	return nil
+	return tx.Commit()
 }
 
 // VideoManagementCounts 返回后台视频管理两个标签的计数：
@@ -4398,12 +4431,7 @@ func buildDeletedVideoRestorePayload(
 SELECT t.label,
        COALESCE(vt.source, ''),
        COALESCE(vt.evidence, ''),
-       COALESCE(vt.created_at, 0),
-       COALESCE(t.match_rules, '{}'),
-       COALESCE(t.source, 'user'),
-       COALESCE(t.origin, ''),
-       COALESCE(t.created_at, 0),
-       COALESCE(t.updated_at, 0)
+       COALESCE(vt.created_at, 0)
   FROM video_tags vt
   JOIN tags t ON t.id = vt.tag_id
  WHERE vt.video_id = ?
@@ -4420,11 +4448,6 @@ SELECT t.label,
 			&assignment.Source,
 			&assignment.Evidence,
 			&assignment.CreatedAt,
-			&assignment.TagMatchRules,
-			&assignment.TagSource,
-			&assignment.TagOrigin,
-			&assignment.TagCreatedAt,
-			&assignment.TagUpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -4501,14 +4524,11 @@ func decodeDeletedVideoRestorePayload(id, encoded string) (deletedVideoRestorePa
 
 func fallbackDeletedVideoTagAssignment(label string, manual bool) deletedVideoTagRestoreAssignment {
 	assignment := deletedVideoTagRestoreAssignment{
-		Label:         strings.TrimSpace(label),
-		Source:        "auto",
-		TagMatchRules: "{}",
-		TagSource:     "generated",
+		Label:  strings.TrimSpace(label),
+		Source: "auto",
 	}
 	if manual {
 		assignment.Source = "manual"
-		assignment.TagSource = "user"
 	}
 	return assignment
 }
@@ -4528,21 +4548,6 @@ func restoreDeletedVideoTagsTx(
 		if assignment.Label == "" {
 			continue
 		}
-		if !json.Valid([]byte(assignment.TagMatchRules)) {
-			assignment.TagMatchRules = "{}"
-		}
-		if strings.TrimSpace(assignment.TagSource) == "" {
-			assignment.TagSource = "generated"
-			if payload.TagsManual || assignment.Source == "manual" {
-				assignment.TagSource = "user"
-			}
-		}
-		if assignment.TagCreatedAt <= 0 {
-			assignment.TagCreatedAt = now
-		}
-		if assignment.TagUpdatedAt <= 0 {
-			assignment.TagUpdatedAt = assignment.TagCreatedAt
-		}
 		if assignment.CreatedAt <= 0 {
 			assignment.CreatedAt = now
 		}
@@ -4552,23 +4557,14 @@ func restoreDeletedVideoTagsTx(
 				assignment.Source = "manual"
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `
-INSERT INTO tags (label, match_rules, source, origin, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?)
-ON CONFLICT(label) DO NOTHING`,
-			assignment.Label,
-			assignment.TagMatchRules,
-			assignment.TagSource,
-			assignment.TagOrigin,
-			assignment.TagCreatedAt,
-			assignment.TagUpdatedAt,
-		); err != nil {
-			return err
-		}
 		var tagID int64
-		if err := tx.QueryRowContext(ctx,
+		err := tx.QueryRowContext(ctx,
 			`SELECT id FROM tags WHERE label = ? COLLATE NOCASE`, assignment.Label,
-		).Scan(&tagID); err != nil {
+		).Scan(&tagID)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `

@@ -342,10 +342,6 @@ func (c *Importer) RestoreRequestedVideos(ctx context.Context) (int, error) {
 			video.ThumbnailURL = "/p/thumb/" + video.ID
 		}
 
-		if err := c.cfg.Catalog.UpsertVideo(ctx, video); err != nil {
-			restoreErrors = append(restoreErrors, fmt.Errorf("restore %s: %w", request.ID, err))
-			continue
-		}
 		sourceID, sourceErr := c.cfg.Catalog.CrawlerSourceForVideo(ctx, c.cfg.Driver.ID(), request.ID)
 		if sourceErr != nil && !errors.Is(sourceErr, sql.ErrNoRows) {
 			restoreErrors = append(restoreErrors, sourceErr)
@@ -358,13 +354,7 @@ func (c *Importer) RestoreRequestedVideos(ctx context.Context) (int, error) {
 				continue
 			}
 		}
-		if sourceID != "" {
-			if err := c.cfg.Catalog.MarkCrawlerSourceSeen(ctx, Kind, c.cfg.Driver.ID(), sourceID, "imported", video.ID, video.SampledSHA256, video.Size); err != nil {
-				restoreErrors = append(restoreErrors, fmt.Errorf("restore %s seen source: %w", request.ID, err))
-				continue
-			}
-		}
-		if err := c.cfg.Catalog.CompleteCrawlerRestore(ctx, request.ID); err != nil {
+		if err := c.cfg.Catalog.CompleteCrawlerRestore(ctx, video, sourceID); err != nil {
 			restoreErrors = append(restoreErrors, fmt.Errorf("complete restore %s: %w", request.ID, err))
 			continue
 		}

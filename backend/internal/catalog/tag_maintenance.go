@@ -7,7 +7,7 @@ import (
 	"github.com/video-site/backend/internal/tagging"
 )
 
-// 标签维护包括按当前规则重算视频，以及清理没有视频引用的生成标签。
+// 标签维护按当前规则重算视频，标签定义独立于视频引用数保留。
 
 // retagVideoRow 是重算时读取的最小视频行。
 type retagVideoRow struct {
@@ -98,27 +98,7 @@ SELECT id, title, COALESCE(author, ''), COALESCE(file_name, ''), COALESCE(dir_na
 	return len(batch), lastID, len(batch) < limit, nil
 }
 
-// PruneUnreferencedTags 删除零引用的 generated 标签，包括没有任何视频引用的
-// 爬虫来源标签。user 标签即使零引用也保留（人工维护语义）。
-func (c *Catalog) PruneUnreferencedTags(ctx context.Context) (int, error) {
-	res, err := c.db.ExecContext(ctx, `
-DELETE FROM tags
- WHERE source = 'generated'
-   AND id NOT IN (SELECT DISTINCT tag_id FROM video_tags)`)
-	if err != nil {
-		return 0, err
-	}
-	n, _ := res.RowsAffected()
-	if n > 0 {
-		if err := c.bumpTagRulesVersion(ctx); err != nil {
-			return int(n), err
-		}
-	}
-	return int(n), nil
-}
-
-// ReconcileVideoTags refreshes assignments from current rules and removes
-// unreferenced generated tags.
+// ReconcileVideoTags refreshes assignments from current rules.
 func (c *Catalog) ReconcileVideoTags(ctx context.Context) error {
 	c.tagMaintenanceMu.Lock()
 	defer c.tagMaintenanceMu.Unlock()
@@ -140,8 +120,7 @@ func (c *Catalog) ReconcileVideoTags(ctx context.Context) error {
 		}
 		lastID = nextID
 		if done {
-			_, err := c.PruneUnreferencedTags(ctx)
-			return err
+			return nil
 		}
 	}
 }

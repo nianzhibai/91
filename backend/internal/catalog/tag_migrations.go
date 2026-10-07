@@ -346,8 +346,8 @@ func (c *Catalog) removeRetiredTagRuleFields(ctx context.Context) error {
 	return c.bumpTagRulesVersion(ctx)
 }
 
-// normalizeStoredTagSources 将旧内置标签迁移为自定义标签，保留规则和关联。视频与标签的关联来源
-// video_tags.source 独立记录 auto/manual/crawler/telegram 等关联来源。
+// normalizeStoredTagSources 将 Telegram 来源标签归为自动生成，旧内置标签归为自定义，
+// 保留规则和关联。video_tags.source 独立记录 auto/manual/crawler/telegram 等关联来源。
 func (c *Catalog) normalizeStoredTagSources(ctx context.Context) error {
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -357,11 +357,13 @@ func (c *Catalog) normalizeStoredTagSources(ctx context.Context) error {
 	result, err := tx.ExecContext(ctx, `
 UPDATE tags
    SET source = CASE
+       WHEN lower(trim(COALESCE(origin, ''))) = 'telegram' THEN 'generated'
        WHEN lower(trim(COALESCE(source, ''))) IN ('system', 'builtin', 'user') THEN 'user'
        ELSE 'generated'
    END
  WHERE source IS NULL
     OR source != CASE
+       WHEN lower(trim(COALESCE(origin, ''))) = 'telegram' THEN 'generated'
        WHEN lower(trim(COALESCE(source, ''))) IN ('system', 'builtin', 'user') THEN 'user'
        ELSE 'generated'
    END`)

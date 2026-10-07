@@ -188,8 +188,7 @@ SELECT videos.id
 		if _, err := tx.ExecContext(ctx, `DELETE FROM drives WHERE lower(trim(kind)) = 'localstorage'`); err != nil {
 			return nil, err
 		}
-		_, err := tx.ExecContext(ctx, `DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM video_tags)`)
-		return nil, err
+		return nil, nil
 	}
 
 	type localVideo struct {
@@ -351,9 +350,6 @@ INSERT INTO drives (
 		); err != nil {
 			return nil, err
 		}
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM video_tags)`); err != nil {
-		return nil, err
 	}
 	return oldToNew, nil
 }

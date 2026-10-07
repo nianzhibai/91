@@ -14,18 +14,18 @@ const retiredGeneratedTagIDsSQL = `
 SELECT t.id
   FROM tags t
  WHERE lower(trim(COALESCE(t.source, ''))) = 'generated'
-   AND lower(trim(COALESCE(t.origin, ''))) != 'crawler'
+   AND lower(trim(COALESCE(t.origin, ''))) NOT IN ('crawler', 'telegram')
    AND NOT EXISTS (
      SELECT 1
-       FROM video_tags vt_crawler
-      WHERE vt_crawler.tag_id = t.id
-        AND lower(trim(COALESCE(vt_crawler.source, ''))) = 'crawler'
+       FROM video_tags vt_source
+      WHERE vt_source.tag_id = t.id
+        AND lower(trim(COALESCE(vt_source.source, ''))) IN ('crawler', 'telegram')
    )`
 
 // removeAutomaticTaggingArtifacts removes the retired "create new labels from
-// content" model. It preserves user tag definitions plus crawler-owned
-// tags, and leaves engine assignments that point at preserved tags for the
-// subsequent existing-tag retag pass to refresh.
+// content" model. It preserves user tag definitions plus crawler and Telegram
+// provenance tags, and leaves engine assignments that point at preserved tags
+// for the subsequent existing-tag retag pass to refresh.
 func (c *Catalog) removeAutomaticTaggingArtifacts(ctx context.Context) error {
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {

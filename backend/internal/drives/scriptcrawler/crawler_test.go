@@ -451,8 +451,34 @@ func TestCrawlerRunOnceSkipsThenRestoresRetainedLocalVideo(t *testing.T) {
 	if err := cat.UpsertVideo(ctx, v); err != nil {
 		t.Fatalf("seed legacy crawler timestamp: %v", err)
 	}
+	if _, err := cat.EnsureTag(ctx, "保留标签", "user"); err != nil {
+		t.Fatal(err)
+	}
+	deletedTag, err := cat.EnsureTag(ctx, "已删除标签", "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.SetManualVideoTags(ctx, v.ID, []string{"保留标签", "已删除标签"}); err != nil {
+		t.Fatal(err)
+	}
+	crawlerTag, err := cat.EnsureCrawlerTag(ctx, "Demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cat.EnsureCrawlerTagForVideo(ctx, v.ID, crawlerTag.Label); err != nil {
+		t.Fatal(err)
+	}
 	if err := cat.DeleteVideoWithTombstone(ctx, v.ID); err != nil {
 		t.Fatalf("delete with tombstone: %v", err)
+	}
+	if err := cat.ReconcileVideoTags(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := cat.LookupTagLabel(ctx, crawlerTag.Label); err != nil || !found {
+		t.Fatalf("unreferenced crawler tag was removed: found=%v err=%v", found, err)
+	}
+	if _, err := cat.DeleteTag(ctx, deletedTag.ID); err != nil {
+		t.Fatal(err)
 	}
 	if err := cat.RemoveDeletedVideo(ctx, v.ID); err != nil {
 		t.Fatalf("remove deleted video: %v", err)
@@ -494,8 +520,90 @@ func TestCrawlerRunOnceSkipsThenRestoresRetainedLocalVideo(t *testing.T) {
 	if !restored.PublishedAt.Equal(restored.CreatedAt) {
 		t.Fatalf("restored timestamps = published %s created %s, want identical import time", restored.PublishedAt, restored.CreatedAt)
 	}
+	if len(restored.Tags) != 2 || restored.Tags[0] != crawlerTag.Label || restored.Tags[1] != "保留标签" {
+		t.Fatalf("restored tags = %v, want crawler source and surviving manual tag", restored.Tags)
+	}
+	if _, found, err := cat.LookupTagLabel(ctx, "已删除标签"); err != nil || found {
+		t.Fatalf("crawler restore recreated a deleted tag: found=%v err=%v", found, err)
+	}
+	metadata, err := cat.ListVideoTagMetadata(ctx, []string{v.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := metadata[v.ID]["保留标签"].Source; got != "manual" {
+		t.Fatalf("restored tag assignment source = %q, want manual", got)
+	}
+	if got := metadata[v.ID][crawlerTag.Label]; got.Source != "crawler" || got.Evidence != "爬虫:"+crawlerTag.Label {
+		t.Fatalf("restored crawler tag assignment = %#v", got)
+	}
 	if deleted, err := cat.IsVideoDeleted(ctx, v.ID); err != nil || deleted {
 		t.Fatalf("restored video tombstone remains: deleted=%v err=%v", deleted, err)
+	}
+}
+
+func TestImporterRestoreRequestedVideosMatchesCurrentRulesForTaglessVideo(t *testing.T) {
+	for _, manual := range []bool{false, true} {
+		name := "automatic"
+		if manual {
+			name = "manual empty selection"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			root := t.TempDir()
+			cat, err := catalog.Open(filepath.Join(root, "catalog.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = cat.Close() })
+			drv := New(Config{ID: "tagless", RootDir: filepath.Join(root, "crawler")})
+			if err := drv.Init(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := cat.UpsertDrive(ctx, &catalog.Drive{ID: drv.ID(), Kind: Kind, Name: "Crawler", RootID: "/"}); err != nil {
+				t.Fatal(err)
+			}
+			media := []byte("retained media")
+			if err := os.WriteFile(filepath.Join(drv.VideosDir(), "retained.mp4"), media, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now()
+			video := &catalog.Video{
+				ID: BuildVideoID(drv.ID(), "source-1"), DriveID: drv.ID(), FileID: "retained.mp4", FileName: "retained.mp4",
+				Title: "travel clip", Size: int64(len(media)), PublishedAt: now, CreatedAt: now,
+			}
+			if err := cat.UpsertVideo(ctx, video); err != nil {
+				t.Fatal(err)
+			}
+			if manual {
+				if err := cat.SetManualVideoTags(ctx, video.ID, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := cat.DeleteVideoWithTombstone(ctx, video.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := cat.CreateTagAndClassify(ctx, "travel", "user"); err != nil {
+				t.Fatal(err)
+			}
+			if err := cat.RemoveDeletedVideo(ctx, video.ID); err != nil {
+				t.Fatal(err)
+			}
+			importer := &Importer{cfg: ImporterConfig{Driver: drv, Catalog: cat}}
+			if count, err := importer.RestoreRequestedVideos(ctx); err != nil || count != 1 {
+				t.Fatalf("restore retained source: count=%d err=%v", count, err)
+			}
+			saved, err := cat.GetVideo(ctx, video.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if manual {
+				if len(saved.Tags) != 0 {
+					t.Fatalf("restore filled manually cleared tags: %v", saved.Tags)
+				}
+			} else if len(saved.Tags) != 1 || saved.Tags[0] != "travel" {
+				t.Fatalf("restore did not apply current rule: %v", saved.Tags)
+			}
+		})
 	}
 }
 

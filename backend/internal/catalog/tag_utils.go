@@ -1,9 +1,6 @@
 package catalog
 
 import (
-	"context"
-	"database/sql"
-	"errors"
 	"strings"
 
 	"github.com/video-site/backend/internal/tagging"
@@ -110,50 +107,4 @@ func uniqueStrings(values []string) []string {
 		out = append(out, value)
 	}
 	return out
-}
-
-// pruneOrphanGeneratedTagsByID 在事务里检查并删除不再被引用的自动生成标签。
-func pruneOrphanGeneratedTagsByID(ctx context.Context, tx *sql.Tx, tagIDs []int64) error {
-	for _, tagID := range tagIDs {
-		var src string
-		err := tx.QueryRowContext(ctx, `SELECT source FROM tags WHERE id = ?`, tagID).Scan(&src)
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		if normalizeTagSource(src) != "generated" {
-			continue
-		}
-		var refCount int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM video_tags WHERE tag_id = ?`, tagID).Scan(&refCount); err != nil {
-			return err
-		}
-		if refCount > 0 {
-			continue
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM tags WHERE id = ?`, tagID); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// collectVideoTagIDs 在事务里读出当前视频关联的 tag_id，供后续清理判断。
-func collectVideoTagIDs(ctx context.Context, tx *sql.Tx, videoID string) ([]int64, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT tag_id FROM video_tags WHERE video_id = ?`, videoID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
 }

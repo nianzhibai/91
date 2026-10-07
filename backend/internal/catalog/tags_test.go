@@ -1919,109 +1919,65 @@ func videoUpdatedAtByID(t *testing.T, ctx context.Context, cat *Catalog, ids ...
 	return out
 }
 
-// 删除旧版本 collection 标签的最后一个引用视频后，标签应当自动从 tags 表里消失。
-// user/builtin 标签不受影响：自定义/内置标签的语义由人维护，孤儿状态保留。
-func TestDeleteVideoPrunesLegacyOrphanCollectionTag(t *testing.T) {
-	ctx := context.Background()
-	cat, err := Open(t.TempDir() + "/catalog.db")
-	if err != nil {
-		t.Fatalf("open catalog: %v", err)
-	}
-	seedCustomTagRules(t, cat)
-
-	t.Cleanup(func() {
-		if err := cat.Close(); err != nil {
-			t.Fatalf("close catalog: %v", err)
+func TestDeleteVideoPreservesUnreferencedTags(t *testing.T) {
+	for _, test := range []struct {
+		name, source, origin string
+	}{
+		{name: "user", source: "user"},
+		{name: "generated", source: "generated"},
+		{name: "crawler", source: "generated", origin: "crawler"},
+		{name: "telegram", source: "generated", origin: "telegram"},
+		{name: "legacy collection", source: "collection"},
+	} {
+		for _, deletion := range []string{"permanent", "tombstone"} {
+			t.Run(test.name+"/"+deletion, func(t *testing.T) {
+				ctx := context.Background()
+				cat, err := Open(t.TempDir() + "/catalog.db")
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = cat.Close() })
+				now := time.Now()
+				if _, err := cat.db.ExecContext(ctx, `
+INSERT INTO tags (label, match_rules, source, origin, created_at, updated_at)
+VALUES ('retained-tag', '{"keywords":["kept-rule"]}', ?, ?, ?, ?)`,
+					test.source, test.origin, now.UnixMilli(), now.UnixMilli()); err != nil {
+					t.Fatal(err)
+				}
+				original := mustTagByLabel(t, ctx, cat, "retained-tag")
+				for _, id := range []string{"video-a", "video-b"} {
+					if err := cat.UpsertVideo(ctx, &Video{
+						ID: id, DriveID: "drive", FileID: id, FileName: id + ".mp4",
+						Title: id, Size: 1024, PublishedAt: now, CreatedAt: now,
+					}); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := cat.AddVideoTagAssignments(ctx, id, []TagAssignment{{Label: original.Label, Source: "auto"}}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				deleteVideo := cat.DeleteVideo
+				if deletion == "tombstone" {
+					deleteVideo = cat.DeleteVideoWithTombstone
+				}
+				for index, id := range []string{"video-a", "video-b"} {
+					if err := deleteVideo(ctx, id); err != nil {
+						t.Fatal(err)
+					}
+					retained := mustTagByLabel(t, ctx, cat, original.Label)
+					if retained.ID != original.ID || retained.Source != test.source ||
+						!sameStrings(retained.MatchRules.Keywords, []string{"kept-rule"}) || retained.Count != 1-index {
+						t.Fatalf("tag after deleting %s = %#v, want original definition and count %d", id, retained, 1-index)
+					}
+				}
+				if removed, err := cat.DeleteTag(ctx, original.ID); err != nil || removed != 0 {
+					t.Fatalf("explicit tag deletion: removed=%d err=%v", removed, err)
+				}
+				if _, found, err := cat.LookupTagLabel(ctx, original.Label); err != nil || found {
+					t.Fatalf("explicitly deleted tag still exists: found=%v err=%v", found, err)
+				}
+			})
 		}
-	})
-
-	now := time.Now()
-	for _, id := range []string{"video-a", "video-b"} {
-		if err := cat.UpsertVideo(ctx, &Video{
-			ID:          id,
-			DriveID:     "drive",
-			FileID:      id,
-			Title:       id,
-			PublishedAt: now,
-			CreatedAt:   now,
-			UpdatedAt:   now,
-		}); err != nil {
-			t.Fatalf("seed %s: %v", id, err)
-		}
-	}
-
-	nowMillis := now.UnixMilli()
-	if _, err := cat.db.ExecContext(ctx,
-		`INSERT INTO tags (label, source, created_at, updated_at) VALUES (?, 'collection', ?, ?)`,
-		"Better Call Saul S02", nowMillis, nowMillis); err != nil {
-		t.Fatalf("insert legacy collection tag: %v", err)
-	}
-	var collectionTagID int64
-	if err := cat.db.QueryRowContext(ctx, `SELECT id FROM tags WHERE label = ?`, "Better Call Saul S02").Scan(&collectionTagID); err != nil {
-		t.Fatalf("lookup legacy collection tag: %v", err)
-	}
-	for _, id := range []string{"video-a", "video-b"} {
-		if _, err := cat.db.ExecContext(ctx,
-			`INSERT INTO video_tags (video_id, tag_id, source, created_at) VALUES (?, ?, 'auto', ?)`,
-			id, collectionTagID, nowMillis); err != nil {
-			t.Fatalf("attach legacy collection tag to %s: %v", id, err)
-		}
-	}
-
-	if _, err := cat.db.ExecContext(ctx,
-		`INSERT INTO tags (label, source, created_at, updated_at) VALUES (?, 'user', ?, ?)`,
-		"用户标签", nowMillis, nowMillis); err != nil {
-		t.Fatalf("insert user orphan tag: %v", err)
-	}
-
-	collectionExists := func() bool {
-		var n int
-		if err := cat.db.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM tags WHERE label = ? AND source = 'collection'`,
-			"Better Call Saul S02").Scan(&n); err != nil {
-			t.Fatalf("count collection tag: %v", err)
-		}
-		return n > 0
-	}
-	if !collectionExists() {
-		t.Fatal("collection tag missing right after creation")
-	}
-
-	// 删第一个视频：还有 video-b 在引用旧 collection 标签，应保留。
-	if err := cat.DeleteVideo(ctx, "video-a"); err != nil {
-		t.Fatalf("delete video-a: %v", err)
-	}
-	if !collectionExists() {
-		t.Fatal("collection tag was pruned while another video still references it")
-	}
-
-	// 删最后一个引用视频，旧 collection 标签应当被同步清掉。
-	if err := cat.DeleteVideo(ctx, "video-b"); err != nil {
-		t.Fatalf("delete video-b: %v", err)
-	}
-	if collectionExists() {
-		t.Fatal("orphan collection tag was not pruned after deleting the last referencing video")
-	}
-
-	// 用户标签即使是孤儿也必须保留。
-	var userCount int
-	if err := cat.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM tags WHERE label = ? AND source = 'user'`,
-		"用户标签").Scan(&userCount); err != nil {
-		t.Fatalf("count user tag: %v", err)
-	}
-	if userCount != 1 {
-		t.Fatalf("user tag count = %d, want 1 (user-source orphans must be preserved)", userCount)
-	}
-
-	// 当前内置标签即使零引用也不能被孤儿清理影响。
-	var customCount int
-	if err := cat.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM tags WHERE label = '奶子' AND source = 'user'`).Scan(&customCount); err != nil {
-		t.Fatalf("count custom tag: %v", err)
-	}
-	if customCount != 1 {
-		t.Fatalf("custom tag count = %d, want 1", customCount)
 	}
 }
 
@@ -2074,7 +2030,7 @@ func TestMigrateKeepsUserTagsAndRemovesOrdinaryGeneratedSources(t *testing.T) {
 	}
 }
 
-func TestPostStartupMaintenancePrunesPreexistingOrphanGeneratedTags(t *testing.T) {
+func TestPostStartupMaintenancePreservesUnreferencedSourceTags(t *testing.T) {
 	ctx := context.Background()
 	path := t.TempDir() + "/catalog.db"
 	cat, err := Open(path)
@@ -2126,12 +2082,18 @@ func TestPostStartupMaintenancePrunesPreexistingOrphanGeneratedTags(t *testing.T
 		"空爬虫", now, now); err != nil {
 		t.Fatalf("insert crawler orphan: %v", err)
 	}
+	if _, err := cat.db.ExecContext(ctx,
+		`INSERT INTO tags (label, source, origin, created_at, updated_at) VALUES (?, 'generated', 'telegram', ?, ?)`,
+		TelegramTagLabel, now, now); err != nil {
+		t.Fatalf("insert Telegram orphan: %v", err)
+	}
 
 	if err := cat.Close(); err != nil {
 		t.Fatalf("close before reopen: %v", err)
 	}
 
-	// 重新打开不会扫描标签；监听完成后的后台维护才清理孤儿合集。
+	// Startup retires the old collection model. Neither startup nor subsequent
+	// maintenance removes current source tags just because they have no videos.
 	cat2, err := Open(path)
 	if err != nil {
 		t.Fatalf("reopen catalog: %v", err)
@@ -2158,8 +2120,11 @@ func TestPostStartupMaintenancePrunesPreexistingOrphanGeneratedTags(t *testing.T
 	if count("用户孤儿") != 1 {
 		t.Fatal("post-startup maintenance wrongly pruned user-source orphan tag")
 	}
-	if count("空爬虫") != 0 {
-		t.Fatal("post-startup maintenance did not prune orphan crawler tag")
+	if count("空爬虫") != 1 {
+		t.Fatal("post-startup maintenance removed unreferenced crawler tag")
+	}
+	if count(TelegramTagLabel) != 1 {
+		t.Fatal("post-startup maintenance removed unreferenced Telegram tag")
 	}
 	video, err := cat2.GetVideo(ctx, "video-keeper")
 	if err != nil {

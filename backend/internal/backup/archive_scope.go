@@ -158,6 +158,8 @@ func validateArchiveDatabaseScope(ctx context.Context, databasePath string, mani
 		}
 	}
 
+	// Tag definitions are global catalog data, including unassigned labels.
+	// Only assignments must reference videos and tags present in this archive.
 	for _, relationship := range []struct {
 		name  string
 		query string
@@ -172,11 +174,6 @@ func validateArchiveDatabaseScope(ctx context.Context, databasePath string, mani
 			query: `SELECT COUNT(*) FROM video_tags AS source
 				WHERE NOT EXISTS (SELECT 1 FROM videos WHERE videos.id = source.video_id)
 				   OR NOT EXISTS (SELECT 1 FROM tags WHERE tags.id = source.tag_id)`,
-		},
-		{
-			name: "unreferenced tags",
-			query: `SELECT COUNT(*) FROM tags AS source
-				WHERE NOT EXISTS (SELECT 1 FROM video_tags WHERE video_tags.tag_id = source.id)`,
 		},
 	} {
 		var invalid int64

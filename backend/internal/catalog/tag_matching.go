@@ -57,7 +57,15 @@ func (c *Catalog) Matcher(ctx context.Context) (*tagging.Matcher, error) {
 }
 
 func (c *Catalog) buildMatcher(ctx context.Context) (*tagging.Matcher, error) {
-	rows, err := c.db.QueryContext(ctx,
+	return buildTagMatcher(ctx, c.db)
+}
+
+type tagMatcherQuerier interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func buildTagMatcher(ctx context.Context, query tagMatcherQuerier) (*tagging.Matcher, error) {
+	rows, err := query.QueryContext(ctx,
 		`SELECT label, COALESCE(match_rules, '{}'), COALESCE(origin, '') FROM tags ORDER BY id ASC`)
 	if err != nil {
 		return nil, err
@@ -81,6 +89,33 @@ func (c *Catalog) buildMatcher(ctx context.Context) (*tagging.Matcher, error) {
 		return nil, err
 	}
 	return tagging.NewMatcher(tagRules), nil
+}
+
+// matchTaglessVideoTx initializes automatic tags for a restored row that has
+// no surviving assignments and is not manually locked. Read current rules from
+// the owning transaction so matching and publication share the same snapshot.
+func matchTaglessVideoTx(ctx context.Context, tx *sql.Tx, video *Video) error {
+	var needsMatching bool
+	if err := tx.QueryRowContext(ctx, `
+SELECT COALESCE(tags_manual, 0) = 0
+   AND NOT EXISTS (SELECT 1 FROM video_tags WHERE video_id = videos.id)
+  FROM videos
+ WHERE id = ?`, video.ID).Scan(&needsMatching); err != nil {
+		return err
+	}
+	if !needsMatching {
+		return nil
+	}
+	matcher, err := buildTagMatcher(ctx, tx)
+	if err != nil {
+		return err
+	}
+	assignments := matchTagAssignmentsWithMatcher(matcher, video.Title, video.FileName, video.Author, video.DirName, video.AncestorDirNames...)
+	changed, err := replaceAutoVideoTagsTx(ctx, tx, video.ID, assignments)
+	if err != nil || !changed {
+		return err
+	}
+	return syncVideoTagsJSONTx(ctx, tx, video.ID, false)
 }
 
 // effectiveRule 计算标签的生效规则：普通标签无显式规则时按标签名匹配；

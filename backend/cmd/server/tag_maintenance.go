@@ -81,10 +81,6 @@ func (a *App) runTagRetag(ctx context.Context) {
 	if err := a.ensureAllScriptCrawlerNameTags(ctx); err != nil {
 		log.Printf("[tag-retag] ensure crawler name tags: %v", err)
 	}
-	if _, err := a.cat.PruneUnreferencedTags(ctx); err != nil {
-		a.finishTagJob("failed", err)
-		return
-	}
 	a.tagJobMu.Lock()
 	a.tagJobState.Processed = total
 	a.tagJobMu.Unlock()

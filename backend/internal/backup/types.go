@@ -55,7 +55,8 @@ type Manifest struct {
 
 // BackupSelection is the user-visible scope of a backup. The database schema
 // itself is always included because it is the catalog needed to restore the
-// selected resources; its rows are filtered to this scope during snapshotting.
+// selected resources. Global tag definitions are included even without video
+// references; resource rows and tag assignments are filtered to this scope.
 type BackupSelection struct {
 	CloudDrives    bool `json:"cloudDrives"`
 	CrawlerScripts bool `json:"crawlerScripts"`

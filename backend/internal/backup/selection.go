@@ -290,10 +290,6 @@ DELETE FROM videos
 			return snapshotSelectionState{}, err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM video_tags)`); err != nil {
-		rollback()
-		return snapshotSelectionState{}, err
-	}
 	if !selection.UploadStorage {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM telegram_files`); err != nil {
 			rollback()
