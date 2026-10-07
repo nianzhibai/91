@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import postcss from "postcss";
 import { createMemoryRouter } from "react-router";
 
 const componentSource = readFileSync(
@@ -137,14 +138,25 @@ test("desktop recommendation rail always uses tabs while mobile keeps its headin
     stylesSource,
     /\.vd-rail__head\.vd-rail__head--mobile-only\s*\{\s*display:\s*none;/
   );
-  assert.match(
-    stylesSource,
-    /@media \(max-width:\s*480px\)[\s\S]*?\.vd-rail__head\.vd-rail__head--mobile-only\s*\{\s*display:\s*flex;/
-  );
-  assert.match(
-    stylesSource,
-    /@media \(max-width:\s*480px\)[\s\S]*?\.vd-rail--collection-only,\s*\.vd-rail__tabs,\s*\.vd-rail__tabpanel--collection\s*\{\s*display:\s*none;/
-  );
+  const styles = postcss.parse(stylesSource);
+  for (const [selector, display] of [
+    [".vd-rail--collection-only", "none"],
+    [".vd-rail__tabs", "none"],
+    [".vd-rail__tabpanel--collection", "none"],
+    [".vd-rail__head.vd-rail__head--mobile-only", "flex"],
+  ]) {
+    const queries: string[] = [];
+    styles.walkRules((rule) => {
+      if (!rule.selectors.includes(selector)) return;
+      if (!rule.nodes.some((node) =>
+        node.type === "decl" && node.prop === "display" && node.value === display
+      )) return;
+      const media = rule.parent;
+      assert.ok(media?.type === "atrule" && media.name === "media");
+      queries.push(media.params);
+    });
+    assert.deepEqual(queries, ["(max-width: 768px)"], selector);
+  }
 });
 
 test("recommendation loading and failures stay inside the independent rail", () => {

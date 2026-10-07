@@ -2663,6 +2663,17 @@
     padding: 0 0 var(--space-3);
   }
 
+  /* Match collection loading and the bottom sheet's mobile breakpoint. */
+  .vd-rail--collection-only,
+  .vd-rail__tabs,
+  .vd-rail__tabpanel--collection {
+    display: none;
+  }
+
+  .vd-rail__head.vd-rail__head--mobile-only {
+    display: flex;
+  }
+
   .vd-main {
     gap: var(--space-4);
   }
@@ -2920,17 +2931,7 @@
     flex: 1 1 auto;
   }
 
-  /* 推荐栏：横向紧凑列表。合集仍由移动端底部浮窗承载。 */
-  .vd-rail--collection-only,
-  .vd-rail__tabs,
-  .vd-rail__tabpanel--collection {
-    display: none;
-  }
-
-  .vd-rail__head.vd-rail__head--mobile-only {
-    display: flex;
-  }
-
+  /* 推荐栏：横向紧凑列表。 */
   .vd-rail__head-title {
     font-size: var(--font-md);
   }
