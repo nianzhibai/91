@@ -295,7 +295,7 @@ test("card feedback underlines titles without transforming thumbnails", () => {
   assert.doesNotMatch(interactions, /\.thumb-frame::before/);
   assert.doesNotMatch(interactions, /transform:|::before/);
   assert.match(interactions, /\.vd-rail__link:focus-visible \.vd-rail__title/);
-  assert.match(interactions, /\.vd-collection-item__link\[data-title-pressed="true"\] \.vd-collection-item__title/);
+  assert.match(interactions, /\.vd-collection-item__link\[data-title-clicked="true"\] \.vd-collection-item__title/);
   assert.doesNotMatch(interactions, /data-preview-enabled/);
   assert.match(cards, /\.video-card__title-link:hover\s*\{/);
   assert.doesNotMatch(cards, /\.video-card\[data-preview-enabled="true"\]:(?:active|focus-within)/);

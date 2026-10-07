@@ -13,17 +13,15 @@
 }
 
 .vd-rail__link:focus-visible .vd-rail__title,
-.vd-rail__link[data-title-pressed="true"] .vd-rail__title,
+.vd-rail__link[data-title-clicked="true"] .vd-rail__title,
 .vd-collection-item__link:focus-visible .vd-collection-item__title,
-.vd-collection-item__link[data-title-pressed="true"] .vd-collection-item__title {
+.vd-collection-item__link[data-title-clicked="true"] .vd-collection-item__title {
   text-decoration-line: underline;
 }
 
 @media (hover: hover) and (pointer: fine) {
   .vd-rail__title:hover,
-  .vd-rail__thumb:hover + .vd-rail__body .vd-rail__title,
-  .vd-collection-item__title:hover,
-  .vd-collection-item__thumb:hover + .vd-collection-item__body .vd-collection-item__title {
+  .vd-collection-item__title:hover {
     text-decoration-line: underline;
   }
 }

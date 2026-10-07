@@ -394,7 +394,7 @@ function RecommendedItemContent(
   }: RailItemProps,
   forwardedRef: React.ForwardedRef<HTMLLIElement>
 ) {
-  const [titlePressed, setTitlePressed] = useState(false);
+  const [titleClicked, setTitleClicked] = useState(false);
   const [thumbnailActivated, setThumbnailActivated] = useState(
     variant !== "collection"
   );
@@ -423,6 +423,14 @@ function RecommendedItemContent(
     if (inView) setThumbnailActivated(true);
   }, [inView]);
 
+  // Wait for a confirmed click so touching or scrolling over a title has no
+  // feedback. Clear it even when this is the current video and navigation stops.
+  useEffect(() => {
+    if (!titleClicked) return;
+    const timeout = window.setTimeout(() => setTitleClicked(false), 180);
+    return () => window.clearTimeout(timeout);
+  }, [titleClicked]);
+
   function handlePointerEnter(event: React.PointerEvent<HTMLDivElement>) {
     if (event.pointerType !== "touch") startPreview();
   }
@@ -445,7 +453,7 @@ function RecommendedItemContent(
         to={video.href}
         state={navigationState}
         className="vd-rail__link"
-        data-title-pressed={titlePressed || undefined}
+        data-title-clicked={titleClicked || undefined}
         aria-current={current ? "page" : undefined}
         onClick={(event) => {
           stopPreview();
@@ -486,10 +494,7 @@ function RecommendedItemContent(
           <h3
             className="vd-rail__title"
             title={video.title}
-            onPointerDown={() => setTitlePressed(true)}
-            onPointerUp={() => setTitlePressed(false)}
-            onPointerCancel={() => setTitlePressed(false)}
-            onPointerLeave={() => setTitlePressed(false)}
+            onClick={() => setTitleClicked(true)}
           >
             {video.title}
           </h3>

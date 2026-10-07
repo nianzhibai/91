@@ -638,7 +638,7 @@ const CollectionItem = forwardRef<HTMLLIElement, CollectionItemProps>(
     { video, current, navigationState, replaceHistory, onSelect },
     forwardedRef
   ) {
-    const [titlePressed, setTitlePressed] = useState(false);
+    const [titleClicked, setTitleClicked] = useState(false);
     const rootRef = useRef<HTMLLIElement | null>(null);
     const inView = useInViewport(rootRef);
     const {
@@ -656,6 +656,12 @@ const CollectionItem = forwardRef<HTMLLIElement, CollectionItemProps>(
       },
       [forwardedRef]
     );
+
+    useEffect(() => {
+      if (!titleClicked) return;
+      const timeout = window.setTimeout(() => setTitleClicked(false), 180);
+      return () => window.clearTimeout(timeout);
+    }, [titleClicked]);
 
     function handlePointerEnter(event: React.PointerEvent<HTMLDivElement>) {
       if (event.pointerType !== "touch") startPreview();
@@ -676,7 +682,7 @@ const CollectionItem = forwardRef<HTMLLIElement, CollectionItemProps>(
           replace={replaceHistory}
           state={navigationState}
           className="vd-collection-item__link"
-          data-title-pressed={titlePressed || undefined}
+          data-title-clicked={titleClicked || undefined}
           aria-current={current ? "page" : undefined}
           onClick={(event) => {
             stopPreview();
@@ -717,10 +723,7 @@ const CollectionItem = forwardRef<HTMLLIElement, CollectionItemProps>(
           <div className="vd-collection-item__body">
             <h3
               className="vd-collection-item__title"
-              onPointerDown={() => setTitlePressed(true)}
-              onPointerUp={() => setTitlePressed(false)}
-              onPointerCancel={() => setTitlePressed(false)}
-              onPointerLeave={() => setTitlePressed(false)}
+              onClick={() => setTitleClicked(true)}
             >
               {video.title}
             </h3>
