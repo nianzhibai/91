@@ -2119,12 +2119,8 @@
 }
 
 .vd-rail__tabs {
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.vd-rail__tabs::-webkit-scrollbar {
-  display: none;
+  /* Row padding provides the gap below the shared tab underline. */
+  margin-bottom: 0;
 }
 
 .vd-rail__tabs--loading {
