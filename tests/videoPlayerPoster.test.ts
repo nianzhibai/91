@@ -277,8 +277,9 @@ test("detail player previews held arrow-key seeks and commits once on release", 
 test("detail loading skeleton matches current desktop video page layout", () => {
   assert.match(detailPageSource, /<VideoDetailLoading isAdmin=\{isAdmin\} \/>/);
   assert.match(detailLoadingSource, /className="vd-layout vd-skeleton"/);
-  assert.match(detailLoadingSource, /className="vd-skeleton__summary"/);
-  assert.match(detailLoadingSource, /className="vd-skeleton__info"/);
+  assert.match(detailLoadingSource, /className="vd-detail-panels"/);
+  assert.match(detailLoadingSource, /className="vd-summary vd-skeleton__summary"/);
+  assert.match(detailLoadingSource, /className="vd-info vd-skeleton__info"/);
   assert.match(detailLoadingSource, /<VideoRailSkeleton \/>/);
   assert.match(
     railSkeletonSource,
@@ -291,7 +292,7 @@ test("detail loading skeleton matches current desktop video page layout", () => 
   );
   assert.match(
     detailCss,
-    /\.vd-skeleton__summary,\s*\.vd-skeleton__info\s*\{[^}]*border:\s*1px solid var\(--border-default\)[^}]*border-radius:\s*var\(--radius-md\)/s
+    /\.vd-summary\s*\{[^}]*border:\s*1px solid var\(--border-default\)[^}]*border-radius:\s*var\(--radius-md\)/s
   );
   assert.match(
     detailCss,
@@ -319,7 +320,7 @@ test("detail loading skeleton keeps metadata bars uniform and concise", () => {
   );
   assert.match(
     detailCss,
-    /\.vd-skeleton__chip\s*\{[^}]*width:\s*88px;[^}]*height:\s*18px;[^}]*border-radius:\s*var\(--radius-sm\)/s
+    /\.vd-skeleton__chip\s*\{[^}]*width:\s*88px;[^}]*height:\s*18px;/s
   );
   assert.match(
     detailCss,
@@ -327,32 +328,39 @@ test("detail loading skeleton keeps metadata bars uniform and concise", () => {
   );
 });
 
-test("detail loading title bar spans the full summary width", () => {
+test("detail loading title bar reserves one line of the shared responsive title", () => {
   const titleRules = [
     ...detailCss.matchAll(/\.vd-skeleton__title\s*\{([^}]*)\}/g),
   ];
-  assert.equal(titleRules.length, 2);
+  assert.equal(titleRules.length, 1);
   assert.match(titleRules[0][1], /width:\s*100%;/);
-  assert.doesNotMatch(titleRules[1][1], /\bwidth\s*:/);
+  assert.match(titleRules[0][1], /height:\s*1lh;/);
+  assert.match(detailLoadingSource, /className="vd-header__title vd-skeleton__title"/);
 });
 
 test("detail info skeleton reserves the tag heading and chips", () => {
   assert.match(
     detailLoadingSource,
-    /className="vd-skeleton__info"[\s\S]*?vd-skeleton__section-head[\s\S]*?vd-skeleton__tag-row/
+    /className="vd-info vd-skeleton__info"[\s\S]*?vd-info__tags[\s\S]*?vd-skeleton__section-head[\s\S]*?vd-skeleton__tag-row/
   );
   assert.doesNotMatch(detailLoadingSource, /vd-skeleton__line/);
   assert.doesNotMatch(detailCss, /\.vd-skeleton__line/);
 });
 
 test("detail loading skeleton actions stay inside mobile viewport", () => {
+  assert.match(detailLoadingSource, /className="vd-actions vd-skeleton__actions"/);
+  assert.match(detailLoadingSource, /className="vd-actions__group"/);
   assert.match(
     detailCss,
-    /@media \(max-width:\s*480px\)\s*\{[\s\S]*\.vd-skeleton__actions\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\) minmax\(0,\s*1fr\) 44px/s
+    /@media \(max-width:\s*480px\)\s*\{[\s\S]*\.vd-actions__group\s*\{[^}]*grid-template-columns:\s*1fr 1fr/s
   );
   assert.match(
     detailCss,
-    /@media \(max-width:\s*480px\)\s*\{[\s\S]*\.vd-skeleton__actions span:last-child\s*\{[^}]*width:\s*100%/s
+    /@media \(max-width:\s*480px\)\s*\{[\s\S]*\.vd-skeleton__actions \.vd-actions__pill\s*\{[^}]*width:\s*100%/s
+  );
+  assert.match(
+    detailCss,
+    /@media \(max-width:\s*480px\)\s*\{[\s\S]*\.vd-skeleton__actions \.vd-skeleton__action--share,[\s\S]*?\.vd-skeleton__action--delete\s*\{[^}]*width:\s*44px/s
   );
 });
 
@@ -370,11 +378,11 @@ test("detail loading skeleton mirrors the desktop action toolbar", () => {
   );
   assert.match(
     detailCss,
-    /\.vd-skeleton__action--delete\s*\{[^}]*margin-left:\s*auto/s
+    /\.vd-actions__delete\s*\{[^}]*margin-left:\s*auto/s
   );
   assert.match(
     detailCss,
-    /@media \(min-width:\s*769px\)\s*\{[\s\S]*?\.vd-skeleton__action--dislike\s*\{[^}]*margin-right:\s*calc\(var\(--space-3\) - var\(--space-2\)\)/s
+    /\.vd-actions__group\s*\{[^}]*gap:\s*var\(--space-2\)/s
   );
   assert.doesNotMatch(
     detailCss,

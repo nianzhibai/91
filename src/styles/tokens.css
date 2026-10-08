@@ -88,6 +88,7 @@
   --bg-surface: #14161c;
   --bg-elevated: #1b1e26;
   --bg-sunken: #0a0b0f;
+  --bg-skeleton: #252831;
   --bg-overlay: rgba(8, 9, 13, 0.78);
 
   /* 半透明玻璃 */
@@ -191,6 +192,7 @@
   --bg-surface: #ffffff;
   --bg-elevated: #ffe9ee;
   --bg-sunken: #fbeaef;
+  --bg-skeleton: #f3e5ea;
   --bg-overlay: rgba(255, 240, 244, 0.82);
 
   /* 半透明玻璃（白底叠透明粉） */
@@ -298,6 +300,7 @@
   --bg-surface: #ffffff;
   --bg-elevated: #eaf4ff;
   --bg-sunken: #b8d8f5;
+  --bg-skeleton: #e1ecf7;
   --bg-overlay: rgba(210, 230, 250, 0.82);
 
   /* 半透明玻璃（蓝白叠透明） */

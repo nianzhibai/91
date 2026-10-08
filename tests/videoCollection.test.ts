@@ -284,7 +284,7 @@ test("desktop collection loading state renders six skeleton cards", () => {
   );
   assert.match(
     stylesSource,
-    /\.vd-rail__loading-thumb,[\s\S]*?\.vd-rail__loading-body\s*>\s*span\s*\{[\s\S]*?animation:\s*vd-shimmer/
+    /\.vd-rail__loading-thumb\s*\{[^}]*animation:\s*vd-shimmer/
   );
 });
 
