@@ -179,7 +179,6 @@ type Video struct {
 	Dislikes           int       `json:"dislikes"`
 	Hidden             bool      `json:"hidden"`
 	Badges             []string  `json:"badges"`
-	Description        string    `json:"description"`
 	PublishedAt        time.Time `json:"publishedAt"`
 	CreatedAt          time.Time `json:"createdAt"`
 	UpdatedAt          time.Time `json:"updatedAt"`
@@ -187,7 +186,7 @@ type Video struct {
 
 // VideoSummary is the public card-sized projection of a video. List feeds use
 // this instead of loading the full persistence object, whose hashes, storage
-// locations, processing state and description are only needed by detail and
+// locations and processing state are only needed by detail and
 // maintenance paths.
 type VideoSummary struct {
 	ID                 string
@@ -308,13 +307,13 @@ INSERT INTO videos (
 	  duration_seconds, size_bytes, ext, thumbnail_url, thumbnail_updated_at, thumbnail_status,
 	  preview_file_id, preview_local, preview_updated_at, preview_status,
 	  views, last_viewed_at, favorites, comments, likes, last_liked_at, dislikes,
-	  hidden, badges, description, published_at, created_at, updated_at
+	  hidden, badges, published_at, created_at, updated_at
 	) VALUES (
 	  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 	  ?, ?, ?, ?, ?, CASE WHEN COALESCE(?, '') != '' THEN 'ready' ELSE 'pending' END,
 	  ?, ?, ?, ?,
 	  ?, ?, ?, ?, ?, ?, ?,
-	  ?, ?, ?, ?, ?, ?
+	  ?, ?, ?, ?, ?
 	)
 ON CONFLICT(id) DO UPDATE SET
   file_name       = CASE
@@ -382,14 +381,13 @@ ON CONFLICT(id) DO UPDATE SET
                       ELSE videos.thumbnail_status
                     END,
 	  badges          = excluded.badges,
-	  description     = excluded.description,
   updated_at      = excluded.updated_at
 `,
 		v.ID, v.DriveID, v.FileID, v.FileName, v.ContentHash, v.SampledSHA256, fingerprintStatus, v.FingerprintError, v.ParentID, ancestorDirIDsJSON, ancestorDirNamesJSON, v.DirName, v.Title, v.Author, string(tagsJSON),
 		v.DurationSeconds, v.Size, v.Ext, v.ThumbnailURL, thumbnailUpdatedAt, v.ThumbnailURL,
 		v.PreviewFileID, v.PreviewLocal, previewUpdatedAt, nullableStatus(v.PreviewStatus),
 		v.Views, unixMilliOrZero(v.LastViewedAt), v.Favorites, v.Comments, v.Likes, unixMilliOrZero(v.LastLikedAt), v.Dislikes,
-		boolToInt(v.Hidden), string(badgesJSON), v.Description,
+		boolToInt(v.Hidden), string(badgesJSON),
 		v.PublishedAt.UnixMilli(), v.CreatedAt.UnixMilli(), v.UpdatedAt.UnixMilli(),
 	)
 	if err != nil {
@@ -2988,8 +2986,7 @@ COALESCE(videos.badges, '[]'), videos.published_at
 // ListRecommendationCandidates loads one small, latest-first candidate window
 // using the same public visibility and deduplication rules as video listings.
 // It deliberately returns VideoSummary rather than the full persistence model:
-// recommendation cards do not need hashes, storage paths, processing state or
-// descriptions.
+// recommendation cards do not need hashes, storage paths or processing state.
 func (c *Catalog) ListRecommendationCandidates(ctx context.Context, p RecommendationCandidateParams) ([]*VideoSummary, error) {
 	if p.Limit <= 0 {
 		return nil, nil
@@ -4243,7 +4240,7 @@ COALESCE(parent_id, ''), COALESCE(ancestor_dir_ids, ''), COALESCE(ancestor_dir_n
 duration_seconds, size_bytes, COALESCE(ext, ''), COALESCE(thumbnail_url, ''), COALESCE(thumbnail_updated_at, 0),
 COALESCE(preview_file_id, ''), COALESCE(preview_local, ''), COALESCE(preview_updated_at, 0), COALESCE(preview_status, 'pending'),
 	views, COALESCE(last_viewed_at, 0), favorites, comments, likes, COALESCE(last_liked_at, 0), dislikes,
-	COALESCE(hidden, 0), COALESCE(badges, '[]'), COALESCE(description, ''),
+	COALESCE(hidden, 0), COALESCE(badges, '[]'),
 	published_at, created_at, updated_at
 	`
 
@@ -4356,7 +4353,7 @@ func scanVideo(row rowScanner) (*Video, error) {
 		&v.DurationSeconds, &v.Size, &v.Ext, &v.ThumbnailURL, &thumbnailUpdatedAt,
 		&v.PreviewFileID, &v.PreviewLocal, &previewUpdatedAt, &v.PreviewStatus,
 		&v.Views, &lastViewedAt, &v.Favorites, &v.Comments, &v.Likes, &lastLikedAt, &v.Dislikes,
-		&hidden, &badgesJSON, &v.Description,
+		&hidden, &badgesJSON,
 		&publishedAt, &createdAt, &updatedAt,
 	)
 	if err != nil {

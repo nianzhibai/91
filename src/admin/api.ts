@@ -1111,7 +1111,6 @@ export type AdminVideo = {
   comments: number;
   likes: number;
   badges: string[];
-  description: string;
   publishedAt: string;
   updatedAt: string;
 };
@@ -1247,7 +1246,6 @@ export function startBlacklistSourceDelete(
 export type UpdateVideoInput = Partial<{
   tags: string[];
   badges: string[];
-  description: string;
   thumbnail: string;
   durationSeconds: number;
 }>;

@@ -347,7 +347,7 @@ func TestRemoveDeletedVideoDirectRestoresLocalUploadLosslessly(t *testing.T) {
 		ID: "local-upload-rich", DriveID: "local-upload", FileID: "rich.mp4",
 		DirName: "2026", AncestorDirNames: []string{"旅行", "2026"},
 		FileName: "rich.mp4", Title: "用户起的标题", Author: "上传者",
-		Tags: []string{"标签一", "标签二"}, Description: "简介", DurationSeconds: 42,
+		Tags: []string{"标签一", "标签二"}, DurationSeconds: 42,
 		Size: 4096, Ext: "mp4",
 		ThumbnailURL: "/p/thumb/local-upload-rich", PreviewLocal: "/data/previews/local-upload-rich.mp4",
 		PreviewStatus: "ready", Views: 7, Likes: 3,
@@ -377,7 +377,7 @@ func TestRemoveDeletedVideoDirectRestoresLocalUploadLosslessly(t *testing.T) {
 		t.Fatalf("get restored video: %v", err)
 	}
 	if restored.Title != "用户起的标题" || restored.Author != "上传者" ||
-		restored.Description != "简介" || restored.DurationSeconds != 42 {
+		restored.DurationSeconds != 42 {
 		t.Fatalf("user metadata lost: %#v", restored)
 	}
 	if len(restored.Tags) != 2 || restored.Tags[0] != "标签一" || restored.Tags[1] != "标签二" {
@@ -790,7 +790,6 @@ func TestCompleteCrawlerRestorePreservesExistingVideo(t *testing.T) {
 			// then changed by an administrator and background asset workers.
 			partial := *original
 			partial.Title = "Edited title"
-			partial.Description = "Edited description"
 			partial.ContentHash = "current-content"
 			partial.SampledSHA256 = "current-sample"
 			partial.DurationSeconds = 45
@@ -835,7 +834,7 @@ BEGIN SELECT RAISE(ABORT, 'injected restore completion failure'); END`); err != 
 			if err != nil {
 				t.Fatal(err)
 			}
-			if saved.Title != before.Title || saved.Description != before.Description || !sameStrings(saved.Tags, before.Tags) || !cat.hasManualTags(ctx, saved.ID) {
+			if saved.Title != before.Title || !sameStrings(saved.Tags, before.Tags) || !cat.hasManualTags(ctx, saved.ID) {
 				t.Fatalf("restore replaced current edits or manual tags: %#v", saved)
 			}
 			metadata, err := cat.ListVideoTagMetadata(ctx, []string{original.ID})

@@ -2,7 +2,7 @@
  * Video Detail Page
  * ---------------------------------------------------------
  * 整体视觉
- *   - 主区从上到下：播放器 → 信息卡 → 简介+标签卡 → 推荐
+ *   - 主区从上到下：播放器 → 信息卡 → 标签卡 → 推荐
  *   - 右侧（>=1024px）固定 380px 推荐栏；移动端折到底部
  *
  * 主要 BEM 块（前缀 vd-）
@@ -16,7 +16,7 @@
  *   .vd-header       meta 信息 + 标题
  *   .vd-meta         meta 胶囊列表
  *   .vd-actions      操作工具条
- *   .vd-info         简介 + 标签合并卡
+ *   .vd-info         标签卡
  *   .vd-tag-editor   标签编辑器（页面弹窗）
  *   .vd-rail         推荐栏
  *   .vd-skeleton     loading 占位
@@ -60,7 +60,7 @@
 }
 
 /* Keep the player-to-content rhythm independent from the tighter stack of
- * detail, collection and description/tag cards below it. */
+ * detail, collection and tag cards below it. */
 .vd-detail-panels {
   min-width: 0;
   display: flex;
@@ -1221,7 +1221,7 @@
   }
 }
 
-/* ---------- Info card (description + tags) ---------- */
+/* ---------- Info card (tags) ---------- */
 .vd-info {
   display: flex;
   flex-direction: column;
@@ -1266,56 +1266,6 @@
 .vd-info__section-title svg {
   flex: 0 0 auto;
   color: currentColor;
-}
-
-/* Description block */
-.vd-info__desc {
-  position: relative;
-  padding: var(--space-5);
-  border-bottom: 1px solid var(--border-subtle);
-  color: var(--text-default);
-  font-size: var(--font-md);
-  line-height: var(--line-relaxed);
-  transition: background var(--transition-fast);
-}
-
-.vd-info__desc.is-clickable {
-  cursor: pointer;
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .vd-info__desc.is-clickable:hover {
-    background: var(--accent-softer);
-  }
-}
-
-.vd-info__desc.is-clickable:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-
-.vd-info__desc-text {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.vd-info__desc.is-expanded .vd-info__desc-text {
-  display: block;
-  -webkit-line-clamp: unset;
-  overflow: visible;
-}
-
-.vd-info__desc-toggle {
-  color: var(--accent);
-  font-size: var(--font-sm);
-  font-weight: var(--weight-semibold);
-  letter-spacing: normal;
-  text-transform: none;
 }
 
 /* Tags block */
@@ -2747,16 +2697,6 @@
     padding: 0 18px;
   }
 
-  .vd-info__desc {
-    padding: var(--space-3) var(--space-4);
-    font-size: var(--font-base);
-    line-height: 1.6;
-  }
-
-  .vd-info__desc-text {
-    -webkit-line-clamp: 4;
-  }
-
   .vd-info__tags {
     padding: var(--space-3) var(--space-4);
   }
@@ -2893,11 +2833,6 @@
 
   .vd-delete-action {
     width: 100%;
-  }
-
-  .vd-info__desc {
-    padding: var(--space-3);
-    font-size: var(--font-base);
   }
 
   .vd-info__tags {
@@ -3163,7 +3098,6 @@
 /* 防止任何子元素意外撑破宽度（长 URL / 不可断字符串） */
 .vd-main,
 .vd-rail,
-.vd-info__desc-text,
 .vd-rail__title,
 .vd-header__title {
   min-width: 0;

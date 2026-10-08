@@ -15,16 +15,7 @@ type Props = {
   onTagsChange?: (tags: string[]) => Promise<void>;
 };
 
-/**
- * 简介 + 标签合并卡。
- * - 上半部分是简介：默认折叠 3 行，整块可点击展开/收起；简介为空时不渲染。
- * - 下半部分是标签：横向 chip 列表 + 一个"编辑"按钮调出标签编辑器。
- *
- * 视觉上和上一版的"两张分离卡"相比，整体感更强：
- * - 一张大卡内分两个小区块，区块之间用细分隔线
- * - 简介区块加 "简介" 标题前缀
- * - 标签区块加标签轮廓图标暗示
- */
+/** 视频标签卡，管理员可通过弹窗编辑标签。 */
 export function VideoInfoPanel({
   video,
   availableTags = [],
@@ -37,7 +28,6 @@ export function VideoInfoPanel({
   const [editingTags, setEditingTags] = useState(false);
   const [draftTags, setDraftTags] = useState<string[]>(video.tags ?? []);
   const [tagError, setTagError] = useState("");
-  const [descExpanded, setDescExpanded] = useState(false);
   const tagEditorTitleId = useId();
   const tagEditorRef = useRef<HTMLDivElement | null>(null);
 
@@ -47,9 +37,6 @@ export function VideoInfoPanel({
   });
 
   const tags = video.tags ?? [];
-  const description = (video.description ?? "").trim();
-  const showDescription = description.length > 0;
-  const descriptionLong = description.length > 80 || description.includes("\n");
 
   const sortedAvailable = useMemo(() => {
     return [...availableTags].sort((a, b) => {
@@ -206,34 +193,6 @@ export function VideoInfoPanel({
 
   return (
     <section className="vd-info" aria-label="视频信息">
-      {showDescription && (
-        <div
-          className={`vd-info__desc${descExpanded ? " is-expanded" : ""}${
-            descriptionLong ? " is-clickable" : ""
-          }`}
-          role={descriptionLong ? "button" : undefined}
-          tabIndex={descriptionLong ? 0 : undefined}
-          onClick={() => descriptionLong && setDescExpanded((v) => !v)}
-          onKeyDown={(e) => {
-            if (!descriptionLong) return;
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              setDescExpanded((v) => !v);
-            }
-          }}
-        >
-          <div className="vd-info__section-head">
-            <span className="vd-info__section-title">简介</span>
-            {descriptionLong && (
-              <span className="vd-info__desc-toggle">
-                {descExpanded ? "收起" : "展开"}
-              </span>
-            )}
-          </div>
-          <p className="vd-info__desc-text">{description}</p>
-        </div>
-      )}
-
       <div className="vd-info__tags">
         <div className="vd-info__section-head">
           <span className="vd-info__section-title">

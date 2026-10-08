@@ -178,7 +178,6 @@ type VideoDetailDTO struct {
 	VideoSrc            string        `json:"videoSrc"`
 	MediaType           string        `json:"mediaType,omitempty"`
 	Poster              string        `json:"poster"`
-	Description         string        `json:"description"`
 	EmbedURL            string        `json:"embedUrl"`
 	Points              int           `json:"points,omitempty"`
 	AuthorProfile       AuthorProfile `json:"authorProfile"`
@@ -441,12 +440,11 @@ func (s *Server) handleVideoDetail(w http.ResponseWriter, r *http.Request) {
 	dto.SourceLabel = s.videoSourceLabel(r.Context(), v)
 
 	detail := VideoDetailDTO{
-		VideoDTO:    dto,
-		VideoSrc:    s.videoSource(v),
-		MediaType:   playbackMediaType(v),
-		Poster:      thumbnailURL(v),
-		Description: v.Description,
-		EmbedURL:    fmt.Sprintf(`<iframe src="/embed/%s" width="640" height="360" frameborder="0" allowfullscreen></iframe>`, pathSegment(v.ID)),
+		VideoDTO:  dto,
+		VideoSrc:  s.videoSource(v),
+		MediaType: playbackMediaType(v),
+		Poster:    thumbnailURL(v),
+		EmbedURL:  fmt.Sprintf(`<iframe src="/embed/%s" width="640" height="360" frameborder="0" allowfullscreen></iframe>`, pathSegment(v.ID)),
 		AuthorProfile: AuthorProfile{
 			ID:     "author-" + v.Author,
 			Name:   v.Author,

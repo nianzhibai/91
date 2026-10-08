@@ -116,7 +116,7 @@ INSERT INTO videos (
     duration_seconds, size_bytes, ext, thumbnail_url,
     thumbnail_updated_at, thumbnail_status, preview_local, preview_updated_at,
     preview_status, views, favorites, comments, likes, dislikes, hidden,
-    is_canonical, badges, description, published_at, created_at, updated_at
+    is_canonical, badges, published_at, created_at, updated_at
 )
 SELECT
     ? || '-' || printf('%05d', seq.n),
@@ -133,7 +133,7 @@ SELECT
     template.thumbnail_updated_at, template.thumbnail_status,
     template.preview_local, template.preview_updated_at, template.preview_status,
     seq.n % 97, 0, 0, seq.n % 53, 0, 0, 1,
-    template.badges, template.description,
+    template.badges,
     ? - seq.n * 60000, ?, ?
 FROM seq, template`, count, prefix, prefix, now, now, now)
 		if err != nil {

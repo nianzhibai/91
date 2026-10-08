@@ -37,7 +37,6 @@ CREATE TABLE IF NOT EXISTS videos (
     is_canonical     INTEGER NOT NULL DEFAULT 1, -- derived by dedup triggers; hidden rows still participate
     tags_manual      INTEGER DEFAULT 0,          -- 1 = user explicitly curated tags
     badges           TEXT,                      -- JSON array
-    description      TEXT,
     published_at     INTEGER NOT NULL,          -- unix ms
     created_at       INTEGER NOT NULL,
     updated_at       INTEGER NOT NULL

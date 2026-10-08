@@ -998,6 +998,9 @@ INSERT INTO videos (
 	if hasColumn(t, cat, "videos", "quality") {
 		t.Fatal("retired quality column was not dropped")
 	}
+	if hasColumn(t, cat, "videos", "description") {
+		t.Fatal("retired description column was not dropped")
+	}
 	if indexExists(t, cat, "idx_legacy_videos_category") {
 		t.Fatal("legacy category index was not dropped")
 	}

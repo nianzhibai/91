@@ -128,6 +128,9 @@ UPDATE videos
 	if err := c.dropColumnIfExists(ctx, "videos", "quality"); err != nil {
 		return err
 	}
+	if err := c.dropColumnIfExists(ctx, "videos", "description"); err != nil {
+		return err
+	}
 	// 浏览器兼容性转码已整体退役；老库不再保留任务状态和产物引用。
 	for _, column := range []string{"transcode_status", "transcode_error", "transcoded_file_id", "transcoded_size"} {
 		if err := c.dropColumnIfExists(ctx, "videos", column); err != nil {
@@ -506,6 +509,7 @@ func isRetiredVideoColumn(column string) bool {
 		"category",
 		"llm_tagged_at",
 		"quality",
+		"description",
 		"transcode_status",
 		"transcode_error",
 		"transcoded_file_id",
@@ -941,7 +945,6 @@ var currentVideoColumnNames = []string{
 	"is_canonical",
 	"tags_manual",
 	"badges",
-	"description",
 	"published_at",
 	"created_at",
 	"updated_at",
@@ -986,7 +989,6 @@ CREATE TABLE videos_schema_rebuild_new (
     is_canonical       INTEGER NOT NULL DEFAULT 1,
     tags_manual        INTEGER DEFAULT 0,
     badges             TEXT,
-    description        TEXT,
     published_at       INTEGER NOT NULL,
     created_at         INTEGER NOT NULL,
     updated_at         INTEGER NOT NULL

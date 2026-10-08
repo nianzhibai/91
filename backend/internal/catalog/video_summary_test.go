@@ -38,7 +38,6 @@ func TestVisibleVideoSummariesByIDsReturnsOnlyVisibleCardsInSnapshotOrder(t *tes
 			Likes:              40 + index,
 			Dislikes:           5 + index,
 			Badges:             []string{"badge-" + id},
-			Description:        "detail-only description",
 			PublishedAt:        publishedAt,
 			CreatedAt:          publishedAt,
 			UpdatedAt:          publishedAt,

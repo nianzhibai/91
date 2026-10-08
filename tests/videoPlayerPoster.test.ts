@@ -336,7 +336,7 @@ test("detail loading title bar spans the full summary width", () => {
   assert.doesNotMatch(titleRules[1][1], /\bwidth\s*:/);
 });
 
-test("detail info skeleton omits the two description lines", () => {
+test("detail info skeleton reserves the tag heading and chips", () => {
   assert.match(
     detailLoadingSource,
     /className="vd-skeleton__info"[\s\S]*?vd-skeleton__section-head[\s\S]*?vd-skeleton__tag-row/

@@ -53,7 +53,6 @@ type Item struct {
 	Author          string    `json:"author,omitempty"`
 	Tags            []string  `json:"tags,omitempty"`
 	DurationSeconds int       `json:"duration_seconds,omitempty"`
-	Description     string    `json:"description,omitempty"`
 }
 type envelope struct {
 	Type      string `json:"type"`
@@ -67,6 +66,9 @@ type pageResponse struct {
 type itemResponse struct {
 	envelope
 	Item
+	// Existing scripts may send descriptions. Keep them at the protocol
+	// boundary; Resolve returns only Item, so they never reach the importer.
+	IgnoredDescription json.RawMessage `json:"description,omitempty"`
 }
 type ScriptError struct {
 	Type              string `json:"type"`
@@ -188,7 +190,7 @@ func validateItem(item Item, candidate Candidate) error {
 	if strings.TrimSpace(item.Title) == "" || len(item.Title) > 4096 {
 		return protocolError("title is required (at most 4096 bytes)")
 	}
-	if len(item.Author) > 1024 || len(item.Description) > 64*1024 || item.DurationSeconds < 0 || item.DurationSeconds > 7*24*3600 || len(item.Tags) > 100 {
+	if len(item.Author) > 1024 || item.DurationSeconds < 0 || item.DurationSeconds > 7*24*3600 || len(item.Tags) > 100 {
 		return protocolError("metadata limit exceeded")
 	}
 	for _, tag := range item.Tags {

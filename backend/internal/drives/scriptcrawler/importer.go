@@ -132,7 +132,6 @@ func (c *Importer) Import(downloadCtx, ctx context.Context, item Item) (ImportOu
 		DurationSeconds: item.DurationSeconds,
 		Size:            size,
 		Ext:             strings.TrimPrefix(videoExt, "."),
-		Description:     strings.TrimSpace(item.Description),
 		PreviewStatus:   "pending",
 		PublishedAt:     now,
 		CreatedAt:       now,

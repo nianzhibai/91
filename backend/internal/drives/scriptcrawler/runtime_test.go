@@ -2,6 +2,7 @@ package scriptcrawler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -287,6 +288,34 @@ func TestStrictItemValidation(t *testing.T) {
 		if err := strictDecode([]byte(raw), &response); err == nil {
 			t.Fatalf("accepted removed media field: %s", raw)
 		}
+	}
+}
+
+func TestCrawlerImportsItemsWithIgnoredDescriptions(t *testing.T) {
+	mediaURL := serveScriptCrawlerMedia(t, "video with ignored description")
+	c := newRuntimeTestCrawler(t, fmt.Sprintf(`c=read(); send(c,"page",items=[dict(discovery_key="one",locator={})],next_cursor=None)
+c=read(); send(c,"item",discovery_key="one",source_id="source",title="Video title",author="Video author",duration_seconds=42,description="Legacy description",media=dict(type="url",url=%q))
+stop()
+`, mediaURL), ProtocolV3, nil)
+	ctx := context.Background()
+	result, err := c.RunOnce(ctx, 1)
+	if err != nil || result.NewVideos != 1 || result.Failed != 0 {
+		t.Fatalf("import with description failed: result=%+v error=%v", result, err)
+	}
+	videos, err := c.cfg.Catalog.ListVideosByDrive(ctx, result.DriveID)
+	if err != nil || len(videos) != 1 {
+		t.Fatalf("imported videos=%#v error=%v", videos, err)
+	}
+	video := videos[0]
+	if video.Title != "Video title" || video.Author != "Video author" || video.DurationSeconds != 42 {
+		t.Fatalf("retained metadata changed: %#v", video)
+	}
+	encoded, err := json.Marshal(video)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), `"description"`) {
+		t.Fatalf("import retained description: %s", encoded)
 	}
 }
 

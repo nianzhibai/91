@@ -19,7 +19,6 @@ type updateVideoReq struct {
 	Author      json.RawMessage `json:"author"`
 	Tags        []string        `json:"tags"`
 	Badges      []string        `json:"badges"`
-	Description string          `json:"description"`
 	Thumbnail   string          `json:"thumbnail"`
 	DurationSec int             `json:"durationSeconds"`
 }
@@ -54,7 +53,6 @@ type adminVideoDTO struct {
 	Dislikes          int               `json:"dislikes"`
 	Hidden            bool              `json:"hidden"`
 	Badges            []string          `json:"badges"`
-	Description       string            `json:"description"`
 	PublishedAt       time.Time         `json:"publishedAt"`
 	CreatedAt         time.Time         `json:"createdAt"`
 	UpdatedAt         time.Time         `json:"updatedAt"`
@@ -92,7 +90,6 @@ func mapAdminVideo(v *catalog.Video) adminVideoDTO {
 		Dislikes:          v.Dislikes,
 		Hidden:            v.Hidden,
 		Badges:            v.Badges,
-		Description:       v.Description,
 		PublishedAt:       v.PublishedAt,
 		CreatedAt:         v.CreatedAt,
 		UpdatedAt:         v.UpdatedAt,
@@ -125,9 +122,6 @@ func (a *AdminServer) handleUpdateVideo(w http.ResponseWriter, r *http.Request) 
 	}
 	if body.Badges != nil {
 		v.Badges = body.Badges
-	}
-	if body.Description != "" {
-		v.Description = body.Description
 	}
 	if body.Thumbnail != "" {
 		v.ThumbnailURL = body.Thumbnail
