@@ -139,11 +139,13 @@ export function VideoActions({
     setReaction(nextReaction);
     applyCounts(optimisticCounts);
 
-    if (selected === "like" && nextReaction === "like") {
-      setBursting(true);
-      if (burstResetTimer.current !== null) {
-        window.clearTimeout(burstResetTimer.current);
-      }
+    if (burstResetTimer.current !== null) {
+      window.clearTimeout(burstResetTimer.current);
+      burstResetTimer.current = null;
+    }
+    const shouldBurst = selected === "like" && nextReaction === "like";
+    setBursting(shouldBurst);
+    if (shouldBurst) {
       burstResetTimer.current = window.setTimeout(() => {
         setBursting(false);
         burstResetTimer.current = null;
@@ -170,6 +172,12 @@ export function VideoActions({
       reactionRef.current = previousReaction;
       setReaction(previousReaction);
       applyCounts(previousCounts);
+      setBursting(false);
+      if (burstResetTimer.current !== null) {
+        window.clearTimeout(burstResetTimer.current);
+        burstResetTimer.current = null;
+      }
+      show("操作失败，请稍后重试", "error");
     } finally {
       reactionPendingRef.current = false;
       if (mountedRef.current) {

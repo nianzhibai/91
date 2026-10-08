@@ -50,11 +50,11 @@ test("detail like and dislike buttons are visually separated", () => {
 test("reaction hover feedback excludes touch devices and selected buttons", () => {
   assert.match(
     detailCss,
-    /@media \(hover:\s*hover\) and \(pointer:\s*fine\)\s*\{\s*\.vd-actions__pill:hover:not\(:disabled\):not\(\.is-active\)\s*\{[^}]*color:\s*var\(--text-strong\)/s
+    /@media \(hover:\s*hover\) and \(pointer:\s*fine\)\s*\{\s*\.vd-actions__pill:hover:not\(\.is-active\)\s*\{[^}]*color:\s*var\(--text-strong\)/s
   );
   assert.doesNotMatch(
     detailCss,
-    /\.vd-actions__pill:hover:not\(:disabled\)\s*\{/
+    /\.vd-actions__pill:hover(?:\s*\{|:not\(:disabled\))/
   );
   assert.match(
     detailCss,

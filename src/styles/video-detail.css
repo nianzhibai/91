@@ -913,12 +913,13 @@
   font-size: var(--font-md);
   font-weight: var(--weight-semibold);
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: background-color var(--transition-fast), color var(--transition-fast),
+    border-color var(--transition-fast);
 }
 
-/* Hover is transient feedback; it must not mask a selected reaction. */
+/* Preserve hover feedback during submission without masking a selected reaction. */
 @media (hover: hover) and (pointer: fine) {
-  .vd-actions__pill:hover:not(:disabled):not(.is-active) {
+  .vd-actions__pill:hover:not(.is-active) {
     color: var(--text-strong);
     background: rgba(255, 255, 255, 0.06);
     border-color: var(--border-strong);
@@ -938,7 +939,6 @@
 
 .vd-actions__pill:disabled {
   cursor: wait;
-  opacity: 0.72;
 }
 
 .vd-actions__count {
@@ -953,16 +953,13 @@
 }
 
 @keyframes vd-like-burst {
-  0% {
-    transform: scale(1);
+  0%,
+  100% {
+    filter: drop-shadow(0 0 0 var(--accent-glow));
   }
   40% {
-    transform: scale(1.2);
     color: var(--accent);
     filter: drop-shadow(0 0 10px var(--accent-glow));
-  }
-  100% {
-    transform: scale(1);
   }
 }
 
