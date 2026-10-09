@@ -78,7 +78,7 @@ export function ShortsDesktopSidebar({
         )}
       </nav>
       <div className="shorts-desktop-sidebar__footer">
-        <p>发现下一份精彩</p>
+        <p><span className="shorts-desktop-sidebar__slogan-lead">探索</span><span>精彩瞬间</span></p>
       </div>
     </aside>
   );

@@ -76,10 +76,12 @@
 
   .shorts-desktop-brand__name {
     color: #fff;
-    font-size: 20px;
+    font-family: inherit;
     font-weight: 600;
-    line-height: 1;
+    letter-spacing: normal;
     white-space: nowrap;
+    font-size: 20px;
+    line-height: 1;
   }
 
   .shorts-desktop-nav {
@@ -138,22 +140,26 @@
   }
 
   .shorts-desktop-sidebar__footer {
+    position: relative;
     display: block;
     margin-top: auto;
     margin-bottom: 12px;
-    padding: 0 10px;
-    font-size: 11px;
-    color: #696b7e;
+    padding: 16px 6px 10px;
+  }
+
+  .shorts-desktop-sidebar__footer::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 6px;
+    right: 6px;
+    height: 1px;
+    background: linear-gradient(90deg, rgb(255 255 255 / 18%), rgb(255 255 255 / 4%) 70%, transparent);
   }
 
   .shorts-desktop-sidebar__footer p {
     margin: 0;
-    color: rgb(255 255 255 / 60%);
-    font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
-    font-size: 12px;
-    font-weight: 400;
-    line-height: 20px;
-    letter-spacing: 0.4px;
+    white-space: nowrap;
   }
 
   .shorts-header {
@@ -240,11 +246,38 @@
   }
 
   .shorts-slide__title {
-    min-height: 0;
+    color: #fff;
+    font-family: inherit;
     font-size: 15px;
     line-height: 1.65;
     font-weight: 400;
+    letter-spacing: normal;
+    text-shadow: 0 1px 4px rgb(0 0 0 / 40%);
+  }
+
+  .shorts-slide__title {
+    min-height: 0;
     max-height: 3.3em;
+  }
+
+  .shorts-desktop-sidebar__footer p {
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: 5px;
+    color: rgb(255 255 255 / 90%);
+    font-family: "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", "STSong", "SimSun", serif;
+    font-size: 16px;
+    font-weight: 400;
+    line-height: 24px;
+    letter-spacing: 1.5px;
+    text-shadow: none;
+  }
+
+  .shorts-desktop-sidebar__slogan-lead {
+    color: rgb(255 255 255 / 50%);
+    font-size: 13px;
+    letter-spacing: 1px;
   }
 
   .shorts-slide__sidebar {
@@ -876,7 +909,7 @@
     bottom: 76px;
   }
 
-  .shorts-desktop-sidebar__footer p {
+  .shorts-desktop-sidebar__footer {
     display: none;
   }
 }
