@@ -43,6 +43,7 @@ function createHarness(options?: { viewportTop?: number }) {
     paused: false,
     ended: false,
     playbackRate: 1,
+    defaultPlaybackRate: 1,
     currentTime: 30,
     getBoundingClientRect: () => ({ width: 300 }),
   };
@@ -200,6 +201,19 @@ test("long press resets speed and the very next tap works when no synthetic clic
   h.tap(); h.advance(300);
   assert.equal(h.state.singles, 1);
   assert.equal(h.video.paused, true);
+}));
+
+test("releasing or canceling a long press restores the selected playback speed", () => withHarness(h => {
+  h.video.defaultPlaybackRate = 1.5;
+  h.video.playbackRate = 1.5;
+  h.pointer("pointerdown"); h.advance(410);
+  assert.equal(h.video.playbackRate, 2);
+  h.pointer("pointerup");
+  assert.equal(h.video.playbackRate, 1.5);
+  h.pointer("pointerdown"); h.advance(410);
+  h.pointer("pointercancel");
+  assert.equal(h.video.playbackRate, 1.5);
+  assert.equal(h.state.fast, false);
 }));
 
 test("holding a second press cancels the pending single and does not like", () => withHarness(h => {

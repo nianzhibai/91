@@ -7,6 +7,8 @@ import {
 } from "react";
 import { Sparkles } from "lucide-react";
 import { clamp } from "./mediaBuffer";
+import { restoreShortsPlaybackRate } from "./playbackRate";
+import { SHORTS_ACTION_SHORTCUTS, SHORTS_CONTROL_SHORTCUTS } from "./controlShortcuts";
 
 const SHORTS_KEYBOARD_SEEK_SECONDS = 5;
 const SHORTS_KEYBOARD_FAST_PLAYBACK_DELAY_MS = 400;
@@ -38,6 +40,11 @@ export type ShortsKeyboardOptions = {
   isVideoPausedByUser: (index: number) => boolean;
   setUserPausedForIndex: (index: number, isPaused: boolean) => void;
   onToggleMute: () => void;
+  /** 仅桌面页面提供，缺省时不接管这些按键。 */
+  onToggleAutoAdvance?: () => void;
+  onToggleClearScreen?: () => void;
+  onToggleFullscreen?: () => void;
+  enableSidebarShortcuts?: boolean;
   showHud: (text: string, icon?: ReactNode) => void;
   isWindowsShortsPlatform: boolean;
 };
@@ -45,6 +52,7 @@ export type ShortsKeyboardOptions = {
 /**
  * 短视频页的键盘快捷键：
  * - ↑/↓ 切换上下视频，空格播放/暂停（双空格点赞），M 静音，L 点赞
+ * - 桌面 K 连播、J 清屏、H 全屏；D 来源、S 分享、X 隐藏
  * - ← 按键重复时累计快退 5s/次，松开（或失焦/超时）后提交一次真实 seek
  * - → 短按快进 5s；按住 400ms 后以 2 倍速播放，松开恢复 1 倍速
  */
@@ -264,7 +272,7 @@ export function useShortsKeyboard(options: ShortsKeyboardOptions) {
 
       if (target.fastPlaybackActive) {
         try {
-          target.video.playbackRate = 1;
+          restoreShortsPlaybackRate(target.video);
         } catch {
           // ignore
         }
@@ -321,6 +329,7 @@ export function useShortsKeyboard(options: ShortsKeyboardOptions) {
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
       const activeEl = document.activeElement;
       if (
         activeEl &&
@@ -328,6 +337,45 @@ export function useShortsKeyboard(options: ShortsKeyboardOptions) {
           activeEl.tagName === "TEXTAREA" ||
           activeEl.tagName === "SELECT" ||
           (activeEl instanceof HTMLElement && activeEl.isContentEditable))
+      ) {
+        return;
+      }
+      const key = e.key.toUpperCase();
+      const desktopAction = key === SHORTS_CONTROL_SHORTCUTS.autoAdvance
+        ? optionsRef.current.onToggleAutoAdvance
+        : key === SHORTS_CONTROL_SHORTCUTS.clearScreen
+          ? optionsRef.current.onToggleClearScreen
+          : key === SHORTS_CONTROL_SHORTCUTS.fullscreen
+            ? optionsRef.current.onToggleFullscreen
+            : undefined;
+      if (desktopAction && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        if (!e.repeat) desktopAction();
+        return;
+      }
+      const sidebarShortcut = [
+        SHORTS_ACTION_SHORTCUTS.source, SHORTS_ACTION_SHORTCUTS.share, SHORTS_ACTION_SHORTCUTS.hide,
+      ].some((shortcut) => shortcut === key);
+      if (optionsRef.current.enableSidebarShortcuts && sidebarShortcut && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        // 使用当前视频实际渲染的控件，沿用其权限、禁用状态和原有点击流程。
+        const action = containerRef.current?.querySelector<HTMLElement>(
+          `[data-index="${activeIndexRef.current}"][data-active="true"] [data-shorts-shortcut="${key}"]`
+        );
+        if (action && !action.matches(":disabled") && action.getAttribute("aria-disabled") !== "true") {
+          e.preventDefault();
+          if (!e.repeat) {
+            finishKeyboardRightPress(false);
+            finishKeyboardSeek();
+            action.click();
+          }
+          return;
+        }
+      }
+      // 空格优先激活已聚焦的按钮/链接，避免桌面控件触发后又切换播放状态。
+      if (
+        e.key === " " &&
+        activeEl instanceof HTMLElement &&
+        activeEl.closest('button, a, summary, [role="button"]')
       ) {
         return;
       }
@@ -384,7 +432,7 @@ export function useShortsKeyboard(options: ShortsKeyboardOptions) {
         finishKeyboardSeek();
         if (e.repeat) return;
         optionsRef.current.onToggleMute();
-      } else if (e.key === "l" || e.key === "L") {
+      } else if (key === SHORTS_ACTION_SHORTCUTS.like) {
         e.preventDefault();
         finishKeyboardRightPress(false);
         finishKeyboardSeek();

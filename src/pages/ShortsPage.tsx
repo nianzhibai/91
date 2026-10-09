@@ -51,7 +51,6 @@ import { useShortsFeed } from "@/shorts/useShortsFeed";
 import {
   getShortsQueueTrimCount,
   readShortsFeedMode,
-  SHORTS_FEED_TABS,
   shortsQueueItemKey,
   withShortsFeedMode,
   type ShortsFeedMode,
@@ -61,7 +60,18 @@ import {
   type ShortsKeyboardSeekPreview,
 } from "@/shorts/useShortsKeyboard";
 import { useShortsSlideGestures } from "@/shorts/useShortsSlideGestures";
+import { useShortsDesktopLayout } from "@/shorts/useShortsDesktopLayout";
+import { useShortsPlaybackPreferences } from "@/shorts/useShortsPlaybackPreferences";
+import { restoreShortsPlaybackRate } from "@/shorts/playbackRate";
+import { ShortsPlaybackControls } from "@/shorts/ShortsPlaybackControls";
+import { ShortsTooltip } from "@/shorts/ShortsTooltip";
+import { SHORTS_ACTION_SHORTCUTS } from "@/shorts/controlShortcuts";
+import { exitShortsFullscreen } from "@/shorts/fullscreen";
 import { useShortsNavigation } from "@/shorts/useShortsNavigation";
+import {
+  ShortsDesktopSidebar,
+  ShortsFullscreenExit,
+} from "@/shorts/ShortsDesktopChrome";
 import { ShortsSlideVisibility } from "@/shorts/slideVisibility";
 import {
   measureOffsetWithinSlide,
@@ -76,6 +86,7 @@ import {
   createAndCopyVideoShare,
 } from "@/lib/videoShareClipboard";
 import "@/styles/shorts.css";
+import "@/styles/shorts-desktop.css";
 
 
 // 距当前屏多少条以内的 slide 才渲染真正的内容（背景、海报、文案、操作栏）。
@@ -148,28 +159,47 @@ function ShortsPlayback({
   const [activeIndex, setActiveIndex] = useState(0);
   // 是否静音；首次必须静音才能 autoplay，用户点击后切换
   const [muted, setMuted] = useState(true);
+  const isDesktop = useShortsDesktopLayout();
+  const [autoAdvance, setAutoAdvance] = useState(false);
+  const [playbackRate, setPlaybackRate] = useState(1);
+  const [volume, setVolume] = useState(1);
+  const lastAudibleVolumeRef = useRef(1);
   // iOS/WebKit 的有声播放授权按 media element 管理。iOS 分支始终复用
   // 同一个真实 <video>，滑动时只移动节点并更换 src。
   const useIOSSharedVideo = shouldUseIOSSharedVideo();
   // 全局 Toast / HUD 提醒文字
-  const [hudText, setHudText] = useState<{ id: number; text: string; icon?: React.ReactNode } | null>(null);
+  const [hudText, setHudText] = useState<{
+    id: number;
+    text: string;
+    icon?: React.ReactNode;
+    variant: "hud" | "copy";
+  } | null>(null);
   const hudTimeoutRef = useRef<number | null>(null);
 
-  const showHud = useCallback((text: string, icon?: React.ReactNode) => {
+  const showHud = useCallback((text: string, icon?: React.ReactNode, variant: "hud" | "copy" = "hud") => {
     if (hudTimeoutRef.current) window.clearTimeout(hudTimeoutRef.current);
-    setHudText({ id: Date.now(), text, icon });
+    setHudText({ id: Date.now(), text, icon, variant });
     hudTimeoutRef.current = window.setTimeout(() => {
       setHudText(null);
-    }, 1500);
+    }, variant === "copy" ? 3150 : 1500);
   }, []);
+
+  const handleShareCopied = useCallback(() => {
+    showHud("已复制分享链接", undefined, "copy");
+  }, [showHud]);
 
   const stopHeaderControlPropagation = useCallback((e: React.SyntheticEvent) => {
     e.stopPropagation();
   }, []);
 
   const handleMuteButtonClick = useCallback(() => {
-    const activeVideo = getVideoAtIndex(activeIndex);
+    const activeVideo = getVideoAtIndex(activeIndexRef.current);
     const next = !muted;
+    if (!next && isDesktop && volume === 0) {
+      const restoredVolume = lastAudibleVolumeRef.current;
+      setVolume(restoredVolume);
+      if (activeVideo) activeVideo.volume = restoredVolume;
+    }
     if (activeVideo) {
       // Android Chrome 切换静音时可能正在重建音频管线。对一个本来就在
       // 播放的元素重复 play() 和延迟重试只会干扰这次切换，因此普通 video
@@ -203,11 +233,20 @@ function ShortsPlayback({
       }
     }
     setMuted(next);
-    showHud(
-      next ? "已静音" : "音量已开启",
-      next ? <VolumeX size={16} /> : <Volume2 size={16} />
-    );
-  }, [activeIndex, muted, showHud, useIOSSharedVideo]);
+  }, [muted, useIOSSharedVideo, isDesktop, volume]);
+
+  const handleVolumeChange = useCallback((nextVolume: number) => {
+    const next = clamp(nextVolume, 0, 1);
+    if (next > 0) lastAudibleVolumeRef.current = next;
+    const activeVideo = getVideoAtIndex(activeIndexRef.current);
+    // 在用户手势中同步音量和静音状态，拖动滑杆即可开启声音。
+    if (activeVideo) {
+      activeVideo.volume = next;
+      applyVideoMutedState(activeVideo, next === 0);
+    }
+    setVolume(next);
+    setMuted(next === 0);
+  }, []);
 
   // 组件卸载时清理 HUD 定时器
   useEffect(() => {
@@ -402,6 +441,12 @@ function ShortsPlayback({
     isVideoPausedByUser,
     setUserPausedForIndex,
     onToggleMute: handleMuteButtonClick,
+    enableSidebarShortcuts: isDesktop,
+    onToggleAutoAdvance: isDesktop ? () => setAutoAdvance((enabled) => !enabled) : undefined,
+    onToggleClearScreen: isDesktop ? () => setClearScreen(!clearScreen) : undefined,
+    onToggleFullscreen: isDesktop && fullscreenSupported
+      ? () => { void (isFullscreen ? exitShortsFullscreen() : requestFullscreen()); }
+      : undefined,
     showHud,
     isWindowsShortsPlatform,
   });
@@ -784,7 +829,7 @@ function ShortsPlayback({
     });
   }, [activeIndex, items.length]);
 
-  // 只同步静音属性。页面不读写 video.volume，实际响度完全交给系统音量。
+  // 在各播放元素之间同步静音；桌面媒体音量由播放偏好 hook 同步。
   // 这里不做 play/pause，避免手机端切换静音时打断播放节奏。
   useEffect(() => {
     const sharedVideo = iosSharedVideoRef.current;
@@ -1114,9 +1159,21 @@ function ShortsPlayback({
         usePagerGestures ? " is-pager-driven" : ""
       }${legacyVideoTransitionEnabled ? " has-video-transition" : ""}`}
       data-clear-screen={clearScreen}
+      data-fullscreen={isFullscreen}
     >
       <div className="shorts-media-parking" ref={mediaParkingRef} aria-hidden="true" />
+      <ShortsDesktopSidebar
+        isAdmin={isAdmin}
+        mode={mode}
+        isDesktop={isDesktop}
+        onModeChange={onModeChange}
+        onHomeClick={handleBackToHomeClick}
+        onRouteClick={handleRouteClick}
+      />
       <header className="shorts-header">
+        {isDesktop && isFullscreen && (
+          <ShortsFullscreenExit onExit={() => void exitShortsFullscreen()} />
+        )}
         <Link
           to="/"
           className="shorts-header__back"
@@ -1127,45 +1184,6 @@ function ShortsPlayback({
           <ChevronLeft size={28} strokeWidth={2.5} />
           <span className="shorts-header__back-label">返回首页</span>
         </Link>
-        <div className="shorts-header__tabs" role="tablist" aria-label="短视频排序">
-          {SHORTS_FEED_TABS.map((tab, index) => (
-            <button
-              key={tab.key}
-              id={`shorts-tab-${tab.key}`}
-              type="button"
-              role="tab"
-              className="shorts-header__tab"
-              aria-selected={mode === tab.key}
-              aria-controls="shorts-feed"
-              tabIndex={mode === tab.key ? 0 : -1}
-              onClick={(event) => onModeChange(tab.key, event.detail === 0)}
-              onKeyDown={(event) => {
-                let nextIndex: number;
-                switch (event.key) {
-                  case "ArrowLeft":
-                    nextIndex = (index + SHORTS_FEED_TABS.length - 1) % SHORTS_FEED_TABS.length;
-                    break;
-                  case "ArrowRight":
-                    nextIndex = (index + 1) % SHORTS_FEED_TABS.length;
-                    break;
-                  case "Home":
-                    nextIndex = 0;
-                    break;
-                  case "End":
-                    nextIndex = SHORTS_FEED_TABS.length - 1;
-                    break;
-                  default:
-                    return;
-                }
-                event.preventDefault();
-                event.stopPropagation();
-                onModeChange(SHORTS_FEED_TABS[nextIndex].key, true);
-              }}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
         <div className="shorts-header__actions">
           {fullscreenSupported && !isFullscreen && (
             <button
@@ -1208,7 +1226,9 @@ function ShortsPlayback({
       </header>
 
       {hudText && (
-        <div key={hudText.id} className="shorts-hud-toast">
+        <div key={hudText.id}
+          className={`shorts-hud-toast${hudText.variant === "copy" ? " is-copy" : ""}`}
+          role="status" aria-live="polite">
           {hudText.icon}
           <span>{hudText.text}</span>
         </div>
@@ -1345,6 +1365,7 @@ function ShortsPlayback({
                     : undefined
                 }
                 keyboardFastPlayback={keyboardFastPlaybackIndex === index}
+                isDesktop={isDesktop}
                 sharedVideoRef={
                   useIOSSharedVideo ? iosSharedVideoRef : undefined
                 }
@@ -1354,6 +1375,17 @@ function ShortsPlayback({
                     : undefined
                 }
                 muted={muted}
+                onToggleMute={handleMuteButtonClick}
+                volume={isDesktop ? volume : undefined}
+                onVolumeChange={handleVolumeChange}
+                autoAdvance={isDesktop && autoAdvance}
+                onAutoAdvanceChange={setAutoAdvance}
+                playbackRate={isDesktop ? playbackRate : 1}
+                onPlaybackRateChange={setPlaybackRate}
+                clearScreen={clearScreen}
+                fullscreenSupported={fullscreenSupported}
+                isFullscreen={isFullscreen}
+                onRequestFullscreen={requestFullscreen}
                 onClearScreenChange={setClearScreen}
                 videoRef={setVideoRef(index)}
                 onLikeToggle={handleLikeToggle}
@@ -1368,6 +1400,7 @@ function ShortsPlayback({
                 isVideoPausedByUser={isVideoPausedByUser}
                 onRouteClick={handleRouteClick}
                 showHud={showHud}
+                onShareCopied={handleShareCopied}
                 loopDebugProbeRef={
                   debugHudEnabled ? loopDebugProbeRef : undefined
                 }
@@ -1455,6 +1488,7 @@ type SlideProps = {
   itemKey: string;
   index: number;
   isActive: boolean;
+  isDesktop: boolean;
   canGoPrevious: boolean;
   canGoNext: boolean;
   shouldMount: boolean;
@@ -1477,6 +1511,17 @@ type SlideProps = {
   /** 持久 video 当前应移动到的 slide 插槽 */
   sharedVideoSlotRef?: (el: HTMLDivElement | null) => void;
   muted: boolean;
+  onToggleMute: () => void;
+  volume: number | undefined;
+  onVolumeChange: (volume: number) => void;
+  autoAdvance: boolean;
+  onAutoAdvanceChange: (enabled: boolean) => void;
+  playbackRate: number;
+  onPlaybackRateChange: (rate: number) => void;
+  clearScreen: boolean;
+  fullscreenSupported: boolean;
+  isFullscreen: boolean;
+  onRequestFullscreen: () => Promise<boolean>;
   onClearScreenChange: (clear: boolean) => void;
   videoRef: (el: HTMLVideoElement | null) => void;
   /**
@@ -1501,6 +1546,7 @@ type SlideProps = {
   isVideoPausedByUser: (index: number) => boolean;
   onRouteClick: (event: React.MouseEvent<HTMLAnchorElement>, destination: string) => void;
   showHud: (text: string, icon?: React.ReactNode) => void;
+  onShareCopied: () => void;
   /** ?debug=1 时活跃 slide 在这里挂一个循环重启状态读取器，供面板轮询。 */
   loopDebugProbeRef?: React.MutableRefObject<ShortsLoopDebugProbe | null>;
 };
@@ -1523,6 +1569,7 @@ function ShortsSlideImpl({
   itemKey,
   index,
   isActive,
+  isDesktop,
   canGoPrevious,
   canGoNext,
   shouldMount,
@@ -1534,6 +1581,17 @@ function ShortsSlideImpl({
   sharedVideoRef,
   sharedVideoSlotRef,
   muted,
+  onToggleMute,
+  volume,
+  onVolumeChange,
+  autoAdvance,
+  onAutoAdvanceChange,
+  playbackRate,
+  onPlaybackRateChange,
+  clearScreen,
+  fullscreenSupported,
+  isFullscreen,
+  onRequestFullscreen,
   onClearScreenChange,
   videoRef,
   onLikeToggle,
@@ -1548,6 +1606,7 @@ function ShortsSlideImpl({
   isVideoPausedByUser,
   onRouteClick,
   showHud,
+  onShareCopied,
   loopDebugProbeRef,
 }: SlideProps) {
   const slideRef = useRef<HTMLElement | null>(null);
@@ -1625,6 +1684,7 @@ function ShortsSlideImpl({
   const currentTimeRef = useRef(0);
   const progressTrackRef = useRef<HTMLDivElement | null>(null);
   const progressTimeRef = useRef<HTMLDivElement | null>(null);
+  const playbackTimeRef = useRef<HTMLSpanElement | null>(null);
   const [scrubbing, setScrubbing] = useState(false);
   const scrubbingRef = useRef(false);
   const lastKeyboardSeekPreviewTimeRef = useRef<number | null>(null);
@@ -1645,6 +1705,12 @@ function ShortsSlideImpl({
       if (progressTimeRef.current) {
         progressTimeRef.current.textContent =
           `${formatClock(safeTime)} / ${formatClock(safeDuration)}`;
+      }
+      if (playbackTimeRef.current) {
+        const clock = `${formatClock(safeTime)} / ${formatClock(safeDuration)}`;
+        if (playbackTimeRef.current.textContent !== clock) {
+          playbackTimeRef.current.textContent = clock;
+        }
       }
     },
     []
@@ -1826,6 +1892,7 @@ function ShortsSlideImpl({
   // 是否已点过赞。真正的防重在父组件 likedIdsRef 里，
   // 这里仅控制视觉态并依据父组件返回的回执处理失败回滚。
   const [isLiked, setIsLiked] = useState(false);
+  const [likeCount, setLikeCount] = useState(item.likes ?? 0);
   // 屏幕中央的心形飞起动画（双击点赞时显示）
   const [heartBurst, setHeartBurst] = useState<{
     key: number;
@@ -2236,7 +2303,7 @@ function ShortsSlideImpl({
     }
   }, [isActive, resetLoopRestartState, usesSharedVideo]);
 
-  // 只同步静音；媒体音量保持浏览器默认值，由系统控制实际响度。
+  // 静音状态与桌面音量分别同步，手机仍由系统控制实际响度。
   useEffect(() => {
     const video = getVideoElement();
     if (video && isActive) {
@@ -2811,6 +2878,8 @@ function ShortsSlideImpl({
       if (serverLikes === null) {
         // 请求失败：回滚视觉态
         setIsLiked(false);
+      } else {
+        setLikeCount(serverLikes);
       }
     });
   }
@@ -2850,6 +2919,8 @@ function ShortsSlideImpl({
       void onLikeToggle(item.id, true).then((serverLikes) => {
         if (serverLikes === null) {
           setIsLiked(false);
+        } else {
+          setLikeCount(serverLikes);
         }
       });
     } else {
@@ -2858,6 +2929,8 @@ function ShortsSlideImpl({
       void onLikeToggle(item.id, false).then((serverLikes) => {
         if (serverLikes === null) {
           setIsLiked(true);
+        } else {
+          setLikeCount(serverLikes);
         }
       });
     }
@@ -2880,7 +2953,7 @@ function ShortsSlideImpl({
         }
       }
       pendingShareURLRef.current = "";
-      showHud("一次性分享链接已复制");
+      onShareCopied();
     } catch {
       showHud(
         pendingShareURLRef.current ? "复制失败，请重试" : "分享失败，请重试",
@@ -2932,6 +3005,19 @@ function ShortsSlideImpl({
       target.scrollIntoView({ behavior: "smooth" });
     }
   }
+
+  useShortsPlaybackPreferences({
+    getVideoElement,
+    shouldMount,
+    usesSharedVideo,
+    isActive,
+    canGoNext,
+    autoAdvance,
+    playbackRate,
+    volume,
+    isTemporarilyAccelerated: fastActive || keyboardFastPlayback,
+    onAdvance: () => goToAdjacentSlide(1),
+  });
 
   // 远离视口的 slide 只保留空壳。属性照旧给全：高度来自 .shorts-slide 的
   // CSS，滚动高度和吸附点一格不差；data-shorts-slide 让 IntersectionObserver
@@ -2990,7 +3076,7 @@ function ShortsSlideImpl({
                   preload={shouldLoad ? (shouldEagerLoad ? "auto" : "metadata") : "none"}
                   autoPlay={isActive}
                   playsInline
-                  loop
+                  loop={!autoAdvance || !canGoNext}
                   muted={muted}
                   controlsList="nodownload"
                   disablePictureInPicture
@@ -3022,7 +3108,13 @@ function ShortsSlideImpl({
                 !isMarkedHidden && (
                 <div className="shorts-slide__paused" aria-hidden="true">
                   <span className="shorts-slide__paused-icon">
-                    <Play size={22} fill="currentColor" strokeWidth={1.75} />
+                    {isDesktop ? (
+                      <svg viewBox="0 0 32 32" fill="currentColor" focusable="false">
+                        <path d="M23.5 15.134C24.1667 15.5189 24.1667 16.4811 23.5 16.866L12.25 23.3612C11.5833 23.7461 10.75 23.265 10.75 22.4952V9.50481C10.75 8.73501 11.5833 8.25388 12.25 8.63878L23.5 15.134Z" />
+                      </svg>
+                    ) : (
+                      <Play size={22} fill="currentColor" strokeWidth={1.75} />
+                    )}
                   </span>
                 </div>
               )}
@@ -3104,6 +3196,28 @@ function ShortsSlideImpl({
                   </div>
                 </div>
               )}
+              {isActive && shouldLoad && !isMarkedHidden && (
+                <ShortsPlaybackControls
+                  paused={paused}
+                  disabled={playbackFailure !== null}
+                  clockRef={playbackTimeRef}
+                  clock={`${formatClock(currentTimeRef.current)} / ${formatClock(duration)}`}
+                  onTogglePlay={togglePlayInternal}
+                  muted={muted}
+                  onToggleMute={onToggleMute}
+                  volume={volume ?? 1}
+                  onVolumeChange={onVolumeChange}
+                  autoAdvance={autoAdvance}
+                  onAutoAdvanceChange={onAutoAdvanceChange}
+                  clearScreen={clearScreen}
+                  onClearScreenChange={onClearScreenChange}
+                  playbackRate={playbackRate}
+                  onPlaybackRateChange={onPlaybackRateChange}
+                  fullscreenSupported={fullscreenSupported}
+                  isFullscreen={isFullscreen}
+                  onRequestFullscreen={onRequestFullscreen}
+                />
+              )}
             </div>
 
             <div className="shorts-slide__overlay">
@@ -3118,57 +3232,77 @@ function ShortsSlideImpl({
               onClick={(e) => e.stopPropagation()}
             >
               {/* 云盘来源徽章同时是当前视频唯一的详情入口。 */}
-              <Link
-                to={detailPath}
-                className="shorts-drive-badge"
-                aria-label={`查看视频详情，来源：${item.sourceLabel || "本地"}`}
-                title={`查看视频详情 · 来源：${item.sourceLabel || "本地"}`}
-                onClick={(event) => onRouteClick(event, detailPath)}
-              >
-                {getDriveShortName(item.sourceLabel || "本地")}
-              </Link>
+              <ShortsTooltip label="来源" shortcut={SHORTS_ACTION_SHORTCUTS.source} placement="left" enabled={isDesktop}>
+                <Link
+                  to={detailPath}
+                  className="shorts-drive-badge"
+                  aria-label="来源"
+                  aria-keyshortcuts={SHORTS_ACTION_SHORTCUTS.source}
+                  data-shorts-shortcut={SHORTS_ACTION_SHORTCUTS.source}
+                  onClick={(event) => onRouteClick(event, detailPath)}
+                >
+                  {getDriveShortName(item.sourceLabel || "本地")}
+                </Link>
+              </ShortsTooltip>
 
               {/* 点赞 */}
-              <button
-                type="button"
-                data-shorts-like=""
-                className={`shorts-slide__action ${isLiked ? "is-liked" : ""}`}
-                aria-label={isLiked ? "取消点赞" : "点赞"}
-                title={isLiked ? "取消点赞" : "点赞"}
-                aria-pressed={isLiked}
-                onClick={handleHeartClick}
-              >
-                <Heart
-                  size={34}
-                  fill="currentColor"
-                  strokeWidth={1.5}
-                />
-              </button>
+              <ShortsTooltip label={isLiked ? "取消点赞" : "点赞"} shortcut={SHORTS_ACTION_SHORTCUTS.like}
+                placement="left" enabled={isDesktop} anchorIcon>
+                <button
+                  type="button"
+                  data-shorts-like=""
+                  className={`shorts-slide__action ${isLiked ? "is-liked" : ""}`}
+                  aria-label={isLiked ? "取消点赞" : "点赞"}
+                  aria-keyshortcuts={SHORTS_ACTION_SHORTCUTS.like}
+                  aria-pressed={isLiked}
+                  onClick={handleHeartClick}
+                >
+                  <Heart
+                    size={34}
+                    fill="currentColor"
+                    strokeWidth={1.5}
+                  />
+                  <span className="shorts-slide__action-label">
+                    {likeCount > 0 ? likeCount.toLocaleString("zh-CN") : "点赞"}
+                  </span>
+                </button>
+              </ShortsTooltip>
 
               {/* 一次性分享 */}
-              <button
-                type="button"
-                className="shorts-slide__action"
-                aria-label="生成并复制一次性分享链接"
-                title="生成并复制一次性分享链接"
-                aria-busy={isSharing}
-                disabled={isSharing}
-                onClick={handleShareClick}
-              >
-                <Forward size={34} strokeWidth={3} />
-              </button>
-
-
-              {canHide && (
+              <ShortsTooltip label="分享" shortcut={SHORTS_ACTION_SHORTCUTS.share}
+                placement="left" enabled={isDesktop} disabled={isSharing} anchorIcon>
                 <button
                   type="button"
                   className="shorts-slide__action"
-                  aria-label="不再展示"
-                  title="不再展示"
-                  onClick={handleHideClick}
+                  aria-label="分享"
+                  aria-keyshortcuts={SHORTS_ACTION_SHORTCUTS.share}
+                  data-shorts-shortcut={SHORTS_ACTION_SHORTCUTS.share}
+                  aria-busy={isSharing}
+                  disabled={isSharing}
+                  onClick={handleShareClick}
                 >
-                  <EyeOff size={30} strokeWidth={2.5} />
+                  <Forward size={34} strokeWidth={3} />
+                  <span className="shorts-slide__action-label">分享</span>
                 </button>
+              </ShortsTooltip>
+
+
+              {canHide && (
+                <ShortsTooltip label="隐藏" shortcut={SHORTS_ACTION_SHORTCUTS.hide}
+                  placement="left" enabled={isDesktop} disabled={isMarkedHidden} anchorIcon>
+                  <button
+                    type="button"
+                    className="shorts-slide__action"
+                    aria-label="隐藏"
+                    aria-keyshortcuts={SHORTS_ACTION_SHORTCUTS.hide}
+                    data-shorts-shortcut={SHORTS_ACTION_SHORTCUTS.hide}
+                    disabled={isMarkedHidden}
+                    onClick={handleHideClick}
+                  >
+                    <EyeOff size={30} strokeWidth={2.5} />
+                    <span className="shorts-slide__action-label">隐藏</span>
+                  </button>
+                </ShortsTooltip>
               )}
             </aside>
 
@@ -3324,12 +3458,7 @@ function getMediaErrorName(error: unknown) {
 
 function normalizeVideoPlaybackRate(video: HTMLVideoElement) {
   try {
-    if (video.defaultPlaybackRate !== 1) {
-      video.defaultPlaybackRate = 1;
-    }
-    if (video.playbackRate !== 1) {
-      video.playbackRate = 1;
-    }
+    restoreShortsPlaybackRate(video);
   } catch {
     // ignore
   }

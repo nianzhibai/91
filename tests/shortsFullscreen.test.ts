@@ -5,12 +5,16 @@ import {
   isShortsFullscreen,
   observeShortsFullscreen,
   requestShortsFullscreen,
+  requestShortsFullscreenOnEntry,
   supportsShortsFullscreen,
 } from "../src/shorts/fullscreen";
 
 function createHarness(prefixed = false) {
   const events = new EventTarget();
-  const state = { path: "/shorts", requests: 0, exits: 0, reject: false, options: null as FullscreenOptions | null };
+  const state = {
+    path: "/shorts", requests: 0, exits: 0, reject: false, options: null as FullscreenOptions | null,
+    touchOnly: false, viewportWidth: 1440,
+  };
   const root: Record<string, unknown> = {};
   const doc = Object.assign(events, {
     documentElement: root,
@@ -40,9 +44,16 @@ function createHarness(prefixed = false) {
   const previousDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   Object.defineProperty(globalThis, "document", { configurable: true, value: doc });
-  Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { get pathname() { return state.path; } } } });
+  const browserWindow = {
+    location: { get pathname() { return state.path; } },
+    get innerWidth() { return state.viewportWidth; },
+    matchMedia(query: string) {
+      return { matches: query === "(hover: none) and (pointer: coarse)" && state.touchOnly };
+    },
+  };
+  Object.defineProperty(globalThis, "window", { configurable: true, value: browserWindow });
   return {
-    doc, root, state,
+    doc, root, state, browserWindow,
     restore() {
       if (previousDocument) Object.defineProperty(globalThis, "document", previousDocument);
       else delete (globalThis as Record<string, unknown>).document;
@@ -51,6 +62,42 @@ function createHarness(prefixed = false) {
     },
   };
 }
+
+test("desktop entry stays outside fullscreen at both wide and narrow window sizes", async () => {
+  const h = createHarness();
+  try {
+    for (const width of [1440, 800, 320]) {
+      h.state.viewportWidth = width;
+      assert.equal(await requestShortsFullscreenOnEntry(), false);
+      assert.equal(isShortsFullscreen(), false);
+      assert.equal(h.state.requests, 0);
+    }
+    // 默认入口策略不限制用户主动请求全屏。
+    assert.equal(await requestShortsFullscreen(), true);
+    assert.equal(h.state.requests, 1);
+  } finally { h.restore(); }
+});
+
+test("touch-only entry keeps capability-gated automatic fullscreen", async () => {
+  for (const prefixed of [false, true]) {
+    const h = createHarness(prefixed);
+    try {
+      h.state.touchOnly = true;
+      assert.equal(await requestShortsFullscreenOnEntry(), true);
+      assert.equal(h.state.requests, 1);
+      assert.equal(isShortsFullscreen(), true);
+    } finally { h.restore(); }
+  }
+});
+
+test("entry without input capability detection defaults to ordinary playback", async () => {
+  const h = createHarness();
+  try {
+    Reflect.deleteProperty(h.browserWindow, "matchMedia");
+    assert.equal(await requestShortsFullscreenOnEntry(), false);
+    assert.equal(h.state.requests, 0);
+  } finally { h.restore(); }
+});
 
 test("native fullscreen requests hide browser navigation UI and repeated entry is idempotent", async () => {
   const h = createHarness();
@@ -127,4 +174,48 @@ test("standard and prefixed change events report each fullscreen transition once
     await requestShortsFullscreen();
     assert.deepEqual(changes, [false, true, false]);
   } finally { h.restore(); }
+});
+
+test("Escape exits shorts fullscreen when the browser delivers the key to the page", async () => {
+  const h = createHarness();
+  const stop = observeShortsFullscreen(() => {});
+  try {
+    await requestShortsFullscreen();
+    const event = Object.assign(new Event("keydown", { cancelable: true }), { key: "Escape" });
+    h.doc.dispatchEvent(event);
+    assert.equal(event.defaultPrevented, true);
+    assert.equal(isShortsFullscreen(), false);
+    assert.equal(h.state.exits, 1);
+  } finally {
+    stop();
+    h.restore();
+  }
+});
+
+test("fullscreen Escape respects menus, other fullscreen owners and observer cleanup", async () => {
+  const h = createHarness();
+  const stop = observeShortsFullscreen(() => {});
+  const pressEscape = () => Object.assign(new Event("keydown", { cancelable: true }), { key: "Escape" });
+  try {
+    await requestShortsFullscreen();
+    const handled = pressEscape();
+    handled.preventDefault();
+    h.doc.dispatchEvent(handled);
+    assert.equal(isShortsFullscreen(), true);
+    assert.equal(h.state.exits, 0);
+    h.doc.fullscreenElement = { tagName: "VIDEO" };
+    const otherPlayer = pressEscape();
+    h.doc.dispatchEvent(otherPlayer);
+    assert.equal(otherPlayer.defaultPrevented, false);
+    assert.equal(h.state.exits, 0);
+    h.doc.fullscreenElement = h.root;
+    stop();
+    const detached = pressEscape();
+    h.doc.dispatchEvent(detached);
+    assert.equal(detached.defaultPrevented, false);
+    assert.equal(isShortsFullscreen(), true);
+  } finally {
+    stop();
+    h.restore();
+  }
 });

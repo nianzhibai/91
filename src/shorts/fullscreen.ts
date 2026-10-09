@@ -24,6 +24,13 @@ export function supportsShortsFullscreen(): boolean {
   );
 }
 
+/** 仅触控入口自动全屏；电脑端不按窗口宽度推断，进入后由用户主动开启。 */
+export async function requestShortsFullscreenOnEntry(): Promise<boolean> {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+  if (!window.matchMedia("(hover: none) and (pointer: coarse)").matches) return false;
+  return requestShortsFullscreen();
+}
+
 /** 必须在点击回调内调用，保留浏览器授予这次手势的全屏权限。 */
 export async function requestShortsFullscreen(): Promise<boolean> {
   if (isShortsFullscreen()) return true;
@@ -69,10 +76,19 @@ export function observeShortsFullscreen(onChange: (active: boolean) => void) {
     previous = active;
     onChange(active);
   };
+  const handleKeyDown = (event: KeyboardEvent) => {
+    // 内嵌浏览器可能把 Esc 交给页面；原生浏览器会先自行退出全屏。
+    // 菜单已处理的 Esc 和其他播放器的全屏继续由各自负责。
+    if (event.key !== "Escape" || event.defaultPrevented || !isShortsFullscreen()) return;
+    event.preventDefault();
+    void exitShortsFullscreen();
+  };
   document.addEventListener("fullscreenchange", handleChange);
   document.addEventListener("webkitfullscreenchange", handleChange);
+  document.addEventListener("keydown", handleKeyDown);
   return () => {
     document.removeEventListener("fullscreenchange", handleChange);
     document.removeEventListener("webkitfullscreenchange", handleChange);
+    document.removeEventListener("keydown", handleKeyDown);
   };
 }

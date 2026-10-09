@@ -1030,7 +1030,7 @@ html.shorts-document-scroll.is-pager-driven body {
   letter-spacing: 0.02em;
 }
 
-/* ---------- 统一悬浮 HUD 提醒 (音量/键盘快捷键/链接复制) ---------- */
+/* ---------- 键盘及操作反馈 ---------- */
 .shorts-hud-toast {
   position: absolute;
   top: calc(76px + env(safe-area-inset-top));
@@ -1057,6 +1057,46 @@ html.shorts-document-scroll.is-pager-driven body {
 @keyframes hud-toast-in {
   from { opacity: 0; transform: translate(-50%, -15px) scale(0.92); }
   to { opacity: 1; transform: translate(-50%, 0) scale(1); }
+}
+
+/* 推荐页复制成功反馈：在视频区域中央短暂显示，不遮挡后续操作。 */
+.shorts-hud-toast.is-copy {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  min-height: 48px;
+  max-width: calc(100vw - 32px);
+  padding: 13px 32px;
+  border: 0;
+  border-radius: 12px;
+  background: #252632;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 22px;
+  text-align: center;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  animation: shorts-copy-toast-in 150ms linear,
+    shorts-copy-toast-out 150ms linear 3s forwards;
+}
+
+@keyframes shorts-copy-toast-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes shorts-copy-toast-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shorts-hud-toast.is-copy {
+    animation: none;
+  }
 }
 
 /* ---------- 空 / 加载提示 ---------- */
@@ -1116,196 +1156,5 @@ html.shorts-document-scroll.is-pager-driven body {
 @media (hover: hover) and (pointer: fine) {
   .shorts-empty__link:hover {
     background: rgba(255, 255, 255, 0.25);
-  }
-}
-
-/* 宽屏为画面和操作留出独立空间；低高度横屏继续使用紧凑的叠加布局。 */
-@media (min-width: 900px) and (min-height: 560px) {
-  .shorts-page {
-    --shorts-header-height: calc(70px + env(safe-area-inset-top));
-    background: #0b0c10;
-  }
-
-  .shorts-header {
-    grid-template-columns: 120px minmax(0, 1fr) 92px;
-    padding-right: calc(28px + env(safe-area-inset-right));
-    padding-left: calc(28px + env(safe-area-inset-left));
-    background: #0b0c10;
-    border-bottom: 1px solid rgb(255 255 255 / 5%);
-  }
-
-  .shorts-header__back {
-    width: auto;
-    justify-content: flex-start;
-    gap: 4px;
-    color: #b4b5c4;
-  }
-
-  .shorts-header__back svg {
-    width: 22px;
-    height: 22px;
-  }
-
-  .shorts-header__back-label {
-    display: inline;
-    font-size: 14px;
-  }
-
-  .shorts-header__tabs {
-    top: calc(13px + env(safe-area-inset-top));
-    gap: 8px;
-  }
-
-  .shorts-header__tab {
-    flex-basis: 58px;
-  }
-
-  .shorts-slide {
-    background: #0b0c10;
-  }
-
-  .shorts-slide__layout {
-    top: calc(var(--shorts-header-height) + 28px);
-    right: calc(32px + env(safe-area-inset-right));
-    bottom: calc(24px + env(safe-area-inset-bottom));
-    left: calc(32px + env(safe-area-inset-left));
-    container-type: size;
-    display: grid;
-    place-items: center;
-    --shorts-caption-height: 80px;
-    --shorts-caption-gap: 18px;
-    /* 80px 留给两行标题，84px 留给操作栏与画面的间距。 */
-    --shorts-frame-width: min(
-      1000px,
-      calc(100cqw - 84px),
-      calc((100cqh - var(--shorts-caption-height)) * var(--shorts-media-aspect))
-    );
-    --shorts-frame-height: calc(var(--shorts-frame-width) / var(--shorts-media-aspect));
-  }
-
-  /* 主体列和操作列共同决定高度，整个区域在导航下方居中。 */
-  .shorts-slide__content {
-    display: flex;
-    align-items: flex-start;
-    gap: 20px;
-  }
-
-  .shorts-slide__main {
-    display: block;
-    flex: 0 0 auto;
-    align-self: center;
-    width: var(--shorts-frame-width);
-  }
-
-  .shorts-slide__player {
-    position: relative;
-    inset: auto;
-    width: var(--shorts-frame-width);
-    height: var(--shorts-frame-height);
-    border-radius: 12px;
-    background: #000;
-  }
-
-  .shorts-slide__player::after {
-    height: 100px;
-    background: linear-gradient(transparent, rgb(0 0 0 / 50%));
-  }
-
-  .shorts-slide__bg {
-    display: none;
-  }
-
-  .shorts-slide__overlay {
-    position: static;
-    width: var(--shorts-frame-width);
-    margin-top: var(--shorts-caption-gap);
-    min-height: calc(var(--shorts-caption-height) - var(--shorts-caption-gap));
-  }
-
-  .shorts-slide__title {
-    min-height: 0;
-    font-size: 19px;
-    text-shadow: none;
-  }
-
-  .shorts-slide__sidebar {
-    position: static;
-    flex: 0 0 auto;
-    width: 64px;
-    min-height: calc(var(--shorts-frame-height) + 46px);
-    display: flex;
-    flex-direction: column;
-    gap: 30px;
-    /* 较矮的画面也为全部操作项留出空间，避免内容溢出后打破居中。 */
-    justify-content: flex-end;
-    pointer-events: none;
-    z-index: 15;
-  }
-
-  .shorts-slide__actions {
-    position: static;
-    flex: 0 0 auto;
-    width: 64px;
-    pointer-events: none;
-  }
-
-  .shorts-slide__actions > a,
-  .shorts-slide__actions > button {
-    pointer-events: auto;
-  }
-
-  .shorts-drive-badge {
-    background: #24252e;
-    border-color: #b7b8c9;
-  }
-
-  .shorts-slide__action {
-    background: #20212a;
-    border-radius: 50%;
-  }
-
-  .shorts-slide__action svg {
-    width: 27px;
-    height: 27px;
-  }
-
-  .shorts-slide__progress {
-    left: 16px;
-    right: 16px;
-    bottom: 0;
-  }
-
-  .shorts-slide__progress-time,
-  .shorts-slide__rate-hint {
-    top: 16px;
-    bottom: auto;
-  }
-
-  .shorts-slide__pager {
-    display: flex;
-    flex: 0 0 auto;
-    justify-content: center;
-    gap: 6px;
-    width: 64px;
-    z-index: 15;
-  }
-
-  .shorts-slide__pager button {
-    width: 28px;
-    height: 32px;
-    padding: 0;
-    display: grid;
-    place-items: center;
-    color: #b4b5c4;
-    background: #20212a;
-    border: 0;
-    border-radius: 6px;
-    cursor: pointer;
-    pointer-events: auto;
-  }
-
-  .shorts-slide__pager button:disabled {
-    opacity: 0.35;
-    cursor: default;
   }
 }

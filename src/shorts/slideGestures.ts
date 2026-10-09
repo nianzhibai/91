@@ -1,5 +1,6 @@
 import { clamp } from "./mediaBuffer";
 import { isShortsSystemGestureStart } from "./gestureBoundary";
+import { restoreShortsPlaybackRate } from "./playbackRate";
 
 const SHORTS_SEEK_ACTIVATION_PX = 12;
 const SHORTS_SEEK_DIRECTION_LOCK_RATIO = 1.2;
@@ -111,7 +112,7 @@ export function createShortsSurfaceGestures(host: SurfaceGestureHost) {
   function endPress() {
     clearHoldTimer();
     if (press?.mode === "fast") {
-      video.playbackRate = 1;
+      restoreShortsPlaybackRate(video);
       host.onFastChange(false);
     } else if (press?.mode === "seek") {
       host.onSeekEnd(press.targetTime);
@@ -254,7 +255,7 @@ export function createShortsSurfaceGestures(host: SurfaceGestureHost) {
       clearHoldTimer();
       cancelTap();
       if (press.mode === "fast") {
-        video.playbackRate = 1;
+        restoreShortsPlaybackRate(video);
         host.onFastChange(false);
         press.mode = "pending";
       }

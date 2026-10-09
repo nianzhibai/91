@@ -7,7 +7,7 @@ import {
 import { useAuth } from "@/admin/AuthContext";
 import { UploadIcon } from "@/components/icons/UploadIcon";
 import { VideoIcon } from "@/components/icons/VideoIcon";
-import { requestShortsFullscreen } from "@/shorts/fullscreen";
+import { requestShortsFullscreenOnEntry } from "@/shorts/fullscreen";
 import { useNativeBackHandler } from "@/lib/useNativeBack";
 
 // Font Awesome Free 7.3.1 by Fonticons, Inc. — https://fontawesome.com/license/free
@@ -135,7 +135,7 @@ export function MainNav() {
                   setOpen(false);
                   if (to === "/shorts" && event.button === 0 &&
                     !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) {
-                    void requestShortsFullscreen();
+                    void requestShortsFullscreenOnEntry();
                   }
                 }}
               >

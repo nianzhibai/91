@@ -111,7 +111,7 @@ test("the shorts drive badge is the only video detail link", () => {
   );
   assert.match(
     shortsPageSource,
-    /<Link\s+to=\{detailPath\}\s+className="shorts-drive-badge"[\s\S]*?aria-label=\{`查看视频详情，来源：\$\{item\.sourceLabel \|\| "本地"\}`\}/
+    /<Link\s+to=\{detailPath\}\s+className="shorts-drive-badge"[\s\S]*?aria-label="来源"/
   );
   assert.doesNotMatch(shortsPageSource, /shorts-slide__detail|<Info\b|>查看详情</);
   assert.doesNotMatch(shortsCssSource, /\.shorts-slide__detail/);
@@ -408,7 +408,7 @@ test("desktop left-key seeking and held right-key playback keep distinct semanti
   );
   assert.match(
     useShortsKeyboardSource,
-    /if \(target\.fastPlaybackActive\) \{[\s\S]*?target\.video\.playbackRate = 1;[\s\S]*?setKeyboardFastPlaybackIndex\(null\);/
+    /if \(target\.fastPlaybackActive\) \{[\s\S]*?restoreShortsPlaybackRate\(target\.video\);[\s\S]*?setKeyboardFastPlaybackIndex\(null\);/
   );
   assert.match(
     useShortsKeyboardSource,
@@ -466,7 +466,7 @@ test("shorts play pause does not render transient center hud", () => {
   );
   assert.match(
     shortsPageSource,
-    /<span className="shorts-slide__paused-icon">\s*<Play size=\{22\} fill="currentColor" strokeWidth=\{1\.75\} \/>/
+    /<span className="shorts-slide__paused-icon">[\s\S]*?<Play size=\{22\} fill="currentColor" strokeWidth=\{1\.75\} \/>/
   );
   assert.match(
     shortsCssSource,
@@ -718,10 +718,10 @@ test("shorts hidden overlay keeps only the concise confirmation", () => {
   assert.doesNotMatch(shortsCssSource, /\.shorts-slide__hidden-desc/);
 });
 
-test("shorts hide action is icon-only and advances by stable feed key", () => {
+test("shorts hide action uses a concise label and advances by stable feed key", () => {
   assert.match(
     shortsPageSource,
-    /aria-label="不再展示"[\s\S]*?<EyeOff\b/
+    /aria-label="隐藏"[\s\S]*?<EyeOff\b/
   );
   assert.doesNotMatch(
     shortsPageSource,
@@ -746,11 +746,11 @@ test("shorts creates and copies the existing one-time video share", () => {
   );
   assert.match(
     shortsPageSource,
-    /async function handleShareClick[\s\S]*?createAndCopyVideoShare\(item\.id\)[\s\S]*?pendingShareURLRef\.current = result\.url[\s\S]*?showHud\("请再次点击分享按钮"\)[\s\S]*?showHud\("一次性分享链接已复制"\)/
+    /async function handleShareClick[\s\S]*?createAndCopyVideoShare\(item\.id\)[\s\S]*?pendingShareURLRef\.current = result\.url[\s\S]*?showHud\("请再次点击分享按钮"\)[\s\S]*?onShareCopied\(\)/
   );
   assert.match(
     shortsPageSource,
-    /aria-label="生成并复制一次性分享链接"[\s\S]*?disabled=\{isSharing\}[\s\S]*?onClick=\{handleShareClick\}[\s\S]*?<Forward\b/
+    /aria-label="分享"[\s\S]*?disabled=\{isSharing\}[\s\S]*?onClick=\{handleShareClick\}[\s\S]*?<Forward\b/
   );
   assert.match(
     shortsPageSource,
@@ -1246,14 +1246,13 @@ test("shorts sound toggle limits playback recovery to the iOS media path", () =>
   assert.match(shortsPageSource, /\}, \[muted, items\.length, useIOSSharedVideo\]\);/);
 });
 
-test("shorts leaves loudness to the system and only exposes mute", () => {
+test("mobile shorts keeps system loudness while desktop exposes volume", () => {
   assert.match(
     shortsPageSource,
     /<button[\s\S]*?className="shorts-header__icon-btn"[\s\S]*?aria-label=\{muted \? "取消静音" : "静音"\}[\s\S]*?handleMuteButtonClick\(\);/
   );
   assert.doesNotMatch(shortsPageSource, /type="range"/);
-  assert.doesNotMatch(shortsPageSource, /handleVolumeSliderChange|setVolume|volumeRef/);
-  assert.doesNotMatch(shortsPageSource, /video\.volume\s*=/);
+  assert.match(shortsPageSource, /volume=\{isDesktop \? volume : undefined\}/);
   assert.doesNotMatch(shortsCssSource, /shorts-header__volume-slider|shorts-header__volume-group/);
   assert.match(
     shortsPageSource,
@@ -1434,9 +1433,10 @@ test("shorts keeps per-swipe work off the queue length", () => {
   );
 });
 
-test("shorts navigation requests native fullscreen and exits it before explicit route changes", () => {
+test("shorts navigation applies the fullscreen entry policy and exits before explicit route changes", () => {
   const mainNavSource = readFileSync(new URL("../src/components/MainNav.tsx", import.meta.url), "utf8");
-  assert.match(mainNavSource, /requestShortsFullscreen\(\)/);
+  assert.match(mainNavSource, /requestShortsFullscreenOnEntry\(\)/);
+  assert.doesNotMatch(mainNavSource, /\brequestShortsFullscreen\(\)/);
   assert.match(
     shortsPageSource,
     /<Link\s*to="\/"[\s\S]*?className="shorts-header__back"[\s\S]*?onClick=\{handleBackToHomeClick\}/
