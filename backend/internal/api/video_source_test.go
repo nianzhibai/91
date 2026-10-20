@@ -51,7 +51,7 @@ func TestPlaybackSourceLabelsFollowLocalAndMigratedStorage(t *testing.T) {
 			if shared.SourceLabel != wantLabel {
 				t.Fatalf("shared label=%q, want %q", shared.SourceLabel, wantLabel)
 			}
-			shorts := s.mapShortsItems(ctx, []*catalog.Video{saved, saved}, nil)
+		shorts := s.mapShortsItems(ctx, []*catalog.Video{saved, saved}, nil, nil, nil)
 			for _, item := range shorts {
 				if item.SourceLabel != wantLabel {
 					t.Fatalf("shorts label=%q, want %q", item.SourceLabel, wantLabel)

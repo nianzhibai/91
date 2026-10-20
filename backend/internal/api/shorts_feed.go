@@ -6,13 +6,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"log"
-	"math/rand/v2"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/video-site/backend/internal/auth"
 	"github.com/video-site/backend/internal/catalog"
+	"github.com/video-site/backend/internal/feed"
 )
 
 const (
@@ -23,6 +24,13 @@ const (
 	shortsFeedTTL            = 24 * time.Hour
 	maxShortsFeedSessions    = 64
 	shortsLinkPrewarmCount   = 2
+	// recommend 模式按批决策，这些上限约束每批一次的信号加载成本。
+	// 候选池有上限意味着超大库只推荐最新的 shortsCandidateLimit 条；这是
+	// 私有库场景下用内存换延迟的有意取舍，total 仍取真实可见总数。
+	shortsCandidateLimit    = 5000
+	shortsServedLimit       = 400
+	shortsProfileWindow     = 30 * 24 * time.Hour
+	shortsDirectoryCacheTTL = 10 * time.Minute
 	// Slightly longer than proxy link resolution's hard timeout so a timed-out
 	// provider call keeps occupying its global slot until the detached resolver
 	// actually exits.
@@ -47,10 +55,21 @@ type ShortsItemDTO struct {
 	SizeBytes        int64  `json:"sizeBytes,omitempty"`
 	DurationSeconds  int    `json:"durationSeconds,omitempty"`
 	FeedCursor       int    `json:"feedCursor,omitempty"`
+	Favorited        bool   `json:"favorited"`
+	Liked            bool   `json:"liked"`
 }
 
 type shortsFeedSession struct {
-	videoIDs   []string
+	// videoIDs 是确定性栏目（latest / hot / favorites）的整轮快照。
+	videoIDs []string
+	// served 是 recommend 模式已下发的 id，按下发顺序。它同时用于本会话去重
+	// 和持久化：进程重启后旧 token 仍能接着避免重复推荐。
+	served []string
+	// batches 把 cursor 映射到已下发的批次，只存内存。同一个 cursor 的重试
+	// 直接重放，避免重算让前端 feedToken:feedCursor 去重键错位。
+	batches map[int][]string
+	// total 是最近一次决策时的可见视频总数，重放时直接复用。
+	total      int
 	lastAccess time.Time
 }
 
@@ -72,7 +91,7 @@ func (s *Server) handleShortsNext(w http.ResponseWriter, r *http.Request) {
 		mode = "recommend"
 	}
 	switch mode {
-	case "recommend", "latest", "hot":
+	case "recommend", "latest", "hot", "favorites":
 	default:
 		writeErr(w, r, http.StatusBadRequest, errors.New("invalid shorts mode"))
 		return
@@ -98,15 +117,30 @@ func (s *Server) handleShortsNext(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, r, http.StatusBadRequest, errors.New("invalid shorts feed token"))
 		return
 	}
+	viewerUserID, _ := auth.UserIDFromContext(r.Context())
+	after := strings.TrimSpace(r.URL.Query().Get("after"))
+	if len(after) > 128 {
+		writeErr(w, r, http.StatusBadRequest, errors.New("invalid shorts after"))
+		return
+	}
+	// 推荐栏目按批决策：下一批取决于用户刚看完的那一条，无法预先生成整轮
+	// 快照，因此单独走一条路径。
+	if mode == "recommend" {
+		s.handleShortsRecommend(w, r, count, cursor, feedToken, after, viewerUserID)
+		return
+	}
 	var videoIDs []string
 	if feedToken == "" {
 		if cursor != 0 {
 			writeErr(w, r, http.StatusBadRequest, errors.New("shorts cursor requires a feed token"))
 			return
 		}
-		if mode == "recommend" {
-			videoIDs, err = s.Catalog.ListVisibleVideoIDs(r.Context())
-		} else {
+		switch mode {
+		case "favorites":
+			// 收藏是账号数据：快照只含该账号已收藏且仍可见的视频，顺序为
+			// 收藏时间倒序，不参与随机洗牌。
+			videoIDs, err = s.Catalog.FavoriteVideoIDs(r.Context(), viewerUserID)
+		default:
 			limit := 0
 			if mode == "latest" {
 				limit = shortsLatestSnapshotSize
@@ -120,11 +154,6 @@ func (s *Server) handleShortsNext(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if len(videoIDs) > 0 {
-			if mode == "recommend" {
-				rand.Shuffle(len(videoIDs), func(i, j int) {
-					videoIDs[i], videoIDs[j] = videoIDs[j], videoIDs[i]
-				})
-			}
 			feedToken, err = newShortsFeedToken()
 			if err != nil {
 				writeErr(w, r, http.StatusInternalServerError, err)
@@ -150,27 +179,31 @@ func (s *Server) handleShortsNext(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	videos, itemCursors, nextCursor, err := s.loadShortsFeedBatch(
+	batch, err := s.loadShortsFeedBatch(
 		r.Context(),
 		videoIDs,
 		cursor,
 		count,
-		mode == "hot",
+		shortsFeedSelection{
+			likedOnly:     mode == "hot",
+			favoritesOnly: mode == "favorites",
+			viewerUserID:  viewerUserID,
+		},
 	)
 	if err != nil {
 		writeErr(w, r, http.StatusInternalServerError, err)
 		return
 	}
 
-	items := s.mapShortsItems(r.Context(), videos, itemCursors)
-	s.prewarmShortsStreamLinks(videos, r.Header)
+	items := s.mapShortsItems(r.Context(), batch.videos, batch.cursors, batch.favorited, batch.liked)
+	s.prewarmShortsStreamLinks(batch.videos, r.Header)
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, shortsFeedResponse{
 		Items:         items,
 		Total:         len(videoIDs),
 		FeedToken:     feedToken,
-		NextCursor:    nextCursor,
-		RoundComplete: nextCursor >= len(videoIDs),
+		NextCursor:    batch.nextCursor,
+		RoundComplete: batch.nextCursor >= len(videoIDs),
 	})
 }
 
@@ -242,11 +275,16 @@ func (s *Server) storeShortsFeed(token string, videoIDs []string) {
 	s.persistShortsFeed(token, videoIDs, now)
 }
 
-// rememberShortsFeed 把快照放进内存会话表（含 TTL 清理与 LRU 淘汰）。
+// rememberShortsFeed 把确定性栏目的整轮快照放进内存会话表。
 func (s *Server) rememberShortsFeed(token string, videoIDs []string, now time.Time) {
 	s.shortsFeedMu.Lock()
 	defer s.shortsFeedMu.Unlock()
+	s.rememberShortsSessionLocked(token, &shortsFeedSession{videoIDs: videoIDs}, now)
+}
 
+// rememberShortsSessionLocked 插入会话并淘汰最久未用的条目。
+// 调用方必须持有 shortsFeedMu。
+func (s *Server) rememberShortsSessionLocked(token string, session *shortsFeedSession, now time.Time) {
 	if s.shortsFeeds == nil {
 		s.shortsFeeds = make(map[string]*shortsFeedSession)
 	}
@@ -268,10 +306,8 @@ func (s *Server) rememberShortsFeed(token string, videoIDs []string, now time.Ti
 
 	// The slice is immutable after insertion, so readers can safely retain it
 	// after releasing the mutex.
-	s.shortsFeeds[token] = &shortsFeedSession{
-		videoIDs:   videoIDs,
-		lastAccess: now,
-	}
+	session.lastAccess = now
+	s.shortsFeeds[token] = session
 }
 
 // persistShortsFeed 尽力而为地把快照落盘：失败只影响重启后的续播，
@@ -357,6 +393,24 @@ func (s *Server) pruneShortsFeedsLocked(now time.Time) {
 	}
 }
 
+// shortsFeedSelection describes which snapshot entries stay eligible for this
+// request and whose favorite state the caller needs back.
+type shortsFeedSelection struct {
+	likedOnly     bool
+	favoritesOnly bool
+	viewerUserID  int64
+}
+
+// shortsFeedBatch is one page of a feed snapshot plus the viewer's own favorite
+// and like state for the ids examined while filling it.
+type shortsFeedBatch struct {
+	videos     []*catalog.Video
+	cursors    []int
+	nextCursor int
+	favorited  map[string]struct{}
+	liked      map[string]struct{}
+}
+
 // loadShortsFeedBatch advances over snapshot entries that are no longer
 // eligible and records the precise resume cursor after each returned item.
 func (s *Server) loadShortsFeedBatch(
@@ -364,45 +418,81 @@ func (s *Server) loadShortsFeedBatch(
 	videoIDs []string,
 	cursor int,
 	count int,
-	likedOnly bool,
-) ([]*catalog.Video, []int, int, error) {
-	videos := make([]*catalog.Video, 0, count)
-	itemCursors := make([]int, 0, count)
+	selection shortsFeedSelection,
+) (shortsFeedBatch, error) {
+	batch := shortsFeedBatch{
+		videos:     make([]*catalog.Video, 0, count),
+		cursors:    make([]int, 0, count),
+		nextCursor: cursor,
+		favorited:  make(map[string]struct{}),
+		liked:      make(map[string]struct{}),
+	}
 
-	for cursor < len(videoIDs) && len(videos) < count {
+	for cursor < len(videoIDs) && len(batch.videos) < count {
 		end := cursor + shortsFeedLookupChunk
 		if end > len(videoIDs) {
 			end = len(videoIDs)
 		}
 		visible, err := s.Catalog.VisibleVideosByIDs(ctx, videoIDs[cursor:end])
 		if err != nil {
-			return nil, nil, cursor, err
+			batch.nextCursor = cursor
+			return batch, err
 		}
-		visibleByID := make(map[string]*catalog.Video, len(visible))
+		visibleIDs := make([]string, 0, len(visible))
 		for _, video := range visible {
-			if likedOnly && video.Likes <= 0 {
+			visibleIDs = append(visibleIDs, video.ID)
+		}
+		// 一次查询同时服务下面的收藏过滤和客户端要渲染的按钮状态。
+		favorited, err := s.Catalog.FavoritedVideoIDsAmong(ctx, selection.viewerUserID, visibleIDs)
+		if err != nil {
+			batch.nextCursor = cursor
+			return batch, err
+		}
+		// 点赞同样是账号数据：一次取回，供客户端渲染爱心状态。
+		liked, err := s.Catalog.LikedVideoIDsAmong(ctx, selection.viewerUserID, visibleIDs)
+		if err != nil {
+			batch.nextCursor = cursor
+			return batch, err
+		}
+		eligible := make(map[string]*catalog.Video, len(visible))
+		for _, video := range visible {
+			if selection.likedOnly && video.Likes <= 0 {
 				continue
 			}
-			visibleByID[video.ID] = video
+			if selection.favoritesOnly {
+				if _, ok := favorited[video.ID]; !ok {
+					continue
+				}
+			}
+			eligible[video.ID] = video
 		}
 
-		for cursor < end && len(videos) < count {
+		for cursor < end && len(batch.videos) < count {
 			videoID := videoIDs[cursor]
 			cursor++
-			if video := visibleByID[videoID]; video != nil {
-				videos = append(videos, video)
-				itemCursors = append(itemCursors, cursor)
+			if video := eligible[videoID]; video != nil {
+				batch.videos = append(batch.videos, video)
+				batch.cursors = append(batch.cursors, cursor)
 			}
+		}
+		for id := range favorited {
+			batch.favorited[id] = struct{}{}
+		}
+		for id := range liked {
+			batch.liked[id] = struct{}{}
 		}
 	}
 
-	return videos, itemCursors, cursor, nil
+	batch.nextCursor = cursor
+	return batch, nil
 }
 
 func (s *Server) mapShortsItems(
 	ctx context.Context,
 	videos []*catalog.Video,
 	itemCursors []int,
+	favorited map[string]struct{},
+	liked map[string]struct{},
 ) []ShortsItemDTO {
 	driveLabels := make(map[string]string)
 	out := make([]ShortsItemDTO, 0, len(videos))
@@ -428,6 +518,8 @@ func (s *Server) mapShortsItems(
 			feedCursor = itemCursors[index]
 		}
 		poster := thumbnailURL(video)
+		_, isFavorited := favorited[video.ID]
+		_, isLiked := liked[video.ID]
 		out = append(out, ShortsItemDTO{
 			VideoDTO:         dto,
 			VideoSrc:         videoSrc,
@@ -436,6 +528,8 @@ func (s *Server) mapShortsItems(
 			SizeBytes:        sizeBytes,
 			DurationSeconds:  durationSeconds,
 			FeedCursor:       feedCursor,
+			Favorited:        isFavorited,
+			Liked:            isLiked,
 		})
 	}
 	return out
@@ -450,4 +544,293 @@ func shortsBackgroundPosterURL(poster string) string {
 		separator = "&"
 	}
 	return poster + separator + "variant=shorts-bg"
+}
+
+// ---------------------------------------------------------------------------
+// recommend 模式：按批决策
+// ---------------------------------------------------------------------------
+
+// handleShortsRecommend builds one batch from the live signals instead of
+// serving a pre-computed round snapshot. 「下一条推什么」取决于用户刚看完哪一条，
+// 固定快照表达不了这层依赖，所以推荐栏目单独走一条路径。
+func (s *Server) handleShortsRecommend(
+	w http.ResponseWriter,
+	r *http.Request,
+	count int,
+	cursor int,
+	feedToken string,
+	after string,
+	viewerUserID int64,
+) {
+	now := s.shortsNow()
+	if feedToken == "" && cursor != 0 {
+		writeErr(w, r, http.StatusBadRequest, errors.New("shorts cursor requires a feed token"))
+		return
+	}
+
+	var session *shortsFeedSession
+	if feedToken != "" {
+		session = s.loadShortsRecommendSession(feedToken, now)
+		if session == nil {
+			writeErr(w, r, http.StatusGone, errShortsFeedExpired)
+			return
+		}
+		// 同一个 cursor 的重试重放同一批。重算会让前端的
+		// feedToken:feedCursor 去重键错位，进而触发"返回空批"的报错。
+		if batch, ok := session.batches[cursor]; ok {
+			s.writeShortsRecommendBatch(w, r, batch, feedToken, cursor, session.total, viewerUserID)
+			return
+		}
+	}
+
+	ids, total, err := s.buildShortsRecommendBatch(r, count, after, viewerUserID, session)
+	if err != nil {
+		writeErr(w, r, http.StatusInternalServerError, err)
+		return
+	}
+
+	if len(ids) == 0 {
+		// 候选被排除干净：让前端换一轮，而不是停在一条永远不结束的批次上。
+		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, http.StatusOK, shortsFeedResponse{
+			Items:         []ShortsItemDTO{},
+			Total:         total,
+			FeedToken:     feedToken,
+			NextCursor:    cursor,
+			RoundComplete: true,
+		})
+		return
+	}
+
+	if feedToken == "" {
+		feedToken, err = newShortsFeedToken()
+		if err != nil {
+			writeErr(w, r, http.StatusInternalServerError, err)
+			return
+		}
+	}
+	if session == nil {
+		session = &shortsFeedSession{}
+	}
+	if session.batches == nil {
+		session.batches = make(map[int][]string)
+	}
+	session.batches[cursor] = ids
+	session.total = total
+	session.served = append(session.served, ids...)
+	if len(session.served) > shortsServedLimit {
+		session.served = session.served[len(session.served)-shortsServedLimit:]
+	}
+	s.storeShortsRecommendSession(feedToken, session, now)
+
+	s.writeShortsRecommendBatch(w, r, ids, feedToken, cursor, total, viewerUserID)
+}
+
+// buildShortsRecommendBatch loads the per-user signals, the candidate pool and
+// the directory profiles, then asks the feed package for one batch.
+func (s *Server) buildShortsRecommendBatch(
+	r *http.Request,
+	count int,
+	after string,
+	viewerUserID int64,
+	session *shortsFeedSession,
+) ([]string, int, error) {
+	ctx := r.Context()
+	now := s.shortsNow()
+
+	total, err := s.Catalog.CountVisibleVideos(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	if total == 0 {
+		return nil, 0, nil
+	}
+
+	pool, err := s.Catalog.ShortsCandidates(ctx, shortsCandidateLimit)
+	if err != nil {
+		return nil, 0, err
+	}
+	shares, err := s.shortsDirectoryShares(ctx, now)
+	if err != nil {
+		return nil, 0, err
+	}
+	profile, err := s.Catalog.ShortsWatchProfile(ctx, viewerUserID, now.Add(-shortsProfileWindow))
+	if err != nil {
+		return nil, 0, err
+	}
+
+	candidates := make([]feed.Candidate, 0, len(pool))
+	byID := make(map[string]feed.Candidate, len(pool))
+	for _, item := range pool {
+		candidate := feed.Candidate{
+			ID:              item.ID,
+			ParentID:        item.ParentID,
+			FileName:        item.FileName,
+			DurationSeconds: item.DurationSeconds,
+			PublishedAt:     item.PublishedAt,
+			Views:           item.Views,
+			Likes:           item.Likes,
+			Tags:            item.Tags,
+		}
+		candidates = append(candidates, candidate)
+		byID[candidate.ID] = candidate
+	}
+
+	// 最近消费过的和本会话已下发的都不再出现。
+	served := shortsSessionServed(session)
+	exclude := make(map[string]struct{}, len(profile.Consumed)+len(served))
+	for id := range profile.Consumed {
+		exclude[id] = struct{}{}
+	}
+	sessionExclude := make(map[string]struct{}, len(served))
+	for _, id := range served {
+		exclude[id] = struct{}{}
+		sessionExclude[id] = struct{}{}
+	}
+	// 正在看的那一条本身不再出现在这一批里：上报是异步的，此刻它还未必进
+	// 了 profile.Consumed。
+	if after != "" {
+		exclude[after] = struct{}{}
+	}
+
+	var lastWatched *feed.Candidate
+	if candidate, ok := byID[after]; ok {
+		lastWatched = &candidate
+	} else if candidate, ok := byID[profile.LastCompleted]; ok {
+		lastWatched = &candidate
+	}
+
+	input := feed.Input{
+		Now:         now,
+		Count:       count,
+		Pool:        candidates,
+		Directories: feed.ProfileDirectories(candidates, feedTagShares(shares)),
+		DirAffinity: profile.DirAffinity,
+		TagAffinity: profile.TagAffinity,
+		Exclude:     exclude,
+		LastWatched: lastWatched,
+	}
+	ids := feed.BuildBatch(input)
+	if len(ids) == 0 && len(exclude) > len(sessionExclude) {
+		// 用户几乎看完了整个库：先放开历史消费的排除，只保留本会话去重，
+		// 否则推荐栏会一直空着。
+		input.Exclude = sessionExclude
+		ids = feed.BuildBatch(input)
+	}
+	return ids, total, nil
+}
+
+func shortsSessionServed(session *shortsFeedSession) []string {
+	if session == nil {
+		return nil
+	}
+	return session.served
+}
+
+// writeShortsRecommendBatch loads the chosen ids in order and reports them with
+// cursors offset by the request cursor, so the client resumes exactly after the
+// last served item.
+func (s *Server) writeShortsRecommendBatch(
+	w http.ResponseWriter,
+	r *http.Request,
+	ids []string,
+	feedToken string,
+	cursor int,
+	total int,
+	viewerUserID int64,
+) {
+	batch, err := s.loadShortsFeedBatch(
+		r.Context(),
+		ids,
+		0,
+		len(ids),
+		shortsFeedSelection{viewerUserID: viewerUserID},
+	)
+	if err != nil {
+		writeErr(w, r, http.StatusInternalServerError, err)
+		return
+	}
+	cursors := make([]int, len(batch.cursors))
+	for index, position := range batch.cursors {
+		cursors[index] = cursor + position
+	}
+	items := s.mapShortsItems(r.Context(), batch.videos, cursors, batch.favorited, batch.liked)
+	s.prewarmShortsStreamLinks(batch.videos, r.Header)
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, shortsFeedResponse{
+		Items:         items,
+		Total:         total,
+		FeedToken:     feedToken,
+		NextCursor:    cursor + len(ids),
+		RoundComplete: false,
+	})
+}
+
+// loadShortsRecommendSession returns the recommend session for token. After a
+// restart the served list is restored from the persisted snapshot, so the client
+// keeps its resume position and the feed keeps avoiding repeats.
+func (s *Server) loadShortsRecommendSession(token string, now time.Time) *shortsFeedSession {
+	s.shortsFeedMu.Lock()
+	s.pruneShortsFeedsLocked(now)
+	if session := s.shortsFeeds[token]; session != nil {
+		session.lastAccess = now
+		s.shortsFeedMu.Unlock()
+		s.touchPersistedShortsFeed(token, now)
+		return session
+	}
+	s.shortsFeedMu.Unlock()
+
+	served := s.loadPersistedShortsFeed(token, now)
+	if served == nil {
+		return nil
+	}
+	session := &shortsFeedSession{
+		served:  served,
+		batches: make(map[int][]string),
+	}
+	s.shortsFeedMu.Lock()
+	s.rememberShortsSessionLocked(token, session, now)
+	s.shortsFeedMu.Unlock()
+	return session
+}
+
+func (s *Server) storeShortsRecommendSession(token string, session *shortsFeedSession, now time.Time) {
+	s.shortsFeedMu.Lock()
+	s.rememberShortsSessionLocked(token, session, now)
+	s.shortsFeedMu.Unlock()
+	s.persistShortsFeed(token, session.served, now)
+}
+
+// shortsDirectoryShares caches the per-directory tag concentration: it changes
+// only when the library is rescanned, and recomputing it per batch would put a
+// full-library aggregate on the swipe path.
+func (s *Server) shortsDirectoryShares(
+	ctx context.Context,
+	now time.Time,
+) (map[string]catalog.ShortsDirectoryTagShare, error) {
+	s.shortsSignalMu.Lock()
+	if s.shortsSignalShares != nil && now.Before(s.shortsSignalUntil) {
+		shares := s.shortsSignalShares
+		s.shortsSignalMu.Unlock()
+		return shares, nil
+	}
+	s.shortsSignalMu.Unlock()
+
+	shares, err := s.Catalog.ShortsDirectoryTagShares(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.shortsSignalMu.Lock()
+	s.shortsSignalShares = shares
+	s.shortsSignalUntil = now.Add(shortsDirectoryCacheTTL)
+	s.shortsSignalMu.Unlock()
+	return shares, nil
+}
+
+func feedTagShares(shares map[string]catalog.ShortsDirectoryTagShare) map[string]feed.TagShare {
+	out := make(map[string]feed.TagShare, len(shares))
+	for parentID, share := range shares {
+		out[parentID] = feed.TagShare{Tagged: share.Tagged, TopShare: share.TopShare}
+	}
+	return out
 }

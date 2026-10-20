@@ -2267,7 +2267,7 @@ func TestHandleShortsNextSkipsVideosHiddenAfterFeedCreation(t *testing.T) {
 	}
 
 	server := &Server{Catalog: cat}
-	firstReq := httptest.NewRequest(http.MethodGet, "/api/shorts/next?count=1", nil)
+	firstReq := httptest.NewRequest(http.MethodGet, "/api/shorts/next?mode=latest&count=1", nil)
 	firstRR := httptest.NewRecorder()
 	server.handleShortsNext(firstRR, firstReq)
 	var first shortsFeedResponse
@@ -2289,7 +2289,7 @@ func TestHandleShortsNextSkipsVideosHiddenAfterFeedCreation(t *testing.T) {
 
 	nextReq := httptest.NewRequest(
 		http.MethodGet,
-		"/api/shorts/next?feedToken="+first.FeedToken+"&cursor="+strconv.Itoa(first.NextCursor)+"&count=1",
+			"/api/shorts/next?mode=latest&feedToken="+first.FeedToken+"&cursor="+strconv.Itoa(first.NextCursor)+"&count=1",
 		nil,
 	)
 	nextRR := httptest.NewRecorder()
@@ -2402,7 +2402,7 @@ func TestHandleShortsNextResumesFeedAfterServerRestart(t *testing.T) {
 	}
 
 	serverA := &Server{Catalog: cat}
-	first := requestBatch(serverA, "/api/shorts/next?count=3")
+	first := requestBatch(serverA, "/api/shorts/next?mode=latest&count=3")
 	if first.FeedToken == "" || len(first.Items) != 3 {
 		t.Fatalf("first response = %#v, want 3 items with token", first)
 	}
@@ -2411,7 +2411,7 @@ func TestHandleShortsNextResumesFeedAfterServerRestart(t *testing.T) {
 	serverB := &Server{Catalog: cat}
 	resumed := requestBatch(
 		serverB,
-		"/api/shorts/next?feedToken="+first.FeedToken+"&cursor="+strconv.Itoa(first.NextCursor)+"&count=4",
+		"/api/shorts/next?mode=latest&feedToken="+first.FeedToken+"&cursor="+strconv.Itoa(first.NextCursor)+"&count=4",
 	)
 	if len(resumed.Items) != 4 || !resumed.RoundComplete {
 		t.Fatalf("resumed response = %#v, want final 4 items of the same round", resumed)
@@ -2428,7 +2428,7 @@ func TestHandleShortsNextResumesFeedAfterServerRestart(t *testing.T) {
 	}
 
 	// 重启后的快照顺序与重启前完全一致：重放首批得到相同条目
-	replayed := requestBatch(serverB, "/api/shorts/next?feedToken="+first.FeedToken+"&cursor=0&count=3")
+	replayed := requestBatch(serverB, "/api/shorts/next?mode=latest&feedToken="+first.FeedToken+"&cursor=0&count=3")
 	for index := range first.Items {
 		if replayed.Items[index].ID != first.Items[index].ID {
 			t.Fatalf("replayed item %d = %s, want %s", index, replayed.Items[index].ID, first.Items[index].ID)

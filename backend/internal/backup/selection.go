@@ -229,6 +229,12 @@ DELETE FROM video_reaction_visits
 			return snapshotSelectionState{}, err
 		}
 		if _, err := tx.ExecContext(ctx, `
+DELETE FROM video_favorites
+ WHERE video_id NOT IN (SELECT id FROM videos WHERE drive_id IN (SELECT id FROM backup_selected_drives))`); err != nil {
+			rollback()
+			return snapshotSelectionState{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `
 DELETE FROM video_shares
  WHERE video_id NOT IN (SELECT id FROM videos WHERE drive_id IN (SELECT id FROM backup_selected_drives))`); err != nil {
 			rollback()

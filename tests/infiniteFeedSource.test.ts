@@ -158,6 +158,7 @@ test("later batches explicitly address the same token and cursor", async (t) => 
 
 test("shorts like and unlike use the shared counter endpoint", async (t) => {
   const requested = stubFetch(t, (_path, init) => ({
+    liked: init?.method === "POST",
     likes: init?.method === "POST" ? 9 : 8,
   }));
 

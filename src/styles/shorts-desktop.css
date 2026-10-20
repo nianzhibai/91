@@ -399,6 +399,10 @@
     color: #ff4060;
   }
 
+  .shorts-slide__action.is-favorited:hover {
+    color: #ffc93c;
+  }
+
   .shorts-slide__action-label {
     display: block;
     font-size: 12px;

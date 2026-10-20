@@ -1,6 +1,7 @@
 import { type MouseEvent } from "react";
 import { Link } from "react-router";
 import {
+  Bookmark,
   Clock3,
   Flame,
   Home,
@@ -13,6 +14,14 @@ const DESKTOP_FEED_TABS = [
   ...SHORTS_FEED_TABS.filter((tab) => tab.key === "recommend"),
   ...SHORTS_FEED_TABS.filter((tab) => tab.key !== "recommend"),
 ];
+
+// 栏目图标按 key 显式列举，新增栏目时类型检查会要求同步补齐。
+const FEED_TAB_ICONS: Record<ShortsFeedMode, typeof ThumbsUp> = {
+  recommend: ThumbsUp,
+  latest: Clock3,
+  hot: Flame,
+  favorites: Bookmark,
+};
 
 type NavigationProps = {
   isAdmin: boolean;
@@ -41,7 +50,7 @@ export function ShortsDesktopSidebar({
         <div className="shorts-header__tabs" role="tablist" aria-label="短视频排序"
           aria-orientation={isDesktop ? "vertical" : "horizontal"}>
           {(isDesktop ? DESKTOP_FEED_TABS : SHORTS_FEED_TABS).map((tab, index, tabs) => {
-            const Icon = tab.key === "recommend" ? ThumbsUp : tab.key === "latest" ? Clock3 : Flame;
+            const Icon = FEED_TAB_ICONS[tab.key];
             return (
               <button key={tab.key} id={`shorts-tab-${tab.key}`} type="button" role="tab"
                 className="shorts-header__tab" aria-selected={mode === tab.key}

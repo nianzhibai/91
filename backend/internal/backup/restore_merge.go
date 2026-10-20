@@ -163,6 +163,10 @@ func mergeSelectiveRestoreDatabase(
 			rollback()
 			return err
 		}
+		if err := mergeVideoFavorites(ctx, tx); err != nil {
+			rollback()
+			return err
+		}
 	}
 	if selection.UploadStorage {
 		if err := mergeRemoteUploadJobs(ctx, tx); err != nil {
@@ -470,6 +474,28 @@ func mergeVideoReactionVisits(ctx context.Context, tx *sql.Tx) error {
 		  JOIN restore_imported_videos AS imported ON imported.id = source.video_id`)
 	if err != nil {
 		return fmt.Errorf("backup: merge video reaction visits: %w", err)
+	}
+	return nil
+}
+
+// Favorites are account-scoped, so the archive's user ids are resolved by
+// username: the same person can hold a different id in the target database.
+// Archives created before favorites existed have no such table, and
+// tableColumnNames reports an empty column set for a missing table.
+func mergeVideoFavorites(ctx context.Context, tx *sql.Tx) error {
+	sourceColumns, err := tableColumnNames(ctx, tx, "backup_source", "video_favorites")
+	if err != nil || len(sourceColumns) == 0 {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT OR IGNORE INTO main.video_favorites (user_id, video_id, created_at)
+		SELECT target_user.id, source.video_id, source.created_at
+		  FROM backup_source.video_favorites AS source
+		  JOIN backup_source.users AS source_user ON source_user.id = source.user_id
+		  JOIN main.users AS target_user
+		    ON target_user.username = source_user.username COLLATE NOCASE
+		  JOIN restore_imported_videos AS imported ON imported.id = source.video_id`); err != nil {
+		return fmt.Errorf("backup: merge video favorites: %w", err)
 	}
 	return nil
 }

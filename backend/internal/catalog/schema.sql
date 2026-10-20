@@ -112,6 +112,21 @@ CREATE TABLE IF NOT EXISTS video_reaction_visits (
 CREATE INDEX IF NOT EXISTS idx_video_reaction_visits_video
     ON video_reaction_visits(video_id);
 
+-- 账号级收藏。与只记录本次访问选票的 video_reaction_visits 不同，收藏是
+-- 跨会话持久数据：短视频「收藏」栏目按 (user_id) 筛选，取消收藏即删行。
+-- favorites 计数字段仍保持 0，收藏状态以本表为唯一事实来源。
+CREATE TABLE IF NOT EXISTS video_favorites (
+    user_id    INTEGER NOT NULL,
+    video_id   TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, video_id)
+);
+
+-- 收藏栏目按收藏时间倒序取快照。
+CREATE INDEX IF NOT EXISTS idx_video_favorites_user
+    ON video_favorites(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_video_favorites_video
+    ON video_favorites(video_id);
 -- 统一标签池
 CREATE TABLE IF NOT EXISTS tags (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -405,3 +420,40 @@ CREATE TABLE IF NOT EXISTS crawler_upload_tasks (
     parent_task_id TEXT NOT NULL DEFAULT '',
     result TEXT NOT NULL
 );
+
+-- 账号级点赞。videos.likes 保留为冗余计数（与 video_favorites 同样的模式），
+-- 真实状态以本表为唯一事实来源。有了 user_id 才能回答「这个人喜欢什么」，
+-- 也只有这样才能让取消点赞保持幂等：全局计数器无法区分重复点击。
+CREATE TABLE IF NOT EXISTS video_likes (
+    user_id    INTEGER NOT NULL,
+    video_id   TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, video_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_video_likes_user
+    ON video_likes(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_video_likes_video
+    ON video_likes(video_id);
+
+-- 短视频观看结算。一条记录 = 一次「这条视频被看了多久」，kind 是对这次观看的
+-- 分类，三个取值互斥：complete（看完，含循环）/ partial（看了一部分）/ skip
+-- （几乎没看）。position 是这次观看在 feed 里的位置，只用于后续做位置偏差
+-- 分析，不参与打分。
+--
+-- 这张表是推荐链路的唯一行为输入：没有它，任何排序策略都只能靠猜。
+CREATE TABLE IF NOT EXISTS video_user_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    video_id   TEXT NOT NULL,
+    kind       TEXT NOT NULL CHECK (kind IN ('complete', 'partial', 'skip')),
+    watch_ms   INTEGER NOT NULL DEFAULT 0,
+    loop_count INTEGER NOT NULL DEFAULT 0,
+    position   INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_video_user_events_user_time
+    ON video_user_events(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_video_user_events_user_video
+    ON video_user_events(user_id, video_id, created_at DESC);

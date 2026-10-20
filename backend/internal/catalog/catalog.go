@@ -1612,6 +1612,9 @@ ON CONFLICT(id) DO UPDATE SET
 	if _, err := tx.ExecContext(ctx, `DELETE FROM video_reaction_visits WHERE video_id = ?`, restoreVideo.ID); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM video_favorites WHERE video_id = ?`, restoreVideo.ID); err != nil {
+		return err
+	}
 	if err := deleteDriveScanMissForVideoTx(ctx, tx, restoreVideo.ID); err != nil {
 		return err
 	}
@@ -1640,6 +1643,9 @@ func (c *Catalog) DeleteVideo(ctx context.Context, id string) (resultErr error) 
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM video_reaction_visits WHERE video_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM video_favorites WHERE video_id = ?`, id); err != nil {
 		return err
 	}
 	if err := deleteDriveScanMissForVideoTx(ctx, tx, id); err != nil {
@@ -2146,6 +2152,7 @@ func (c *Catalog) restoreDeletedVideoDirect(
 		`DELETE FROM video_tags WHERE video_id = ?`,
 		`DELETE FROM video_shares WHERE video_id = ?`,
 		`DELETE FROM video_reaction_visits WHERE video_id = ?`,
+		`DELETE FROM video_favorites WHERE video_id = ?`,
 	} {
 		if _, err := tx.ExecContext(ctx, statement, id); err != nil {
 			return DeletedVideoRestoreResult{}, err

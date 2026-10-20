@@ -519,14 +519,34 @@ export function recordView(id: string): Promise<{ views: number }> {
 
 /** Legacy counter-style like endpoint used by the immersive shorts UI. */
 export async function setVideoLike(id: string, liked: boolean): Promise<number> {
-  const result = await apiJSON<{ likes: number }>(
+  const result = await apiJSON<{ liked: boolean; likes: number }>(
     `/api/video/${encodeURIComponent(id)}/like`,
     { method: liked ? "POST" : "DELETE" }
   );
-  if (!result || !Number.isInteger(result.likes) || result.likes < 0) {
+  if (
+    !result ||
+    typeof result.liked !== "boolean" ||
+    !Number.isInteger(result.likes) ||
+    result.likes < 0
+  ) {
     throw new Error("Invalid video like response");
   }
   return result.likes;
+}
+
+/** 账号级收藏切换，返回服务端确认后的收藏状态。 */
+export async function setVideoFavorite(
+  id: string,
+  favorite: boolean
+): Promise<boolean> {
+  const result = await apiJSON<{ favorited: boolean }>(
+    `/api/video/${encodeURIComponent(id)}/favorite`,
+    { method: favorite ? "POST" : "DELETE" }
+  );
+  if (!result || typeof result.favorited !== "boolean") {
+    throw new Error("Invalid video favorite response");
+  }
+  return result.favorited;
 }
 
 export type VideoReactionResult = VideoReactionCounts & {
@@ -696,6 +716,16 @@ export type ShortsItem = VideoItem & {
    */
   sizeBytes?: number;
   durationSeconds?: number;
+  /**
+   * 当前登录账号是否已收藏该视频。服务端按请求账号逐条给出，客户端不需要
+   * 自己维护收藏集合。
+   */
+  favorited?: boolean;
+  /**
+   * 当前登录账号是否已点赞该视频。与收藏一样由服务端逐条给出：点赞是账号级
+   * 数据，客户端不需要（也无法）自己维护点赞集合。
+   */
+  liked?: boolean;
 };
 
 export type ShortsFeedItem = ShortsItem & {
@@ -729,7 +759,7 @@ export async function fetchShortsNext(
   cursor: number,
   count: number,
   mode: ShortsFeedMode = "recommend",
-  options: { signal?: AbortSignal } = {}
+  options: { signal?: AbortSignal; after?: string } = {}
 ): Promise<ShortsNextResponse> {
   const params = new URLSearchParams({
     cursor: String(cursor),
@@ -737,6 +767,8 @@ export async function fetchShortsNext(
     mode,
   });
   if (feedToken) params.set("feedToken", feedToken);
+  // 推荐栏目要据此决定这一批的同目录扩展；其他栏目会忽略它。
+  if (options.after) params.set("after", options.after);
 
   let result: ShortsNextResponse;
   try {
@@ -771,6 +803,36 @@ export async function fetchShortsNext(
     throw new Error("Invalid /api/shorts/next response");
   }
   return result;
+}
+
+/** 一次观看结算。kind 由前端按观看比例判定，见 shortsTelemetry。 */
+export type ShortsWatchEventPayload = {
+  videoId: string;
+  kind: "complete" | "partial" | "skip";
+  watchMs: number;
+  loopCount: number;
+  position: number;
+};
+
+/**
+ * 批量上报观看结算。
+ *
+ * 用 keepalive 让页面正在卸载时也能送达；失败静默丢弃 —— 上报永远不能影响
+ * 播放，也永远不该让用户看到错误。
+ */
+export function reportShortsEvents(events: ShortsWatchEventPayload[]): void {
+  if (events.length === 0) return;
+  try {
+    void fetch("/api/shorts/events", {
+      method: "POST",
+      credentials: "include",
+      keepalive: true,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ events }),
+    }).catch(() => undefined);
+  } catch {
+    // 同步抛错（例如 keepalive 配额用尽）只影响这一次上报。
+  }
 }
 
 const API_GET_MAX_ATTEMPTS = 2;

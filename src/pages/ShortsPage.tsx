@@ -19,8 +19,14 @@ import {
   AlertCircle,
   Forward,
   Maximize,
+  Star,
 } from "lucide-react";
-import { hideVideo, setVideoLike, type ShortsItem } from "@/data/videos";
+import {
+  hideVideo,
+  setVideoFavorite,
+  setVideoLike,
+  type ShortsItem,
+} from "@/data/videos";
 import {
   averageBytesPerSecond,
   clamp,
@@ -48,6 +54,10 @@ import {
   type ShortsLoopDebugProbe,
 } from "@/shorts/ShortsDebugHud";
 import { useShortsFeed } from "@/shorts/useShortsFeed";
+import {
+  flushShortsWatchEvents,
+  trackShortsWatch,
+} from "@/shorts/shortsTelemetry";
 import {
   getShortsQueueTrimCount,
   readShortsFeedMode,
@@ -109,6 +119,14 @@ const IOS_LOOP_RELOAD_TIMEOUT_MS = 6000;
 // WebKit 会在极短的解码抖动中发 waiting。延迟一点再展示，避免视频画面
 // 仍在连续推进时闪出或残留加载图标。
 const SHORTS_BUFFERING_INDICATOR_DELAY_MS = 180;
+
+// 各栏目的空态文案：收藏栏目要说清"你还没有收藏"，而不是"库里没有视频"。
+const SHORTS_EMPTY_TEXT: Record<ShortsFeedMode, string> = {
+  recommend: "当前库中没有视频",
+  latest: "当前库中没有视频",
+  hot: "暂无最热视频",
+  favorites: "还没有收藏的视频",
+};
 
 export default function ShortsPage() {
   const { ready, ...navigation } = useShortsNavigation();
@@ -379,6 +397,16 @@ function ShortsPlayback({
 
   const { items, loading, empty, loadError, loadMore, trimQueueBefore } =
     useShortsFeed(activeIndex, handleQueueReset, mode);
+
+  // 离开短视频页或页面卸载时，把待发的观看结算立刻送出去。
+  useEffect(() => {
+    const flush = () => flushShortsWatchEvents();
+    window.addEventListener("pagehide", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      flush();
+    };
+  }, []);
   itemsLengthRef.current = items.length;
   const activeItemKey = items[activeIndex]
     ? shortsQueueItemKey(items[activeIndex])
@@ -395,6 +423,17 @@ function ShortsPlayback({
   // 与后端的真实 likes 字段同步——后端是单纯计数器，前端在这里防重避免连发。
   // 用户在操作栏点取消时会从这里移除，允许之后再次点赞。
   const likedIdsRef = useRef<Set<string>>(new Set());
+
+  // 服务端逐条下发 liked。只在每个 id 首次出现时并入本地集合：之后用户在
+  // 本地的取消点赞不能被队列里的旧快照重新覆盖。
+  const seededLikedIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const queued of items) {
+      if (seededLikedIdsRef.current.has(queued.id)) continue;
+      seededLikedIdsRef.current.add(queued.id);
+      if (queued.liked) likedIdsRef.current.add(queued.id);
+    }
+  }, [items]);
 
   // 事件监听器和 iOS 持久 video effect 都通过 ref 读取当前索引。放在最前面的
   // layout effect 可避免长队列裁剪与上一轮 passive effect 交错时写回旧值。
@@ -511,6 +550,21 @@ function ShortsPlayback({
   /** 当前 id 是否已经在本次会话内点过赞（供 Slide 切换 active 时同步状态） */
   const hasLiked = useCallback(
     (videoId: string) => likedIdsRef.current.has(videoId),
+    []
+  );
+
+  /**
+   * 切换收藏状态。收藏是账号级持久数据，服务端是唯一事实来源：
+   * 返回服务端确认后的状态，null 表示请求失败（调用方回滚 UI）。
+   */
+  const handleFavoriteToggle = useCallback(
+    async (videoId: string, favorite: boolean): Promise<boolean | null> => {
+      try {
+        return await setVideoFavorite(videoId, favorite);
+      } catch {
+        return null;
+      }
+    },
     []
   );
 
@@ -1300,7 +1354,7 @@ function ShortsPlayback({
             <div className="shorts-empty">
               <AdminEmptyVisual
                 variant="empty"
-                text={mode === "hot" ? "暂无最热视频" : "当前库中没有视频"}
+                text={SHORTS_EMPTY_TEXT[mode]}
                 className="shorts-empty__visual"
               />
             </div>
@@ -1391,6 +1445,7 @@ function ShortsPlayback({
                 onClearScreenChange={setClearScreen}
                 videoRef={setVideoRef(index)}
                 onLikeToggle={handleLikeToggle}
+                onFavoriteToggle={handleFavoriteToggle}
                 hasLiked={hasLiked}
                 registerKeyboardLikeHandler={registerKeyboardLikeHandler}
                 canHide={isAdmin}
@@ -1534,6 +1589,11 @@ type SlideProps = {
   onLikeToggle: (videoId: string, liked: boolean) => Promise<number | null>;
   /** 父组件查询某 id 是否已经在本次会话内点过赞 */
   hasLiked: (videoId: string) => boolean;
+  /**
+   * 切换收藏。第二参数 true 表示收藏，false 表示取消收藏。
+   * 返回服务端确认后的状态；null 表示请求失败，调用方应回滚 UI。
+   */
+  onFavoriteToggle: (videoId: string, favorite: boolean) => Promise<boolean | null>;
   /** 注册该 slide 的键盘点赞入口，供父级双空格快捷键直接调用。 */
   registerKeyboardLikeHandler: (
     index: number,
@@ -1599,6 +1659,7 @@ function ShortsSlideImpl({
   onClearScreenChange,
   videoRef,
   onLikeToggle,
+  onFavoriteToggle,
   hasLiked,
   registerKeyboardLikeHandler,
   canHide,
@@ -1897,6 +1958,8 @@ function ShortsSlideImpl({
   // 是否已点过赞。真正的防重在父组件 likedIdsRef 里，
   // 这里仅控制视觉态并依据父组件返回的回执处理失败回滚。
   const [isLiked, setIsLiked] = useState(false);
+  // 收藏状态来自服务端逐条下发的 favorited 字段，客户端不维护收藏集合。
+  const [isFavorited, setIsFavorited] = useState(item.favorited ?? false);
   const [likeCount, setLikeCount] = useState(item.likes ?? 0);
   // 屏幕中央的心形飞起动画（双击点赞时显示）
   const [heartBurst, setHeartBurst] = useState<{
@@ -1910,6 +1973,11 @@ function ShortsSlideImpl({
     setIsLiked(hasLiked(item.id));
   }, [item.id, hasLiked]);
 
+  // 同一条视频换轮后重新出现时，以新的服务端状态为准。
+  useEffect(() => {
+    setIsFavorited(item.favorited ?? false);
+  }, [item.id, item.favorited]);
+
   const setRef = useCallback(
     (el: HTMLVideoElement | null) => {
       const previous = localRef.current;
@@ -1921,6 +1989,17 @@ function ShortsSlideImpl({
     },
     [videoRef]
   );
+
+  // 观看结算上报。只统计当前屏的真实播放时间：暂停、切后台、缓冲都不计入。
+  // 这是推荐链路唯一的真实行为输入，也是「看完就推同目录」的依据。
+  useEffect(() => {
+    if (!isActive) return;
+    return trackShortsWatch({
+      getVideo: getVideoElement,
+      videoId: item.id,
+      position: index,
+    });
+  }, [getVideoElement, index, isActive, item.id]);
 
   // 非当前屏/后续预加载/视频窗口内缓存视频不保留媒体源，确保离开窗口后浏览器中止原始网盘流。
   useEffect(() => {
@@ -2946,6 +3025,16 @@ function ShortsSlideImpl({
     }
   }
 
+  /** 点击收藏按钮：视觉立即响应，失败时按服务端回执回滚。 */
+  function handleFavoriteClick(e: React.MouseEvent<HTMLButtonElement>) {
+    e.stopPropagation();
+    const willFavorite = !isFavorited;
+    setIsFavorited(willFavorite);
+    void onFavoriteToggle(item.id, willFavorite).then((favorited) => {
+      setIsFavorited(favorited ?? !willFavorite);
+    });
+  }
+
   /** 创建并复制与详情页相同的一次性分享链接。 */
   async function handleShareClick(e: React.MouseEvent<HTMLButtonElement>) {
     e.stopPropagation();
@@ -3288,6 +3377,28 @@ function ShortsSlideImpl({
                   />
                   <span className="shorts-slide__action-label">
                     {likeCount > 0 ? likeCount.toLocaleString("zh-CN") : "点赞"}
+                  </span>
+                </button>
+              </ShortsTooltip>
+
+              {/* 收藏 */}
+              <ShortsTooltip label={isFavorited ? "取消收藏" : "收藏"}
+                placement="left" enabled={isDesktop} anchorIcon>
+                <button
+                  type="button"
+                  data-shorts-favorite=""
+                  className={`shorts-slide__action ${isFavorited ? "is-favorited" : ""}`}
+                  aria-label={isFavorited ? "取消收藏" : "收藏"}
+                  aria-pressed={isFavorited}
+                  onClick={handleFavoriteClick}
+                >
+                  <Star
+                    size={32}
+                    fill={isFavorited ? "currentColor" : "none"}
+                    strokeWidth={1.75}
+                  />
+                  <span className="shorts-slide__action-label">
+                    {isFavorited ? "已收藏" : "收藏"}
                   </span>
                 </button>
               </ShortsTooltip>

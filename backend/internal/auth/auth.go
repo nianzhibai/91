@@ -43,6 +43,26 @@ func SessionIdentityFromContext(ctx context.Context) (string, bool) {
 	return identity, ok && identity != ""
 }
 
+type userIDContextKey struct{}
+
+// UserIDFromContext returns the authenticated account ID. Handlers use it for
+// account-scoped data such as favorites; SessionIdentityFromContext above stays
+// the opaque per-login-session handle used by per-session caches.
+func UserIDFromContext(ctx context.Context) (int64, bool) {
+	userID, ok := ctx.Value(userIDContextKey{}).(int64)
+	return userID, ok && userID > 0
+}
+
+// WithUserID returns a context carrying the authenticated account ID, the same
+// value UserIDFromContext reads. It lets callers outside this package build a
+// request context for one account without replaying a login.
+func WithUserID(ctx context.Context, userID int64) context.Context {
+	if userID <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, userIDContextKey{}, userID)
+}
+
 // CheckCurrentPassword re-authenticates the administrator represented by the
 // request's current session against the stored bcrypt hash.
 func (a *Authenticator) CheckCurrentPassword(r *http.Request, password string) (bool, error) {
@@ -143,14 +163,18 @@ func (a *Authenticator) Required(next http.Handler) http.Handler {
 	return a.require(next, false)
 }
 
-func withSessionIdentity(r *http.Request) *http.Request {
+func withSessionIdentity(r *http.Request, userID int64) *http.Request {
+	ctx := r.Context()
+	if userID > 0 {
+		ctx = context.WithValue(ctx, userIDContextKey{}, userID)
+	}
 	cookie, err := r.Cookie(sessionCookie)
 	if err != nil || cookie.Value == "" {
-		return r
+		return r.WithContext(ctx)
 	}
 	digest := sha256.Sum256([]byte(cookie.Value))
 	identity := hex.EncodeToString(digest[:])
-	return r.WithContext(context.WithValue(r.Context(), sessionIdentityContextKey{}, identity))
+	return r.WithContext(context.WithValue(ctx, sessionIdentityContextKey{}, identity))
 }
 
 func randomToken() (string, error) {
@@ -254,7 +278,7 @@ func (a *Authenticator) require(next http.Handler, adminOnly bool) http.Handler 
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		next.ServeHTTP(w, withSessionIdentity(r))
+		next.ServeHTTP(w, withSessionIdentity(r, userID))
 	})
 }
 

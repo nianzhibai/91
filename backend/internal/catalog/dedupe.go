@@ -285,6 +285,19 @@ ON CONFLICT(video_id, visit_id) DO UPDATE SET
 	if _, err := tx.ExecContext(ctx, `UPDATE video_shares SET video_id = ? WHERE video_id = ?`, canonicalID, duplicate.ID); err != nil {
 		return err
 	}
+	// 收藏按 (user_id, video_id) 唯一：同一账号可能同时收藏了副本和保留项，
+	// 所以先补写再删源行，不能直接 UPDATE 主键。
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO video_favorites (user_id, video_id, created_at)
+SELECT user_id, ?, created_at
+  FROM video_favorites
+ WHERE video_id = ?
+ON CONFLICT(user_id, video_id) DO NOTHING`, canonicalID, duplicate.ID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM video_favorites WHERE video_id = ?`, duplicate.ID); err != nil {
+		return err
+	}
 
 	now := time.Now().UnixMilli()
 	res, err := tx.ExecContext(ctx, `

@@ -28,6 +28,7 @@ import (
 	"github.com/video-site/backend/internal/drives/localstorage"
 	"github.com/video-site/backend/internal/drives/localupload"
 	"github.com/video-site/backend/internal/localpath"
+	"github.com/video-site/backend/internal/natural"
 	"github.com/video-site/backend/internal/persistence"
 	"github.com/video-site/backend/internal/proxy"
 	"github.com/video-site/backend/internal/subtitles"
@@ -68,6 +69,10 @@ type Server struct {
 	shortsFeedMu  sync.Mutex
 	shortsFeeds   map[string]*shortsFeedSession
 	shortsFeedNow func() time.Time
+	// 目录标签集中度只随扫盘变化，缓存一段时间避免每批推荐都全量聚合。
+	shortsSignalMu     sync.Mutex
+	shortsSignalShares map[string]catalog.ShortsDirectoryTagShare
+	shortsSignalUntil  time.Time
 
 	videoFeedMu     sync.Mutex
 	videoFeeds      map[string]*videoFeedSession
@@ -267,9 +272,12 @@ func (s *Server) RegisterRoutes(r chi.Router, a *auth.Authenticator) {
 		r.Put("/api/video/{id}/reaction", s.handleSetVideoReaction)
 		r.Post("/api/video/{id}/like", s.handleLike)
 		r.Delete("/api/video/{id}/like", s.handleUnlike)
+		r.Post("/api/video/{id}/favorite", s.handleFavoriteVideo)
+		r.Delete("/api/video/{id}/favorite", s.handleUnfavoriteVideo)
 		r.Post("/api/video/{id}/view", s.handleView)
 		r.Get("/api/tags", s.handleTags)
 		r.Get("/api/shorts/next", s.handleShortsNext)
+		r.Post("/api/shorts/events", s.handleShortsEvents)
 
 		// 代理路由同样需要鉴权，防止绕过
 		r.Get("/p/stream/{driveID}/*", s.handleStream)
@@ -657,71 +665,10 @@ func naturalVideoCollectionFieldsLess(
 
 // naturalCompare compares ASCII digit runs numerically while keeping all other
 // Unicode runes in a deterministic case-insensitive order (episode 2 < 10).
+// The ordering itself lives in internal/natural so the shorts recommendation
+// feed can share one implementation instead of growing a second.
 func naturalCompare(left, right string) int {
-	leftRunes := []rune(strings.ToLower(strings.TrimSpace(left)))
-	rightRunes := []rune(strings.ToLower(strings.TrimSpace(right)))
-	for li, ri := 0, 0; li < len(leftRunes) && ri < len(rightRunes); {
-		if isASCIIDigit(leftRunes[li]) && isASCIIDigit(rightRunes[ri]) {
-			leftEnd, rightEnd := li, ri
-			for leftEnd < len(leftRunes) && isASCIIDigit(leftRunes[leftEnd]) {
-				leftEnd++
-			}
-			for rightEnd < len(rightRunes) && isASCIIDigit(rightRunes[rightEnd]) {
-				rightEnd++
-			}
-			leftSignificant, rightSignificant := li, ri
-			for leftSignificant < leftEnd-1 && leftRunes[leftSignificant] == '0' {
-				leftSignificant++
-			}
-			for rightSignificant < rightEnd-1 && rightRunes[rightSignificant] == '0' {
-				rightSignificant++
-			}
-			leftDigits := leftRunes[leftSignificant:leftEnd]
-			rightDigits := rightRunes[rightSignificant:rightEnd]
-			if len(leftDigits) != len(rightDigits) {
-				if len(leftDigits) < len(rightDigits) {
-					return -1
-				}
-				return 1
-			}
-			for index := range leftDigits {
-				if leftDigits[index] < rightDigits[index] {
-					return -1
-				}
-				if leftDigits[index] > rightDigits[index] {
-					return 1
-				}
-			}
-			// Numerically equal runs use the shorter spelling first: 2 before 02.
-			if leftEnd-li != rightEnd-ri {
-				if leftEnd-li < rightEnd-ri {
-					return -1
-				}
-				return 1
-			}
-			li, ri = leftEnd, rightEnd
-			continue
-		}
-		if leftRunes[li] < rightRunes[ri] {
-			return -1
-		}
-		if leftRunes[li] > rightRunes[ri] {
-			return 1
-		}
-		li++
-		ri++
-	}
-	if len(leftRunes) < len(rightRunes) {
-		return -1
-	}
-	if len(leftRunes) > len(rightRunes) {
-		return 1
-	}
-	return 0
-}
-
-func isASCIIDigit(value rune) bool {
-	return value >= '0' && value <= '9'
+	return natural.Compare(left, right)
 }
 
 func firstNonEmptyString(values ...string) string {
@@ -931,14 +878,63 @@ func (s *Server) handleUpdateVideoTags(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, mapVideo(v))
 }
 
+// handleLike 点赞。点赞是账号级数据：写 video_likes 并同步冗余计数，
+// 同一个人重复点赞是幂等的，不会把计数刷高。
 func (s *Server) handleLike(w http.ResponseWriter, r *http.Request) {
-	id := routeParam(r, "id")
-	likes, err := s.Catalog.IncrementLike(r.Context(), id)
-	if err != nil {
-		writeErr(w, r, http.StatusInternalServerError, err)
+	s.handleSetVideoLike(w, r, true)
+}
+
+func (s *Server) handleSetVideoLike(w http.ResponseWriter, r *http.Request, liked bool) {
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		writeErr(w, r, http.StatusUnauthorized, errors.New("authentication required"))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"likes": likes})
+	result, err := s.Catalog.SetUserVideoLike(r.Context(), userID, routeParam(r, "id"), liked)
+	if err != nil {
+		switch {
+		case errors.Is(err, catalog.ErrInvalidVideoLike):
+			writeErr(w, r, http.StatusBadRequest, err)
+		case errors.Is(err, sql.ErrNoRows):
+			writeErr(w, r, http.StatusNotFound, err)
+		default:
+			writeErr(w, r, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleSetVideoFavorite stores whether the authenticated account favorites one
+// video. Favorites are account-scoped, so the handler reads the user ID rather
+// than the opaque per-session identity used by per-session caches.
+func (s *Server) handleSetVideoFavorite(w http.ResponseWriter, r *http.Request, favorite bool) {
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		writeErr(w, r, http.StatusUnauthorized, errors.New("authentication required"))
+		return
+	}
+	result, err := s.Catalog.SetVideoFavorite(r.Context(), userID, routeParam(r, "id"), favorite)
+	if err != nil {
+		switch {
+		case errors.Is(err, catalog.ErrInvalidVideoFavorite):
+			writeErr(w, r, http.StatusBadRequest, err)
+		case errors.Is(err, sql.ErrNoRows):
+			writeErr(w, r, http.StatusNotFound, err)
+		default:
+			writeErr(w, r, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleFavoriteVideo(w http.ResponseWriter, r *http.Request) {
+	s.handleSetVideoFavorite(w, r, true)
+}
+
+func (s *Server) handleUnfavoriteVideo(w http.ResponseWriter, r *http.Request) {
+	s.handleSetVideoFavorite(w, r, false)
 }
 
 type setVideoReactionReq struct {
@@ -980,20 +976,10 @@ func (s *Server) handleSetVideoReaction(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, result)
 }
 
-// handleUnlike 取消点赞：likes - 1（保底 0）。
-// 短视频模式中爱心按钮点击切换状态时使用。
+// handleUnlike 取消点赞。与 handleLike 共用账号级幂等写入：只有真正发生状态
+// 变化时才动 videos.likes 计数，重复请求不会把计数减两次。
 func (s *Server) handleUnlike(w http.ResponseWriter, r *http.Request) {
-	id := routeParam(r, "id")
-	likes, err := s.Catalog.DecrementLike(r.Context(), id)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeErr(w, r, http.StatusNotFound, err)
-			return
-		}
-		writeErr(w, r, http.StatusInternalServerError, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"likes": likes})
+	s.handleSetVideoLike(w, r, false)
 }
 
 func (s *Server) handleView(w http.ResponseWriter, r *http.Request) {

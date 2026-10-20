@@ -6,14 +6,16 @@ export const SHORTS_FEED_STORAGE_KEY = "shorts_feed_v2";
 export const SHORTS_FEED_TABS = [
   { key: "latest", label: "最新" },
   { key: "hot", label: "最热" },
+  { key: "favorites", label: "收藏" },
   { key: "recommend", label: "推荐" },
 ] as const;
 
 export type ShortsFeedMode = (typeof SHORTS_FEED_TABS)[number]["key"];
 
+/** 栏目顺序与可用 key 都以 SHORTS_FEED_TABS 为唯一来源。 */
 export function readShortsFeedMode(params: URLSearchParams): ShortsFeedMode {
   const mode = params.get("feed");
-  return mode === "latest" || mode === "hot" ? mode : "recommend";
+  return SHORTS_FEED_TABS.find((tab) => tab.key === mode)?.key ?? "recommend";
 }
 
 export function withShortsFeedMode(

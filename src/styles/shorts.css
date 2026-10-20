@@ -826,10 +826,16 @@ html.shorts-document-scroll.is-pager-driven body {
 /* 点赞激活态 */
 .shorts-slide__action.is-liked {
   color: #ff4060;
-  animation: heart-active-bounce 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+  animation: action-active-bounce 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
 }
 
-@keyframes heart-active-bounce {
+/* 收藏激活态。与点赞共用同一个缩放回弹关键帧，它只描述缩放。 */
+.shorts-slide__action.is-favorited {
+  color: #ffc93c;
+  animation: action-active-bounce 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+}
+
+@keyframes action-active-bounce {
   0% { transform: scale(1); }
   50% { transform: scale(1.22); }
   100% { transform: scale(1); }

@@ -29,6 +29,11 @@ export function useShortsFeed(
 ) {
   // 已加入页面的视频队列（按出现顺序）
   const [items, setItems] = useState<QueuedShortsItem[]>([]);
+  // 推荐栏目要知道「用户刚看完哪一条」才能决定这一批的同目录扩展。
+  // activeIndex 每次渲染都变，用 ref 读取最新值，避免把 loadMore 绑到
+  // activeIndex 上导致每滑一屏就重建回调。
+  const activeVideoIdRef = useRef("");
+  activeVideoIdRef.current = items[activeIndex]?.id ?? "";
   const [queueMode, setQueueMode] = useState(mode);
   const modeRef = useRef(mode);
   // 是否正在加载下一批，避免并发请求
@@ -112,7 +117,10 @@ export function useShortsFeed(
         feed: requestFeedRef.current,
         count: hasLoadedBatchRef.current ? BATCH_SIZE : INITIAL_BATCH_SIZE,
         fetchNext: (token, cursor, count) =>
-          fetchShortsNext(token, cursor, count, mode, { signal: controller.signal }),
+          fetchShortsNext(token, cursor, count, mode, {
+            signal: controller.signal,
+            after: activeVideoIdRef.current,
+          }),
         isFeedExpiredError: (error) => error instanceof ShortsFeedExpiredError,
         commitFeed: (feed, event) => {
           if (generation !== requestGenerationRef.current) return;
