@@ -1,48 +1,30 @@
 # Documentation Rules
 
-- Do not modify the README.md file in the project root directory unless explicitly requested.
+- Do not modify the `README.md` file in the project root directory unless explicitly requested.
 
 # Engineering Principles
 
 ## Code Quality
 
-- Write code that is clear, understandable, and easy to maintain.
-- Prefer simple, consistent, and well-structured solutions over clever or overly complex implementations.
-- Code should communicate intent clearly. Avoid unnecessary abstractions, indirection, or hidden behavior.
+- Write clear, readable, and maintainable code.
+- Prefer simple, consistent, and well-structured solutions over unnecessary complexity.
+- Keep responsibilities focused and code intent explicit.
+- Avoid unnecessary abstractions, indirection, and hidden behavior.
 
-## Cohesion and Coupling
+## Architecture and Dependencies
 
-- Prefer high cohesion and low coupling in system design.
-- The goal is not to eliminate coupling completely. A certain level of coupling is necessary for components to collaborate effectively.
-- Aim for intentional, explicit, and manageable coupling:
-  - Dependencies between components should represent meaningful relationships.
-  - Dependencies should be visible and easy to understand.
-  - Prefer well-defined interfaces and abstractions over implicit assumptions or hidden dependencies.
-  - Avoid unnecessary knowledge sharing between modules.
-  - Keep responsibilities clearly separated so changes remain localized.
-
-- When introducing or modifying dependencies, consider:
-  - Is this dependency required for a meaningful collaboration, or is it accidental coupling?
-  - Is the dependency direction appropriate?
-  - Does this relationship belong behind an abstraction?
-  - Will this design remain understandable and maintainable as the system grows?
-
-## Architecture and Design
-
-- Consider system-level impact when making changes.
-- Avoid solving problems only at the local code level when the issue is caused by architectural problems.
-- Prefer designs that improve long-term reliability, maintainability, and extensibility.
-- Avoid introducing special cases, workarounds, or hacks unless there is a clear architectural justification.
+- Favor high cohesion and low coupling, while recognizing that meaningful collaboration requires dependencies.
+- Keep module boundaries clear and dependencies intentional, explicit, and manageable.
+- Prefer well-defined interfaces and appropriate dependency direction.
+- Consider system-wide implications and address problems at the appropriate architectural level.
+- Avoid unnecessary complexity, special cases, and workarounds that compromise maintainability.
 
 # Bug Fixing Principles
 
-- When a bug is discovered, do not immediately apply a temporary patch.
-- First identify the root cause of the problem.
-- Analyze the issue from a system perspective:
-  - Is the current architecture contributing to the problem?
-  - Is there a missing abstraction or incorrect responsibility boundary?
-  - Does another component need redesign or optimization?
-- Fix the underlying cause instead of only addressing the observed symptom.
+- Identify the root cause before implementing a fix.
+- Determine whether the issue is local or reflects a broader design problem.
+- Address the underlying cause rather than merely treating symptoms.
+- Avoid temporary workarounds unless justified by clear constraints.
 
 # Compatibility Principles
 
@@ -52,14 +34,14 @@
 
 # Before Making Changes
 
-Before modifying code:
-
-1. Understand the existing architecture and design intent.
-2. Identify the affected components and their responsibilities.
-3. Explain the root cause of the problem.
-4. Evaluate whether the issue indicates a broader design problem.
-5. Consider alternative solutions and choose the one with the best long-term maintainability.
-6. Only then implement the change.
+- Understand the relevant code, existing conventions, and intended behavior before making changes.
+- Keep changes focused on the requested task and avoid unrelated modifications.
+- Match the depth of analysis to the complexity and impact of the change:
+  - **Simple changes:** Inspect the relevant code and implement directly without unnecessary analysis.
+  - **Feature development:** Identify affected components, responsibilities, dependencies, and potential architectural implications.
+  - **Bug fixes:** Investigate the root cause and determine whether a local fix or broader design change is appropriate.
+  - **Significant architectural changes:** Evaluate alternatives, trade-offs, and long-term maintainability before implementation.
+- Prefer the simplest solution that fully addresses the requirements without compromising correctness or maintainability.
 
 # Git Commit Conventions
 
