@@ -20,6 +20,7 @@ afterEach(() => {
   for (const video of videos) disposeVideoSource(video);
   videos.clear();
   FakeHls.instances = [];
+  Object.defineProperty(document, "hidden", { value: false });
 });
 function media() {
   const video = document.createElement("video");
@@ -234,8 +235,7 @@ for (const status of [401, 403, 429]) {
   });
 }
 
-function setup(options: { original?: PlaybackSource; cloud?: PlaybackSource; mode?: "auto" | "original" | "compatible" } = {}) {
-  const video = media();
+function setup(options: { original?: PlaybackSource; cloud?: PlaybackSource; mode?: "auto" | "original" | "compatible"; active?: boolean } = {}, video = media()) {
   const urls: URL[] = [];
   const originalSource = options.original ?? original;
   const fetcher = (async (path: RequestInfo | URL) => {
@@ -244,13 +244,246 @@ function setup(options: { original?: PlaybackSource; cloud?: PlaybackSource; mod
     if (url.pathname.startsWith("/p/")) return new Response(null, { status: 206 });
     return manifest(originalSource, url.searchParams.get("source") === "cloud" ? options.cloud ?? readyCloud : cloud);
   }) as typeof fetch;
-  attachVideoSource(video, original.url!, "/api/video/one/playback", { fetch: fetcher, loadHls, mode: options.mode });
+  attachVideoSource(video, original.url!, "/api/video/one/playback", { fetch: fetcher, loadHls, mode: options.mode, active: options.active });
   return { video, urls };
 }
 function mediaError(video: HTMLVideoElement, code = 4) {
   Object.defineProperty(video, "error", { value: { code }, configurable: true, writable: true });
   video.dispatchEvent(new Event("error"));
 }
+
+function startupPlayback(t: TestContext, options: Parameters<typeof setup>[0] = {}) {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
+  const video = media();
+  const load = video.load;
+  video.load = () => {
+    load();
+    Object.assign(video, { readyState: 0, videoWidth: 0, videoHeight: 0, duration: NaN });
+  };
+  video.preload = "metadata";
+  const env = setup(options, video);
+  const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+  return {
+    ...env, flush,
+    async advance(ms: number) { t.mock.timers.tick(ms); await flush(); },
+    metadata() {
+      Object.assign(video, { readyState: 1, videoWidth: 1080, videoHeight: 1920, duration: 180 });
+      video.dispatchEvent(new Event("loadedmetadata"));
+    },
+    frame() {
+      Object.assign(video, { readyState: 4, videoWidth: 1080, videoHeight: 1920 });
+      video.dispatchEvent(new Event("loadeddata"));
+    },
+  };
+}
+
+test("smart playback switches a scanning original to HLS after 10 seconds without refreshing it", async (t) => {
+  const env = startupPlayback(t);
+  await env.flush();
+  await env.video.play();
+  for (const milliseconds of [5_000, 4_999]) {
+    env.video.dispatchEvent(new Event("progress"));
+    await env.advance(milliseconds);
+    assert.equal(env.urls.length, 1);
+  }
+  await env.advance(1);
+  assert.equal(env.urls.length, 2);
+  assert.equal(env.urls[1].searchParams.get("source"), "cloud");
+  assert.equal(env.urls[1].searchParams.has("refresh"), false);
+  assert.equal(playbackSourceState(env.video)?.activeSource?.id, "cloud");
+  assert.equal(playbackSourceState(env.video)?.mode, "auto");
+  env.metadata();
+  env.frame();
+  assert.equal(env.video.paused, false);
+  await env.advance(60_000);
+  assert.equal(env.urls.length, 2);
+  assert.equal(playbackSourceError(env.video), null);
+});
+
+test("metadata-only preloading waits for a play request before timing out the first frame", async (t) => {
+  const env = startupPlayback(t);
+  await env.flush();
+  env.metadata();
+  await env.advance(60_000);
+  assert.equal(env.urls.length, 1);
+  await env.video.play();
+  await env.advance(9_999);
+  assert.equal(env.urls.length, 1);
+  await env.advance(1);
+  assert.equal(playbackSourceState(env.video)?.activeSource?.id, "cloud");
+});
+
+test("a paused first-frame request gets a fresh startup budget when resumed", async (t) => {
+  const env = startupPlayback(t);
+  await env.flush();
+  env.metadata();
+  await env.video.play();
+  await env.advance(5_000);
+  env.video.pause();
+  await env.advance(60_000);
+  assert.equal(env.urls.length, 1);
+  await env.video.play();
+  await env.advance(9_999);
+  assert.equal(env.urls.length, 1);
+  await env.advance(1);
+  assert.equal(env.urls.length, 2);
+});
+
+test("playback buffering after the first frame never triggers startup recovery", async (t) => {
+  const env = startupPlayback(t);
+  await env.flush();
+  env.metadata();
+  await env.video.play();
+  env.frame();
+  Object.assign(env.video, { readyState: 1 });
+  for (const event of ["waiting", "stalled", "timeupdate"]) env.video.dispatchEvent(new Event(event));
+  await env.advance(120_000);
+  assert.equal(env.urls.length, 1);
+  assert.equal(playbackSourceError(env.video), null);
+});
+
+test("manual original startup timeout offers compatibility without switching or retaining the download", async (t) => {
+  const env = startupPlayback(t, { mode: "original" });
+  await env.flush();
+  await env.advance(10_000);
+  assert.equal(env.urls.length, 1);
+  assert.equal(FakeHls.instances.length, 0);
+  assert.equal(playbackSourceState(env.video)?.mode, "original");
+  assert.equal(playbackSourceState(env.video)?.error?.reason, "timeout");
+  assert.deepEqual(playbackSourceState(env.video)?.error?.recoveryModes, ["compatible"]);
+  assert.match(playbackSourceError(env.video)!, /原画播放加载超时/);
+  assert.equal(env.video.getAttribute("src"), null);
+  selectPlaybackMode(env.video, "compatible");
+  await env.flush();
+  env.metadata();
+  env.frame();
+  await env.advance(60_000);
+  assert.equal(playbackSourceError(env.video), null);
+  assert.equal(playbackSourceState(env.video)?.activeSource?.id, "cloud");
+});
+
+test("timing out both sources stops recovery and a manual retry only retries the failed cloud", async (t) => {
+  const env = startupPlayback(t);
+  await env.flush();
+  await env.video.play();
+  await env.advance(10_000);
+  await env.advance(10_000);
+  assert.equal(env.urls.length, 2);
+  assert.equal(FakeHls.instances[0].destroyed, true);
+  assert.equal(playbackSourceState(env.video)?.error?.sourceID, "cloud");
+  assert.equal(playbackSourceState(env.video)?.error?.reason, "timeout");
+  assert.deepEqual(playbackSourceState(env.video)?.error?.recoveryModes, []);
+  assert.match(playbackSourceError(env.video)!, /原画播放暂不可用，兼容播放加载超时/);
+  await env.advance(120_000);
+  assert.equal(env.urls.length, 2);
+  retryVideoSource(env.video);
+  await env.flush();
+  assert.equal(env.urls.length, 3);
+  assert.equal(env.urls[2].searchParams.get("source"), "cloud");
+  assert.equal(env.urls[2].searchParams.get("refresh"), "1");
+  await env.advance(10_000);
+  assert.equal(playbackSourceState(env.video)?.error?.sourceID, "cloud");
+  assert.equal(env.urls.length, 3);
+});
+
+test("a missing compatible source reports failure after the original timeout without cycling", async (t) => {
+  const env = startupPlayback(t, { cloud: { ...cloud, status: "unavailable", message: "网盘暂未提供兼容播放源" } });
+  await env.flush();
+  await env.advance(10_000);
+  assert.match(playbackSourceError(env.video)!, /原画播放暂不可用，网盘暂未提供兼容播放源/);
+  await env.advance(120_000);
+  assert.equal(env.urls.length, 2);
+  assert.equal(FakeHls.instances.length, 0);
+});
+
+test("inactive preloading starts its startup timeout only when promoted to active", async (t) => {
+  const env = startupPlayback(t, { active: false });
+  await env.flush();
+  await env.advance(60_000);
+  assert.equal(env.urls.length, 1);
+  setVideoSourceActive(env.video, true);
+  await env.advance(10_000);
+  assert.equal(playbackSourceState(env.video)?.activeSource?.id, "cloud");
+});
+
+test("leaving an active video cancels its startup timeout until it becomes active again", async (t) => {
+  const env = startupPlayback(t);
+  await env.flush();
+  await env.advance(5_000);
+  setVideoSourceActive(env.video, false);
+  await env.advance(60_000);
+  assert.equal(env.urls.length, 1);
+  setVideoSourceActive(env.video, true);
+  await env.advance(9_999);
+  assert.equal(env.urls.length, 1);
+  await env.advance(1);
+  assert.equal(env.urls.length, 2);
+});
+
+test("hidden pages cancel startup detection and get a fresh timeout on return", async (t) => {
+  const env = startupPlayback(t);
+  await env.flush();
+  await env.advance(5_000);
+  Object.defineProperty(document, "hidden", { value: true });
+  document.dispatchEvent(new Event("visibilitychange"));
+  await env.advance(60_000);
+  assert.equal(env.urls.length, 1);
+  Object.defineProperty(document, "hidden", { value: false });
+  document.dispatchEvent(new Event("visibilitychange"));
+  await env.advance(10_000);
+  assert.equal(env.urls.length, 2);
+});
+
+test("preload none does not run startup detection until playback is requested", async (t) => {
+  const env = startupPlayback(t);
+  env.video.preload = "none";
+  await env.flush();
+  await env.advance(60_000);
+  assert.equal(env.urls.length, 1);
+  await env.video.play();
+  await env.advance(10_000);
+  assert.equal(env.urls.length, 2);
+});
+
+test("disposing a stalled video cancels every future startup recovery", async (t) => {
+  const env = startupPlayback(t);
+  await env.flush();
+  await env.advance(5_000);
+  disposeVideoSource(env.video);
+  await env.advance(120_000);
+  assert.equal(env.urls.length, 1);
+  assert.equal(FakeHls.instances.length, 0);
+});
+
+test("replacing a stalled source cancels its timeout without affecting the new video", async (t) => {
+  const env = startupPlayback(t);
+  await env.flush();
+  await env.advance(5_000);
+  attachVideoSource(env.video, "new", "/api/video/new/playback", {
+    fetch: (async () => manifest({ ...original, url: "https://cdn.example/new.mp4" })) as typeof fetch,
+  });
+  await env.flush();
+  env.metadata();
+  env.frame();
+  await env.advance(60_000);
+  assert.equal(env.urls.length, 1);
+  assert.equal(env.video.src, "https://cdn.example/new.mp4");
+  assert.equal(playbackSourceError(env.video), null);
+});
+
+test("switching modes cancels the previous source's startup timeout", async (t) => {
+  const env = startupPlayback(t);
+  await env.flush();
+  await env.advance(5_000);
+  selectPlaybackMode(env.video, "compatible");
+  await env.flush();
+  env.metadata();
+  env.frame();
+  await env.advance(120_000);
+  assert.equal(env.urls.length, 2);
+  assert.equal(FakeHls.instances[0].destroyed, false);
+  assert.equal(playbackSourceState(env.video)?.mode, "compatible");
+});
 
 test("automatic original playback does not resolve or load the optional HLS source", async () => {
   const { video, urls } = setup();
@@ -576,23 +809,25 @@ test("the controller also supports a direct HLS source without a metadata endpoi
   assert.equal(FakeHls.instances.length, 1);
 });
 
-test("provider rate limits wrapped in HTTP 502 stop original refresh and fallback", async () => {
-  const video = media();
-  let requests = 0;
-  attachVideoSource(video, original.url!, "/api/video/one/playback", {
-    fetch: (async (path) => {
-      requests++;
-      return String(path).includes("/p/stream/")
-        ? json({ code: "drive_rate_limited", message: "网盘当前正在限流" }, 502)
-        : manifest(original, cloud);
-    }) as typeof fetch,
+for (const status of [424, 502]) {
+  test(`provider rate limits wrapped in HTTP ${status} stop original refresh and fallback`, async () => {
+    const video = media();
+    let requests = 0;
+    attachVideoSource(video, original.url!, "/api/video/one/playback", {
+      fetch: (async (path) => {
+        requests++;
+        return String(path).includes("/p/stream/")
+          ? json({ code: "drive_rate_limited", message: "网盘当前正在限流" }, status)
+          : manifest(original, cloud);
+      }) as typeof fetch,
+    });
+    await settle();
+    mediaError(video, 2);
+    await settle();
+    assert.match(playbackSourceError(video)!, /限流/);
+    assert.equal(requests, 2);
   });
-  await settle();
-  mediaError(video, 2);
-  await settle();
-  assert.match(playbackSourceError(video)!, /限流/);
-  assert.equal(requests, 2);
-});
+}
 
 test("volume changes during cloud resolution remain effective after switching", async () => {
   const video = media();
@@ -619,20 +854,20 @@ test("volume changes during cloud resolution remain effective after switching", 
 test("unavailable cloud playback records the failed source when the original format was skipped", async () => {
   const { video } = setup({
     original: { ...original, mediaType: "video/mp2t" },
-    cloud: { ...cloud, status: "unavailable", message: "沃盘暂未提供该视频的兼容播放源" },
+    cloud: { ...cloud, status: "unavailable", message: "联通网盘暂未提供该视频的兼容播放源" },
   });
   await settle();
   const error = playbackSourceState(video)?.error;
   assert.equal(error?.sourceID, "cloud");
   assert.equal(error?.reason, "unavailable");
   assert.deepEqual(error?.recoveryModes, []);
-  assert.match(error?.message ?? "", /原画播放暂不可用；沃盘暂未提供/);
+  assert.match(error?.message ?? "", /原画播放暂不可用，联通网盘暂未提供/);
   assert.equal(playbackSourceState(video)?.notice, null);
 });
 
 test("reacquiring a failed cloud source preserves the failure of the original instead of cycling", async () => {
   const { video, urls } = setup({
-    cloud: { ...cloud, status: "unavailable", message: "沃盘暂未提供该视频的兼容播放源" },
+    cloud: { ...cloud, status: "unavailable", message: "联通网盘暂未提供该视频的兼容播放源" },
   });
   await settle();
   mediaError(video);
@@ -662,7 +897,7 @@ test("reacquiring a missing cloud source can succeed while preserving smart sele
       const url = new URL(String(path));
       urls.push(url);
       return manifest({ ...original, mediaType: "video/mp2t" }, url.searchParams.get("source") === "cloud"
-        ? cloudReady ? readyCloud : { ...cloud, status: "unavailable", message: "沃盘暂未提供该视频的兼容播放源" } : cloud);
+        ? cloudReady ? readyCloud : { ...cloud, status: "unavailable", message: "联通网盘暂未提供该视频的兼容播放源" } : cloud);
     }) as typeof fetch,
   });
   await settle();
@@ -732,7 +967,7 @@ test("retrying an unsupported original refreshes discovery instead of loading un
 });
 
 test("an unsuccessful fallback never announces a successful source switch", async () => {
-  const { video } = setup({ cloud: { ...cloud, status: "unavailable", message: "沃盘暂未提供该视频的兼容播放源" } });
+  const { video } = setup({ cloud: { ...cloud, status: "unavailable", message: "联通网盘暂未提供该视频的兼容播放源" } });
   await settle();
   const notices: string[] = [];
   video.addEventListener("playback-source-change", () => {

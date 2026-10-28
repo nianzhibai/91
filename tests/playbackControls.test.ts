@@ -194,6 +194,86 @@ test("ArtPlayer playback selector uses the shared controller without reconnectin
   assert.equal(reconnects, 0);
 });
 
+test("an unsupported original-only video identifies the browser limitation without mentioning compatibility", async (t) => {
+  t.mock.method(window.HTMLMediaElement.prototype, "canPlayType", (type: string) => type === "video/quicktime" ? "" : "probably");
+  const original = { id: "original", label: "原画播放", kind: "original", protocol: "file", status: "ready", url: "/p/stream/googledrive/file", mediaType: "video/quicktime" };
+  const requests: string[] = [];
+  window.fetch = (async (path) => {
+    requests.push(String(path));
+    return new Response(JSON.stringify({ sources: [original] }), { status: 200 });
+  }) as typeof fetch;
+  const view = render(createElement(VideoPlayer, { src: original.url, playbackUrl: "/api/video/one/playback", title: "Example", poster: "" }));
+  await settle();
+  const video = view.container.querySelector("video")!;
+  assert.equal(playbackSourceState(video)?.error?.reason, "unsupported");
+  assert.equal(playbackSourceState(video)?.error?.message, "浏览器无法播放当前视频");
+  assert.equal(view.container.querySelector(".video-player__error-title")?.textContent, "视频无法播放");
+  assert.equal(view.container.querySelector(".video-player__error-message")?.textContent, "浏览器无法播放当前视频");
+  assert.doesNotMatch(view.getByRole("alert").textContent ?? "", /兼容播放|视频源暂不可用|其他浏览器|外部播放器/);
+  assert.equal(requests.length, 1);
+  assert.equal(video.getAttribute("src"), null);
+  assert.equal(view.queryByRole("button", { name: "切换兼容播放" }), null);
+});
+
+test("an original-only decoding error uses the same browser-specific failure card", async () => {
+  const original = { id: "original", label: "原画播放", kind: "original", protocol: "file", status: "ready", url: "/p/stream/googledrive/file", mediaType: "video/mp4" };
+  window.fetch = (async (path) => String(path).includes("/p/stream/")
+    ? new Response(null, { status: 206 })
+    : new Response(JSON.stringify({ sources: [original] }), { status: 200 })) as typeof fetch;
+  const view = render(createElement(VideoPlayer, { src: original.url, playbackUrl: "/api/video/one/playback", title: "Example", poster: "" }));
+  await settle();
+  const video = view.container.querySelector("video")!;
+  Object.defineProperty(video, "error", { configurable: true, value: { code: 3 } });
+  await act(async () => { video.dispatchEvent(new Event("error")); });
+  await settle();
+  assert.equal(playbackSourceState(video)?.error?.reason, "unsupported");
+  assert.equal(playbackSourceState(video)?.error?.message, "浏览器无法播放当前视频");
+  assert.equal(view.container.querySelector(".video-player__error-title")?.textContent, "视频无法播放");
+  assert.equal(view.container.querySelector(".video-player__error-message")?.textContent, "浏览器无法播放当前视频");
+  assert.doesNotMatch(view.getByRole("alert").textContent ?? "", /兼容播放|视频源暂不可用|其他浏览器|外部播放器/);
+});
+
+test("an original-only access error retains its source message without blaming browser support", async () => {
+  const original = { id: "original", label: "原画播放", kind: "original", protocol: "file", status: "ready", url: "/p/stream/googledrive/file", mediaType: "video/mp4" };
+  window.fetch = (async (path) => String(path).includes("/p/stream/")
+    ? new Response(JSON.stringify({ message: "当前账号无权访问该视频源" }), { status: 403, headers: { "Content-Type": "application/json" } })
+    : new Response(JSON.stringify({ sources: [original] }), { status: 200 })) as typeof fetch;
+  const view = render(createElement(VideoPlayer, { src: original.url, playbackUrl: "/api/video/one/playback", title: "Example", poster: "" }));
+  await settle();
+  const video = view.container.querySelector("video")!;
+  Object.defineProperty(video, "error", { configurable: true, value: { code: 4 } });
+  await act(async () => { video.dispatchEvent(new Event("error")); });
+  await settle();
+  assert.equal(playbackSourceState(video)?.error?.reason, "access");
+  assert.equal(view.container.querySelector(".video-player__error-title")?.textContent, "视频源暂不可用");
+  assert.match(view.getByRole("alert").textContent ?? "", /当前账号无权访问该视频源/);
+  assert.doesNotMatch(view.getByRole("alert").textContent ?? "", /浏览器无法播放当前视频|兼容播放/);
+});
+
+test("a drive initialization failure takes precedence over an unsupported TS format", async (t) => {
+  t.mock.method(window.HTMLMediaElement.prototype, "canPlayType", () => "");
+  let requests = 0;
+  window.fetch = (async () => {
+    requests++;
+    return new Response(JSON.stringify({ code: "drive_auth_failed", message: "联通网盘登录或授权已失效，请联系管理员重新登录" }), {
+      status: 424, headers: { "Content-Type": "application/json" },
+    });
+  }) as typeof fetch;
+  const view = render(createElement(VideoPlayer, { src: "/p/stream/wopan/file", playbackUrl: "/api/video/ts/playback", title: "Example", poster: "" }));
+  await settle();
+  const video = view.container.querySelector("video")!;
+  assert.equal(playbackSourceState(video)?.error?.reason, "access");
+  assert.equal(view.container.querySelector(".video-player__error-title")?.textContent, "视频源暂不可用");
+  assert.equal(view.container.querySelector(".video-player__error-message")?.textContent, "联通网盘登录或授权已失效，请联系管理员重新登录");
+  assert.doesNotMatch(view.getByRole("alert").textContent ?? "", /浏览器无法播放当前视频|兼容播放/);
+  assert.equal(video.getAttribute("src"), null);
+  assert.equal(requests, 1);
+  await act(async () => { view.getByRole("button", { name: "重新获取" }).click(); });
+  await settle();
+  assert.equal(requests, 2);
+  assert.equal(playbackSourceState(video)?.error?.reason, "access");
+});
+
 test("a failed compatibility selection exposes a working original switch in the error overlay", async () => {
   const original = { id: "original", label: "原画播放", kind: "original", protocol: "file", status: "ready", url: "/p/stream/drive/file", mediaType: "video/mp4" };
   const cloud = { id: "cloud", label: "兼容播放", kind: "transcoded", protocol: "hls", status: "unknown", resolveUrl: "/api/video/one/playback?source=cloud" };
@@ -253,13 +333,13 @@ test("missing cloud source offers reacquisition instead of switching to an unava
     const refreshed = url.searchParams.get("refresh") === "1";
     return new Response(JSON.stringify({ sources: [original, !resolved ? cloud : refreshed
       ? { ...cloud, status: "ready", url: "https://hls.example/index.m3u8" }
-      : { ...cloud, status: "unavailable", message: "沃盘暂未提供该视频的兼容播放源" }] }), { status: 200 });
+      : { ...cloud, status: "unavailable", message: "联通网盘暂未提供该视频的兼容播放源" }] }), { status: 200 });
   }) as typeof fetch;
   try {
     const view = render(createElement(VideoPlayer, { src: original.url, playbackUrl: "/api/video/one/playback", title: "Example", poster: "" }));
     await settle();
     const alert = view.getByRole("alert");
-    assert.match(alert.textContent ?? "", /原画播放暂不可用；沃盘暂未提供/);
+    assert.match(alert.textContent ?? "", /原画播放暂不可用，联通网盘暂未提供/);
     assert.equal(view.queryByRole("button", { name: "切换兼容播放" }), null);
     assert.equal(view.queryByRole("button", { name: "尝试原画播放" }), null);
     await act(async () => { view.getByRole("button", { name: "重新获取" }).click(); });
@@ -284,7 +364,7 @@ test("a failed automatic fallback does not offer the last attached original or t
     urls.push(url);
     if (url.pathname.startsWith("/p/")) return new Response(null, { status: 206 });
     return new Response(JSON.stringify({ sources: [original, url.searchParams.get("source") === "cloud"
-      ? { ...cloud, status: "unavailable", message: "沃盘暂未提供该视频的兼容播放源" } : cloud] }), { status: 200 });
+      ? { ...cloud, status: "unavailable", message: "联通网盘暂未提供该视频的兼容播放源" } : cloud] }), { status: 200 });
   }) as typeof fetch;
   const view = render(createElement(VideoPlayer, { src: original.url, playbackUrl: "/api/video/one/playback", title: "Example", poster: "" }));
   await settle();
@@ -300,7 +380,7 @@ test("a failed automatic fallback does not offer the last attached original or t
   await settle();
   assert.equal(urls.at(-1)?.searchParams.get("source"), "cloud");
   assert.equal(urls.at(-1)?.searchParams.get("refresh"), "1");
-  assert.match(view.getByRole("alert").textContent ?? "", /原画播放暂不可用；沃盘暂未提供/);
+  assert.match(view.getByRole("alert").textContent ?? "", /原画播放暂不可用，联通网盘暂未提供/);
 });
 
 test("playback submenu keeps the root width and separates selected mode from the actual source", async () => {

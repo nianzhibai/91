@@ -42,7 +42,7 @@ func (d *Driver) PlaybackSources(ctx context.Context, fileID string) ([]drives.P
 		source := drives.PlaybackSource{ID: "cloud", Label: "兼容播放", Kind: "transcoded", Protocol: "hls", Status: "ready", Link: hls, MediaType: "application/vnd.apple.mpegurl"}
 		if hls == nil {
 			source.Status = "unavailable"
-			source.Message = "沃盘暂未提供该视频的兼容播放源"
+			source.Message = "联通网盘暂未提供该视频的兼容播放源"
 		}
 		return []drives.PlaybackSource{source}, nil
 	}

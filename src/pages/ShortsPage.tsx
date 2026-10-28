@@ -3626,7 +3626,7 @@ function getDriveShortName(source: string): string {
   if (s.includes("移动") || s.includes("yun139")) return "移动";
   if (s.includes("quark") || s.includes("夸克")) return "Quak";
   if (s.includes("onedrive")) return "OD";
-  if (s.includes("wopan") || s.includes("沃盘")) return "沃盘";
+  if (s.includes("wopan") || s.includes("沃盘") || s.includes("联通")) return "联通网盘";
   if (s.includes("guangyapan") || s.includes("guangya") || s.includes("光鸭")) return "光鸭";
   if (s.includes("webdav") || s.includes("web dav")) return "WebDAV";
   if (s.includes("localstorage") || s.includes("本地")) return "本地";

@@ -223,6 +223,13 @@ func (p *Proxy) driveInitError(driveID string) (driveInitError, bool) {
 	return result, ok
 }
 
+// DriveInitializationError returns a recorded mount failure without contacting
+// the provider. InvalidateDrive clears it when credentials or the driver change.
+func (p *Proxy) DriveInitializationError(driveID string) error {
+	failure, _ := p.driveInitError(driveID)
+	return failure.err
+}
+
 func (p *Proxy) getLink(ctx context.Context, d drives.Drive, driveID, fileID string, header http.Header) (*drives.StreamLink, error) {
 	key := linkCacheKey(d, driveID, fileID, header)
 	now := time.Now()
@@ -576,7 +583,9 @@ func writeStreamError(w http.ResponseWriter, driveKind string, err error) {
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusBadGateway)
+	// These are application-level drive dependency failures. A gateway 502
+	// can be replaced by a CDN, discarding the code/message the player needs.
+	w.WriteHeader(http.StatusFailedDependency)
 	_ = json.NewEncoder(w).Encode(streamErrorResponse{Code: code, Message: message})
 }
 
@@ -648,7 +657,7 @@ func driveLabel(kind string) string {
 	case "pikpak":
 		return "PikPak"
 	case "wopan":
-		return "沃盘"
+		return "联通网盘"
 	case "yun139":
 		return "移动网盘"
 	case "onedrive":

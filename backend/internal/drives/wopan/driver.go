@@ -158,7 +158,7 @@ func (d *Driver) List(ctx context.Context, dirID string) ([]drives.Entry, error)
 }
 
 func (d *Driver) Stat(ctx context.Context, fileID string) (*drives.Entry, error) {
-	// 沃盘 SDK 没有单文件查询，退化为遍历父目录 —— 这里第一版只在 scanner 路径使用 List，Stat 保留 stub
+	// 联通网盘 SDK 没有单文件查询，退化为遍历父目录 —— 这里第一版只在 scanner 路径使用 List，Stat 保留 stub
 	return nil, drives.ErrNotSupported
 }
 

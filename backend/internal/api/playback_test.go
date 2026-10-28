@@ -142,7 +142,7 @@ func TestPlaybackManifestAndLazyCloudResolution(t *testing.T) {
 		})
 	}
 	d.err = errors.New("request failed with rsp_code: 1001,rep_desc: 无效登录信息")
-	if rr := request("/api/video/ts/playback?source=cloud&refresh=1", true); rr.Code != 502 || !strings.Contains(rr.Body.String(), "drive_auth_failed") {
+	if rr := request("/api/video/ts/playback?source=cloud&refresh=1", true); rr.Code != http.StatusFailedDependency || !strings.Contains(rr.Body.String(), "drive_auth_failed") {
 		t.Fatalf("provider error lost: %d %s", rr.Code, rr.Body.String())
 	}
 	decode(request("/api/video/ts/playback", true))
@@ -186,6 +186,68 @@ func TestPlaybackManifestAndLazyCloudResolution(t *testing.T) {
 type apiOriginalOnlyDrive struct{ drives.Drive }
 
 func (*apiOriginalOnlyDrive) Kind() string { return "webdav" }
+
+func TestPlaybackMetadataPrioritizesDriveInitializationErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name, code, message string
+		err                 error
+	}{
+		{"authorization", "drive_auth_failed", "联通网盘登录或授权已失效，请联系管理员重新登录", errors.New("request failed with rsp_code: 1001,rep_desc: 无效的令牌！")},
+		{"unavailable", "drive_upstream_unavailable", "联通网盘上游服务暂时不可用，请稍后重试", &drives.ProviderError{Kind: drives.ProviderErrorUnavailable, Err: errors.New("connection failed")}},
+		{"throttled", "drive_rate_limited", "联通网盘当前正在限流，请稍后重试", &drives.RateLimitError{Provider: "wopan", RetryAfter: time.Minute, Err: errors.New("rate limited")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registry := proxy.NewRegistry()
+			p := proxy.New(registry)
+			p.SetDriveInitError("wo", "wopan", tc.err)
+			s := &Server{Proxy: p}
+			for _, ext := range []string{"ts", "mp4"} {
+				video := &catalog.Video{ID: ext, DriveID: "wo", FileID: ext, Ext: ext}
+				for _, base := range []string{"/api/video/" + ext + "/playback", "/api/share/claimed/playback"} {
+					for _, target := range []struct{ method, suffix string }{
+						{http.MethodGet, ""},
+						{http.MethodGet, "?source=original&refresh=1"},
+						{http.MethodGet, "?source=cloud&refresh=1"},
+						{http.MethodPost, "/prepare"},
+					} {
+						r := httptest.NewRequest(target.method, base+target.suffix, nil)
+						w := httptest.NewRecorder()
+						s.servePlaybackMetadata(w, r, video, "/p/stream/wo/"+ext)
+						if w.Code != http.StatusFailedDependency {
+							t.Fatalf("%s %s: status=%d body=%s", target.method, r.URL, w.Code, w.Body.String())
+						}
+						var payload struct{ Code, Message string }
+						if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+							t.Fatal(err)
+						}
+						if payload.Code != tc.code || payload.Message != tc.message {
+							t.Fatalf("%s %s: payload=%+v", target.method, r.URL, payload)
+						}
+						if strings.Contains(w.Body.String(), `"sources"`) || w.Header().Get("Cache-Control") != "no-store" {
+							t.Fatalf("failed drive advertised or cached playback sources: %s", w.Body.String())
+						}
+					}
+				}
+			}
+
+			// Reattaching after credentials are repaired clears the mount error;
+			// metadata remains lazy and does not request cloud previews or bytes.
+			p.InvalidateDrive("wo")
+			d := &apiPlaybackDrive{}
+			registry.Set("wo", d)
+			w := httptest.NewRecorder()
+			s.servePlaybackMetadata(w, httptest.NewRequest(http.MethodGet, "/api/video/ts/playback", nil),
+				&catalog.Video{ID: "ts", DriveID: "wo", FileID: "ts", Ext: "ts"}, "/p/stream/wo/ts")
+			var manifest PlaybackManifestDTO
+			if err := json.Unmarshal(w.Body.Bytes(), &manifest); err != nil {
+				t.Fatal(err)
+			}
+			if w.Code != http.StatusOK || len(manifest.Sources) != 2 || manifest.Sources[1].Status != "unknown" || d.calls != 0 {
+				t.Fatalf("recovered drive: status=%d manifest=%+v preview calls=%d", w.Code, manifest, d.calls)
+			}
+		})
+	}
+}
 
 func TestHLSPlaybackAuthenticatesEveryResourceAndShare(t *testing.T) {
 	ctx := context.Background()

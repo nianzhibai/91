@@ -16,7 +16,6 @@ import {
   disposeVideoSource,
   PLAYBACK_SOURCE_ERROR,
   PLAYBACK_SOURCE_CHANGE,
-  playbackSourceError,
   playbackSourceURL,
   playbackSourceState,
   playbackModeLabel,
@@ -306,17 +305,6 @@ export function VideoPlayer({
     }
   }
 
-  async function copySource() {
-    const absolute = new URL((artRef.current && playbackSourceURL(artRef.current.video)) || src, window.location.href).href;
-    try {
-      await navigator.clipboard.writeText(absolute);
-      showGestureHud("播放地址已复制", 900);
-    } catch {
-      fallbackCopyText(absolute);
-      showGestureHud("播放地址已复制", 900);
-    }
-  }
-
   const previewStyle = previewHover
     ? ({ left: `${previewHover.x}px` } as CSSProperties)
     : undefined;
@@ -347,9 +335,6 @@ export function VideoPlayer({
                 {mode === "original" ? "尝试原画播放" : "切换兼容播放"}
               </button>
             ))}
-            <button type="button" onClick={copySource}>
-              复制地址
-            </button>
           </div>
         </div>
       )}
@@ -611,8 +596,13 @@ function mountArtPlayer({
   }
 
   function handleSourceError() {
-    const message = playbackSourceError(video);
-    if (message) onError({ title: "视频源暂不可用", message });
+    const failure = playbackSourceState(video)?.error;
+    if (!failure) return;
+    const unsupportedOriginal = failure.reason === "unsupported" && failure.sourceID === "original";
+    onError({
+      title: unsupportedOriginal ? "视频无法播放" : "视频源暂不可用",
+      message: failure.message,
+    });
   }
 
   let previousSourceNotice: string | null = null;
@@ -2478,7 +2468,7 @@ function mediaErrorMessage(error: MediaError | null) {
     case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
       return "浏览器未能加载视频源，可能是网盘连接、地址失效或视频格式问题";
     default:
-      return "视频源暂时无法播放，请重试或复制地址排查";
+      return "视频源暂时无法播放，请重试";
   }
 }
 
@@ -2491,23 +2481,6 @@ function syncPreviewVideo(video: HTMLVideoElement | null, ratio: number) {
     } catch {
       // ignore
     }
-  }
-}
-
-function fallbackCopyText(text: string) {
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.setAttribute("readonly", "true");
-  textarea.style.position = "fixed";
-  textarea.style.left = "-9999px";
-  document.body.appendChild(textarea);
-  textarea.select();
-  try {
-    document.execCommand("copy");
-  } catch {
-    // ignore
-  } finally {
-    textarea.remove();
   }
 }
 

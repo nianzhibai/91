@@ -78,19 +78,20 @@ test("playback diagnostics surface the backend drive error message", async () =>
         message: "115 网盘登录或授权已失效，请联系管理员重新登录",
       }),
       {
-        status: 502,
+        status: 424,
         headers: { "Content-Type": "application/json; charset=utf-8" },
       }
     );
   };
 
-  const message = await diagnosePlaybackSource("/p/stream/115/file-1", {
+  const failure = await diagnosePlaybackFailure("/p/stream/115/file-1", {
     baseHref: "https://video.example/videos/1",
     fetch: fetcher,
   });
 
+  assert.equal(failure?.kind, "access");
   assert.equal(
-    message,
+    failure?.message,
     "115 网盘登录或授权已失效，请联系管理员重新登录"
   );
   assert.equal(requestURL, "https://video.example/p/stream/115/file-1");

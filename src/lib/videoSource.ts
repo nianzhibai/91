@@ -15,7 +15,7 @@ export type PlaybackSource = {
   message?: string;
   expiresAt?: string;
 };
-type PlaybackFailureReason = "unsupported" | "network" | "processing" | "unavailable" | "access" | "throttled" | "other";
+type PlaybackFailureReason = "unsupported" | "network" | "timeout" | "processing" | "unavailable" | "access" | "throttled" | "other";
 export type PlaybackSourceFailure = {
   sourceID: string | null;
   reason: PlaybackFailureReason;
@@ -60,6 +60,7 @@ type SourceController = {
 };
 type RestoreState = { time: number; playing: boolean; rate: number; volume: number; muted: boolean };
 const controllers = new WeakMap<HTMLVideoElement, SourceController>();
+const STARTUP_TIMEOUT_MS = 10_000;
 
 export function playbackSourceState(video: HTMLVideoElement) {
   const state = controllers.get(video)?.state;
@@ -145,6 +146,8 @@ export function attachVideoSource(
   let wasPlaying = false;
   let initialized = false;
   let originalURL: string | null = null;
+  let startupTimer: ReturnType<typeof setTimeout> | null = null;
+  let startupComplete = false;
   const failed = new Set<string>();
   const refreshed = new Set<string>();
   const prepared = new Set<string>();
@@ -164,6 +167,7 @@ export function attachVideoSource(
       } else if (controller.state.processing && !controller.state.error && controller.state.activeSource) {
         void start(controller.state.activeSource, false);
       }
+      watchStartup();
     },
     retry() {
       const sourceID = controller.state.error ? controller.state.error.sourceID : controller.state.activeSource?.id;
@@ -200,25 +204,32 @@ export function attachVideoSource(
     destroy() {
       disposed = true;
       generation++;
+      clearStartupTimer();
       abort?.abort();
       hls?.destroy();
       hls = null;
       video.removeEventListener("error", mediaFailed);
       video.removeEventListener("loadedmetadata", loaded);
+      video.removeEventListener("loadeddata", watchStartup);
+      video.removeEventListener("playing", watchStartup);
       video.removeEventListener("timeupdate", checkFrames);
       video.removeEventListener("play", rememberPlaying);
       video.removeEventListener("pause", rememberPause);
       video.removeEventListener("volumechange", rememberVolume);
+      document.removeEventListener("visibilitychange", watchStartup);
     },
   };
   controllers.set(video, controller);
   video.setAttribute("referrerpolicy", "no-referrer");
   video.addEventListener("error", mediaFailed);
   video.addEventListener("loadedmetadata", loaded);
+  video.addEventListener("loadeddata", watchStartup);
+  video.addEventListener("playing", watchStartup);
   video.addEventListener("timeupdate", checkFrames);
   video.addEventListener("play", rememberPlaying);
   video.addEventListener("pause", rememberPause);
   video.addEventListener("volumechange", rememberVolume);
+  document.addEventListener("visibilitychange", watchStartup);
 
   function changed() {
     if (!disposed) video.dispatchEvent(new CustomEvent(PLAYBACK_SOURCE_CHANGE));
@@ -227,9 +238,14 @@ export function attachVideoSource(
     wasPlaying = true;
     if (restore) restore.playing = true;
     if (hls) hls.config.maxBufferLength = 15;
+    watchStartup();
   }
   function rememberPause() {
-    if (!controller.state.loading && !video.error && !controller.state.error) wasPlaying = false;
+    if (!controller.state.loading && !video.error && !controller.state.error) {
+      wasPlaying = false;
+      if (restore) restore.playing = false;
+    }
+    watchStartup();
   }
   function rememberVolume() {
     if (restore) {
@@ -245,16 +261,33 @@ export function attachVideoSource(
       volume: video.volume, muted: video.muted,
     };
   }
-  function begin() {
-    rememberState();
-    const epoch = ++generation;
-    controller.state.loading = true;
-    controller.state.processing = false;
-    controller.state.notice = null;
-    controller.state.error = null;
-    frameStart = null;
-    abort?.abort();
-    abort = new AbortController();
+  function clearStartupTimer() {
+    if (startupTimer !== null) clearTimeout(startupTimer);
+    startupTimer = null;
+  }
+  function startupPending() {
+    if (disposed || controller.state.loading || controller.state.error || !controller.state.activeSource) return false;
+    if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) startupComplete = true;
+    const playing = wasPlaying || !!restore?.playing || !video.paused;
+    // Metadata preloading may stop before the first frame. Only wait for that
+    // frame after a play request, and never rotate sources for later buffering.
+    return active && !document.hidden && !startupComplete &&
+      (video.readyState < 1 || playing) && (video.preload !== "none" || playing);
+  }
+  function watchStartup() {
+    if (!startupPending()) { clearStartupTimer(); return; }
+    if (startupTimer !== null) return;
+    const epoch = generation;
+    startupTimer = setTimeout(() => {
+      startupTimer = null;
+      if (epoch !== generation || !startupPending()) return;
+      const label = controller.state.activeSource!.label;
+      // A responsive download can still scan fragments indefinitely. Refreshing
+      // its signed URL would repeat the same scan, so try the next source once.
+      void recover("timeout", `${label}加载超时，请重试或切换播放方式`);
+    }, STARTUP_TIMEOUT_MS);
+  }
+  function resetMedia() {
     hls?.destroy();
     hls = null;
     video.pause();
@@ -263,11 +296,26 @@ export function attachVideoSource(
       video.querySelectorAll("source").forEach((source) => source.remove());
       video.load();
     }
+  }
+  function begin() {
+    rememberState();
+    const epoch = ++generation;
+    clearStartupTimer();
+    startupComplete = false;
+    controller.state.loading = true;
+    controller.state.processing = false;
+    controller.state.notice = null;
+    controller.state.error = null;
+    frameStart = null;
+    abort?.abort();
+    abort = new AbortController();
+    resetMedia();
     changed();
     return epoch;
   }
   function fail(message: string, source: PlaybackSource | null, reason: PlaybackFailureReason) {
     if (disposed) return;
+    clearStartupTimer();
     const recoveryModes: Exclude<PlaybackMode, "auto">[] = [];
     if (!stopsRecovery(reason)) {
       for (const alternative of controller.state.sources) {
@@ -278,9 +326,13 @@ export function attachVideoSource(
       }
     }
     const original = controller.state.sources.find((item) => item.kind === "original");
+    if (reason === "unsupported" && source?.kind === "original" &&
+        !controller.state.sources.some((item) => item.kind === "transcoded")) {
+      message = "浏览器无法播放当前视频";
+    }
     if (controller.state.mode === "auto" && source?.kind === "transcoded" &&
         !stopsRecovery(reason) && original && (failed.has(original.id) || nativeUnsupported(original))) {
-      message = `原画播放暂不可用；${message}`;
+      message = `原画播放暂不可用，${message}`;
     }
     if (controller.state.mode === "auto" && source?.kind === "original" && !stopsRecovery(reason)) {
       const cloud = controller.state.sources.find((item) => item.kind === "transcoded" &&
@@ -291,11 +343,12 @@ export function attachVideoSource(
     controller.state.processing = false;
     controller.state.error = { sourceID: source?.id ?? null, reason, message, recoveryModes };
     controller.state.notice = null;
-    video.pause();
+    resetMedia();
     changed();
     video.dispatchEvent(new CustomEvent(PLAYBACK_SOURCE_ERROR));
   }
   function loaded() {
+    watchStartup();
     if (disposed || controller.state.loading || !restore) return;
     const state = restore;
     restore = null;
@@ -309,6 +362,7 @@ export function attachVideoSource(
     if (state.playing || wasPlaying) void video.play().catch(() => undefined);
   }
   function checkFrames() {
+    watchStartup();
     if (disposed || controller.state.loading || controller.state.error || video.paused) return;
     if (video.videoWidth > 0 && video.videoHeight > 0) { frameStart = null; return; }
     // Media time advancing without video dimensions detects audio-only decode
@@ -324,11 +378,12 @@ export function attachVideoSource(
     if (code === 1) return; // User/navigation aborts are not source failures.
     void recover(code === 3 || code === 4 ? "unsupported" : "network", "视频源加载失败", true);
   }
-  async function recover(kind: "unsupported" | "network" | "throttled", message: string, diagnose = false) {
+  async function recover(kind: "unsupported" | "network" | "throttled" | "timeout", message: string, diagnose = false) {
     if (disposed || controller.state.loading || controller.state.error) return;
     const source = controller.state.activeSource;
     if (!source) return;
     rememberState();
+    clearStartupTimer();
     controller.state.loading = true;
     changed();
     const epoch = generation;
@@ -378,9 +433,9 @@ export function attachVideoSource(
         controller.state.sources.find((item) => item.kind === "original") ?? null;
       const reason = unavailable?.status === "processing" ? "processing"
         : unavailable && nativeUnsupported(unavailable) ? "unsupported" : "unavailable";
-      fail(unavailable?.message || (controller.state.mode === "compatible"
+      fail(unavailable?.message || (controller.state.mode === "compatible" || unavailable?.kind === "transcoded"
         ? "该视频暂未提供兼容播放源"
-        : "当前浏览器无法播放原视频，且没有可用的兼容播放源"), unavailable, reason);
+        : reason === "unsupported" ? "浏览器无法播放当前视频" : "原画播放暂不可用"), unavailable, reason);
       return;
     }
     if (!refresh && source.id === controller.state.activeSource?.id && !controller.state.error && !controller.state.loading) { changed(); return; }
@@ -539,6 +594,7 @@ export function attachVideoSource(
       }
       changed();
       video.dispatchEvent(new CustomEvent(PLAYBACK_SOURCE_READY));
+      watchStartup();
     } catch (error) {
       if (disposed || epoch !== generation) return;
       failed.add(selected.id);

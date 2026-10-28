@@ -498,8 +498,8 @@
 .video-player__error {
   left: 50%;
   top: 50%;
-  width: min(420px, calc(100% - 32px));
-  padding: 18px;
+  width: min(320px, calc(100% - 32px));
+  padding: 16px;
   border-radius: var(--radius-md);
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: rgba(8, 9, 13, 0.86);
@@ -538,6 +538,7 @@
   color: rgba(255, 255, 255, 0.76);
   font-size: var(--font-md);
   line-height: 1.55;
+  overflow-wrap: anywhere;
 }
 
 .video-player__error-actions {
@@ -746,11 +747,6 @@
 }
 
 @media (max-width: 640px) {
-  .video-player__error {
-    width: calc(100% - 24px);
-    padding: 16px;
-  }
-
   .video-player__seek-preview {
     display: none;
   }

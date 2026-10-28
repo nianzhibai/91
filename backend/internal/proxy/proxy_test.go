@@ -38,8 +38,8 @@ func TestServeStreamLinkFailureReturnsStructuredErrorAndReportsStatus(t *testing
 	rr := httptest.NewRecorder()
 	p.ServeStream(rr, req, "115", "file-1")
 
-	if rr.Code != http.StatusBadGateway {
-		t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadGateway)
+	if rr.Code != http.StatusFailedDependency {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusFailedDependency)
 	}
 	if got := rr.Header().Get("Content-Type"); got != "application/json; charset=utf-8" {
 		t.Fatalf("Content-Type = %q", got)
@@ -123,7 +123,7 @@ func TestServeStreamReportsRecoveryAndCoalescesRepeatedSuccess(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/p/stream/guangyapan/file-1", nil)
 		rr := httptest.NewRecorder()
 		p.ServeStream(rr, req, "guangyapan", "file-1")
-		if i == 0 && rr.Code != http.StatusBadGateway {
+		if i == 0 && rr.Code != http.StatusFailedDependency {
 			t.Fatalf("failed request status = %d", rr.Code)
 		}
 		if i > 0 && rr.Code != http.StatusFound {
@@ -156,8 +156,8 @@ func TestServeStreamUpstreamAuthFailureReturnsStructuredError(t *testing.T) {
 	rr := httptest.NewRecorder()
 	p.ServeStream(rr, req, "quark", "file-1")
 
-	if rr.Code != http.StatusBadGateway {
-		t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadGateway)
+	if rr.Code != http.StatusFailedDependency {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusFailedDependency)
 	}
 	var payload streamErrorResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
@@ -213,7 +213,7 @@ func TestServeStreamUsesProviderFailureClassification(t *testing.T) {
 				if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
 					t.Fatal(err)
 				}
-				if rr.Code != http.StatusBadGateway || payload.Code != tt.code {
+				if rr.Code != http.StatusFailedDependency || payload.Code != tt.code {
 					t.Fatalf("status=%d payload=%+v, want %s", rr.Code, payload, tt.code)
 				}
 				if tt.kind == drives.ProviderErrorUnavailable && payload.Message != "光鸭网盘上游服务暂时不可用，请稍后重试" {
@@ -240,8 +240,8 @@ func TestServeStreamMissingFileDoesNotMarkWholeDriveUnhealthy(t *testing.T) {
 	rr := httptest.NewRecorder()
 	p.ServeStream(rr, req, "local", "missing.mp4")
 
-	if rr.Code != http.StatusBadGateway {
-		t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadGateway)
+	if rr.Code != http.StatusFailedDependency {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusFailedDependency)
 	}
 	var payload streamErrorResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
@@ -267,8 +267,8 @@ func TestServeStreamConfiguredDriveInitFailureIsNotReportedAsMissing(t *testing.
 	rr := httptest.NewRecorder()
 	p.ServeStream(rr, req, "115", "file-1")
 
-	if rr.Code != http.StatusBadGateway {
-		t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadGateway)
+	if rr.Code != http.StatusFailedDependency {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusFailedDependency)
 	}
 	var payload streamErrorResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
@@ -992,8 +992,8 @@ func TestServeStreamRejectsUnsafeWebDAVRedirect(t *testing.T) {
 	rr := httptest.NewRecorder()
 	p.ServeStream(rr, req, "webdav", "/video.mp4")
 
-	if rr.Code != http.StatusBadGateway {
-		t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadGateway)
+	if rr.Code != http.StatusFailedDependency {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusFailedDependency)
 	}
 }
 

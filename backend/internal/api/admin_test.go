@@ -2383,7 +2383,7 @@ func TestHandleUpsertCrawlerPersistsAndValidatesUploadDrive(t *testing.T) {
 	for _, d := range []*catalog.Drive{
 		{ID: "quark-target", Kind: "quark", Name: "夸克", RootID: "0", Credentials: map[string]string{"cookie": "x"}},
 		{ID: "p115-target", Kind: "p115", Name: "115", RootID: "0", Credentials: map[string]string{"cookie": "x"}},
-		{ID: "wopan-target", Kind: "wopan", Name: "沃盘", RootID: "0", Credentials: map[string]string{"access_token": "a", "refresh_token": "r"}},
+		{ID: "wopan-target", Kind: "wopan", Name: "联通网盘", RootID: "0", Credentials: map[string]string{"access_token": "a", "refresh_token": "r"}},
 		{ID: "guangyapan-target", Kind: "guangyapan", Name: "光鸭", RootID: "", Credentials: map[string]string{"access_token": "a", "refresh_token": "r"}},
 		{ID: "local-target", Kind: "localstorage", Name: "Local", RootID: "/", Credentials: map[string]string{"path": tmp}},
 	} {

@@ -66,6 +66,13 @@ func (s *Server) servePlaybackMetadata(w http.ResponseWriter, r *http.Request, v
 		writeJSON(w, http.StatusOK, manifest)
 		return
 	}
+	// An unmounted drive can have a known authorization or connection failure.
+	// Return it before capability discovery can turn it into an original-only
+	// manifest and let the browser's format check hide the actual drive error.
+	if err := s.Proxy.DriveInitializationError(v.DriveID); err != nil {
+		s.Proxy.WritePlaybackError(w, v.DriveID, err)
+		return
+	}
 	if selected == "original" && refresh {
 		s.Proxy.InvalidateStreamLink(v.DriveID, v.FileID, r.Header)
 	}
