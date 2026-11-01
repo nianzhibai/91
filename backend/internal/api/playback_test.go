@@ -422,3 +422,122 @@ func TestHLSPlaybackAuthenticatesEveryResourceAndShare(t *testing.T) {
 		t.Fatalf("hidden video master=%d", w.Code)
 	}
 }
+
+func TestNamedRenditionsCreateOnlyTheSelectedMediaSession(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("metadata must not fetch media bytes") }))
+	defer upstream.Close()
+	host, _ := url.Parse(upstream.URL)
+	makeSource := func(id, label string) drives.PlaybackSource {
+		return drives.PlaybackSource{ID: id, Label: label, Kind: "transcoded", Protocol: "hls", Status: "ready", Resolution: strings.TrimPrefix(id, "cloud-"), Width: 540, Height: 960, Bitrate: 1200, Codec: "h264", Link: &drives.StreamLink{URL: upstream.URL + "/" + id + ".m3u8", Expires: time.Now().Add(time.Minute)}, Relay: &drives.HLSRelay{AllowedHosts: []string{host.Host}, Authorize: func(r *http.Request) { r.Header.Set("Cookie", "account-secret") }}}
+	}
+	drive := &apiPlaybackDrive{sources: []drives.PlaybackSource{makeSource("cloud-high", "高清"), makeSource("cloud-low", "流畅")}}
+	registry := proxy.NewRegistry()
+	registry.Set("drive", drive)
+	server := &Server{Proxy: proxy.New(registry)}
+	request := func(source string) PlaybackManifestDTO {
+		t.Helper()
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest("GET", "/api/video/video/playback?source="+source, nil)
+		server.servePlaybackMetadata(w, r, &catalog.Video{ID: "video", DriveID: "drive", FileID: "file", Ext: "mp4"}, "/p/stream/drive/file")
+		if w.Code != 200 {
+			t.Fatalf("status=%d %s", w.Code, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), "account-secret") || strings.Contains(w.Body.String(), upstream.URL) {
+			t.Fatal("provider credentials or signed URL exposed")
+		}
+		var manifest PlaybackManifestDTO
+		if err := json.Unmarshal(w.Body.Bytes(), &manifest); err != nil {
+			t.Fatal(err)
+		}
+		return manifest
+	}
+	group := request("cloud")
+	if len(group.Sources) != 3 || group.Sources[1].Status != "ready" || group.Sources[2].Status != "unknown" || group.Sources[2].URL != "" {
+		t.Fatalf("group=%+v", group)
+	}
+	high := group.Sources[1]
+	if high.Width != 540 || high.Bitrate != 1200 || high.ResolveURL != "/api/video/video/playback?source=cloud-high" {
+		t.Fatalf("lost rendition metadata: %+v", high)
+	}
+	low := request("cloud-low")
+	if low.Sources[1].Status != "unknown" || low.Sources[1].URL != "" || low.Sources[2].Status != "ready" || !strings.HasPrefix(low.Sources[2].URL, "/p/hls/video/") {
+		t.Fatalf("low=%+v", low)
+	}
+	if drive.calls != 1 {
+		t.Fatalf("selecting a cached rendition re-fetched provider metadata: %d", drive.calls)
+	}
+}
+
+type apiObservedOriginalDrive struct {
+	apiPlaybackDrive
+	link        *drives.StreamLink
+	resolutions int
+}
+
+func (d *apiObservedOriginalDrive) OriginalPlaybackURL(context.Context, string) (*drives.StreamLink, error) {
+	d.resolutions++
+	return d.link, nil
+}
+
+func TestOriginalSourceInfoReportsActualStreamsWithoutFetchingOrCrossingViewers(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "video") }))
+	defer upstream.Close()
+	d := &apiObservedOriginalDrive{link: &drives.StreamLink{URL: upstream.URL, URLSource: "quark-raw", Headers: http.Header{"Cookie": {"account-secret"}}, Expires: time.Now().Add(time.Minute)}}
+	reg := proxy.NewRegistry()
+	reg.Set("drive", d)
+	p := proxy.New(reg)
+	s := &Server{Proxy: p}
+	v := &catalog.Video{ID: "video", DriveID: "drive", FileID: "file", Ext: "mp4"}
+	metadata := func(target string) PlaybackSourceDTO {
+		t.Helper()
+		w := httptest.NewRecorder()
+		s.servePlaybackMetadata(w, httptest.NewRequest("GET", target, nil), v, "/p/stream/drive/file")
+		if w.Code != 200 {
+			t.Fatalf("metadata=%d %s", w.Code, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), "account-secret") || strings.Contains(w.Body.String(), upstream.URL) {
+			t.Fatal("private upstream data exposed")
+		}
+		var m PlaybackManifestDTO
+		if err := json.Unmarshal(w.Body.Bytes(), &m); err != nil {
+			t.Fatal(err)
+		}
+		return m.Sources[0]
+	}
+	first := metadata("/api/video/video/playback")
+	second := metadata("/api/video/video/playback")
+	if first.SourceInfoURL == "" || first.SourceInfoURL == second.SourceInfoURL || first.URLSource != "" || d.resolutions != 0 {
+		t.Fatal("rendering inferred a source or fetched a link")
+	}
+	stream := func(source PlaybackSourceDTO, want string) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		p.ServeStream(w, httptest.NewRequest("GET", source.URL, nil), "drive", "file")
+		if w.Code != 200 || w.Header().Get("X-Playback-Source") != want {
+			t.Fatalf("stream=%d %v", w.Code, w.Header())
+		}
+	}
+	stream(first, "quark-raw")
+	if got := metadata(first.SourceInfoURL).URLSource; got != "quark-raw" {
+		t.Fatalf("first source=%q", got)
+	}
+	if got := metadata(second.SourceInfoURL).URLSource; got != "" {
+		t.Fatal("unplayed viewer inherited another viewer's result")
+	}
+	d.link = &drives.StreamLink{URL: upstream.URL, URLSource: "quark-download", Expires: time.Now().Add(time.Minute)}
+	p.InvalidateDriveLinks("drive")
+	stream(second, "quark-download")
+	if got := metadata(second.SourceInfoURL).URLSource; got != "quark-download" {
+		t.Fatalf("second source=%q", got)
+	}
+	if got := metadata(first.SourceInfoURL).URLSource; got != "quark-raw" {
+		t.Fatal("later resolution changed an older viewer's provenance")
+	}
+	if d.resolutions != 2 || d.calls != 0 {
+		t.Fatalf("source info resolved links: original=%d cloud=%d", d.resolutions, d.calls)
+	}
+	p.InvalidateDrive("drive")
+	if got := metadata(first.SourceInfoURL).URLSource; got != "" {
+		t.Fatal("account remount retained source info")
+	}
+}

@@ -70,6 +70,12 @@ type PlaybackSourceProvider interface {
 	PlaybackSources(context.Context, string) ([]PlaybackSource, error)
 }
 
+// OriginalPlaybackProvider resolves an original-file link for viewers without
+// changing the source used by downloads and content fingerprinting.
+type OriginalPlaybackProvider interface {
+	OriginalPlaybackURL(context.Context, string) (*StreamLink, error)
+}
+
 // PlaybackSourcePreparer explicitly starts provider-side preparation after a
 // viewer requests playback. Listing or preloading sources must remain read-only.
 type PlaybackSourcePreparer interface {
@@ -77,25 +83,34 @@ type PlaybackSourcePreparer interface {
 }
 
 type PlaybackSource struct {
-	ID        string
-	Label     string
-	Kind      string // original or transcoded; independent of transport protocol
-	Protocol  string // file or hls
-	Status    string // ready, processing or unavailable
-	Link      *StreamLink
-	MediaType string
-	Message   string
-	Relay     *HLSRelay
+	ID         string
+	Label      string
+	Kind       string // original or transcoded; independent of transport protocol
+	Protocol   string // file or hls
+	Status     string // ready, processing or unavailable
+	Link       *StreamLink
+	MediaType  string
+	Message    string
+	Relay      *HLSRelay
+	Resolution string
+	Width      int
+	Height     int
+	Bitrate    int // kilobits per second, as reported by the provider
+	Codec      string
 }
 
 // HLSRelay opts a playback source into authenticated server delivery. When set,
 // Playlist is the resolved master, with relative URIs based on Link.URL.
-// Account credentials must not be included in Link.Headers. AllowedHosts accepts
+// Account credentials must not be included in Link.Headers. Providers that need
+// account authentication may authorize each already-validated server request.
+// The callback stays server-side and can read freshly rotated credentials.
+// AllowedHosts accepts
 // exact authorities (including ports), or a leading dot for a domain and its
 // subdomains. Every resource and redirect must satisfy this provider policy.
 type HLSRelay struct {
 	Playlist     string
 	AllowedHosts []string
+	Authorize    func(*http.Request) `json:"-"`
 }
 
 // Uploader is the optional write capability of a drive. Callers that produce
@@ -150,6 +165,9 @@ type Entry struct {
 type StreamLink struct {
 	URL     string
 	Headers http.Header
+	// URLSource identifies the resolver that actually produced this link.
+	// It is safe diagnostic metadata, never a signed URL or account credential.
+	URLSource string
 	// Expires is the deadline through which callers may reuse this link. It can
 	// be a conservative local deadline when a provider does not expose the
 	// signed URL's exact expiry.

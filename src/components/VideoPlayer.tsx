@@ -18,10 +18,12 @@ import {
   PLAYBACK_SOURCE_CHANGE,
   playbackSourceURL,
   playbackSourceState,
-  playbackModeLabel,
+  playbackStateLabel,
+  originalPlaybackLabel,
   PLAYBACK_MODES,
   retryVideoSource,
   selectPlaybackMode,
+  selectPlaybackSource,
   setOriginalVideoDelivery,
   type PlaybackState,
   type PlaybackMode,
@@ -613,13 +615,17 @@ function mountArtPlayer({
     onSourceChange(state);
     if (!state.error) onError(null);
     const hasCloudSource = state.sources.some((source) => source.kind === "transcoded");
-    const settingKey = `${state.mode}:${hasCloudSource}`;
+    const renditions = state.sources.filter((source) => source.kind === "transcoded" && source.id !== "cloud");
+    const settingKey = `${state.mode}:${state.activeSource?.urlSource}:${state.activeSource?.id}:${state.activeSource?.kind}:${state.selectedSourceID}:${state.sources.map((source) => `${source.id}:${source.status}:${source.label}:${source.urlSource}`).join(",")}`;
     if (settingKey !== previousPlaybackSetting && hasCloudSource) {
       art.setting.update(createPlaybackSetting(state));
     } else if (!hasCloudSource && art.setting.find("playback-mode")) {
       art.setting.remove("playback-mode");
     }
-    updatePlaybackSourceStatus(art, state);
+    if (settingKey !== previousPlaybackSetting) {
+      if (state.activeSource?.kind === "transcoded" && renditions.length > 1) art.setting.update(createRenditionSetting(state));
+      else if (art.setting.find("playback-rendition")) art.setting.remove("playback-rendition");
+    }
     previousPlaybackSetting = settingKey;
     if (state.notice && state.notice !== previousSourceNotice) art.notice.show = state.notice;
     previousSourceNotice = state.notice;
@@ -1125,36 +1131,47 @@ function createPlayerSettings(
   return [createLoopSetting(), createSubtitleSetting(state, requestSubtitles)];
 }
 
-function playbackSourceStatus(state: PlaybackState) {
-  if (state.error) return "播放源暂不可用";
-  if (state.processing) return "视频正在转码";
-  if (state.loading) return "正在获取播放源";
-  return state.activeSource ? `当前：${state.activeSource.label}` : "等待播放源";
-}
-
-function updatePlaybackSourceStatus(art: Artplayer, state: PlaybackState) {
-  const label = playbackSourceStatus(state);
-  art.template.$setting.querySelectorAll(".video-player__playback-source-status").forEach((element) => {
-    element.textContent = label;
-    element.setAttribute("title", label);
-  });
-}
-
 function createPlaybackSetting(state: PlaybackState): PlayerSetting {
+  // The menu shows the active transport choice, independently of automatic
+  // recovery or a viewer's manual preference in the shared controller.
+  const activeMode = state.activeSource
+    ? state.activeSource.kind === "original" ? "original" : "compatible"
+    : null;
   return {
     name: "playback-mode",
-    html: `<span class="video-player__playback-heading"><span>播放方式</span><span class="video-player__playback-source-status">${escapeHtml(playbackSourceStatus(state))}</span></span>`,
-    tooltip: playbackModeLabel(state.mode),
+    html: "播放方式",
+    tooltip: playbackStateLabel(state),
     // Inherit the root menu width; only subtitle names need a wider panel.
     selector: PLAYBACK_MODES.map((mode) => ({
       name: `playback-mode-${mode.value}`,
-      html: mode.label,
+      html: mode.value === "original"
+        ? originalPlaybackLabel((state.activeSource?.kind === "original" ? state.activeSource : state.sources.find((source) => source.id === "original"))?.urlSource)
+        : mode.label,
       value: mode.value,
-      default: state.mode === mode.value,
+      default: activeMode === mode.value,
     })),
     onSelect(this: Artplayer, item: SettingOption) {
       selectPlaybackMode(this.video, item.value as PlaybackMode);
-      return playbackModeLabel(playbackSourceState(this.video)?.mode ?? "auto");
+      return playbackStateLabel(playbackSourceState(this.video));
+    },
+  };
+}
+
+function createRenditionSetting(state: PlaybackState): PlayerSetting {
+  const sources = state.sources.filter((source) => source.kind === "transcoded" && source.id !== "cloud");
+  return {
+    name: "playback-rendition",
+    html: "清晰度",
+    tooltip: sources.find((source) => source.id === state.activeSource?.id)?.label ?? "",
+    selector: sources.map((source) => ({
+      name: `rendition-${source.id}`,
+      html: escapeHtml(source.label + (source.status === "processing" ? "（转码中）" : source.status === "unavailable" ? "（不可用）" : "")),
+      value: source.id,
+      default: source.id === state.activeSource?.id,
+    })),
+    onSelect(this: Artplayer, item: SettingOption) {
+      selectPlaybackSource(this.video, item.value);
+      return sources.find((source) => source.id === playbackSourceState(this.video)?.activeSource?.id)?.label ?? "";
     },
   };
 }

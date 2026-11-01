@@ -48,8 +48,8 @@ func (p *Proxy) StartHLSPlayback(driveID, fileID string, source drives.PlaybackS
 	if err != nil || !allowedHLSResource(root, root, policy.AllowedHosts) {
 		return "", time.Time{}, errors.New("HLS source host is not allowed")
 	}
-	// Relays never need account credentials; the driver resolves its signed
-	// master with those credentials before handing it to the playback layer.
+	// Static account headers are forbidden. A provider's server-only Authorize
+	// callback may supply current credentials after the destination is validated.
 	for name := range source.Link.Headers {
 		switch strings.ToLower(name) {
 		case "cookie", "authorization", "proxy-authorization":
@@ -141,12 +141,21 @@ func (p *Proxy) ServeHLS(w http.ResponseWriter, r *http.Request, driveID, fileID
 			req.Header.Set(name, value)
 		}
 	}
+	if session.policy.Authorize != nil {
+		session.policy.Authorize(req)
+	}
 	client := *p.http
 	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
 		if len(via) >= 10 || !allowedHLSResource(root, next.URL, session.policy.AllowedHosts) {
 			return errors.New("HLS redirect is not allowed")
 		}
-		return streamhttp.CheckRedirect(next, via)
+		if err := streamhttp.CheckRedirect(next, via); err != nil {
+			return err
+		}
+		if session.policy.Authorize != nil {
+			session.policy.Authorize(next)
+		}
+		return nil
 	}
 	resp, err := client.Do(req)
 	if err != nil {

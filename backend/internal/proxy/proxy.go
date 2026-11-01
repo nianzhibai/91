@@ -75,12 +75,13 @@ func (r *Registry) Remove(id string) {
 type Proxy struct {
 	Registry *Registry
 	// linkCache key: driveID + "/" + fileID (+ User-Agent for UA-bound links)
-	cacheMu           sync.Mutex
-	cache             map[string]cachedLink
-	inflight          map[string]*linkCall
-	playbackCache     map[string]cachedPlayback
-	playbackInflight  map[string]*playbackCall
-	playbackPreparing map[string]*playbackCall
+	cacheMu            sync.Mutex
+	cache              map[string]cachedLink
+	inflight           map[string]*linkCall
+	playbackCache      map[string]cachedPlayback
+	playbackInflight   map[string]*playbackCall
+	playbackPreparing  map[string]*playbackCall
+	observedURLSources map[streamObservationKey]observedURLSource
 	// resolveTimeout is kept on the proxy so timeout behavior can be tested
 	// without making production tests wait for the full provider deadline.
 	resolveTimeout time.Duration
@@ -123,18 +124,19 @@ type driveInitError struct {
 
 func New(r *Registry) *Proxy {
 	p := &Proxy{
-		Registry:          r,
-		cache:             make(map[string]cachedLink),
-		inflight:          make(map[string]*linkCall),
-		playbackCache:     make(map[string]cachedPlayback),
-		playbackInflight:  make(map[string]*playbackCall),
-		playbackPreparing: make(map[string]*playbackCall),
-		resolveTimeout:    linkResolveTimeout,
-		reportedStatus:    make(map[string]string),
-		initErrors:        make(map[string]driveInitError),
-		hlsSessions:       make(map[string]*hlsSession),
-		http:              streamhttp.NewClient(0), // 流式不设超时
-		relay:             streamhttp.NewNoRedirectClient(0),
+		Registry:           r,
+		cache:              make(map[string]cachedLink),
+		inflight:           make(map[string]*linkCall),
+		playbackCache:      make(map[string]cachedPlayback),
+		playbackInflight:   make(map[string]*playbackCall),
+		playbackPreparing:  make(map[string]*playbackCall),
+		observedURLSources: make(map[streamObservationKey]observedURLSource),
+		resolveTimeout:     linkResolveTimeout,
+		reportedStatus:     make(map[string]string),
+		initErrors:         make(map[string]driveInitError),
+		hlsSessions:        make(map[string]*hlsSession),
+		http:               streamhttp.NewClient(0), // 流式不设超时
+		relay:              streamhttp.NewNoRedirectClient(0),
 	}
 	p.allowForcedRelay.Store(true)
 	return p
@@ -179,6 +181,22 @@ func (p *Proxy) InvalidateDrive(driveID string) {
 		}
 	}
 	p.hlsMu.Unlock()
+	p.invalidateDriveLinks(driveID, true)
+
+	p.statusMu.Lock()
+	delete(p.reportedStatus, driveID)
+	delete(p.initErrors, driveID)
+	p.statusMu.Unlock()
+}
+
+// InvalidateDriveLinks retires cached credentials after an automatic rotation.
+// Active HLS sessions use signed media URLs and remain valid. Unlike a remount,
+// rotation must not discard in-flight resolutions made by the current driver.
+func (p *Proxy) InvalidateDriveLinks(driveID string) {
+	p.invalidateDriveLinks(driveID, false)
+}
+
+func (p *Proxy) invalidateDriveLinks(driveID string, retire bool) {
 	prefix := driveID + "/"
 	p.cacheMu.Lock()
 	for key := range p.playbackCache {
@@ -186,34 +204,34 @@ func (p *Proxy) InvalidateDrive(driveID string) {
 			delete(p.playbackCache, key)
 		}
 	}
-	for key := range p.playbackInflight {
-		if strings.HasPrefix(key, prefix) {
-			delete(p.playbackInflight, key)
-		}
-	}
-	for key := range p.playbackPreparing {
-		if strings.HasPrefix(key, prefix) {
-			delete(p.playbackPreparing, key)
-		}
-	}
 	for key := range p.cache {
 		if strings.HasPrefix(key, prefix) {
 			delete(p.cache, key)
 		}
 	}
-	// 已经发出的 provider 请求无法安全中断，但把它从表里移走后，新请求不会
-	// 等待旧凭证的结果；旧请求完成时也会因身份不再匹配而跳过写缓存。
-	for key := range p.inflight {
-		if strings.HasPrefix(key, prefix) {
-			delete(p.inflight, key)
+	if retire {
+		for key := range p.observedURLSources {
+			if key.driveID == driveID {
+				delete(p.observedURLSources, key)
+			}
+		}
+		for key := range p.playbackInflight {
+			if strings.HasPrefix(key, prefix) {
+				delete(p.playbackInflight, key)
+			}
+		}
+		for key := range p.playbackPreparing {
+			if strings.HasPrefix(key, prefix) {
+				delete(p.playbackPreparing, key)
+			}
+		}
+		for key := range p.inflight {
+			if strings.HasPrefix(key, prefix) {
+				delete(p.inflight, key)
+			}
 		}
 	}
 	p.cacheMu.Unlock()
-
-	p.statusMu.Lock()
-	delete(p.reportedStatus, driveID)
-	delete(p.initErrors, driveID)
-	p.statusMu.Unlock()
 }
 
 func (p *Proxy) driveInitError(driveID string) (driveInitError, bool) {
@@ -299,6 +317,9 @@ func (p *Proxy) finishLinkCall(key string, call *linkCall, link *drives.StreamLi
 }
 
 func resolveStreamLink(ctx context.Context, d drives.Drive, fileID string, header http.Header) (*drives.StreamLink, error) {
+	if provider, ok := d.(drives.OriginalPlaybackProvider); ok {
+		return provider.OriginalPlaybackURL(ctx, fileID)
+	}
 	if h, ok := d.(streamURLWithHeader); ok {
 		return h.StreamURLWithHeader(ctx, fileID, header)
 	}
@@ -390,6 +411,10 @@ func (p *Proxy) ServeStream(w http.ResponseWriter, r *http.Request, driveID, fil
 		}
 		writeStreamError(w, d.Kind(), err)
 		return
+	}
+	if link.URLSource != "" {
+		w.Header().Set("X-Playback-Source", link.URLSource)
+		p.observeStreamURLSource(driveID, fileID, r.URL.Query().Get("playbackId"), link.URLSource)
 	}
 	forceRelay := p.allowForcedRelay.Load() && forceStreamRelay(r)
 	if clientRedirectSafe(link) && !forceRelay {

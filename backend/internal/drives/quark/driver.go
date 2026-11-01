@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html"
 	"net/http"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -32,6 +33,7 @@ type Driver struct {
 	ua             string
 	referer        string
 	apiBase        string
+	playbackAPI    string
 	pr             string
 	client         *resty.Client
 	uploadClient   *http.Client
@@ -62,6 +64,7 @@ func New(c Config) *Driver {
 		ua:             defaultUA,
 		referer:        defaultReferer,
 		apiBase:        defaultAPI,
+		playbackAPI:    "https://drive-pc.quark.cn/1/clouddrive",
 		pr:             defaultPR,
 		uploadTempDir:  c.UploadTempDir,
 		onCookieUpdate: c.OnCookieUpdate,
@@ -90,6 +93,10 @@ type resp struct {
 }
 
 func (d *Driver) request(ctx context.Context, path, method string, query map[string]string, body any, out any) error {
+	return d.requestAt(ctx, d.apiBase, path, method, query, body, out)
+}
+
+func (d *Driver) requestAt(ctx context.Context, apiBase, path, method string, query map[string]string, body any, out any) error {
 	// Quark can rotate credential cookies on any response. Serializing provider
 	// requests prevents two concurrent responses from applying rotations out of
 	// order; cookieMu protects playback readers that only need a snapshot.
@@ -107,7 +114,7 @@ func (d *Driver) request(ctx context.Context, path, method string, query map[str
 	if body != nil {
 		req.SetBody(body)
 	}
-	res, err := req.Execute(method, d.apiBase+path)
+	res, err := req.Execute(method, apiBase+path)
 	if err != nil {
 		return err
 	}
@@ -165,6 +172,8 @@ type file struct {
 	UpdatedAt int64  `json:"updated_at"`
 	MD5       string `json:"md5"`
 	SHA1      string `json:"sha1"`
+	ParentID  string `json:"pdir_fid"`
+	Status    *int   `json:"status"`
 }
 
 type sortResp struct {
@@ -205,8 +214,17 @@ func (d *Driver) List(ctx context.Context, dirID string) ([]drives.Entry, error)
 }
 
 func (d *Driver) Stat(ctx context.Context, fileID string) (*drives.Entry, error) {
-	// 夸克没提供单文件查询接口，回退到父目录遍历需要额外信息
-	return nil, drives.ErrNotSupported
+	var out struct {
+		Data file `json:"data"`
+	}
+	if err := d.requestAt(ctx, d.playbackAPI, "/file/info", http.MethodGet, map[string]string{"fid": fileID}, nil, &out); err != nil {
+		return nil, fmt.Errorf("quark stat: %w", err)
+	}
+	if out.Data.Fid == "" || (out.Data.Status != nil && *out.Data.Status == 0) {
+		return nil, fmt.Errorf("quark stat: %w", os.ErrNotExist)
+	}
+	entry := fileToEntry(&out.Data, out.Data.ParentID)
+	return &entry, nil
 }
 
 // ---------- 下载直链 ----------
@@ -233,9 +251,10 @@ func (d *Driver) StreamURL(ctx context.Context, fileID string) (*drives.StreamLi
 	headers.Set("Cookie", d.cookieSnapshot())
 
 	return &drives.StreamLink{
-		URL:     r.Data[0].DownloadUrl,
-		Headers: headers,
-		Expires: time.Now().Add(10 * time.Minute),
+		URL:       r.Data[0].DownloadUrl,
+		Headers:   headers,
+		URLSource: "quark-download",
+		Expires:   time.Now().Add(10 * time.Minute),
 	}, nil
 }
 

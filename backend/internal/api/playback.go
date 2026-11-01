@@ -6,22 +6,30 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/video-site/backend/internal/catalog"
 	"github.com/video-site/backend/internal/drives"
 )
 
 type PlaybackSourceDTO struct {
-	ID         string     `json:"id"`
-	Label      string     `json:"label"`
-	Kind       string     `json:"kind"`
-	Protocol   string     `json:"protocol"`
-	Status     string     `json:"status"`
-	URL        string     `json:"url,omitempty"`
-	ResolveURL string     `json:"resolveUrl,omitempty"`
-	PrepareURL string     `json:"prepareUrl,omitempty"`
-	MediaType  string     `json:"mediaType,omitempty"`
-	Message    string     `json:"message,omitempty"`
-	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
+	ID            string     `json:"id"`
+	Label         string     `json:"label"`
+	Kind          string     `json:"kind"`
+	Protocol      string     `json:"protocol"`
+	Status        string     `json:"status"`
+	URL           string     `json:"url,omitempty"`
+	ResolveURL    string     `json:"resolveUrl,omitempty"`
+	PrepareURL    string     `json:"prepareUrl,omitempty"`
+	MediaType     string     `json:"mediaType,omitempty"`
+	Message       string     `json:"message,omitempty"`
+	ExpiresAt     *time.Time `json:"expiresAt,omitempty"`
+	Resolution    string     `json:"resolution,omitempty"`
+	Width         int        `json:"width,omitempty"`
+	Height        int        `json:"height,omitempty"`
+	Bitrate       int        `json:"bitrate,omitempty"`
+	Codec         string     `json:"codec,omitempty"`
+	URLSource     string     `json:"urlSource,omitempty"`
+	SourceInfoURL string     `json:"sourceInfoUrl,omitempty"`
 }
 
 type PlaybackManifestDTO struct {
@@ -52,10 +60,10 @@ func (s *Server) servePlaybackMetadata(w http.ResponseWriter, r *http.Request, v
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	selected := r.URL.Query().Get("source")
 	prepare := r.Method == http.MethodPost
-	if prepare {
+	if prepare && selected == "" {
 		selected = "cloud"
 	}
-	if selected != "" && selected != "original" && selected != "cloud" {
+	if !validPlaybackSourceID(selected) || (prepare && selected == "original") {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "未知的播放源"})
 		return
 	}
@@ -76,14 +84,35 @@ func (s *Server) servePlaybackMetadata(w http.ResponseWriter, r *http.Request, v
 	if selected == "original" && refresh {
 		s.Proxy.InvalidateStreamLink(v.DriveID, v.FileID, r.Header)
 	}
+	basePath, baseRawPath := strings.TrimSuffix(r.URL.Path, "/prepare"), strings.TrimSuffix(r.URL.RawPath, "/prepare")
+	if s.Proxy.HasOriginalPlaybackProvider(v.DriveID) {
+		playbackID := r.URL.Query().Get("playbackId")
+		if playbackID == "" {
+			playbackID = uuid.NewString()
+		} else if _, err := uuid.Parse(playbackID); err != nil || len(playbackID) != 36 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "无效的播放标识"})
+			return
+		}
+		streamURL, err := url.Parse(originalURL)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "无效的播放地址"})
+			return
+		}
+		query := streamURL.Query()
+		query.Set("playbackId", playbackID)
+		streamURL.RawQuery = query.Encode()
+		infoURL := &url.URL{Path: basePath, RawPath: baseRawPath, RawQuery: url.Values{"source": {"original"}, "playbackId": {playbackID}}.Encode()}
+		manifest.Sources[0].URL = streamURL.String()
+		manifest.Sources[0].SourceInfoURL = infoURL.String()
+		manifest.Sources[0].URLSource = s.Proxy.ObservedStreamURLSource(v.DriveID, v.FileID, playbackID)
+	}
 	if !s.Proxy.HasPlaybackProvider(v.DriveID) {
 		writeJSON(w, http.StatusOK, manifest)
 		return
 	}
-	basePath, baseRawPath := strings.TrimSuffix(r.URL.Path, "/prepare"), strings.TrimSuffix(r.URL.RawPath, "/prepare")
 	resolveURL := &url.URL{Path: basePath, RawPath: baseRawPath, RawQuery: "source=cloud"}
 	cloud := PlaybackSourceDTO{ID: "cloud", Label: "兼容播放", Kind: "transcoded", Protocol: "hls", Status: "unknown", ResolveURL: resolveURL.String()}
-	if selected != "cloud" {
+	if selected == "" || selected == "original" {
 		// Listing candidates never calls a provider. Original playback can begin
 		// even when the optional cloud preview API is slow or unavailable.
 		manifest.Sources = append(manifest.Sources, cloud)
@@ -101,19 +130,46 @@ func (s *Server) servePlaybackMetadata(w http.ResponseWriter, r *http.Request, v
 		s.Proxy.WritePlaybackError(w, v.DriveID, err)
 		return
 	}
+	// Resolve a group to its best ready rendition, while retaining concrete IDs
+	// for later selection. Only the selected rendition gets a media session.
+	resolvedID := selected
+	if selected == "cloud" {
+		for _, source := range sources {
+			if source.ID != "original" && source.Status == "ready" {
+				resolvedID = source.ID
+				break
+			}
+		}
+	}
+	found := selected == "cloud"
 	for _, source := range sources {
-		if source.ID == "" || source.ID == "original" {
+		if source.ID == "" || source.ID == "original" || !validPlaybackSourceID(source.ID) {
 			continue
 		}
-		dto := PlaybackSourceDTO{ID: source.ID, Label: source.Label, Kind: source.Kind, Protocol: source.Protocol, Status: source.Status, MediaType: source.MediaType, Message: source.Message, ResolveURL: cloud.ResolveURL}
+		if source.ID == selected {
+			found = true
+		}
+		sourceURL := &url.URL{Path: basePath, RawPath: baseRawPath}
+		query := url.Values{"source": {source.ID}}
+		sourceURL.RawQuery = query.Encode()
+		dto := PlaybackSourceDTO{
+			ID: source.ID, Label: source.Label, Kind: source.Kind, Protocol: source.Protocol, Status: source.Status,
+			MediaType: source.MediaType, Message: source.Message, ResolveURL: sourceURL.String(),
+			Resolution: source.Resolution, Width: source.Width, Height: source.Height, Bitrate: source.Bitrate, Codec: source.Codec,
+		}
 		if source.Status == "processing" && s.Proxy.HasPlaybackPreparer(v.DriveID) {
 			prepareURL := &url.URL{Path: basePath + "/prepare"}
+			if source.ID != "cloud" {
+				prepareURL.RawQuery = query.Encode()
+			}
 			if baseRawPath != "" {
 				prepareURL.RawPath = baseRawPath + "/prepare"
 			}
 			dto.PrepareURL = prepareURL.String()
 		}
-		if source.Status == "ready" {
+		if source.Status == "ready" && source.ID != resolvedID {
+			dto.Status = "unknown"
+		} else if source.Status == "ready" {
 			if source.Relay != nil {
 				sessionID, expires, err := s.Proxy.StartHLSPlayback(v.DriveID, v.FileID, source)
 				if err == nil {
@@ -138,11 +194,30 @@ func (s *Server) servePlaybackMetadata(w http.ResponseWriter, r *http.Request, v
 		}
 		manifest.Sources = append(manifest.Sources, dto)
 	}
+	if !found {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "未知的播放源"})
+		return
+	}
 	if len(manifest.Sources) == 1 {
 		cloud.Status, cloud.Message = "unavailable", "网盘暂未提供该视频的兼容播放源"
 		manifest.Sources = append(manifest.Sources, cloud)
 	}
 	writeJSON(w, http.StatusOK, manifest)
+}
+
+func validPlaybackSourceID(id string) bool {
+	if len(id) > 64 {
+		return false
+	}
+	if id != "" && id != "original" && id != "cloud" && !strings.HasPrefix(id, "cloud-") {
+		return false
+	}
+	for _, r := range id {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) handleVideoHLS(w http.ResponseWriter, r *http.Request) {

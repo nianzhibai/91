@@ -219,27 +219,6 @@
   white-space: nowrap;
 }
 
-.video-player__playback-heading {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  line-height: 16px;
-}
-
-.video-player__playback-source-status {
-  display: none;
-}
-
-.video-player__art .art-setting-item-back .video-player__playback-source-status {
-  display: block;
-  overflow: hidden;
-  color: rgba(255, 255, 255, 0.6);
-  font-size: 10px;
-  line-height: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .video-player__art.art-video-player[data-settings-layout="compact"] {
   --art-settings-icon-size: 18px;
   --art-settings-max-height: 180px;

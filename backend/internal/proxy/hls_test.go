@@ -250,3 +250,45 @@ func TestHLSRequestCancellationAndOversizedPlaylist(t *testing.T) {
 		t.Fatalf("large playlist=%d", w.Code)
 	}
 }
+
+func TestHLSUsesRotatedServerCredentialsWithoutRetiringActiveSessions(t *testing.T) {
+	var credential atomic.Value
+	credential.Store("first")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Cookie") != "account="+credential.Load().(string) {
+			t.Errorf("stale or viewer cookie: %s", r.Header.Get("Cookie"))
+		}
+		io.WriteString(w, "segment")
+	}))
+	defer upstream.Close()
+	p := New(NewRegistry())
+	source := testHLSSource(upstream.URL+"/index.m3u8", "#EXTM3U\n#EXTINF:5,\nsegment\n#EXT-X-ENDLIST\n")
+	source.Relay.Authorize = func(r *http.Request) { r.Header.Set("Cookie", "account="+credential.Load().(string)) }
+	id, _, err := p.StartHLSPlayback("drive", "file", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := serveTestHLS(p, id, "index.m3u8", nil)
+	var resource string
+	for _, line := range strings.Split(root.Body.String(), "\n") {
+		if strings.Contains(line, "/p/hls/") {
+			resource = line[strings.LastIndex(line, "/")+1:]
+			break
+		}
+	}
+	if resource == "" {
+		t.Fatal("segment not registered")
+	}
+	for _, value := range []string{"first", "rotated"} {
+		credential.Store(value)
+		p.InvalidateDriveLinks("drive")
+		rr := serveTestHLS(p, id, resource, http.Header{"Cookie": {"viewer-secret"}})
+		if rr.Code != 200 || rr.Body.String() != "segment" {
+			t.Fatalf("rotation killed session: %d %s", rr.Code, rr.Body.String())
+		}
+	}
+	p.InvalidateDrive("drive")
+	if rr := serveTestHLS(p, id, "index.m3u8", nil); rr.Code != 410 {
+		t.Fatalf("remount retained session: %d", rr.Code)
+	}
+}

@@ -9,6 +9,9 @@ import {
   playbackSourceURL,
   retryVideoSource,
   selectPlaybackMode,
+  selectPlaybackSource,
+  playbackStateLabel,
+  originalPlaybackLabel,
   setOriginalVideoDelivery,
   setVideoSourceActive,
   type PlaybackSource,
@@ -978,4 +981,172 @@ test("an unsuccessful fallback never announces a successful source switch", asyn
   await settle();
   assert.ok(playbackSourceError(video));
   assert.deepEqual(notices, []);
+});
+
+test("concrete HLS selection resolves only that rendition and preserves playback state", async () => {
+  const video = media();
+  const high: PlaybackSource = { ...readyCloud, id: "cloud-high", label: "高清", resolution: "high", resolveUrl: "/api/video/one/playback?source=cloud-high" };
+  const low: PlaybackSource = { ...cloud, id: "cloud-low", label: "流畅", resolution: "low", resolveUrl: "/api/video/one/playback?source=cloud-low" };
+  const calls: string[] = [];
+  attachVideoSource(video, original.url!, "/api/video/one/playback", {
+    mode: "compatible", loadHls,
+    fetch: (async (path) => {
+      const source = new URL(String(path)).searchParams.get("source") ?? "";
+      calls.push(source);
+      if (!source) return manifest(original, cloud);
+      if (source === "cloud-low") return manifest(original, { ...high, status: "unknown", url: undefined }, { ...low, status: "ready", url: "/p/hls/low/index.m3u8" });
+      return manifest(original, high, low);
+    }) as typeof fetch,
+  });
+  await settle(); await settle();
+  video.dispatchEvent(new Event("loadedmetadata"));
+  video.currentTime = 42; video.playbackRate = 1.5; video.volume = 0.3; video.muted = true;
+  await video.play();
+  assert.equal(selectPlaybackSource(video, "cloud-low"), true);
+  await settle(); await settle();
+  video.dispatchEvent(new Event("loadedmetadata"));
+  assert.equal(playbackSourceState(video)?.selectedSourceID, "cloud-low");
+  assert.equal(playbackSourceState(video)?.activeSource?.id, "cloud-low");
+  assert.equal(FakeHls.instances.at(-1)?.url, "/p/hls/low/index.m3u8");
+  assert.equal(video.currentTime, 42);
+  assert.equal(video.playbackRate, 1.5);
+  assert.equal(video.volume, 0.3);
+  assert.equal(video.muted, true);
+  assert.equal(video.paused, false);
+  assert.equal(calls.at(-1), "cloud-low");
+});
+
+test("compatibility chooses a ready lower rendition while the higher one is processing", async () => {
+  const video = media();
+  attachVideoSource(video, original.url!, "/api/video/one/playback", {
+    mode: "compatible", loadHls,
+    fetch: (async (path) => new URL(String(path)).searchParams.has("source")
+      ? manifest(original, { ...cloud, id: "cloud-high", status: "processing", resolveUrl: "/api/video/one/playback?source=cloud-high" }, { ...readyCloud, id: "cloud-low", url: "/p/hls/low/index.m3u8" })
+      : manifest(original, cloud)) as typeof fetch,
+  });
+  await settle(); await settle();
+  assert.equal(playbackSourceState(video)?.activeSource?.id, "cloud-low");
+  assert.equal(playbackSourceState(video)?.processing, false);
+});
+
+test("switching to a shorter rendition resets a saved position beyond its end", async () => {
+  const env = setup();
+  await settle();
+  env.video.dispatchEvent(new Event("loadedmetadata"));
+  env.video.currentTime = 179.9;
+  selectPlaybackMode(env.video, "compatible");
+  await settle(); await settle();
+  Object.defineProperty(env.video, "duration", { value: 179.5, configurable: true });
+  env.video.dispatchEvent(new Event("loadedmetadata"));
+  assert.equal(env.video.currentTime, 0);
+});
+
+test("a higher rendition becoming ready during polling remains selected", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
+  const video = media();
+  let ready = false;
+  const high: PlaybackSource = { ...cloud, id: "cloud-high", label: "高清", status: "processing", resolveUrl: "/api/video/one/playback?source=cloud-high" };
+  const low: PlaybackSource = { ...cloud, id: "cloud-low", label: "流畅", status: "processing", resolveUrl: "/api/video/one/playback?source=cloud-low" };
+  attachVideoSource(video, original.url!, "/api/video/one/playback", {
+    mode: "compatible", loadHls,
+    fetch: (async (path) => {
+      const selected = new URL(String(path)).searchParams.get("source");
+      if (!selected) return manifest(original, cloud);
+      return ready ? manifest(original, { ...high, status: "ready", url: "/p/hls/high/index.m3u8" }, { ...low, status: "unknown" }) : manifest(original, high, low);
+    }) as typeof fetch,
+  });
+  const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+  await flush();
+  assert.equal(playbackSourceState(video)?.processing, true);
+  ready = true;
+  t.mock.timers.tick(15000); await flush(); await flush();
+  assert.equal(playbackSourceState(video)?.activeSource?.id, "cloud-high");
+  assert.equal(playbackSourceState(video)?.loading, false);
+  assert.equal(FakeHls.instances.at(-1)?.url, "/p/hls/high/index.m3u8");
+});
+
+test("automatic compatibility falls back between renditions while a concrete selection stays pinned", async () => {
+  const video = media();
+  const high: PlaybackSource = { ...readyCloud, id: "cloud-high", label: "高清", resolveUrl: "/api/video/one/playback?source=cloud-high" };
+  const low: PlaybackSource = { ...readyCloud, id: "cloud-low", label: "流畅", resolveUrl: "/api/video/one/playback?source=cloud-low" };
+  attachVideoSource(video, original.url!, "/api/video/one/playback", {
+    mode: "compatible", loadHls,
+    fetch: (async (path) => {
+      const selected = new URL(String(path)).searchParams.get("source");
+      if (!selected) return manifest(original, cloud);
+      return manifest(original, selected === "cloud-low" ? { ...high, status: "unknown", url: undefined } : high,
+        selected === "cloud-low" ? low : { ...low, status: "unknown", url: undefined });
+    }) as typeof fetch,
+  });
+  await settle(); await settle();
+  FakeHls.instances.at(-1)!.fail(); await settle(); await settle();
+  FakeHls.instances.at(-1)!.fail(); await settle(); await settle();
+  assert.equal(playbackSourceState(video)?.activeSource?.id, "cloud-low");
+  assert.equal(playbackSourceState(video)?.error, null);
+  selectPlaybackSource(video, "cloud-high"); await settle(); await settle();
+  FakeHls.instances.at(-1)!.fail(); await settle(); await settle();
+  FakeHls.instances.at(-1)!.fail(); await settle(); await settle();
+  assert.equal(playbackSourceState(video)?.selectedSourceID, "cloud-high");
+  assert.equal(playbackSourceState(video)?.error?.sourceID, "cloud-high");
+});
+
+test("original source diagnostics follow actual playback and seeks without reloading media", async () => {
+  const video = media();
+  const id = "8a0986cc-e25b-4d86-ac35-8d8a6b242bcb";
+  const tracked = { ...original, url: original.url + "?playbackId=" + id, sourceInfoUrl: "/api/video/one/playback?source=original&playbackId=" + id };
+  let urlSource = "quark-raw", infoCalls = 0;
+  attachVideoSource(video, tracked.url, "/api/video/one/playback", {
+    fetch: (async (path) => {
+      if (new URL(String(path)).searchParams.has("playbackId")) { infoCalls++; return manifest({ ...tracked, urlSource }); }
+      return manifest(tracked, cloud);
+    }) as typeof fetch,
+    loadHls,
+  });
+  await settle();
+  assert.equal(infoCalls, 0);
+  assert.equal(playbackStateLabel(playbackSourceState(video)), "原画播放");
+  video.dispatchEvent(new Event("loadedmetadata")); await settle();
+  assert.equal(playbackSourceState(video)?.activeSource?.urlSource, "quark-raw");
+  assert.equal(playbackStateLabel(playbackSourceState(video)), "原画·RAW");
+  assert.equal(originalPlaybackLabel("quark-raw"), "原画播放（RAW接口）");
+  video.currentTime = 42; urlSource = "quark-download";
+  video.dispatchEvent(new Event("seeked")); await settle();
+  assert.equal(playbackStateLabel(playbackSourceState(video)), "原画·下载");
+  assert.equal(originalPlaybackLabel("quark-download"), "原画播放（下载接口）");
+  assert.equal(video.currentTime, 42);
+  const before = playbackSourceURL(video);
+  setOriginalVideoDelivery(video, "/p/stream/wo/file?tripleScreenRelay=1"); await settle();
+  const delivery = new URL(playbackSourceURL(video), window.location.href);
+  assert.equal(delivery.searchParams.get("playbackId"), id);
+  assert.equal(delivery.searchParams.get("tripleScreenRelay"), "1");
+  assert.ok(before.includes(id));
+});
+
+test("late original-source information cannot relabel a different active source", async () => {
+  const video = media();
+  const tracked = { ...original, sourceInfoUrl: "/api/video/one/playback?source=original&playbackId=old" };
+  let finish!: (response: Response) => void;
+  attachVideoSource(video, original.url!, "/api/video/one/playback", {
+    fetch: (async (path) => {
+      const url = new URL(String(path));
+      if (url.searchParams.has("playbackId")) return new Promise<Response>((resolve) => { finish = resolve; });
+      return manifest(tracked, url.searchParams.get("source") === "cloud" ? readyCloud : cloud);
+    }) as typeof fetch, loadHls,
+  });
+  await settle(); video.dispatchEvent(new Event("loadedmetadata"));
+  selectPlaybackMode(video, "compatible"); await settle(); await settle();
+  finish(manifest({ ...tracked, urlSource: "quark-download" })); await settle();
+  assert.equal(playbackSourceState(video)?.activeSource?.id, "cloud");
+  assert.equal(playbackStateLabel(playbackSourceState(video)), "兼容播放");
+  assert.equal(playbackSourceState(video)?.activeSource?.urlSource, undefined);
+});
+
+test("source information never sends credentials to a foreign origin", async () => {
+  const video = media(); let calls = 0;
+  attachVideoSource(video, original.url!, "/api/video/one/playback", {
+    fetch: (async () => { calls++; return manifest({ ...original, sourceInfoUrl: "https://external.example/source-info" }); }) as typeof fetch,
+  });
+  await settle(); video.dispatchEvent(new Event("loadedmetadata")); await settle();
+  assert.equal(calls, 1);
+  assert.equal(playbackStateLabel(playbackSourceState(video)), "原画播放");
 });

@@ -219,3 +219,16 @@ func TestOriginalRefreshInvalidatesOnlyTheViewersFileAndUserAgent(t *testing.T) 
 		t.Fatalf("refresh affected unrelated links: %+v", d.calls)
 	}
 }
+
+func TestMixedReadyAndProcessingSourcesRefreshPromptly(t *testing.T) {
+	d := &playbackTestDrive{result: append(testCloudSources("https://hls.example/index.m3u8"), drives.PlaybackSource{ID: "cloud-low", Status: "processing"})}
+	reg := NewRegistry()
+	reg.Set("drive", d)
+	p := New(reg)
+	if _, err := p.PlaybackSources(context.Background(), "drive", "file", false); err != nil {
+		t.Fatal(err)
+	}
+	if ttl := time.Until(p.playbackCache["drive/file"].until); ttl > 11*time.Second {
+		t.Fatalf("processing metadata hidden by ready source for %s", ttl)
+	}
+}

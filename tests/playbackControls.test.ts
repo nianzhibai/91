@@ -383,7 +383,7 @@ test("a failed automatic fallback does not offer the last attached original or t
   assert.match(view.getByRole("alert").textContent ?? "", /原画播放暂不可用，联通网盘暂未提供/);
 });
 
-test("playback submenu keeps the root width and separates selected mode from the actual source", async () => {
+test("playback submenu follows the active source while automatic recovery stays internal", async () => {
   const original = { id: "original", label: "原画播放", kind: "original", protocol: "file", status: "ready", url: "/p/stream/drive/file", mediaType: "video/mp4" };
   const cloud = { id: "cloud", label: "兼容播放", kind: "transcoded", protocol: "hls", status: "unknown", resolveUrl: "/api/video/one/playback?source=cloud" };
   window.fetch = (async () => new Response(JSON.stringify({ sources: [original, cloud] }), { status: 200 })) as typeof fetch;
@@ -392,7 +392,7 @@ test("playback submenu keeps the root width and separates selected mode from the
   const video = view.container.querySelector("video")!;
   const art = Artplayer.instances.find((instance) => instance.video === video)!;
   const setting = art.setting.find("playback-mode")!;
-  assert.equal(setting.tooltip, "智能选择");
+  assert.equal(setting.tooltip, "原画播放");
   assert.equal(setting.width, undefined);
   await act(async () => { art.setting.show = true; art.emit("resize"); });
   const menu = art.template.$setting;
@@ -400,11 +400,16 @@ test("playback submenu keeps the root width and separates selected mode from the
   assert.equal(rootWidth, "172px");
   await act(async () => { setting.$item.click(); });
   assert.equal(menu.style.width, rootWidth);
-  assert.match(menu.querySelector(".art-setting-panel.art-current .art-setting-item-back")?.textContent ?? "", /当前：原画播放/);
-  assert.equal(menu.querySelectorAll('.art-setting-panel.art-current [data-name^="playback-mode-"]').length, 3);
+  assert.equal(menu.querySelector(".art-setting-panel.art-current .art-setting-item-back")?.textContent?.trim(), "播放方式");
+  assert.equal(menu.querySelectorAll('.art-setting-panel.art-current [data-name^="playback-mode-"]').length, 2);
+  assert.equal(menu.querySelector('[data-name="playback-mode-auto"]'), null);
+  assert.equal(menu.querySelector('[data-name="playback-mode-original"]')?.classList.contains("art-current"), true);
+  assert.equal(playbackSourceState(video)?.mode, "auto");
+  await act(async () => { menu.querySelector<HTMLElement>('[data-name="playback-mode-original"]')!.click(); });
+  assert.equal(playbackSourceState(video)?.mode, "original");
 });
 
-test("updating the actual source keeps the playback submenu open and its mode label short", async () => {
+test("refreshing the actual source keeps a plain playback submenu header and current selection", async () => {
   const original = { id: "original", label: "原画播放", kind: "original", protocol: "file", status: "ready", url: "/p/stream/drive/file", mediaType: "video/mp2t" };
   const cloud = { id: "cloud", label: "兼容播放", kind: "transcoded", protocol: "hls", status: "unknown", resolveUrl: "/api/video/one/playback?source=cloud" };
   const readyCloud = { ...cloud, status: "ready", url: "https://hls.example/index.m3u8" };
@@ -425,17 +430,119 @@ test("updating the actual source keeps the playback submenu open and its mode la
     await act(async () => { setting.$item.click(); });
     const menu = art.template.$setting;
     const activePanel = menu.querySelector(".art-setting-panel.art-current")!;
-    assert.equal(setting.tooltip, "智能选择");
-    assert.match(activePanel.textContent ?? "", /当前：兼容播放/);
+    assert.equal(setting.tooltip, "兼容播放");
+    assert.equal(activePanel.querySelector(".art-setting-item-back")?.textContent?.trim(), "播放方式");
+    assert.equal(activePanel.querySelector('[data-name="playback-mode-compatible"]')?.classList.contains("art-current"), true);
+    assert.equal(activePanel.querySelector(".video-player__playback-source-status"), null);
     await act(async () => { video.dispatchEvent(new Event("error")); });
     assert.equal(menu.querySelector(".art-setting-panel.art-current"), activePanel);
-    assert.match(activePanel.textContent ?? "", /正在获取播放源/);
+    assert.equal(activePanel.querySelector(".art-setting-item-back")?.textContent?.trim(), "播放方式");
     finish(new Response(JSON.stringify({ sources: [original, readyCloud] }), { status: 200 }));
     await settle();
     assert.equal(menu.querySelector(".art-setting-panel.art-current"), activePanel);
-    assert.match(activePanel.textContent ?? "", /当前：兼容播放/);
-    assert.equal(art.setting.find("playback-mode")!.tooltip, "智能选择");
+    assert.equal(activePanel.querySelector(".art-setting-item-back")?.textContent?.trim(), "播放方式");
+    assert.equal(activePanel.querySelector('[data-name="playback-mode-compatible"]')?.classList.contains("art-current"), true);
+    assert.equal(activePanel.querySelector(".video-player__playback-source-status"), null);
+    assert.equal(art.setting.find("playback-mode")!.tooltip, "兼容播放");
   } finally {
     window.HTMLMediaElement.prototype.canPlayType = canPlayType;
   }
+});
+
+test("an automatic fallback selects compatibility in the menu without fixing the strategy", async () => {
+  const env = await tripleScreenPlayer();
+  const art = Artplayer.instances.find((instance) => instance.video === env.video)!;
+  await act(async () => { art.setting.show = true; art.setting.find("playback-mode")!.$item.click(); });
+  assert.equal(art.template.$setting.querySelector('[data-name="playback-mode-original"]')?.classList.contains("art-current"), true);
+  Object.defineProperty(env.video, "error", { configurable: true, value: { code: 3 } });
+  await act(async () => { env.video.dispatchEvent(new Event("error")); });
+  await settle();
+  const state = playbackSourceState(env.video)!;
+  assert.equal(state.mode, "auto");
+  assert.equal(state.activeSource?.kind, "transcoded");
+  assert.equal(art.setting.show, true);
+  const setting = art.setting.find("playback-mode")!;
+  assert.equal(setting.tooltip, "兼容播放");
+  assert.equal(setting.selector?.find((item) => item.value === "compatible")?.default, true);
+  assert.equal(setting.selector?.find((item) => item.value === "original")?.default, false);
+  assert.equal(setting.selector?.some((item) => item.value === "auto"), false);
+  assert.equal(art.template.$setting.querySelector(".video-player__playback-source-status"), null);
+});
+
+test("rendition menu follows active HLS sources and hides when switching back to the original", async () => {
+  const original = { id: "original", label: "原画播放", kind: "original", protocol: "file", status: "ready", url: "/p/stream/drive/file", mediaType: "video/mp4" };
+  const cloud = { id: "cloud", label: "兼容播放", kind: "transcoded", protocol: "hls", status: "unknown", resolveUrl: "/api/video/one/playback?source=cloud" };
+  const high = { ...cloud, id: "cloud-high", label: "高清", status: "ready", url: "/p/hls/high/index.m3u8" };
+  const low = { ...cloud, id: "cloud-low", label: "流畅", status: "ready", url: "/p/hls/low/index.m3u8" };
+  window.fetch = (async (path) => {
+    const url = new URL(String(path));
+    if (url.pathname.startsWith("/p/")) return new Response(null, { status: 206 });
+    return new Response(JSON.stringify({ sources: url.searchParams.has("source") ? [original, high, low] : [original, cloud] }), { status: 200 });
+  }) as typeof fetch;
+  const view = render(createElement(VideoPlayer, { src: original.url, playbackUrl: "/api/video/one/playback", title: "Example", poster: "" }));
+  await settle();
+  const video = view.container.querySelector("video")!;
+  const art = Artplayer.instances.find((instance) => instance.video === video)!;
+  await act(async () => { selectPlaybackMode(video, "compatible"); });
+  await settle();
+  let setting = art.setting.find("playback-rendition")!;
+  assert.ok(setting);
+  assert.equal(setting.tooltip, "高清");
+  assert.equal(setting.selector?.length, 2);
+  assert.deepEqual(setting.selector?.map((item) => item.value), ["cloud-high", "cloud-low"]);
+  assert.equal(setting.selector?.find((item) => item.value === "cloud-high")?.default, true);
+  assert.equal(playbackSourceState(video)?.selectedSourceID, null);
+
+  // Source metadata and playback mode stay the same; only the active rendition
+  // changes, so the menu must follow its ID instead of the manual preference.
+  Object.defineProperty(video, "error", { configurable: true, value: { code: 3 } });
+  await act(async () => { video.dispatchEvent(new Event("error")); });
+  await settle();
+  setting = art.setting.find("playback-rendition")!;
+  assert.equal(playbackSourceState(video)?.activeSource?.id, "cloud-low");
+  assert.equal(playbackSourceState(video)?.selectedSourceID, null);
+  assert.equal(setting.tooltip, "流畅");
+  assert.equal(setting.selector?.find((item) => item.value === "cloud-high")?.default, false);
+  assert.equal(setting.selector?.find((item) => item.value === "cloud-low")?.default, true);
+
+  Object.defineProperty(video, "error", { configurable: true, value: null });
+  await act(async () => { setting.$item.click(); });
+  assert.equal(art.template.$setting.querySelector('[data-name="rendition-auto"]'), null);
+  await act(async () => { art.template.$setting.querySelector<HTMLElement>('[data-name="rendition-cloud-low"]')!.click(); });
+  assert.equal(playbackSourceState(video)?.selectedSourceID, "cloud-low");
+
+  await act(async () => { selectPlaybackMode(video, "original"); });
+  await settle();
+  assert.equal(playbackSourceState(video)?.activeSource?.kind, "original");
+  assert.ok(!art.setting.find("playback-rendition"));
+  assert.equal(art.template.$setting.querySelector('[data-name="playback-rendition"]'), null);
+
+  await act(async () => { selectPlaybackMode(video, "compatible"); });
+  await settle();
+  assert.equal(playbackSourceState(video)?.activeSource?.id, "cloud-high");
+  const restored = art.setting.find("playback-rendition")!;
+  assert.ok(restored);
+  assert.equal(restored.tooltip, "高清");
+  assert.equal(restored.selector?.find((item) => item.value === "cloud-high")?.default, true);
+});
+
+test("original playback labels show the observed Quark resolver and update when it changes", async () => {
+  const original = { id: "original", label: "原画播放", kind: "original", protocol: "file", status: "ready", url: "/p/stream/drive/file?playbackId=one", mediaType: "video/mp4", sourceInfoUrl: "/api/video/one/playback?source=original&playbackId=one" };
+  const cloud = { id: "cloud", label: "兼容播放", kind: "transcoded", protocol: "hls", status: "unknown", resolveUrl: "/api/video/one/playback?source=cloud" };
+  let urlSource = "quark-raw";
+  window.fetch = (async (path) => new Response(JSON.stringify({ sources: [new URL(String(path)).searchParams.has("playbackId") ? { ...original, urlSource } : original, cloud] }), { status: 200 })) as typeof fetch;
+  const view = render(createElement(VideoPlayer, { src: original.url, playbackUrl: "/api/video/one/playback", title: "Example", poster: "" }));
+  await settle(); const video = view.container.querySelector("video")!;
+  const art = Artplayer.instances.find((instance) => instance.video === video)!;
+  assert.equal(art.setting.find("playback-mode")!.tooltip, "原画播放");
+  await act(async () => { video.dispatchEvent(new Event("loadedmetadata")); }); await settle();
+  let setting = art.setting.find("playback-mode")!;
+  assert.equal(setting.tooltip, "原画·RAW");
+  assert.equal(setting.selector?.find((item) => item.value === "original")?.html, "原画播放（RAW接口）");
+  urlSource = "quark-download";
+  await act(async () => { video.dispatchEvent(new Event("seeked")); }); await settle();
+  setting = art.setting.find("playback-mode")!;
+  assert.equal(setting.tooltip, "原画·下载");
+  assert.equal(setting.selector?.find((item) => item.value === "original")?.html, "原画播放（下载接口）");
+  assert.equal(playbackSourceState(video)?.mode, "auto");
 });

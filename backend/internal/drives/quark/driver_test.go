@@ -329,6 +329,7 @@ func TestOSSObjectURLUpgradesProviderHTTPURL(t *testing.T) {
 func testDriverForServer(baseURL string, client *http.Client, tempDir string) *Driver {
 	d := New(Config{ID: "quark-test", Cookie: "__pus=initial; __puus=initial", UploadTempDir: tempDir})
 	d.apiBase = strings.TrimRight(baseURL, "/") + "/1/clouddrive"
+	d.playbackAPI = d.apiBase
 	if client != nil {
 		d.client.SetTransport(client.Transport)
 		d.uploadClient = newQuarkUploadHTTPClient(client)

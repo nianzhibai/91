@@ -951,7 +951,7 @@ func (a *App) persistDriveCredentials(lease driveCredentialLease, updates map[st
 	// Invalidate even on a persistence error so the proxy cannot keep serving a
 	// credential the active provider session has already rejected.
 	if a.proxy != nil {
-		a.proxy.InvalidateDrive(lease.driveID)
+		a.proxy.InvalidateDriveLinks(lease.driveID)
 	}
 	if err != nil {
 		log.Printf("[drive %s] persist refreshed credentials: %v", lease.driveID, err)

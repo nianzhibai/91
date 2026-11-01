@@ -14,6 +14,13 @@ export type PlaybackSource = {
   mediaType?: string;
   message?: string;
   expiresAt?: string;
+  resolution?: string;
+  width?: number;
+  height?: number;
+  bitrate?: number;
+  codec?: string;
+  urlSource?: string;
+  sourceInfoUrl?: string;
 };
 type PlaybackFailureReason = "unsupported" | "network" | "timeout" | "processing" | "unavailable" | "access" | "throttled" | "other";
 export type PlaybackSourceFailure = {
@@ -26,13 +33,13 @@ export type PlaybackState = {
   mode: PlaybackMode;
   sources: readonly PlaybackSource[];
   activeSource: PlaybackSource | null;
+  selectedSourceID: string | null;
   loading: boolean;
   processing: boolean;
   error: PlaybackSourceFailure | null;
   notice: string | null;
 };
-export const PLAYBACK_MODES: readonly { value: PlaybackMode; label: string }[] = [
-  { value: "auto", label: "智能选择" },
+export const PLAYBACK_MODES: readonly { value: Exclude<PlaybackMode, "auto">; label: string }[] = [
   { value: "original", label: "原画播放" },
   { value: "compatible", label: "兼容播放" },
 ];
@@ -54,6 +61,7 @@ type SourceController = {
   state: PlaybackState;
   retry(): void;
   selectMode(mode: PlaybackMode): void;
+  selectSource(id: string): void;
   setOriginalDelivery(url: string | null): void;
   setActive(active: boolean): void;
   destroy(): void;
@@ -80,17 +88,29 @@ export function playbackSourceURL(video: HTMLVideoElement) {
   return controllers.get(video)?.url ?? video.currentSrc;
 }
 export function playbackModeLabel(mode: PlaybackMode) {
-  return PLAYBACK_MODES.find((option) => option.value === mode)?.label ?? "智能选择";
+  return PLAYBACK_MODES.find((option) => option.value === mode)?.label ?? "正在选择";
+}
+export function originalPlaybackLabel(urlSource?: string, compact = false) {
+  const suffix = urlSource === "quark-raw" ? "RAW" : urlSource === "quark-download" ? "下载" : null;
+  if (!suffix) return "原画播放";
+  return compact ? `原画·${suffix}` : `原画播放（${suffix}接口）`;
 }
 export function playbackStateLabel(state: PlaybackState | null) {
-  const active = state?.activeSource?.label;
-  if (!state || state.mode === "auto") return active ? `智能选择 · ${active}` : "智能选择";
-  return state.mode === "original" ? "原画播放" : "兼容播放";
+  const source = state?.activeSource;
+  if (!source) return "正在选择";
+  return source.kind === "original" ? originalPlaybackLabel(source.urlSource, true) : playbackModeLabel("compatible");
 }
 export function selectPlaybackMode(video: HTMLVideoElement, mode: PlaybackMode) {
   const controller = controllers.get(video);
   if (!controller) return false;
   controller.selectMode(mode);
+  return true;
+}
+/** Select one concrete rendition without changing the shared media controller. */
+export function selectPlaybackSource(video: HTMLVideoElement, id: string) {
+  const controller = controllers.get(video);
+  if (!controller || !controller.state.sources.some((source) => source.id === id)) return false;
+  controller.selectSource(id);
   return true;
 }
 /** Override original-file delivery without changing the selected playback mode. */
@@ -148,12 +168,13 @@ export function attachVideoSource(
   let originalURL: string | null = null;
   let startupTimer: ReturnType<typeof setTimeout> | null = null;
   let startupComplete = false;
+  let sourceInfoSequence = 0;
   const failed = new Set<string>();
   const refreshed = new Set<string>();
   const prepared = new Set<string>();
   const controller: SourceController = {
     key, url: src,
-    state: { mode: options.mode ?? "auto", sources: [], activeSource: null, loading: false, processing: false, error: null, notice: null },
+    state: { mode: options.mode ?? "auto", sources: [], activeSource: null, selectedSourceID: null, loading: false, processing: false, error: null, notice: null },
     setActive(next) {
       if (active === next) return;
       active = next;
@@ -184,13 +205,24 @@ export function attachVideoSource(
       else void choose(true);
     },
     selectMode(mode) {
-      if (controller.state.mode === mode) return;
+      if (controller.state.mode === mode && !controller.state.selectedSourceID) return;
+      controller.state.selectedSourceID = null;
       controller.state.mode = mode;
       controller.state.notice = null;
       failed.clear();
       refreshed.clear();
       changed();
       if (initialized) void choose(false);
+    },
+    selectSource(id) {
+      const source = controller.state.sources.find((item) => item.id === id);
+      if (!source) return;
+      controller.state.selectedSourceID = id;
+      controller.state.mode = source.kind === "original" ? "original" : "compatible";
+      failed.clear();
+      refreshed.clear();
+      changed();
+      if (initialized) void start(source, false);
     },
     setOriginalDelivery(url) {
       if (originalURL === url) return;
@@ -211,7 +243,8 @@ export function attachVideoSource(
       video.removeEventListener("error", mediaFailed);
       video.removeEventListener("loadedmetadata", loaded);
       video.removeEventListener("loadeddata", watchStartup);
-      video.removeEventListener("playing", watchStartup);
+      video.removeEventListener("playing", playbackStarted);
+      video.removeEventListener("seeked", refreshOriginalSourceInfo);
       video.removeEventListener("timeupdate", checkFrames);
       video.removeEventListener("play", rememberPlaying);
       video.removeEventListener("pause", rememberPause);
@@ -224,7 +257,8 @@ export function attachVideoSource(
   video.addEventListener("error", mediaFailed);
   video.addEventListener("loadedmetadata", loaded);
   video.addEventListener("loadeddata", watchStartup);
-  video.addEventListener("playing", watchStartup);
+  video.addEventListener("playing", playbackStarted);
+  video.addEventListener("seeked", refreshOriginalSourceInfo);
   video.addEventListener("timeupdate", checkFrames);
   video.addEventListener("play", rememberPlaying);
   video.addEventListener("pause", rememberPause);
@@ -233,6 +267,36 @@ export function attachVideoSource(
 
   function changed() {
     if (!disposed) video.dispatchEvent(new CustomEvent(PLAYBACK_SOURCE_CHANGE));
+  }
+  function playbackStarted() {
+    watchStartup();
+    refreshOriginalSourceInfo();
+  }
+  function refreshOriginalSourceInfo() {
+    const source = controller.state.activeSource;
+    if (disposed || controller.state.loading || source?.kind !== "original" || !source.sourceInfoUrl) return;
+    const epoch = generation;
+    const sequence = ++sourceInfoSequence;
+    let infoURL: URL;
+    try { infoURL = new URL(source.sourceInfoUrl, window.location.href); }
+    catch { return; }
+    if (infoURL.origin !== window.location.origin) return;
+    void (async () => {
+      const response = await (options.fetch ?? window.fetch.bind(window))(infoURL.href, {
+        credentials: "same-origin", cache: "no-store", signal: abort?.signal,
+      });
+      if (!response.ok) return;
+      const data = await response.json() as { sources?: PlaybackSource[] };
+      const urlSource = data.sources?.find((item) => item.id === "original")?.urlSource;
+      const activeSource = controller.state.activeSource;
+      if (disposed || generation !== epoch || sourceInfoSequence !== sequence || !activeSource ||
+          activeSource.sourceInfoUrl !== source.sourceInfoUrl ||
+          (urlSource !== "quark-raw" && urlSource !== "quark-download")) return;
+      if (activeSource.urlSource === urlSource) return;
+      controller.state.activeSource = { ...activeSource, urlSource };
+      controller.state.sources = controller.state.sources.map((item) => item.id === "original" ? { ...item, urlSource } : item);
+      changed();
+    })().catch(() => { /* Optional diagnostics must never interrupt playback. */ });
   }
   function rememberPlaying() {
     wasPlaying = true;
@@ -349,6 +413,7 @@ export function attachVideoSource(
   }
   function loaded() {
     watchStartup();
+    refreshOriginalSourceInfo();
     if (disposed || controller.state.loading || !restore) return;
     const state = restore;
     restore = null;
@@ -356,7 +421,12 @@ export function attachVideoSource(
     video.volume = state.volume;
     video.muted = state.muted;
     if (state.time > 0 && Number.isFinite(video.duration)) {
-      try { video.currentTime = Math.min(state.time, Math.max(0, video.duration - 0.1)); }
+      try {
+        // Renditions can be slightly shorter than the original. Restoring a
+        // saved position at their end can leave HLS waiting without new frames.
+        video.currentTime = !Number.isFinite(state.time) || state.time >= video.duration - 0.1
+          ? 0 : Math.min(state.time, Math.max(0, video.duration - 0.1));
+      }
       catch { /* Some media becomes seekable only after metadata. */ }
     }
     if (state.playing || wasPlaying) void video.play().catch(() => undefined);
@@ -406,7 +476,7 @@ export function attachVideoSource(
       return;
     }
     failed.add(source.id);
-    if (controller.state.mode === "auto") {
+    if (controller.state.mode === "auto" || (controller.state.mode === "compatible" && !controller.state.selectedSourceID)) {
       const next = candidate();
       if (next) {
         await start(next, false);
@@ -420,10 +490,11 @@ export function attachVideoSource(
   }
   function candidate(refresh = false) {
     const mode = controller.state.mode;
-    return controller.state.sources.find((source) =>
+    const candidates = controller.state.sources.filter((source) =>
       !failed.has(source.id) && (["ready", "unknown", "processing"].includes(source.status) || (refresh && !!source.resolveUrl)) &&
       (mode === "original" ? source.kind === "original" : mode === "compatible" ? source.kind === "transcoded" : !nativeUnsupported(source)),
     );
+    return candidates.find((source) => source.status !== "processing") ?? candidates[0];
   }
   async function choose(refresh: boolean) {
     const source = candidate(refresh);
@@ -471,7 +542,9 @@ export function attachVideoSource(
         !["unknown", "ready", "processing", "unavailable"].includes(item.status) ||
         (item.status === "ready" && (typeof item.url !== "string" || !item.url)) ||
         (item.resolveUrl !== undefined && typeof item.resolveUrl !== "string") ||
-        (item.prepareUrl !== undefined && typeof item.prepareUrl !== "string"),
+        (item.prepareUrl !== undefined && typeof item.prepareUrl !== "string") ||
+        (item.sourceInfoUrl !== undefined && typeof item.sourceInfoUrl !== "string") ||
+        (item.urlSource !== undefined && typeof item.urlSource !== "string"),
       ) || new Set(data.sources.map((item) => item.id)).size !== data.sources.length)
         throw new Error("播放源返回了无效数据");
       controller.state.sources = data.sources;
@@ -517,6 +590,16 @@ export function attachVideoSource(
       const updated = controller.state.sources.find((item) => item.id === selected.id);
       if (!updated) throw new SourceRequestError("兼容播放源暂不可用", "unavailable");
       selected = updated;
+      if (selected.status === "processing" && !controller.state.selectedSourceID) {
+        const alternative = controller.state.sources.find((item) =>
+          item.kind === "transcoded" && item.id !== selected.id &&
+          (item.status === "ready" || item.status === "unknown") && !failed.has(item.id));
+        if (alternative) {
+          if (alternative.status === "ready") return alternative;
+          await start(alternative, false);
+          return null;
+        }
+      }
     }
     controller.state.processing = false;
     return selected;
@@ -544,14 +627,25 @@ export function attachVideoSource(
       if (resolver && (refresh || expired || selected.status === "unknown" || selected.status === "processing")) {
         if (!await requestManifest(resolver, epoch, refresh || expired, selected.kind === "original" ? "original" : undefined)) return;
         selected = controller.state.sources.find((item) => item.id === selected.id) ??
-          controller.state.sources.find((item) => item.kind === selected.kind && item.status === "ready" && !failed.has(item.id)) ?? selected;
+          controller.state.sources.find((item) => item.kind === selected.kind && item.status === "ready" && !failed.has(item.id)) ??
+          controller.state.sources.find((item) => item.kind === selected.kind && item.status === "processing" && !failed.has(item.id)) ??
+          controller.state.sources.find((item) => item.kind === selected.kind && item.status === "unavailable") ?? selected;
       }
       if (selected.status === "processing") {
         const ready = await waitForProcessing(selected, epoch);
         if (!ready) return;
         selected = ready;
       }
-      if (selected.kind === "original" && originalURL) selected = { ...selected, url: originalURL };
+      if (selected.kind === "original" && originalURL) {
+        let deliveryURL = originalURL;
+        const playbackID = selected.url ? new URL(selected.url, window.location.href).searchParams.get("playbackId") : null;
+        if (playbackID) {
+          const url = new URL(originalURL, window.location.href);
+          url.searchParams.set("playbackId", playbackID);
+          deliveryURL = url.href;
+        }
+        selected = { ...selected, url: deliveryURL };
+      }
       if (selected.status !== "ready" || !selected.url) {
         throw new SourceRequestError(selected.message || "该播放源暂不可用，请重新获取",
           selected.status === "processing" ? "processing" : "unavailable");
@@ -599,7 +693,7 @@ export function attachVideoSource(
       if (disposed || epoch !== generation) return;
       failed.add(selected.id);
       const reason = failureReason(error);
-      if (!stopsRecovery(reason) && controller.state.mode === "auto") {
+      if (!stopsRecovery(reason) && (controller.state.mode === "auto" || (controller.state.mode === "compatible" && !controller.state.selectedSourceID))) {
         const next = candidate();
         if (next) { await start(next, false); return; }
       }

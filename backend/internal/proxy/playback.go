@@ -93,7 +93,7 @@ func (p *Proxy) resolvePlayback(ctx context.Context, driveID, fileID string, ref
 					if err == nil && sources != nil {
 						now := time.Now()
 						ttl := 2 * time.Minute
-						if !hasReadyPlaybackSource(sources) {
+						if !hasReadyPlaybackSource(sources) || hasProcessingPlaybackSource(sources) {
 							ttl = 10 * time.Second
 						}
 						until := now.Add(ttl)
@@ -156,6 +156,15 @@ func (p *Proxy) WritePlaybackError(w http.ResponseWriter, driveID string, err er
 func hasReadyPlaybackSource(sources []drives.PlaybackSource) bool {
 	for _, source := range sources {
 		if source.Status == "ready" && source.Link != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func hasProcessingPlaybackSource(sources []drives.PlaybackSource) bool {
+	for _, source := range sources {
+		if source.Status == "processing" {
 			return true
 		}
 	}
