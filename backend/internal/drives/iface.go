@@ -76,6 +76,15 @@ type OriginalPlaybackProvider interface {
 	OriginalPlaybackURL(context.Context, string) (*StreamLink, error)
 }
 
+// StreamRequester optionally executes media requests built from StreamURL.
+// Providers can use current credentials, recover rejected tokens, and classify
+// media errors even when the link came from the proxy cache. Implementations
+// must preserve the request and its context, and close discarded responses.
+// The caller owns the returned response body and forwards it without buffering.
+type StreamRequester interface {
+	RequestStream(*http.Request) (*http.Response, error)
+}
+
 // PlaybackSourcePreparer explicitly starts provider-side preparation after a
 // viewer requests playback. Listing or preloading sources must remain read-only.
 type PlaybackSourcePreparer interface {

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -422,7 +423,7 @@ func (p *Proxy) ServeStream(w http.ResponseWriter, r *http.Request, driveID, fil
 		redirect(w, r, link)
 		return
 	}
-	if err := p.serve(w, r, link, forceRelay); err != nil {
+	if err := p.serve(w, r, d, link, forceRelay); err != nil {
 		if errors.Is(err, context.Canceled) {
 			// Browser navigation and canceled range requests say nothing about
 			// provider health, so retain the previous observed state.
@@ -481,7 +482,7 @@ func forceStreamRelay(r *http.Request) bool {
 	return r.URL.Query().Get("tripleScreenRelay") == "1"
 }
 
-func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, link *drives.StreamLink, forceRelay bool) error {
+func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, d drives.Drive, link *drives.StreamLink, forceRelay bool) error {
 	// 构造上游请求
 	u, err := url.Parse(link.URL)
 	if err != nil {
@@ -511,7 +512,12 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, link *drives.Strea
 	if link.PassThroughRedirects && !forceRelay {
 		client = p.relay
 	}
-	resp, err := client.Do(req)
+	var resp *http.Response
+	if requester, ok := d.(drives.StreamRequester); ok {
+		resp, err = requester.RequestStream(req)
+	} else {
+		resp, err = client.Do(req)
+	}
 	if err != nil {
 		return fmt.Errorf("request upstream: %w", err)
 	}
@@ -608,6 +614,13 @@ func writeStreamError(w http.ResponseWriter, driveKind string, err error) {
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
+	if wait, limited := drives.RateLimitRetryAfter(err); limited && wait > 0 {
+		seconds := wait / time.Second
+		if wait%time.Second != 0 {
+			seconds++
+		}
+		w.Header().Set("Retry-After", strconv.FormatInt(int64(seconds), 10))
+	}
 	// These are application-level drive dependency failures. A gateway 502
 	// can be replaced by a CDN, discarding the code/message the player needs.
 	w.WriteHeader(http.StatusFailedDependency)

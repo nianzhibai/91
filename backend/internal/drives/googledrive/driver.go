@@ -24,6 +24,7 @@ import (
 
 	"github.com/video-site/backend/internal/drives"
 	"github.com/video-site/backend/internal/scopedproxy"
+	"github.com/video-site/backend/internal/streamhttp"
 )
 
 const (
@@ -52,6 +53,7 @@ type Driver struct {
 	uploadBaseURL string
 	client        *resty.Client
 	httpClient    *http.Client
+	mediaClient   *http.Client
 	onTokenUpdate func(access, refresh string)
 
 	// OAuth refresh tokens can rotate. Keep request snapshots race-free and
@@ -101,6 +103,8 @@ func New(c Config) *Driver {
 	if uploadBaseURL == "" {
 		uploadBaseURL = deriveUploadBaseURL(apiBaseURL)
 	}
+	mediaClient := streamhttp.NewClient(0)
+	mediaClient.Transport = scopedproxy.NewTransport(nil)
 	return &Driver{
 		id:              c.ID,
 		rootID:          rootID,
@@ -113,6 +117,7 @@ func New(c Config) *Driver {
 		uploadBaseURL:   uploadBaseURL,
 		onTokenUpdate:   c.OnTokenUpdate,
 		tokenGeneration: 1,
+		mediaClient:     mediaClient,
 		client: resty.New().
 			SetTransport(scopedproxy.NewTransport(nil)).
 			SetTimeout(30*time.Second).
@@ -529,8 +534,8 @@ func (d *Driver) putUploadSessionChunk(ctx context.Context, uploadURL string, st
 		body, _ := io.ReadAll(io.LimitReader(res.Body, 64*1024))
 		var apiErr apiErrorResp
 		_ = json.Unmarshal(body, &apiErr)
-		if isGoogleUploadHTTPRateLimit(res.StatusCode, res.Header, body, apiErr.Error) {
-			return nil, false, googleUploadRateLimitError(res.StatusCode, res.Header, body, apiErr.Error.Message)
+		if isGoogleHTTPRateLimit(res.StatusCode, res.Header, apiErr.Error) {
+			return nil, false, googleHTTPRateLimitError(res.StatusCode, res.Header, body, apiErr.Error.Message)
 		}
 		retryable := res.StatusCode == http.StatusTooManyRequests || (res.StatusCode >= 500 && res.StatusCode <= 504)
 		return nil, retryable, fmt.Errorf("googledrive upload session: status=%d body=%s", res.StatusCode, strings.TrimSpace(string(body)))
@@ -651,7 +656,7 @@ func (d *Driver) findUploadedFileID(ctx context.Context, parentID, name, md5Hex 
 
 var _ drives.Remover = (*Driver)(nil)
 
-func isGoogleUploadHTTPRateLimit(status int, header http.Header, body []byte, apiErr apiErrorBody) bool {
+func isGoogleHTTPRateLimit(status int, header http.Header, apiErr apiErrorBody) bool {
 	if status == http.StatusTooManyRequests {
 		return true
 	}
@@ -664,9 +669,9 @@ func isGoogleUploadHTTPRateLimit(status int, header http.Header, body []byte, ap
 	return false
 }
 
-func googleUploadRateLimitError(status int, header http.Header, body []byte, message string) error {
+func googleHTTPRateLimitError(status int, header http.Header, body []byte, message string) error {
 	if strings.TrimSpace(message) == "" {
-		message = "google drive upload rate limited"
+		message = "google drive rate limited"
 	}
 	bodyText := strings.TrimSpace(string(body))
 	if bodyText != "" {
