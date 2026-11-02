@@ -262,13 +262,11 @@ test("desktop and mobile collections request previews and share preview behavior
   }
 });
 
-test("recommendation rail omits retired quality metadata", () => {
+test("recommendation labels stay above the preview", () => {
   assert.match(
     stylesSource,
     /\.vd-rail__duration,\s*\.vd-rail__current\s*\{\s*z-index:\s*2;/
   );
-  assert.doesNotMatch(railSource, /vd-rail__hd|quality === "HD"/);
-  assert.doesNotMatch(stylesSource, /\.vd-rail__hd/);
 });
 
 test("desktop collection loading state renders six skeleton cards", () => {

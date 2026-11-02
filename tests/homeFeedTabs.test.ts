@@ -87,6 +87,8 @@ test("each home tab scrolls infinitely through its own feed source", () => {
     homePageSource,
     /<VirtualVideoGrid[\s\S]*?videos=\{feedItems\}[\s\S]*?hasMore=\{homeFeed\.hasMore\}[\s\S]*?loadingMore=\{homeFeed\.loadingMore\}[\s\S]*?prefetchRows=\{PREFETCH_ROWS\}[\s\S]*?onLoadMore=\{homeFeed\.loadMore\}/
   );
+  assert.match(homePageSource, /const eagerCount = isMobile \? 2 : 4;/);
+  assert.match(homePageSource, /<VirtualVideoGrid[\s\S]*?eagerCount=\{eagerCount\}[\s\S]*?highPriorityCount=\{1\}/);
   assert.doesNotMatch(homePageSource, /setRange|onRangeChange|shouldLoadMore/);
   assert.match(homePageSource, /<InfiniteFeedStatus \/>/);
   assert.doesNotMatch(homePageSource, /state="end"/);

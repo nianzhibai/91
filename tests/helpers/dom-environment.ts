@@ -6,6 +6,22 @@ const dom = new JSDOM("<!doctype html><html><body></body></html>", {
   pretendToBeVisual: true,
 });
 
+// React checks for AnimationEvent before choosing the standard event names.
+if (!dom.window.AnimationEvent) {
+  dom.window.AnimationEvent = class AnimationEvent extends dom.window.Event {
+    readonly animationName: string;
+    readonly elapsedTime: number;
+    readonly pseudoElement: string;
+
+    constructor(type: string, init: AnimationEventInit = {}) {
+      super(type, init);
+      this.animationName = init.animationName ?? "";
+      this.elapsedTime = init.elapsedTime ?? 0;
+      this.pseudoElement = init.pseudoElement ?? "";
+    }
+  };
+}
+
 for (const name of [
   "window", "document", "navigator", "Node", "HTMLElement", "HTMLButtonElement",
   "HTMLInputElement", "HTMLVideoElement", "Event", "EventTarget", "MouseEvent",

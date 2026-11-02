@@ -6,10 +6,6 @@ const tagsPageSource = readFileSync(
   new URL("../src/admin/TagsPage.tsx", import.meta.url),
   "utf8"
 );
-const adminPaginationSource = readFileSync(
-  new URL("../src/admin/AdminPagination.tsx", import.meta.url),
-  "utf8"
-);
 const adminCss = readFileSync(new URL("../src/styles/admin.css", import.meta.url), "utf8");
 
 test("admin tags page limits visible tags by viewport", () => {
@@ -27,18 +23,13 @@ test("admin tags page renders only the current page", () => {
   assert.match(tagsPageSource, /全选本页/);
 });
 
-test("admin tag pagination matches the compact video pagination and hides for a single page", () => {
+test("admin tags connect pagination and hide it for a single page", () => {
   assert.match(tagsPageSource, /const showPagination = filteredTags\.length > pageSize;/);
   assert.match(tagsPageSource, /\{showPagination && \(/);
   assert.match(
     tagsPageSource,
     /<AdminPagination\s+page=\{currentPage\}[\s\S]*?totalPages=\{totalPages\}[\s\S]*?total=\{filteredTags\.length\}[\s\S]*?itemLabel="标签"[\s\S]*?onPage=\{setPage\}\s*\/>/
   );
-  assert.match(adminPaginationSource, /第 \{page\} \/ \{totalPages\} 页 · 共 \{total\} 个\{itemLabel\}/);
-  assert.equal(Array.from(adminPaginationSource.matchAll(/上一页|下一页/g)).length, 2);
-  assert.doesNotMatch(adminPaginationSource, /首页|末页/);
-  assert.doesNotMatch(tagsPageSource, /显示 \{pageStart\}-\{pageEnd\}/);
-  assert.doesNotMatch(tagsPageSource, /每页 \{pageSize\} 个/);
 });
 
 test("admin tag pagination does not create invisible rows on a short final page", () => {

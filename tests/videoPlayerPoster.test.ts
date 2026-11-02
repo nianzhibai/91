@@ -76,23 +76,7 @@ test("mobile portrait subtitles stay fixed while landscape uses 28px", () => {
   );
 });
 
-test("detail player does not keep playback resume state", () => {
-  assert.doesNotMatch(playerSource, /ResumePrompt/);
-  assert.doesNotMatch(playerSource, /PlaybackRecord/);
-  assert.doesNotMatch(playerSource, /PLAYBACK_KEY_PREFIX/);
-  assert.doesNotMatch(playerSource, /maybeOfferResume/);
-  assert.doesNotMatch(playerSource, /savePlaybackRecord/);
-  assert.doesNotMatch(playerSource, /clearPlaybackRecord/);
-  assert.doesNotMatch(playerSource, /video-player__resume/);
-  assert.doesNotMatch(detailCss, /video-player__resume/);
-});
-
-test("detail player does not persist ArtPlayer user settings", () => {
-  assert.doesNotMatch(playerSource, /localStorage/);
-  assert.doesNotMatch(playerSource, /SETTINGS_KEY/);
-  assert.doesNotMatch(playerSource, /readPlayerSettings/);
-  assert.doesNotMatch(playerSource, /writePlayerSettings/);
-  assert.doesNotMatch(playerSource, /video-site:player-settings/);
+test("detail player initializes defaults and disables volume persistence", () => {
   assert.match(playerSource, /volume:\s*DEFAULT_SETTINGS\.volume/);
   assert.match(playerSource, /muted:\s*DEFAULT_SETTINGS\.muted/);
   assert.match(

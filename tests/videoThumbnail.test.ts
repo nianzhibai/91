@@ -1,92 +1,94 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { createElement } from "react";
+import { fireEvent, render } from "./helpers/dom";
+import { VideoThumbnail } from "../src/components/VideoThumbnail";
 
-const thumbnailSource = readFileSync(
-  new URL("../src/components/VideoThumbnail.tsx", import.meta.url),
-  "utf8"
-);
-const cardSource = readFileSync(
-  new URL("../src/components/VideoCard.tsx", import.meta.url),
-  "utf8"
-);
-const gridSource = readFileSync(
-  new URL("../src/components/VideoGrid.tsx", import.meta.url),
-  "utf8"
-);
-const homeSource = readFileSync(
-  new URL("../src/pages/HomePage.tsx", import.meta.url),
-  "utf8"
-);
-const css = readFileSync(
-  new URL("../src/styles/video-card.css", import.meta.url),
-  "utf8"
-);
+test("a thumbnail stays hidden until its image loads", () => {
+  const { container } = render(createElement(VideoThumbnail, { src: "/thumbnail.jpg" }));
+  const image = container.querySelector("img")!;
+  const placeholder = container.querySelector(".thumb-placeholder")!;
 
-test("video thumbnails hide failed images behind a stable lifecycle placeholder", () => {
-  assert.match(thumbnailSource, /type ThumbnailState = "loading" \| "ready" \| "failed"/);
-  assert.match(thumbnailSource, /setState\("failed"\)/);
-  assert.doesNotMatch(thumbnailSource, /setTimeout|MAX_LOCAL_THUMBNAIL_RETRIES|withRetryParam/);
-  assert.match(thumbnailSource, /className={`thumb-image \$\{state === "ready" \? "is-ready" : ""\}`}/);
-  assert.match(cardSource, /<VideoThumbnail[\s\S]*?src=\{video\.thumbnail\}/);
-  assert.doesNotMatch(cardSource, /<VideoThumbnail[\s\S]*?key=\{video\.thumbnail\}/);
-  assert.match(thumbnailSource, /<ThumbnailResource[\s\S]*?key=\{src\}/);
+  assert.equal(placeholder.getAttribute("data-state"), "loading");
+  assert.equal(image.classList.contains("is-ready"), false);
+  fireEvent.load(image);
+  assert.equal(placeholder.getAttribute("data-state"), "ready");
+  assert.equal(image.classList.contains("is-ready"), true);
+});
+
+test("failed thumbnails recover when the source changes and ignore old image events", () => {
+  const { container, rerender } = render(createElement(VideoThumbnail, { src: "/broken.jpg" }));
+  const oldImage = container.querySelector("img")!;
+  fireEvent.error(oldImage);
+  assert.equal(container.querySelector(".thumb-placeholder")!.getAttribute("data-state"), "failed");
+  assert.equal(oldImage.classList.contains("is-ready"), false);
+  assert.equal(oldImage.getAttribute("src"), "/broken.jpg");
+
+  rerender(createElement(VideoThumbnail, { src: "/replacement.jpg" }));
+  const image = container.querySelector("img")!;
+  assert.equal(image.getAttribute("src"), "/replacement.jpg");
+  assert.equal(container.querySelector(".thumb-placeholder")!.getAttribute("data-state"), "loading");
+  fireEvent.load(oldImage);
+  assert.equal(image.classList.contains("is-ready"), false);
+  fireEvent.load(image);
+  assert.equal(container.querySelector(".thumb-placeholder")!.getAttribute("data-state"), "ready");
+  assert.equal(image.classList.contains("is-ready"), true);
+});
+
+for (const { name, width, state } of [
+  { name: "loaded", width: 320, state: "ready" },
+  { name: "broken", width: 0, state: "failed" },
+]) {
+  test(`a cached ${name} thumbnail settles without a load or error event`, (t) => {
+    const prototype = window.HTMLImageElement.prototype;
+    t.mock.getter(prototype, "complete", () => true);
+    t.mock.getter(prototype, "naturalWidth", () => width);
+    const { container, rerender } = render(createElement(VideoThumbnail, { src: "/first.jpg" }));
+
+    for (const src of ["/first.jpg", "/replacement.jpg"]) {
+      rerender(createElement(VideoThumbnail, { src }));
+      assert.equal(container.querySelector(".thumb-placeholder")!.getAttribute("data-state"), state);
+      assert.equal(container.querySelector("img")!.classList.contains("is-ready"), state === "ready");
+    }
+  });
+}
+
+test("missing and deferred thumbnails do not create image resources", () => {
+  const { container, rerender } = render(createElement(VideoThumbnail, { src: "" }));
+  assert.equal(container.querySelector("img"), null);
+  assert.equal(container.querySelector(".thumb-placeholder")!.getAttribute("data-state"), "failed");
+
+  rerender(createElement(VideoThumbnail, { src: "/thumbnail.jpg", enabled: false }));
+  assert.equal(container.querySelector("img"), null);
+  assert.equal(container.querySelector(".thumb-placeholder")!.getAttribute("data-state"), "deferred");
+
+  rerender(createElement(VideoThumbnail, { src: "/thumbnail.jpg", enabled: true }));
+  assert.equal(container.querySelector("img")!.getAttribute("src"), "/thumbnail.jpg");
+  assert.equal(container.querySelector(".thumb-placeholder")!.getAttribute("data-state"), "loading");
+
+  rerender(createElement(VideoThumbnail, { src: "/thumbnail.jpg", enabled: false }));
+  assert.equal(container.querySelector("img"), null);
+});
+
+test("image loading hints follow thumbnail priority", () => {
+  const { container, rerender } = render(createElement(VideoThumbnail, { src: "/thumbnail.jpg" }));
+  for (const { eager, highPriority, loading, priority } of [
+    { eager: false, highPriority: false, loading: "lazy", priority: "auto" },
+    { eager: true, highPriority: false, loading: "eager", priority: "auto" },
+    { eager: false, highPriority: true, loading: "eager", priority: "high" },
+  ]) {
+    rerender(createElement(VideoThumbnail, { src: "/thumbnail.jpg", eager, highPriority }));
+    const image = container.querySelector("img")!;
+    assert.equal(image.getAttribute("loading"), loading);
+    assert.equal(image.getAttribute("fetchpriority"), priority);
+    assert.equal(image.getAttribute("decoding"), "async");
+    assert.equal(image.getAttribute("alt"), "");
+  }
+});
+
+test("thumbnail styles only reveal ready images", () => {
+  const css = readFileSync(new URL("../src/styles/video-card.css", import.meta.url), "utf8");
   assert.match(css, /\.thumb-image\s*\{[^}]*opacity:\s*0/s);
   assert.match(css, /\.thumb-image\.is-ready\s*\{[^}]*opacity:\s*1/s);
-  assert.match(thumbnailSource, /className="thumb-placeholder"/);
-  const placeholderRule = css.match(/\.thumb-placeholder\s*\{[^}]*\}/s)?.[0] ?? "";
-  assert.match(placeholderRule, /background:\s*linear-gradient\(145deg/);
-  assert.doesNotMatch(placeholderRule, /radial-gradient|accent-softer/);
-  assert.doesNotMatch(thumbnailSource, /thumb-placeholder__mark/);
-  assert.doesNotMatch(css, /\.thumb-placeholder__mark/);
-});
-
-test("cached thumbnails reconcile completion before they can remain hidden", () => {
-  assert.match(thumbnailSource, /useLayoutEffect\(\(\) => \{/);
-  assert.match(thumbnailSource, /const image = imageRef\.current/);
-  assert.match(thumbnailSource, /if \(!image\?\.complete\) return/);
-  assert.match(thumbnailSource, /if \(image\.naturalWidth > 0\) \{\s*handleLoad\(\)/);
-  assert.match(thumbnailSource, /else \{\s*handleError\(\)/);
-  assert.match(thumbnailSource, /ref=\{imageRef\}/);
-  assert.doesNotMatch(thumbnailSource, /setState\(src \? "loading" : "failed"\)/);
-});
-
-test("deferred thumbnails do not create an image resource", () => {
-  assert.match(thumbnailSource, /enabled\?: boolean/);
-  assert.match(thumbnailSource, /enabled = true/);
-  assert.match(
-    thumbnailSource,
-    /if \(!enabled\) \{[\s\S]*?className="thumb-placeholder"[\s\S]*?data-state="deferred"[\s\S]*?return \(\s*<ThumbnailResource/
-  );
-});
-
-test("only likely first-viewport thumbnails receive eager and high priority hints", () => {
-  assert.match(thumbnailSource, /loading=\{eager \|\| highPriority \? "eager" : "lazy"\}/);
-  assert.match(thumbnailSource, /fetchPriority=\{highPriority \? "high" : "auto"\}/);
-  assert.match(thumbnailSource, /decoding="async"/);
-  assert.match(thumbnailSource, /alt=""/);
-  assert.match(gridSource, /eager=\{index < eagerCount\}/);
-  assert.match(gridSource, /highPriority=\{index < highPriorityCount\}/);
-  // 首页两个 tab 共用一个虚拟网格，优先级提示只给首屏那几张。
-  assert.match(
-    homeSource,
-    /<VirtualVideoGrid[\s\S]*?videos=\{feedItems\}[\s\S]*?eagerCount=\{eagerCount\}[\s\S]*?highPriorityCount=\{1\}/
-  );
-  assert.match(homeSource, /const eagerCount = isMobile \? 2 : 4;/);
-  assert.match(
-    homeSource,
-    /<VideoGrid[\s\S]*?videos=\{\[\]\}[\s\S]*?loading[\s\S]*?skeletonCount=\{activeFeedSource\.batchSize\}/
-  );
-});
-
-test("preview startup uses the shared white top bar and removes it after fading", () => {
-  assert.match(css, /\.preview-loader\s*\{[^}]*top:\s*0;[^}]*height:\s*3px;[^}]*background:\s*#ffffff94;[^}]*preview-startup-fill 2s/s);
-  assert.match(css, /@keyframes preview-startup-fade/);
-  const loader = readFileSync(new URL("../src/components/PreviewLoader.tsx", import.meta.url), "utf8");
-  assert.match(loader, /event\.animationName === "preview-startup-fade"\) onFinish\(\)/);
-});
-
-test("previews have no playback bar, label or error overlay", () => {
-  assert.doesNotMatch(css, /\.preview-tag|\.preview-progress|\.preview-error/);
-  assert.doesNotMatch(cardSource, /className="preview-tag"|onTimeUpdate/);
 });

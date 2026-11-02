@@ -1,10 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
-import { act, render } from "./helpers/dom";
+import { act, fireEvent, render } from "./helpers/dom";
 import { MemoryRouter, useNavigate } from "react-router";
 import { useCardPreview } from "../src/lib/useCardPreview.ts";
 import { previewController } from "../src/lib/previewController.ts";
+import { PreviewLoader } from "../src/components/PreviewLoader";
+
+test("preview loaders finish only after the fade animation ends", () => {
+  let finishes = 0;
+  const { container } = render(createElement(PreviewLoader, { onFinish: () => { finishes++; } }));
+  const loader = container.firstElementChild!;
+  for (const name of ["preview-startup-fill", "preview-startup-fade"]) {
+    fireEvent.animationEnd(loader, { animationName: name });
+    assert.equal(finishes, name === "preview-startup-fade" ? 1 : 0);
+  }
+});
 
 function previewHarness() {
   const cards = new Map<string, ReturnType<typeof useCardPreview>>();

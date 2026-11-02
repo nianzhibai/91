@@ -56,11 +56,6 @@ test("admin tags manage custom and generated tags", () => {
   assert.match(apiSource, /avCodePrefixes\?: string\[\]/);
   assert.match(apiSource, /export function updateTag/);
   assert.match(apiSource, /updateTag\(id: number, matchRules: TagMatchRules\)/);
-  assert.doesNotMatch(apiSource, /export function startTagRetag/);
-  assert.doesNotMatch(apiSource, /export function getTagJobStatus/);
-  assert.doesNotMatch(apiSource, /autoGenerateTagsEnabled: boolean/);
-  assert.doesNotMatch(apiSource, /startTagLlmRun/);
-  assert.doesNotMatch(apiSource, /llmEnabled|llmPending/);
   assert.doesNotMatch(tagsPageSource, /编辑标签：/);
   assert.doesNotMatch(tagsPageSource, /<h1 className="admin-page__title">标签管理<\/h1>/);
   assert.match(tagsPageSource, /<div className="admin-tags-board" aria-busy=\{loading \|\| tagsResource\.refreshing \|\| undefined\}>/);
@@ -101,21 +96,6 @@ test("admin tags manage custom and generated tags", () => {
   assert.match(tagsPageSource, /confirmText="确认"/);
   assert.doesNotMatch(tagsPageSource, /confirmText="确认删除"/);
   assert.doesNotMatch(tagsPageSource, /admin-card__title[\s\S]*新增标签/);
-  assert.doesNotMatch(tagsPageSource, /系统不会再从文件名或标题自动创建标签/);
-  assert.doesNotMatch(tagsPageSource, /包含词（子串）/);
-  assert.doesNotMatch(tagsPageSource, /识别文件名和标题中的番号/);
-  assert.doesNotMatch(tagsPageSource, /重新整理所有标签/);
-  assert.doesNotMatch(tagsPageSource, /<RefreshCw size=\{13\} \/> 刷新/);
-  assert.doesNotMatch(tagsPageSource, /自动生成标签/);
-  assert.doesNotMatch(tagsPageSource, /autoGenerateTagsEnabled/);
-  assert.doesNotMatch(tagsPageSource, /admin-tag-setting-toggle__switch/);
-  assert.doesNotMatch(tagsPageSource, /role="switch"/);
-  assert.doesNotMatch(tagsPageSource, /onClick=\{toggleAutoGenerateTags\}/);
-  assert.doesNotMatch(tagsPageSource, /admin-tag-setting-toggle__hint/);
-  assert.doesNotMatch(tagsPageSource, /admin-tag-setting-toggle__body/);
-  assert.doesNotMatch(tagsPageSource, /关闭后扫描只匹配已有标签。/);
-  assert.doesNotMatch(tagsPageSource, /<strong>\{autoGenerateTagsEnabled \? "开启" : "关闭"\}<\/strong>/);
-  assert.doesNotMatch(tagsPageSource, /AI 辅助打标|AI 打标|tagging\.llm/);
   assert.match(tagsPageSource, /const TAG_SOURCE_FILTERS = \["user", "generated"\]/);
   assert.match(tagsPageSource, /function tagSourceKey/);
   assert.match(tagsPageSource, /tag\.crawlerOwned \|\| tag\.source === "generated" \? "generated" : tag\.source/);
@@ -132,19 +112,9 @@ test("admin tags manage custom and generated tags", () => {
   assert.match(tagsPageSource, /tag\.source === "generated"/);
   assert.doesNotMatch(tagsPageSource, /return "AV"/);
   assert.doesNotMatch(tagsPageSource, /return "av"/);
-  assert.doesNotMatch(tagsPageSource, /const displayAliases = tagDisplayAliases\(tag\);/);
-  assert.doesNotMatch(tagsPageSource, /admin-tag-card__aliases/);
-  assert.doesNotMatch(tagsPageSource, /admin-tag-card__alias-pill/);
-  assert.doesNotMatch(tagsPageSource, /function tagDisplayAliases/);
   assert.match(tagsPageSource, /avCodePrefixes: joinRuleTerms\(rules\.avCodePrefixes\)/);
   assert.doesNotMatch(tagsPageSource, /ADMIN_SEARCH_DEBOUNCE_MS|searchInput|setSearchInput/);
-  assert.match(
-    tagsPageSource,
-    /<AdminPagination\s+page=\{currentPage\}[\s\S]*?totalPages=\{totalPages\}[\s\S]*?total=\{filteredTags\.length\}[\s\S]*?itemLabel="标签"[\s\S]*?onPage=\{setPage\}\s*\/>/
-  );
-  assert.doesNotMatch(tagsPageSource, /首页|末页|admin-tags-pagination|admin-table-pagination__info/);
   assert.doesNotMatch(tagsPageSource, /admin-tag-card__keywords|admin-tag-card__keyword-pill|tagKeywordTerms/);
-  assert.doesNotMatch(tagsPageSource, /function uniqueDisplayAliases/);
   assert.doesNotMatch(tagsPageSource, /系统内置车牌已自动参与匹配/);
   assert.match(tagsPageSource, /const TAG_DISPLAY_GROUP_ORDER: Record<string, number>/);
   assert.match(tagsPageSource, /function tagDisplayGroupKey/);

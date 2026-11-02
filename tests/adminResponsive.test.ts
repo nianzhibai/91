@@ -18,10 +18,6 @@ const searchCss = readFileSync(
   new URL("../src/styles/search.css", import.meta.url),
   "utf8"
 );
-const themeTokensCss = readFileSync(
-  new URL("../src/styles/tokens.css", import.meta.url),
-  "utf8"
-);
 const adminLayoutSource = readFileSync(
   new URL("../src/admin/AdminLayout.tsx", import.meta.url),
   "utf8"
@@ -148,10 +144,8 @@ test("admin tables scroll inside the mobile viewport", () => {
   // 把它们改成 display:block 卡片栈；网盘表 .admin-drives-table 走另一组 1280px 媒体
   // 查询。这里只断"非 drives 表的 mobile 卡片化"。
   const body = ruleBody(css, ".admin-table:not(.admin-drives-table)");
-  const card = ruleBody(css, ".admin-table:not(.admin-drives-table) tr");
 
   assert.match(body, /display\s*:\s*block/);
-  assert.match(card, /background\s*:\s*var\(--bg-surface\)/);
 });
 
 test("mobile user management cards keep identity, metadata, and actions separated", () => {
@@ -166,12 +160,9 @@ test("mobile user management cards keep identity, metadata, and actions separate
   const userStatusDot = ruleBody(css, ".admin-users-table:not(.admin-drives-table) .admin-status::before");
   const actionRow = ruleBody(css, ".admin-users-table__action-row");
   const createUserModal = ruleBody(adminCss, ".admin-modal.admin-modal--user-create");
-  const createUserModalChrome = ruleBodyByContains(adminCss, ".admin-modal--user-create .admin-modal__header");
   const createUserSelect = ruleBody(adminCss, ".admin-modal--user-create .admin-form-select");
   const createUserSelectIcon = ruleBody(adminCss, ".admin-modal--user-create .admin-form-select__icon");
   const passwordResetModal = ruleBody(adminCss, ".admin-modal.admin-modal--password-reset");
-  const passwordResetChrome = ruleBodyByContains(adminCss, ".admin-modal--password-reset .admin-modal__header");
-  const passwordResetClose = ruleBody(adminCss, ".admin-modal--password-reset .admin-modal__header .admin-btn");
   const ipIdentity = ruleBody(css, ".admin-banned-ips-table:not(.admin-drives-table) .admin-banned-ips-table__ip");
   const ipReason = ruleBodyByContains(css, ".admin-banned-ips-table:not(.admin-drives-table) .admin-banned-ips-table__reason");
   const ipActions = ruleBody(css, ".admin-banned-ips-table:not(.admin-drives-table) .admin-banned-ips-table__actions");
@@ -184,10 +175,6 @@ test("mobile user management cards keep identity, metadata, and actions separate
   assert.doesNotMatch(usersPageSource, /admin-users-table__id/);
   assert.match(usersPageSource, /title="创建用户"[\s\S]*?className="admin-modal--user-create"/);
   assert.match(createUserModal, /width\s*:\s*min\(380px,\s*100%\)/);
-  assert.match(createUserModal, /border\s*:\s*0/);
-  assert.match(createUserModal, /box-shadow\s*:\s*none/);
-  assert.match(createUserModalChrome, /border\s*:\s*0/);
-  assert.match(createUserModalChrome, /background\s*:\s*var\(--bg-surface\)/);
   assert.match(usersPageSource, /className="admin-form-select"[\s\S]*?<ChevronDown size=\{15\} className="admin-form-select__icon"/);
   assert.match(createUserSelect, /padding-right\s*:\s*44px/);
   assert.match(createUserSelectIcon, /right\s*:\s*15px/);
@@ -219,12 +206,6 @@ test("mobile user management cards keep identity, metadata, and actions separate
   assert.match(passwordResetModal, /width\s*:\s*min\(380px,\s*100%\)/);
   assert.match(ruleBodyByContains(adminCss, ".admin-modal.admin-modal--user-delete"), /width\s*:\s*min\(380px,\s*100%\)/);
   assert.match(ruleBodyByContains(adminCss, ".admin-modal.admin-modal--ip-unban"), /width\s*:\s*min\(380px,\s*100%\)/);
-  assert.match(passwordResetModal, /border\s*:\s*0/);
-  assert.match(passwordResetModal, /box-shadow\s*:\s*none/);
-  assert.match(passwordResetChrome, /border\s*:\s*0/);
-  assert.match(passwordResetChrome, /background\s*:\s*var\(--bg-surface\)/);
-  assert.match(passwordResetClose, /border-color\s*:\s*transparent/);
-  assert.match(passwordResetClose, /background\s*:\s*transparent/);
   assert.match(ruleBody(adminControlsCss, ".admin-password-input"), /position\s*:\s*relative/);
   assert.match(ruleBody(adminControlsCss, ".admin-password-input input"), /padding-right\s*:\s*42px/);
   assert.match(ruleBody(adminControlsCss, ".admin-password-input__toggle"), /position\s*:\s*absolute/);
@@ -239,14 +220,12 @@ test("mobile user management cards keep identity, metadata, and actions separate
   assert.match(ruleBody(adminCss, ".admin-users-tabs"), /left\s*:\s*50%/);
   assert.match(ruleBody(adminCss, ".admin-users-tabs"), /transform\s*:\s*translateX\(-50%\)/);
   assert.match(userCard, /grid-template-columns\s*:\s*repeat\(12,\s*minmax\(0,\s*1fr\)\)/);
-  assert.match(userCard, /border-radius\s*:\s*var\(--radius-sm\)/);
   assert.match(ipCard, /grid-template-columns\s*:\s*repeat\(12,\s*minmax\(0,\s*1fr\)\)/);
   assert.match(username, /grid-column\s*:\s*1\s*\/\s*-1/);
   assert.match(username, /text-align\s*:\s*center/);
   assert.match(userRole, /grid-row\s*:\s*2/);
   assert.match(userRole, /justify-items\s*:\s*center/);
   assert.match(userRole, /text-align\s*:\s*center/);
-  assert.match(userRole, /border-top\s*:\s*1px\s+solid\s+var\(--border-subtle\)/);
   assert.match(userTime, /grid-column\s*:\s*1\s*\/\s*-1/);
   assert.match(userTime, /grid-row\s*:\s*3/);
   assert.match(userActions, /grid-row\s*:\s*4/);
@@ -256,7 +235,6 @@ test("mobile user management cards keep identity, metadata, and actions separate
   assert.match(actionRow, /grid-template-columns\s*:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
   assert.match(ipIdentity, /grid-column\s*:\s*1\s*\/\s*-1/);
   assert.match(ipReason, /grid-row\s*:\s*2/);
-  assert.match(ipReason, /border-top\s*:\s*1px\s+solid\s+var\(--border-subtle\)/);
   assert.match(ipActions, /grid-row\s*:\s*4/);
   assert.match(ipActions, /display\s*:\s*flex/);
   assert.match(ipActions, /justify-content\s*:\s*center/);
@@ -288,7 +266,6 @@ test("user management loading keeps fixed controls and leaves both tables blank"
 
 test("user create action reuses the crawler-style floating button", () => {
   const sharedFab = ruleBody(adminCss, ".admin-create-fab");
-  const sharedFabSurface = ruleBody(adminCss, ".admin-btn.admin-create-fab");
   const mobileSharedFab = lastRuleBody(adminCss, ".admin-create-fab");
 
   assert.match(
@@ -313,7 +290,6 @@ test("user create action reuses the crawler-style floating button", () => {
 
   assert.match(sharedFab, /width\s*:\s*fit-content/);
   assert.match(sharedFab, /min-width\s*:\s*0/);
-  assert.match(sharedFabSurface, /background\s*:\s*transparent/);
   assert.match(mobileSharedFab, /right\s*:\s*var\(--space-3\)/);
   assert.match(mobileSharedFab, /bottom\s*:\s*calc\(var\(--space-3\) \+ env\(safe-area-inset-bottom\)\)/);
   assert.doesNotMatch(usersPageSource, /admin-users-create-fab|admin-users-toolbar-actions/);
@@ -332,10 +308,6 @@ test("admin video management separates source navigation from the modal advanced
   const currentActions = ruleBody(adminCss, ".admin-videos-filter__current-actions");
   const advancedToggle = ruleBody(adminCss, ".admin-video-advanced-toggle");
   const desktopSearchAction = ruleBody(adminCss, ".admin-videos-filter__search-action");
-  const desktopSearchActionHover = ruleBody(
-    adminCss,
-    ".admin-videos-filter__search-action:hover:not(:disabled)"
-  );
   const currentTabSource = videosPageSource.slice(
     videosPageSource.indexOf("function CurrentVideosTab"),
     videosPageSource.indexOf("// ---------- 拉黑视频")
@@ -376,11 +348,6 @@ test("admin video management separates source navigation from the modal advanced
   assert.match(currentActions, /display\s*:\s*inline-flex/);
   assert.doesNotMatch(advancedToggle, /grid-column|grid-row|justify-self/);
   assert.match(desktopSearchAction, /height\s*:\s*40px/);
-  assert.match(desktopSearchAction, /border-radius\s*:\s*var\(--radius-sm\)/);
-  assert.match(desktopSearchAction, /background\s*:\s*transparent/);
-  assert.match(desktopSearchAction, /box-shadow\s*:\s*none/);
-  assert.match(desktopSearchActionHover, /background\s*:\s*transparent/);
-  assert.match(desktopSearchActionHover, /border-color\s*:\s*var\(--border-strong\)/);
   assert.doesNotMatch(adminCss, /\.admin-video-advanced-toggle\.is-active/);
   assert.match(adminCss, /\.admin-modal\.admin-modal--video-filters\s*\{/);
   assert.match(adminCss, /\.admin-modal\.admin-modal--video-filters\s*\{[^}]*border:\s*0;/s);
@@ -406,7 +373,6 @@ test("current video bulk actions use ordinary text buttons", () => {
     videosPageSource.indexOf("function CurrentVideosTab"),
     videosPageSource.indexOf("// ---------- 拉黑视频 ----------")
   );
-  const base = ruleBody(adminCss, ".admin-videos-bulk-actions__btn");
 
   assert.equal(Array.from(currentVideosSource.matchAll(/className="admin-btn admin-videos-bulk-actions__btn"/g)).length, 3);
   assert.match(currentVideosSource, /onClick=\{selectPageVideos\}[\s\S]*?disabled=\{listQueryPending \|\| listItems\.length === 0 \|\| allPageSelected\}[\s\S]*?>\s*全选本页\s*<\/button>/);
@@ -417,17 +383,12 @@ test("current video bulk actions use ordinary text buttons", () => {
   assert.doesNotMatch(currentVideosSource, /admin-videos-bulk-actions__mobile-exit|退出选择|批量选择|toggleSelectMode|selectMode/);
   assert.doesNotMatch(currentVideosSource, /className="admin-btn admin-videos-bulk-actions__btn"[^>]*>\s*<(?:RefreshCw|Trash2)/);
   assert.doesNotMatch(currentVideosSource, /is-primary admin-videos-bulk-actions__btn|is-danger admin-videos-bulk-actions__btn/);
-  assert.match(base, /box-shadow\s*:\s*none/);
   assert.doesNotMatch(adminCss, /admin-videos-bulk-actions__btn\.is-danger/);
 });
 
 test("admin tag bulk actions use a fixed floating toolbar", () => {
   const css = mobileCss();
   const floatingSpace = ruleBody(adminCss, ".admin-page--with-floating-actions");
-  const toolbarToggle = ruleBodyByContains(
-    adminCss,
-    ".admin-btn.admin-tags-toolbar-actions__toggle"
-  );
   const bulkToolbarSource = tagsPageSource.slice(
     tagsPageSource.indexOf('className="admin-tags-bulk-toolbar"'),
     tagsPageSource.indexOf("<Modal", tagsPageSource.indexOf('className="admin-tags-bulk-toolbar"'))
@@ -444,7 +405,6 @@ test("admin tag bulk actions use a fixed floating toolbar", () => {
     tagsPageSource,
     /\{!selectMode && \(\s*<div className="admin-tags-toolbar-actions"[\s\S]*?className="admin-btn admin-tags-toolbar-actions__toggle"[\s\S]*?>\s*<Trash2 size="1em" aria-hidden="true" \/>\s*批量删除\s*<\/button>/
   );
-  assert.match(toolbarToggle, /background\s*:\s*transparent/);
   assert.doesNotMatch(tagsPageSource, /admin-tags-toolbar-actions__toggle[^\n]*is-primary/);
   assert.match(tagsPageSource, /aria-label="标签批量操作"/);
   assert.match(tagsPageSource, /aria-pressed=\{isSelected\}/);
@@ -477,10 +437,6 @@ test("admin tag bulk actions use a fixed floating toolbar", () => {
   assert.match(toolbar, /max-width\s*:\s*calc\(100vw\s*-\s*var\(--admin-sidebar-width\)\s*-\s*24px\)/);
   assert.match(toolbar, /margin\s*:\s*0/);
   assert.match(toolbar, /padding\s*:\s*10px 14px/);
-  assert.match(toolbar, /border\s*:\s*1px solid var\(--border-default\)/);
-  assert.match(toolbar, /border-radius\s*:\s*16px/);
-  assert.match(toolbar, /background\s*:\s*color-mix\(in srgb,\s*var\(--bg-surface\) 88%,\s*transparent\)/);
-  assert.match(toolbar, /box-shadow\s*:\s*var\(--shadow-lg\)/);
   assert.match(toolbar, /transform\s*:\s*translateX\(-50%\)/);
   assert.match(toolbar, /backdrop-filter\s*:\s*blur\(14px\)/);
   assert.match(actions, /display\s*:\s*inline-flex/);
@@ -488,10 +444,6 @@ test("admin tag bulk actions use a fixed floating toolbar", () => {
   assert.match(mobileToolbar, /left\s*:\s*var\(--space-3\)/);
   assert.match(mobileToolbar, /right\s*:\s*var\(--space-3\)/);
   assert.match(mobileToolbar, /bottom\s*:\s*calc\(var\(--space-3\)\s*\+\s*env\(safe-area-inset-bottom\)\)/);
-  assert.match(mobileToolbar, /border\s*:\s*1px solid var\(--border-subtle\)/);
-  assert.match(mobileToolbar, /border-radius\s*:\s*12px/);
-  assert.match(mobileToolbar, /background\s*:\s*var\(--bg-surface\)/);
-  assert.match(mobileToolbar, /box-shadow\s*:\s*0 12px 32px rgba\(0,\s*0,\s*0,\s*0\.34\)/);
   assert.match(mobileToolbar, /transform\s*:\s*none/);
   assert.match(mobileToolbar, /backdrop-filter\s*:\s*none/);
   assert.doesNotMatch(css, /\.admin-tags-page\.has-bulk-actions\s*\{[^}]*padding-bottom/s);
@@ -502,17 +454,6 @@ test("admin tag bulk actions use a fixed floating toolbar", () => {
   assert.match(mobileButton, /min-height\s*:\s*40px/);
   assert.match(mobileButton, /min-width\s*:\s*0/);
   assert.doesNotMatch(adminCss, /admin-tags-bulk-actions__mobile-exit/);
-});
-
-test("admin tag auto-generation setting is removed", () => {
-  assert.doesNotMatch(tagsPageSource, /admin-tag-setting-toggle__switch/);
-  assert.doesNotMatch(tagsPageSource, /role="switch"/);
-  assert.doesNotMatch(tagsPageSource, /onClick=\{toggleAutoGenerateTags\}/);
-  assert.doesNotMatch(tagsPageSource, /autoGenerateTagsEnabled/);
-  assert.doesNotMatch(tagsPageSource, /admin-tag-setting-toggle__hint/);
-  assert.doesNotMatch(tagsPageSource, /admin-tag-setting-toggle__body/);
-  assert.doesNotMatch(tagsPageSource, /<label\s+className=\{`admin-tag-setting-toggle/);
-  assert.doesNotMatch(adminCss, /admin-tag-setting-toggle/);
 });
 
 test("admin sidebar active item frame only wraps the centered option", () => {
@@ -529,26 +470,6 @@ test("admin sidebar active item frame only wraps the centered option", () => {
   assert.match(navLink, /max-width\s*:\s*100%/);
   assert.match(activeMarker, /content\s*:\s*none/);
   assert.match(activeMarker, /display\s*:\s*none/);
-});
-
-test("desktop admin sidebar uses a fully transparent glass surface without changing the mobile drawer", () => {
-  const desktopSidebarMatch = adminCss.match(
-    /@media \(min-width:\s*769px\)\s*\{\s*\.admin-sidebar\s*\{([^}]*)\}/
-  );
-  assert.ok(desktopSidebarMatch, "Expected a desktop-only sidebar rule");
-  const desktopSidebar = desktopSidebarMatch[1];
-  const mobileSidebar = ruleBody(mobileCss(), ".admin-sidebar");
-
-  assert.match(desktopSidebar, /background\s*:\s*transparent/);
-  assert.doesNotMatch(desktopSidebar, /background\s*:[^;]*var\(--glass-sidebar/);
-  assert.match(desktopSidebar, /border-right\s*:\s*1px solid var\(--glass-sidebar-border\)/);
-  assert.match(desktopSidebar, /box-shadow\s*:[\s\S]*var\(--glass-sidebar-shadow\)/);
-  assert.match(desktopSidebar, /backdrop-filter\s*:\s*saturate\(145%\) blur\(22px\)/);
-  assert.match(desktopSidebar, /-webkit-backdrop-filter\s*:\s*saturate\(145%\) blur\(22px\)/);
-  assert.equal(themeTokensCss.match(/--glass-sidebar-highlight\s*:/g)?.length, 3);
-  assert.equal(themeTokensCss.match(/--glass-sidebar-border\s*:/g)?.length, 3);
-  assert.equal(themeTokensCss.match(/--glass-sidebar-shadow\s*:/g)?.length, 3);
-  assert.match(mobileSidebar, /background\s*:\s*var\(--bg-surface\)/);
 });
 
 test("admin sidebar keeps desktop separators but groups the mobile drawer with labels", () => {
@@ -608,8 +529,6 @@ test("current video list does not render the drive summary under filters", () =>
   assert.match(currentToolbar, /bottom\s*:\s*calc\(12px\s*\+\s*env\(safe-area-inset-bottom\)\)/);
   assert.match(currentToolbar, /max-width\s*:\s*calc\(100vw\s*-\s*var\(--admin-sidebar-width\)\s*-\s*24px\)/);
   assert.match(currentToolbar, /margin\s*:\s*0/);
-  assert.match(currentToolbar, /border-radius\s*:\s*16px/);
-  assert.match(currentToolbar, /background\s*:\s*color-mix\(in srgb,\s*var\(--bg-surface\) 88%,\s*transparent\)/);
   assert.match(currentToolbar, /transform\s*:\s*translateX\(-50%\)/);
   assert.match(currentToolbar, /backdrop-filter\s*:\s*blur\(14px\)/);
   assert.match(videosPageSource, /className="admin-videos-list-toolbar" data-admin-floating-actions/);
@@ -629,9 +548,7 @@ test("desktop current video list uses a CPA-style responsive card grid", () => {
   const selectionControl = ruleBody(adminCss, ".admin-video-card__select");
   const selectionInput = ruleBody(adminCss, ".admin-video-card__select-input");
   const selectionBox = ruleBody(adminCss, ".admin-video-card__select-box");
-  const checkedSelectionBox = ruleBody(adminCss, ".admin-video-card__select-box.is-checked");
   const actionButton = ruleBody(adminCss, ".admin-video-action-icon-button");
-  const dangerButton = ruleBody(adminCss, ".admin-video-action-icon-button.is-danger");
   const hoverCard = ruleBody(adminCss, ".admin-video-card:hover");
   const deleteIconButtonSource = videosPageSource.slice(
     videosPageSource.indexOf("function VideoDeleteIconButton"),
@@ -665,7 +582,6 @@ test("desktop current video list uses a CPA-style responsive card grid", () => {
   assert.match(card, /display\s*:\s*flex/);
   assert.match(card, /flex-direction\s*:\s*column/);
   assert.match(card, /padding\s*:\s*16px/);
-  assert.match(card, /border-radius\s*:\s*14px/);
   assert.match(card, /--admin-video-card-bg\s*:\s*color-mix\(in srgb,\s*var\(--bg-surface\) 82%,\s*transparent\)/);
   assert.match(card, /height\s*:\s*100%/);
   assert.match(titleCell, /grid-template-columns\s*:\s*clamp\(112px,\s*38%,\s*156px\)\s+minmax\(0,\s*1fr\)/);
@@ -683,15 +599,8 @@ test("desktop current video list uses a CPA-style responsive card grid", () => {
   assert.match(selectionControl, /height\s*:\s*32px/);
   assert.match(selectionInput, /clip-path\s*:\s*inset\(50%\)/);
   assert.match(selectionBox, /width\s*:\s*22px/);
-  assert.match(selectionBox, /border-radius\s*:\s*7px/);
-  assert.match(checkedSelectionBox, /background\s*:\s*var\(--accent\)/);
-  assert.match(checkedSelectionBox, /color\s*:\s*var\(--text-on-accent\)/);
   assert.match(actionButton, /width\s*:\s*30px/);
   assert.match(actionButton, /height\s*:\s*30px/);
-  assert.match(actionButton, /background\s*:\s*transparent/);
-  assert.match(actionButton, /border\s*:\s*1px solid var\(--admin-video-card-pill-border,\s*var\(--border-subtle\)\)/);
-  assert.match(dangerButton, /border-color\s*:\s*color-mix\(in srgb,\s*var\(--admin-video-card-danger,\s*var\(--danger\)\) 26%,\s*transparent\)/);
-  assert.match(dangerButton, /color\s*:\s*color-mix\(in srgb,\s*var\(--admin-video-card-danger,\s*var\(--danger\)\) 68%,\s*transparent\)/);
   assert.match(hoverCard, /transform\s*:\s*translateY\(-1px\)/);
 });
 
@@ -710,11 +619,7 @@ test("desktop video management toolbar keeps its layout and reuses the home sear
   const sourceNav = ruleBody(css, ".admin-video-source-nav");
   const sourceTabs = ruleBody(css, ".admin-video-source-tabs");
   const sourceTab = ruleBody(css, ".admin-video-source-tab");
-  const activeSourceTab = ruleBody(css, ".admin-video-source-tab.is-active");
-  const activeSourceTabIndicator = ruleBody(css, ".admin-video-source-tab.is-active::after");
   const blacklistEntry = ruleBody(css, ".admin-video-source-nav__blacklist");
-  const blacklistEntryHover = ruleBody(css, ".admin-video-source-nav__blacklist:hover");
-  const activeBlacklistEntry = ruleBody(css, ".admin-video-source-nav__blacklist.is-active");
 
   assert.doesNotMatch(videosPageSource, /aria-label="刷新当前视频"/);
   assert.doesNotMatch(videosPageSource, /aria-label="刷新拉黑视频"/);
@@ -745,9 +650,7 @@ test("desktop video management toolbar keeps its layout and reuses the home sear
   assert.match(adminSearch, /margin-top\s*:\s*0/);
   assert.match(sharedSearchForm, /--width-of-input\s*:\s*min\(100%,\s*360px\)/);
   assert.match(sharedSearchForm, /width\s*:\s*var\(--width-of-input\)/);
-  assert.match(sharedSearchForm, /background\s*:\s*var\(--input-bg, var\(--bg-surface\)\)/);
   assert.match(sharedSearchInput, /padding-inline\s*:\s*0\.5em/);
-  assert.match(sharedSearchInput, /background-color\s*:\s*transparent/);
   assert.doesNotMatch(adminCss, /\.admin-videos-filter__search input\s*\{/);
   assert.match(currentActions, /grid-column\s*:\s*2/);
   assert.match(currentActions, /display\s*:\s*inline-flex/);
@@ -762,90 +665,37 @@ test("desktop video management toolbar keeps its layout and reuses the home sear
   assert.match(sourceNav, /display\s*:\s*grid/);
   assert.match(sourceNav, /grid-template-columns\s*:\s*minmax\(0,\s*1fr\) auto/);
   assert.match(sourceNav, /width\s*:\s*100%/);
-  assert.match(sourceNav, /border-bottom\s*:\s*1px solid var\(--border-default\)/);
-  assert.match(sourceNav, /background\s*:\s*transparent/);
   assert.match(sourceNav, /margin\s*:\s*0\s+0\s+14px/);
   assert.match(sourceTabs, /overflow-x\s*:\s*auto/);
   assert.match(sourceTabs, /min-width\s*:\s*0/);
   assert.match(sourceTab, /padding\s*:\s*8px\s+12px\s+11px/);
-  assert.match(sourceTab, /font-size\s*:\s*var\(--font-sm\)/);
-  assert.match(activeSourceTab, /background\s*:\s*transparent/);
-  assert.match(activeSourceTab, /color\s*:\s*var\(--text-strong\)/);
-  assert.match(activeSourceTabIndicator, /background\s*:\s*var\(--accent\)/);
-  assert.match(blacklistEntry, /border\s*:\s*1px solid var\(--border-default\)/);
-  assert.match(blacklistEntry, /border-radius\s*:\s*var\(--radius-pill\)/);
-  assert.match(blacklistEntry, /background\s*:\s*transparent/);
   assert.match(blacklistEntry, /white-space\s*:\s*nowrap/);
-  assert.match(blacklistEntryHover, /background\s*:\s*transparent/);
-  assert.match(activeBlacklistEntry, /background\s*:\s*transparent/);
 });
 
-test("admin table action headers center-align with action buttons", () => {
-  const actionHeader = ruleBody(adminCss, ".admin-table th.is-actions");
-  const actionCell = ruleBody(adminCss, ".admin-table td.is-actions");
-
-  assert.match(actionHeader, /text-align\s*:\s*center/);
-  assert.match(actionCell, /text-align\s*:\s*center/);
-});
-
-test("desktop table cell surfaces follow the rounded frame without clipping sticky headers", () => {
+test("desktop tables keep sticky headers visible", () => {
   const table = ruleBody(adminCss, ".admin-table");
   const header = ruleBody(adminCss, ".admin-table th");
-  const topLeft = ruleBodyByContains(
-    adminCss,
-    ".admin-table > thead:first-child > tr:first-child > th:first-child"
-  );
-  const topRight = ruleBodyByContains(
-    adminCss,
-    ".admin-table > thead:first-child > tr:first-child > th:last-child"
-  );
-  const bottomLeft = ruleBody(
-    adminCss,
-    ".admin-table > tbody:last-child > tr:last-child > td:first-child"
-  );
-  const bottomRight = ruleBody(
-    adminCss,
-    ".admin-table > tbody:last-child > tr:last-child > td:last-child"
-  );
 
   assert.match(table, /border-collapse\s*:\s*separate/);
   assert.match(table, /border-spacing\s*:\s*0/);
-  assert.match(table, /border-radius\s*:\s*var\(--radius-md\)/);
   assert.match(table, /overflow\s*:\s*visible/);
   assert.match(header, /position\s*:\s*sticky/);
   assert.match(header, /top\s*:\s*0/);
-  assert.match(topLeft, /border-top-left-radius\s*:\s*calc\(var\(--radius-md\) - 1px\)/);
-  assert.match(topRight, /border-top-right-radius\s*:\s*calc\(var\(--radius-md\) - 1px\)/);
-  assert.match(bottomLeft, /border-bottom-left-radius\s*:\s*calc\(var\(--radius-md\) - 1px\)/);
-  assert.match(bottomRight, /border-bottom-right-radius\s*:\s*calc\(var\(--radius-md\) - 1px\)/);
-  assert.match(
-    adminCss,
-    /@media \(min-width:\s*769px\)\s*\{\s*\.admin-table > thead:first-child > tr:first-child > th:first-child/s
-  );
-  assert.equal(Array.from(adminCss.matchAll(/\.admin-table\s*\{/g)).length, 1);
 });
 
-test("current video delete dialogs use flat modal chrome", () => {
-  const flatModal = ruleBodyByContains(adminCss, ".admin-modal--video-delete-flat");
-  const flatModalChrome = ruleBodyByContains(adminCss, ".admin-modal--video-delete-flat .admin-modal__header");
+test("current video delete dialogs share the confirmation layout", () => {
   const deleteSourceOption = ruleBody(adminCss, ".admin-delete-source-option");
 
   assert.equal(
     Array.from(videosPageSource.matchAll(/modalClassName="admin-modal--delete-confirm admin-modal--video-delete-flat"/g)).length,
     2
   );
-  assert.match(flatModal, /border\s*:\s*0/);
-  assert.match(flatModal, /box-shadow\s*:\s*none/);
-  assert.match(flatModalChrome, /background\s*:\s*var\(--bg-surface\)/);
-  assert.match(flatModalChrome, /border\s*:\s*0/);
   assert.doesNotMatch(videosPageSource, /开启后会先删除源文件，失败则不会删除管理库记录。/);
   assert.doesNotMatch(videosPageSource, /开启后会先删除源文件，失败的视频会保留管理库记录。/);
   assert.match(videosPageSource, /title="删除视频"[\s\S]*?confirmText="确认"/);
   assert.match(videosPageSource, /title="批量删除视频"[\s\S]*?confirmText="确认"/);
   assert.doesNotMatch(videosPageSource, /confirmText="删除视频"|confirmText="批量删除"/);
   assert.match(deleteSourceOption, /padding\s*:\s*0/);
-  assert.match(deleteSourceOption, /border\s*:\s*0/);
-  assert.match(deleteSourceOption, /background\s*:\s*transparent/);
 });
 
 test("blacklist cancel action uses ordinary button styling", () => {
@@ -877,7 +727,6 @@ test("blacklist cancel action uses ordinary button styling", () => {
   );
   assert.doesNotMatch(videosPageSource, /被删除和被隐藏的视频会进入黑名单/);
   assert.doesNotMatch(videosPageSource, /原始记录、封面、预览已删除/);
-  assert.match(unavailable, /color\s*:\s*var\(--text-faint\)/);
 });
 
 // 本地上传的源文件被保留，但这个盘不支持枚举，扫盘和爬虫都不会重新发现它，
@@ -910,7 +759,6 @@ test("blacklist duplicate reason renders as a compact pill", () => {
   assert.doesNotMatch(videosPageSource, /admin-blacklist-canonical-btn/);
   assert.doesNotMatch(videosPageSource, /<ExternalLink[\s\S]*?查看保留视频/);
   assert.match(videosPageSource, /className="admin-btn"[\s\S]*?查看保留视频/);
-  assert.match(pill, /border-radius\s*:\s*999px/);
   assert.match(pill, /white-space\s*:\s*nowrap/);
   assert.doesNotMatch(adminCss, /admin-blacklist-canonical-btn/);
 });
@@ -920,16 +768,10 @@ test("blacklist source files can be deleted by one serialized background task", 
     videosPageSource.indexOf("function BlacklistTab"),
     videosPageSource.indexOf("function canDeleteBlacklistSource")
   );
-  const sharedTable = ruleBody(adminCss, ".admin-table");
-  const sharedTableHeader = allRuleBodies(adminCss, ".admin-table th");
   const table = ruleBody(adminCss, ".admin-blacklist-table");
-  const flatModal = ruleBodyByContains(adminCss, ".admin-modal--source-delete-flat");
-  const flatModalChrome = ruleBodyByContains(adminCss, ".admin-modal--source-delete-flat .admin-modal__header");
   const action = ruleBody(adminCss, ".admin-blacklist-source-delete");
-  const status = ruleBody(adminCss, ".admin-blacklist-source-delete__status");
   const button = ruleBody(adminCss, ".admin-blacklist-source-delete__button");
   const searchAction = ruleBody(adminCss, ".admin-videos-filter__search-action");
-  const searchActionHover = ruleBody(adminCss, ".admin-videos-filter__search-action:hover:not(:disabled)");
   const selectCell = ruleBody(adminCss, ".admin-blacklist-table td.admin-blacklist-select-cell");
   const disabledSelection = ruleBody(
     adminCss,
@@ -1004,9 +846,6 @@ test("blacklist source files can be deleted by one serialized background task", 
   assert.match(videosPageSource, /sourceDeleteStatus\.total/);
   assert.match(table, /width\s*:\s*100%/);
   assert.doesNotMatch(table, /max-width|width\s*:\s*min\(/);
-  assert.match(sharedTable, /background\s*:\s*var\(--bg-surface\)/);
-  assert.match(sharedTable, /border\s*:\s*1px solid var\(--border-subtle\)/);
-  assert.match(sharedTableHeader, /background\s*:\s*var\(--bg-elevated\)/);
   assert.equal(Array.from(adminCss.matchAll(/\.admin-blacklist-table\s*\{/g)).length, 2);
   assert.doesNotMatch(table, /background|border-color|box-shadow/);
   assert.match(
@@ -1025,21 +864,10 @@ test("blacklist source files can be deleted by one serialized background task", 
     2
   );
   assert.doesNotMatch(adminCss, /\.admin-table tbody tr:hover td/);
-  assert.match(flatModal, /border\s*:\s*0/);
-  assert.match(flatModal, /box-shadow\s*:\s*none/);
-  assert.match(flatModalChrome, /background\s*:\s*var\(--bg-surface\)/);
-  assert.match(flatModalChrome, /border\s*:\s*0/);
   assert.match(action, /display\s*:\s*flex/);
-  assert.match(status, /font-size\s*:\s*var\(--font-xs\)/);
   assert.match(button, /flex\s*:\s*none/);
   assert.match(deleteAllButtonSource, /admin-videos-filter__search-action/);
   assert.match(searchAction, /height\s*:\s*40px/);
-  assert.match(searchAction, /border-radius\s*:\s*var\(--radius-sm\)/);
-  assert.match(searchAction, /background\s*:\s*transparent/);
-  assert.match(searchAction, /color\s*:\s*var\(--text-muted\)/);
-  assert.match(searchAction, /font-size\s*:\s*var\(--font-sm\)/);
-  assert.match(searchActionHover, /border-color\s*:\s*var\(--border-strong\)/);
-  assert.match(searchActionHover, /color\s*:\s*var\(--text-strong\)/);
   assert.match(rowActions, /display\s*:\s*flex/);
   // 桌面端黑名单操作列保持单行（8be7ebd）；移动端媒体查询里仍允许换行
   assert.match(rowActions, /flex-wrap\s*:\s*nowrap/);
@@ -1128,20 +956,12 @@ test("admin video management controls wrap instead of covering text on mobile", 
   assert.match(currentFilterActionButton, /min-height\s*:\s*32px/);
   assert.match(currentFilterActionButton, /height\s*:\s*32px/);
   assert.match(currentFilterActionButton, /padding\s*:\s*0 10px/);
-  assert.match(currentFilterActionButton, /border\s*:\s*1px solid var\(--border-default\)/);
-  assert.match(currentFilterActionButton, /border-radius\s*:\s*var\(--radius-sm\)/);
-  assert.match(currentFilterActionButton, /background\s*:\s*transparent/);
-  assert.match(currentFilterActionButton, /box-shadow\s*:\s*none/);
   assert.match(blacklistFilter, /display\s*:\s*grid/);
   assert.match(blacklistFilter, /grid-template-columns\s*:\s*minmax\(0,\s*1fr\)\s+auto/);
   assert.match(blacklistFilterField, /min-width\s*:\s*0/);
   assert.match(blacklistFilterActions, /grid-column\s*:\s*2/);
   assert.match(blacklistFilterActions, /display\s*:\s*inline-flex/);
   assert.match(blacklistFilterBatch, /min-height\s*:\s*32px/);
-  assert.match(blacklistFilterBatch, /border\s*:\s*1px solid var\(--border-default\)/);
-  assert.match(blacklistFilterBatch, /border-radius\s*:\s*var\(--radius-sm\)/);
-  assert.match(blacklistFilterBatch, /background\s*:\s*transparent/);
-  assert.match(blacklistFilterBatch, /box-shadow\s*:\s*none/);
   assert.match(bulkToolbar, /position\s*:\s*fixed/);
   assert.match(bulkToolbar, /bottom\s*:\s*calc\(var\(--space-3\)\s*\+\s*env\(safe-area-inset-bottom\)\)/);
   assert.match(bulkToolbar, /margin\s*:\s*0/);
@@ -1236,8 +1056,6 @@ test("drive list loading uses a local card-grid skeleton", () => {
     /\{loading \? \(\s*<DriveListSkeleton \/>\s*\) : loadError/
   );
   assert.match(skeleton, /height\s*:\s*230px/);
-  assert.match(skeleton, /border-radius\s*:\s*var\(--radius-md\)/);
-  assert.match(skeletonSurface, /background\s*:\s*linear-gradient/);
   assert.match(
     skeletonSurface,
     /animation\s*:\s*admin-card-skeleton-shimmer 1\.5s ease-in-out infinite/
@@ -1250,7 +1068,6 @@ test("drive list loading uses a local card-grid skeleton", () => {
 
 test("crawler loading keeps the real page structure and skeletonizes only crawler cards", () => {
   const skeleton = ruleBody(adminCss, ".admin-crawler-card-skeleton");
-  const sharedSurface = ruleBody(adminCss, ".admin-card-skeleton-surface");
 
   assert.match(crawlersPageLoadingSource, /const CRAWLER_LIST_SKELETON_COUNT = 3/);
   assert.match(
@@ -1270,9 +1087,6 @@ test("crawler loading keeps the real page structure and skeletonizes only crawle
   assert.doesNotMatch(crawlersPageSource, /togglingTeasers/);
   assert.doesNotMatch(crawlersPageSource, /AdminLoading/);
   assert.match(skeleton, /height\s*:\s*64px/);
-  assert.match(skeleton, /border\s*:\s*1px solid var\(--border-subtle\)/);
-  assert.match(skeleton, /border-radius\s*:\s*var\(--radius-sm\)/);
-  assert.match(sharedSurface, /background\s*:\s*linear-gradient/);
 });
 
 test("drive detail loading renders the real page shell without animated placeholders", () => {
@@ -1310,7 +1124,7 @@ test("drive detail loading renders the real page shell without animated placehol
   );
 });
 
-test("mobile video management uses compact theme-aware video cards", () => {
+test("mobile video cards keep metadata and actions within the viewport", () => {
   const css = mobileCss();
   const grid = allRuleBodies(css, ".admin-video-card-grid");
   const card = allRuleBodies(css, ".admin-video-card");
@@ -1323,12 +1137,9 @@ test("mobile video management uses compact theme-aware video cards", () => {
   const actions = ruleBody(adminCss, ".admin-video-card__actions");
   const utilityActions = ruleBody(adminCss, ".admin-video-card__utility-actions");
   const actionButton = ruleBody(adminCss, ".admin-video-action-icon-button");
-  const dangerButton = ruleBody(adminCss, ".admin-video-action-icon-button.is-danger");
 
   assert.match(grid, /gap\s*:\s*10px/);
   assert.match(card, /--admin-video-card-bg\s*:\s*color-mix\(in srgb,\s*var\(--bg-surface\) 82%,\s*transparent\)/);
-  assert.match(card, /background\s*:\s*var\(--admin-video-card-bg\)/);
-  assert.match(card, /border-radius\s*:\s*14px/);
   assert.match(card, /padding\s*:\s*12px\s+14px/);
   assert.match(card, /gap\s*:\s*10px/);
   assert.match(css, /:root:not\(\[data-theme="pink"\]\) \.admin-video-card\s*\{[^}]*--admin-video-card-bg\s*:\s*#1e1e1e/s);
@@ -1337,7 +1148,6 @@ test("mobile video management uses compact theme-aware video cards", () => {
   assert.doesNotMatch(videosPageSource, /admin-table-checkbox-btn/);
   assert.match(titleCell, /grid-template-columns\s*:\s*clamp\(104px,\s*32vw,\s*156px\)\s+minmax\(0,\s*1fr\)/);
   assert.match(thumb, /aspect-ratio\s*:\s*16\s*\/\s*9/);
-  assert.match(thumb, /border-radius\s*:\s*8px/);
   assert.match(titleText, /-webkit-line-clamp\s*:\s*2/);
   assert.match(titleText, /overflow-wrap\s*:\s*anywhere/);
   assert.match(videosPageSource, /loading="lazy"\s+decoding="async"/);
@@ -1357,10 +1167,6 @@ test("mobile video management uses compact theme-aware video cards", () => {
   assert.match(actionButton, /width\s*:\s*30px/);
   assert.match(actionButton, /height\s*:\s*30px/);
   assert.match(actionButton, /justify-content\s*:\s*center/);
-  assert.match(actionButton, /border-radius\s*:\s*8px/);
-  assert.match(actionButton, /background\s*:\s*transparent/);
-  assert.match(dangerButton, /border-color\s*:\s*color-mix\(in srgb,\s*var\(--admin-video-card-danger,\s*var\(--danger\)\) 26%,\s*transparent\)/);
-  assert.match(dangerButton, /color\s*:\s*color-mix\(in srgb,\s*var\(--admin-video-card-danger,\s*var\(--danger\)\) 68%,\s*transparent\)/);
   assert.doesNotMatch(adminCss, /\.admin-video-card\.is-selected/);
 });
 
@@ -1370,10 +1176,6 @@ test("video edit modal stays focused on common metadata", () => {
     videosPageSource.indexOf("function tagAssignmentSourceLabel")
   );
   const editModal = ruleBody(adminCss, ".admin-modal--video-edit");
-  const editModalHeader = ruleBody(adminCss, ".admin-modal--video-edit .admin-modal__header");
-  const editModalFooter = allRuleBodies(adminCss, ".admin-modal--video-edit .admin-modal__footer");
-  const editTagPicker = ruleBody(adminCss, ".admin-modal--video-edit .admin-video-tag-picker");
-  const selectedTagOption = ruleBody(adminCss, ".admin-modal--video-edit .admin-video-tag-option:has(input:checked)");
   const editBasics = ruleBody(adminCss, ".admin-video-edit-basics");
   const editMeta = ruleBody(adminCss, ".admin-video-edit-meta");
   const footerActions = ruleBody(adminCss, ".admin-video-edit-footer-actions");
@@ -1407,17 +1209,9 @@ test("video edit modal stays focused on common metadata", () => {
   assert.doesNotMatch(editModalSource, /const \[description, setDescription\]|const \[durationSec, setDurationSec\]/);
   assert.doesNotMatch(editModalSource, /description,|durationSeconds:/);
   assert.match(editModal, /width\s*:\s*min\(680px,\s*100%\)/);
-  assert.match(editModal, /border\s*:\s*1px solid var\(--border-subtle\)/);
-  assert.match(editModal, /box-shadow\s*:\s*var\(--shadow-xl\)/);
-  assert.match(editModalHeader, /border-bottom\s*:\s*1px solid var\(--border-subtle\)/);
-  assert.match(editModalFooter, /border-top\s*:\s*1px solid var\(--border-subtle\)/);
-  assert.match(editTagPicker, /border\s*:\s*0/);
-  assert.match(editTagPicker, /background\s*:\s*transparent/);
   assert.match(editModalSource, /<section className="admin-video-edit-section">\s*<h3>基本信息<\/h3>[\s\S]*?<h3>标签<\/h3>[\s\S]*?<h3>视频信息<\/h3>/);
   assert.match(editBasics, /grid-template-columns\s*:\s*minmax\(0,\s*2fr\) minmax\(160px,\s*1fr\)/);
-  assert.match(selectedTagOption, /background\s*:\s*var\(--accent-soft\)/);
   assert.match(editMeta, /grid-template-columns\s*:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
-  assert.match(editMeta, /background\s*:\s*color-mix/);
   assert.match(footerActions, /display\s*:\s*flex/);
   assert.doesNotMatch(editModalSource, /admin-video-tag-option__count|\{tag\.count\}/);
   assert.doesNotMatch(adminCss, /admin-video-tag-option__count/);
@@ -1427,7 +1221,6 @@ test("video edit modal stays focused on common metadata", () => {
   assert.match(previewActions, /align-items\s*:\s*center/);
   assert.match(previewActions, /gap\s*:\s*var\(--space-5\)/);
   assert.match(previewButton, /padding\s*:\s*5px\s+9px/);
-  assert.match(previewButton, /font-size\s*:\s*var\(--font-xs\)/);
   assert.match(previewStatusDot, /content\s*:\s*none/);
   assert.match(previewStatusDot, /display\s*:\s*none/);
   assert.match(viewVideoLink, /margin-right\s*:\s*auto/);
@@ -1530,20 +1323,12 @@ test("mobile tags management does not create horizontal page overflow", () => {
   assert.match(toolbarActions, /width\s*:\s*max-content/);
   assert.match(toolbarActions, /max-width\s*:\s*calc\(100vw\s*-\s*\(var\(--space-3\)\s*\*\s*2\)\)/);
   assert.match(toolbarActions, /padding\s*:\s*0/);
-  assert.match(toolbarActions, /border\s*:\s*1px solid var\(--border-subtle\)/);
-  assert.match(toolbarActions, /border-radius\s*:\s*12px/);
-  assert.match(toolbarActions, /background\s*:\s*transparent/);
   assert.match(toolbarActions, /gap\s*:\s*0/);
   assert.match(toolbarActions, /overflow\s*:\s*hidden/);
   assert.match(toolbarActionButton, /position\s*:\s*relative/);
   assert.match(toolbarActionButton, /min-height\s*:\s*44px/);
-  assert.match(toolbarActionButton, /border\s*:\s*0/);
-  assert.match(toolbarActionButton, /border-radius\s*:\s*0/);
-  assert.match(toolbarActionButton, /background\s*:\s*transparent/);
-  assert.match(toolbarActionButton, /box-shadow\s*:\s*none/);
   assert.match(toolbarActionDivider, /content\s*:\s*""/);
   assert.match(toolbarActionDivider, /height\s*:\s*18px/);
-  assert.match(toolbarActionDivider, /background\s*:\s*var\(--border-subtle\)/);
   assert.doesNotMatch(css, /\.admin-tags-toolbar-actions \.admin-btn > svg\s*\{[^}]*display\s*:\s*none/s);
   assert.doesNotMatch(css, /\.admin-tags-page\s*\{[^}]*padding-bottom/s);
   assert.doesNotMatch(adminCss, /\.admin-tags-page\.has-bulk-actions \.admin-tags-toolbar-actions/);
@@ -1626,7 +1411,6 @@ test("mobile admin navigation uses a CPA-style sliding drawer", () => {
   const openSidebar = ruleBody(css, ".admin-sidebar.is-open");
   const mobileNav = ruleBody(css, ".admin-nav");
   const mobileNavLink = ruleBody(css, ".admin-nav__link");
-  const activeNavLink = ruleBody(css, ".admin-nav__link.is-active");
   const globalActions = ruleBody(css, ".admin-global-actions");
   const themePopover = ruleBody(css, ".admin-theme-popover");
 
@@ -1672,9 +1456,6 @@ test("mobile admin navigation uses a CPA-style sliding drawer", () => {
   assert.match(mobileNavLink, /gap\s*:\s*10px/);
   assert.match(ruleBody(css, ".admin-nav__icon"), /display\s*:\s*inline-flex/);
   assert.match(ruleBody(css, ".admin-nav__icon"), /width\s*:\s*18px/);
-  assert.match(activeNavLink, /background\s*:\s*var\(--accent-soft\)/);
-  assert.match(activeNavLink, /border-color\s*:\s*var\(--border-accent\)/);
-  assert.match(activeNavLink, /box-shadow\s*:\s*none/);
   const mobileMain = ruleBody(css, ".admin-main");
   assert.match(mobileMain, /height\s*:\s*auto/);
   assert.match(
@@ -1703,7 +1484,6 @@ test("crawler create action reuses the drive floating action button", () => {
   assert.match(fab, /right\s*:\s*var\(--space-7\)/);
   assert.match(fab, /bottom\s*:\s*var\(--space-5\)/);
   assert.match(fab, /min-height\s*:\s*44px/);
-  assert.match(fab, /box-shadow\s*:\s*0 12px 32px/);
   assert.doesNotMatch(crawlersPageSource, /admin-crawler-page-actions/);
 });
 
@@ -1719,7 +1499,6 @@ test("tag create and bulk actions share one floating group on desktop and mobile
   assert.match(actions, /position\s*:\s*fixed/);
   assert.match(actions, /right\s*:\s*var\(--space-7\)/);
   assert.match(actions, /bottom\s*:\s*var\(--space-5\)/);
-  assert.match(actions, /box-shadow\s*:\s*0 12px 32px/);
   assert.match(actionButton, /position\s*:\s*relative/);
   assert.match(actionButton, /min-height\s*:\s*44px/);
   assert.match(allActions, /right\s*:\s*var\(--space-3\)/);

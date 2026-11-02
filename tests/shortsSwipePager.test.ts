@@ -452,7 +452,7 @@ test("taking over the gesture also turns off the browser's own scrolling", () =>
   );
 });
 
-test("desktop keeps the native snapping path untouched", () => {
+test("the pager fallback retains native snapping rules", () => {
   // 行首锚定：文档滚动模式的覆盖规则里也含有 `.shorts-feed {` 这段文本
   const baseRule = /^\.shorts-feed \{[\s\S]*?\}/m.exec(shortsCss);
   assert.ok(baseRule, ".shorts-feed rule should exist");

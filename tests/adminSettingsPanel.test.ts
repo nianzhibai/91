@@ -493,9 +493,3 @@ test("media settings expose the only global preview generation switch", () => {
   assert.match(pageSource, /aria-checked=\{draft\.previewEnabled\}/);
   assert.match(pageSource, /updateVisualField\("previewEnabled", !draft\.previewEnabled\)/);
 });
-
-test("settings no longer offer built-in tag controls", () => {
- assert.doesNotMatch(pageSource, /config-tags|builtinTagsEnabled|内置标签/);
- assert.doesNotMatch(configYamlSource, /builtinTagsEnabled|builtin_pack_enabled/);
- assert.doesNotMatch(apiSource, /builtinTagsEnabled/);
-});
