@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import * as api from "./api";
+import { applyTelegramEnabled, resetTelegramAvailability } from "./telegram/availability";
 
 type AuthStatus = "loading" | "authed" | "guest" | "unavailable";
 
@@ -28,6 +29,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [role, setRole] = useState<string>("");
 
   const invalidateSession = useCallback(() => {
+    resetTelegramAvailability();
     setStatus("guest");
     setRole("");
   }, []);
@@ -39,6 +41,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         invalidateSession();
         return;
       }
+      applyTelegramEnabled(r.role === "admin" && r.telegramEnabled === true);
       setStatus("authed");
       setRole(r.role ?? "");
     } catch {
@@ -57,6 +60,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async (u: string, p: string) => {
     const result = await api.login(u, p);
+    applyTelegramEnabled(result.role === "admin" && result.telegramEnabled === true);
     setStatus("authed");
     setRole(result.role ?? "");
     return result.role;

@@ -5,7 +5,7 @@ import { act, render } from "./helpers/dom";
 import * as api from "../src/admin/api";
 import { useAdminResource } from "../src/admin/useAdminResource";
 import { TelegramStatusProvider, useTelegramStatus } from "../src/admin/telegram/TelegramStatusProvider";
-import { applyTelegramEnabled, getTelegramAvailability } from "../src/admin/telegram/availability";
+import { applyTelegramEnabled, getTelegramAvailability, resetTelegramAvailability } from "../src/admin/telegram/availability";
 import { useTelegramAvailability } from "../src/admin/telegram/useTelegramAvailability";
 import { StorageSummary } from "../src/admin/drive/StorageSummary";
 import { useDriveListData } from "../src/admin/drive/useDriveListData";
@@ -18,12 +18,14 @@ function deferred<T>() {
 }
 
 function browser(t: TestContext) {
+  resetTelegramAvailability();
   const document = globalThis.document;
   document.hidden = false;
   const window = globalThis.window;
   let renderer: ReturnType<typeof render> | undefined;
   t.after(async () => {
     if (renderer) await act(async () => renderer!.unmount());
+    resetTelegramAvailability();
     document.hidden = false;
   });
   return {

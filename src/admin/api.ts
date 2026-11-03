@@ -70,7 +70,7 @@ async function request<T>(
 }
 
 export function login(username: string, password: string) {
-  return request<{ ok: boolean; role?: string }>("/login", {
+  return request<{ ok: boolean; role?: string; telegramEnabled?: boolean }>("/login", {
     method: "POST",
     body: JSON.stringify({ username, password }),
   });
@@ -92,7 +92,7 @@ export function logout() {
 }
 
 export function me() {
-  return request<{ authenticated: boolean; role?: string }>("/me");
+  return request<{ authenticated: boolean; role?: string; telegramEnabled?: boolean }>("/me");
 }
 
 export type UpdateCheck = {

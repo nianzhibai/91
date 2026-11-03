@@ -141,7 +141,11 @@ func (a *AdminServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid credentials", http.StatusBadRequest)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "role": role})
+	response := map[string]any{"ok": true, "role": role}
+	if role == "admin" && a.ConfigManager != nil {
+		response["telegramEnabled"] = a.ConfigManager.LiveSettings().TelegramEnabled
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (a *AdminServer) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -174,7 +178,11 @@ func (a *AdminServer) handleMe(w http.ResponseWriter, r *http.Request) {
 		writeServiceUnavailable(w, r, "load current user", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "role": u.Role})
+	response := map[string]any{"authenticated": true, "role": u.Role}
+	if u.Role == "admin" && a.ConfigManager != nil {
+		response["telegramEnabled"] = a.ConfigManager.LiveSettings().TelegramEnabled
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (a *AdminServer) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {

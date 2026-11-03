@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, type ReactNode } from "react";
 import * as api from "../api";
 import { useAdminResource } from "../useAdminResource";
-import { reportTelegramAvailabilityError, resetTelegramAvailability, subscribeTelegramConfigChanges, syncTelegramAvailability } from "./availability";
+import { reportTelegramAvailabilityError, subscribeTelegramConfigChanges, syncTelegramAvailability } from "./availability";
 import { useTelegramAvailability } from "./useTelegramAvailability";
 
 type StatusResource = ReturnType<typeof useAdminResource<api.TelegramStatus | null>>;
@@ -29,7 +29,6 @@ export function TelegramStatusProvider({ children, workspaceActive, onUnauthoriz
   useEffect(() => {
     if (configuration.error && enabled === null) reportTelegramAvailabilityError();
   }, [configuration.error, enabled]);
-  useEffect(() => () => resetTelegramAvailability(), []);
   useEffect(() => subscribeTelegramConfigChanges((enabled) => {
     configuration.setData(enabled);
     status.setData((current) => current ? {
