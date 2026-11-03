@@ -1,6 +1,9 @@
 # Documentation Rules
 
 - Do not modify the `README.md` file in the project root directory unless explicitly requested.
+- Keep documentation concise, accurate, and easy to understand.
+- Use flowcharts when they help clarify complex workflows, processes, or relationships.
+- Avoid unnecessary verbosity, repetition, and overly complicated explanations.
 
 # Engineering Principles
 
@@ -18,6 +21,16 @@
 - Prefer well-defined interfaces and appropriate dependency direction.
 - Consider system-wide implications and address problems at the appropriate architectural level.
 - Avoid unnecessary complexity, special cases, and workarounds that compromise maintainability.
+
+# Frontend Design Principles
+
+- Create minimalist yet refined interfaces with thoughtful attention to detail.
+- Prioritize visual elegance, consistency, and a polished user experience.
+- Make interactions feel smooth, natural, and responsive.
+- Design animations and transitions with care, ensuring they are fluid, purposeful, and visually pleasing.
+- Pay attention to typography, spacing, alignment, and visual hierarchy.
+- Avoid stiff interactions, abrupt transitions, generic layouts, and hastily assembled designs.
+- Maintain a balance between visual sophistication, usability, and performance.
 
 # Bug Fixing Principles
 
