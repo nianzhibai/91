@@ -1,99 +1,56 @@
-# `Telegram` - `TG Bot API` - `91` 的关系
+# 接入 Telegram
+
+项目通过本地 TG Bot API 获取私聊视频。Bot API 与网站必须共享下载目录，后台只配置机器人及接收规则。
 
 ```mermaid
 flowchart LR
-    TG["Telegram<br/>用户向机器人发送视频"]
-    subgraph SERVER["你的服务器"]
-        API["TG Bot API"]
-        FILES[("共享视频目录")]
-        SITE["91<br/>导入、管理、播放"]
-    end
-    TG -->|消息与视频| API
-    SITE -->|获取消息、请求下载| API
-    API -->|下载视频| FILES
-    FILES -->|读取视频| SITE
+    TG["用户私聊机器人"] --> API["TG Bot API"]
+    SITE["91 网站"] -->|获取消息、请求下载| API
+    API --> FILES[("共享视频目录")]
+    FILES -->|读取并导入| SITE
 ```
 
-接入 `Telegram` 需要部署一个 `TG Bot API` 服务，因为 `Telegram` 公共 Bot API 下载文件最多支持 20 MB
+## 准备凭证
 
-# 接入流程
+- **Bot Token**：向 Telegram 的 `@BotFather` 发送 `/newbot` 创建机器人。
+- **API ID / API Hash**：在 `my.telegram.org` 的 API development tools 申请。API ID 为正整数，API Hash 为 32 位十六进制字符串。
 
-## 1. 准备 `Telegram` 相关凭证信息
+## 部署 Bot API
 
-```text
-Bot Token：向 Telegram 的 @BotFather 发送 /newbot 创建机器人后获取
-API ID、API Hash：登录 my.telegram.org，在 API development tools 中申请
-```
+### 一键安装脚本部署的网站
 
-## 2. 部署 `TG BOT API` 服务
-
-`TG BOT API` 服务需要通过 Docker 部署。`91` 项目有一键脚本和Docker Compose两种部署方式，这两个下 `TG BOT API` 服务的部署略有差别
-
-<details>
-<summary><b>一键脚本</b></summary>
-
-**1. 编辑安装目录中的 `telegram.yml`**
+编辑安装目录中的 `telegram.yml`，在已有 `environment` 下填写 `TELEGRAM_API_ID` 和 `TELEGRAM_API_HASH`，然后启动 Bot API 并重启网站：
 
 ```bash
 cd /opt/video-site-91
 sudo nano telegram.yml
-```
-
-**2. 在 `telegram.yml` 中补充完整以下字段**
-
-```yaml
-TELEGRAM_API_ID: "你的应用ID"
-TELEGRAM_API_HASH: "你的应用Hash"
-```
-
-**3. 启动 TG BOT API 服务**
-
-```bash
 sudo docker compose -f telegram.yml up -d --pull always
-```
-
-**4. 重启项目**
-
-```bash
 sudo 91 restart
 ```
 
-</details>
+该方式默认将 Bot API 端口绑定到 `127.0.0.1:7878`，共享目录为安装目录的 `data/telegram/`。
 
-<details>
-<summary><b>Docker Compose</b></summary>
+### Docker Compose 部署的网站
 
-**1. 进入存放 `91` 项目 `docker-compose.yml` 的目录，然后下载完整部署模板**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/nianzhibai/91/main/tg-docker-compose.yml -o tg-docker-compose.yml
-```
-
-**2. 将原来的 `docker-compose.yml` 替换成 `tg-docker-compose.yml`**
-
-注意如果你之前手动修改过 `docker-compose.yml`，下面操作会替换 `docker-compose.yml`，你替换后需要再修改一次
+在原 Compose 部署目录下载管理脚本并启用 Telegram：
 
 ```bash
-mv docker-compose.yml docker-compose.yml.bak
-mv tg-docker-compose.yml docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/nianzhibai/91/main/91-docker.sh -o 91-docker.sh
+bash 91-docker.sh update --telegram enable
 ```
 
-**3. 编辑新的 `docker-compose.yml` 补充下面字段**
+首次部署用 `bash 91-docker.sh install --telegram enable`。脚本复用已有 API 凭证，缺失或无效时交互输入；非交互环境通过 `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` 环境变量提供，也可覆盖旧值。交互输入明文显示，包含凭证的主 Compose 文件权限设为 600。
 
-```yaml
-TELEGRAM_API_ID: "你的应用ID"
-TELEGRAM_API_HASH: "你的应用Hash"
-```
+脚本保留网站配置并合入 Bot API 服务、共享挂载和依赖，然后重建容器。默认在服务网络内使用 7878，不新增宿主机端口；bind 数据目录使用其 `telegram/` 子目录，命名卷部署默认创建独立 TG 卷。后续普通 `update` 保留 Telegram 部署。
 
-**4. 启动 `TG Bot API` 并重建 `91` 容器**
+自定义 Compose 文件按原顺序通过 `-f` 传入，必要时用 `-p` 指定项目名。脚本要求支持所需选项的 Compose，缺少模板或发现连接/存储配置冲突时退出；更新失败尝试恢复原配置和镜像，不回滚数据。完整更新规则见 [后端部署说明](../README.md#docker-部署与更新)。
 
-```bash
-docker compose pull && docker compose up -d
-```
+手动部署可参考 [TG Compose 模板](../../tg-docker-compose.yml)，将 Bot API 服务、网站环境变量、共享目录及配置文件挂载合入现有配置；保留原端口、数据挂载和其他服务。模板将当前 `docker-compose.yml` 只读挂载为容器内 `telegram.yml`，改用其他文件名时需同步调整。
 
-</details>
+## 网站后台配置
 
-## 3. `91` Web 端配置
+1. 在「配置面板 → Telegram」填写 Bot Token，启用并保存，再到 Telegram 页面测试连接。
+2. 私聊机器人发送 `/id`，将回复的数字填入「允许的用户 ID」并保存；名单为空时仅响应引导消息，不接收视频。
+3. 向机器人发送视频，检查导入结果。可选填站点地址以生成回复链接。
 
-1. 在 **配置面板 → Telegram** 填写 Bot Token，启用 Telegram 并保存，进入 Telegram 页面测试连接
-2. 私聊机器人发送 /id，将回复的数字填入 `91` 项目中 "允许的用户 ID" 并保存
+视频默认保存在媒体库本地目录。配置「上传网盘」和目标目录后，由定时维护转存；保存配置不会立即启动转存，停用网站接收也不会停止 Bot API 容器。

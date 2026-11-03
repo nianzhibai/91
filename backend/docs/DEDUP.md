@@ -1,14 +1,14 @@
 # 去重体系
 
-去重不是某一个步骤，而是分布在视频生命周期四个时机的一套体系。设计思路：**有哈希或采样指纹时优先使用字节证据**（快、误判风险最低），**字节不同的转码/水印副本使用内容信号**（teaser 对齐帧）。原生哈希缺失或未命中时，扫描和实时软过滤还保留 `file_name + size_bytes` 弱兜底；它不是内容证明，存在同名同大小碰撞风险。
+去重分布在扫描入库、爬虫导入、前台软过滤和全库维护四个时机。哈希或采样指纹用于匹配字节证据，标题、封面与 teaser 内容帧用于匹配转码副本。扫描和软过滤还使用 `file_name + size_bytes` 弱兜底，存在同名同大小碰撞风险。
 
-以下路径均相对 `backend/`：`internal/scanner`（扫描入库）、`internal/drives/scriptcrawler/neardupe.go`（爬虫导入）、`internal/dedupe`（硬去重 Planner）、`internal/catalog`（软过滤 `uniqueVideoWhereSQL`、墓碑与计划事务）、`cmd/server/video_maintenance.go` 和 `video_dedupe_plan.go`（夜间 Phase 6 适配/执行）、`internal/mediasim`（全部相似度算法与阈值常量）。
+以下路径均相对 `backend/`：`internal/scanner/`（扫描）、`internal/drives/scriptcrawler/neardupe.go`（爬虫）、`internal/dedupe/`（规划）、`internal/catalog/`（软过滤、墓碑与事务）、`cmd/server/video_maintenance.go` 和 `video_dedupe_plan.go`（维护执行）、`internal/mediasim/`（相似度与阈值）。
 
 ```mermaid
 flowchart LR
     A["① 扫描入库<br/>scanner"] --> C["③ 前台展示<br/>实时软过滤"]
     B["② 爬虫导入<br/>scriptcrawler"] --> C
-    C --> D["④ 夜间 Phase 6<br/>全库硬去重"]
+    C --> D["④ 全库维护<br/>硬去重"]
 ```
 
 ## 判定信号
@@ -22,16 +22,16 @@ flowchart LR
 | 标题相似度 + 封面 SSIM | 归一化 Levenshtein（含核心段变体）+ 96×96 亮度 SSIM | 同源重发（标题几乎一样） | 改名重发、跨源转码 |
 | teaser 帧签名 | teaser 按 1fps 抽 12 帧 96×96 灰度 | **跨源不同压制**（标题、封面全对不上也能抓） | 时长差 >2 秒的剪辑版 |
 
-teaser 帧签名成立的原理：预览视频的**选段起点只由时长决定**（分档策略见 [README「异步生成」](../README.md#4-异步生成)，那里是唯一权威描述），所以时长几乎相等的两个视频，teaser 相同偏移处的帧通常来自同一源画面。压制、水印和裁切会降低分数，但不依赖标题或文件字节一致。
+预览的**选段起点只由时长决定**，分档策略见 [README「异步生成」](../README.md#异步生成)。时长接近的视频在 teaser 相同偏移处通常对应同一源画面，因此可比较不同压制、水印或裁切版本。
 
-内容级两条判定规则（阈值常量统一在 `mediasim`，全库万对负样本实测标定，负样本几乎全部 <0.5）：
+内容级判定规则，阈值常量统一在 `mediasim`：
 
 | 规则 | 条件 | 结论 |
 |------|------|------|
 | 对齐 | 对齐帧 SSIM 中位数 ≥0.80 | 重复，自动处理 |
 | 交叉兜底 | 对齐未命中、**时长精确相等**时：双方各至少 8 个有效帧，双向逐帧最优匹配，单帧 ≥0.95、双向 ≥75% 帧强匹配 | 重复（teaser 某段回退到备选起点造成整段错位的场景） |
 
-守卫：纯色/黑场帧（亮度标准差 <6）不参与统计——两张黑场的 SSIM≈1 是陷阱；有效比较帧 <6 不判；时长 <120 秒不启用内容级——短视频整秒时长碰撞太普遍（全库实测 10 秒档有近 400 个），时长相等不构成信号。
+亮度标准差 <6 的纯色/黑场帧不参与统计；有效比较帧少于 6 不判重；时长不足 120 秒不启用内容通道，避免短视频时长碰撞。
 
 ## 四个时机
 
@@ -62,7 +62,7 @@ flowchart TD
 
 **③ 前台展示（实时软过滤）**——`content_hash`、`size_bytes + sampled_sha256` 或弱兜底 `file_name + size_bytes` 相同的视频，前台列表和封面/预览生成队列只认最早入库的那条（`uniqueVideoWhereSQL`）。行还在库里，作用是在夜间硬去重跑到之前不给用户看重复、不给副本白白生成资产。
 
-**④ 夜间 Phase 6（`internal/dedupe` + `cmd/server/video_maintenance.go`）**——全库硬去重。Planner 只读计算完整计划，三个通道串行，前一通道的逻辑删除项不进下一通道：
+**④ 全库维护（`internal/dedupe` + `cmd/server/video_maintenance.go`）**——定时维护和后台「扫描所有网盘」最终都会执行。Planner 只读计算完整计划，三个通道串行，前一通道的逻辑删除项不进下一通道：
 
 ```mermaid
 flowchart TD
@@ -88,7 +88,8 @@ Planner 跑完全部通道后会压缩 canonical 链。例如精确通道先得�
 
 合并语义（所有通道一致）：先把重复项的标签、访问反应、观看/点赞等计数、分享和历史任务引用合并到最终保留项，再打 `reason=duplicate` 墓碑并退役重复行。墓碑同时充当旧公开 ID 的别名，前台读取旧链接时会解析到当前存活项；后续再次合并会重定向到最终 canonical。**不删网盘源文件**；墓碑阻止后续扫描重新入库，恢复策略为 `none`，不能从后台恢复。事务同时登记 `duplicate_asset_cleanup_jobs`，提交后幂等清理本地 teaser、普通封面、Shorts 背景封面和帧签名缓存；进程中断或文件系统临时失败时由下一轮维护重试。
 
-## 性能与工具
+## 缓存与工具
 
-- 帧签名按 `(teaser size, mtime)` 缓存在 `previews/framesigs/`（约 110KB/视频），teaser 重新生成自动失效，视频删除同步清理；夜间维护和爬虫内容通道共用该缓存。全库冷跑约 7.5 分钟（一次性），之后每晚增量 ≈ 新视频数 × 0.2 秒抽帧 + 秒级比对。
-- `go run ./cmd/dedupe-dryrun` 只读预演内容通道会删什么；它与夜间维护共用 `internal/dedupe` 生成 Plan。加 `-apply` 后一次提交该 Plan，并走同一套 Catalog 墓碑事务和提交后资产清理路径。
+- 帧签名按 `(teaser size, mtime)` 缓存在 `previews/framesigs/`，预览更新后失效，视频删除时清理；全库维护和爬虫内容通道共用缓存。
+- 在 `backend/` 执行 `go run ./cmd/dedupe-dryrun` 默认仅预演内容通道，不合并视频或删除资产；工具打开数据库时仍可能执行 schema 初始化或迁移。通过 `-db` / `-local-dir` 指定数据库与预览目录；加 `-apply` 提交计划，沿用维护的合并事务和资产清理路径。
+- 重复决策的 SQL 查询、证据和备份规则见 [内部记录](../internal/dedupe/RECORDS.md)。
