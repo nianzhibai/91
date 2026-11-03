@@ -42,19 +42,22 @@ const (
 )
 
 type Driver struct {
-	id            string
-	rootID        string
-	refreshToken  string
-	accessToken   string
-	clientID      string
-	clientSecret  string
-	oauthURL      string
-	apiBaseURL    string
-	uploadBaseURL string
-	client        *resty.Client
-	httpClient    *http.Client
-	mediaClient   *http.Client
-	onTokenUpdate func(access, refresh string)
+	id               string
+	rootID           string
+	refreshToken     string
+	accessToken      string
+	clientID         string
+	clientSecret     string
+	playbackCookie   string
+	playbackAuthUser string
+	playbackBaseURL  string
+	oauthURL         string
+	apiBaseURL       string
+	uploadBaseURL    string
+	client           *resty.Client
+	httpClient       *http.Client
+	mediaClient      *http.Client
+	onTokenUpdate    func(access, refresh string)
 
 	// OAuth refresh tokens can rotate. Keep request snapshots race-free and
 	// collapse simultaneous 401 recovery into one exchange.
@@ -73,15 +76,18 @@ type Driver struct {
 }
 
 type Config struct {
-	ID           string
-	RootID       string
-	RefreshToken string
-	AccessToken  string
-	ClientID     string
-	ClientSecret string
-	OAuthURL     string
-	APIBaseURL   string
-	UploadAPIURL string
+	ID               string
+	RootID           string
+	RefreshToken     string
+	AccessToken      string
+	ClientID         string
+	ClientSecret     string
+	OAuthURL         string
+	APIBaseURL       string
+	UploadAPIURL     string
+	PlaybackCookie   string
+	PlaybackAuthUser string
+	PlaybackAPIURL   string
 
 	OnTokenUpdate func(access, refresh string)
 }
@@ -105,19 +111,26 @@ func New(c Config) *Driver {
 	}
 	mediaClient := streamhttp.NewClient(0)
 	mediaClient.Transport = scopedproxy.NewTransport(nil)
+	playbackBaseURL := strings.TrimRight(strings.TrimSpace(c.PlaybackAPIURL), "/")
+	if playbackBaseURL == "" {
+		playbackBaseURL = defaultPlaybackAPIURL
+	}
 	return &Driver{
-		id:              c.ID,
-		rootID:          rootID,
-		refreshToken:    strings.TrimSpace(c.RefreshToken),
-		accessToken:     strings.TrimSpace(c.AccessToken),
-		clientID:        strings.TrimSpace(c.ClientID),
-		clientSecret:    strings.TrimSpace(c.ClientSecret),
-		oauthURL:        oauthURL,
-		apiBaseURL:      apiBaseURL,
-		uploadBaseURL:   uploadBaseURL,
-		onTokenUpdate:   c.OnTokenUpdate,
-		tokenGeneration: 1,
-		mediaClient:     mediaClient,
+		id:               c.ID,
+		rootID:           rootID,
+		refreshToken:     strings.TrimSpace(c.RefreshToken),
+		accessToken:      strings.TrimSpace(c.AccessToken),
+		clientID:         strings.TrimSpace(c.ClientID),
+		clientSecret:     strings.TrimSpace(c.ClientSecret),
+		playbackCookie:   strings.TrimSpace(c.PlaybackCookie),
+		playbackAuthUser: strings.TrimSpace(c.PlaybackAuthUser),
+		playbackBaseURL:  playbackBaseURL,
+		oauthURL:         oauthURL,
+		apiBaseURL:       apiBaseURL,
+		uploadBaseURL:    uploadBaseURL,
+		onTokenUpdate:    c.OnTokenUpdate,
+		tokenGeneration:  1,
+		mediaClient:      mediaClient,
 		client: resty.New().
 			SetTransport(scopedproxy.NewTransport(nil)).
 			SetTimeout(30*time.Second).

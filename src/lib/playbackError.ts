@@ -106,6 +106,7 @@ export function isSameOriginPlaybackURL(sourceURL: URL, pageURL: URL) {
   if (sourceURL.origin !== pageURL.origin) return false;
   return (
     sourceURL.pathname.startsWith("/p/stream/") ||
+    sourceURL.pathname.startsWith("/p/playback/") ||
     sourceURL.pathname.startsWith("/p/hls/") ||
     sourceURL.pathname.startsWith("/p/upload/") ||
     sourceURL.pathname.startsWith("/p/share/")

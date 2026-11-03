@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -45,7 +44,7 @@ func (p *Proxy) StartHLSPlayback(driveID, fileID string, source drives.PlaybackS
 	policy := *source.Relay
 	policy.AllowedHosts = append([]string(nil), policy.AllowedHosts...)
 	root, err := url.Parse(source.Link.URL)
-	if err != nil || !allowedHLSResource(root, root, policy.AllowedHosts) {
+	if err != nil || !allowedPlaybackURL(root, root, policy.AllowedHosts) {
 		return "", time.Time{}, errors.New("HLS source host is not allowed")
 	}
 	// Static account headers are forbidden. A provider's server-only Authorize
@@ -98,7 +97,7 @@ func (p *Proxy) ServeHLS(w http.ResponseWriter, r *http.Request, driveID, fileID
 	session := p.hlsSessions[sessionID]
 	if session == nil {
 		p.hlsMu.Unlock()
-		hlsPlaybackExpired(w)
+		writePlaybackSourceExpired(w)
 		return
 	}
 	if session.driveID != driveID || session.fileID != fileID {
@@ -110,7 +109,7 @@ func (p *Proxy) ServeHLS(w http.ResponseWriter, r *http.Request, driveID, fileID
 	if !now.Before(session.expires) {
 		p.removeHLSSessionLocked(sessionID)
 		p.hlsMu.Unlock()
-		hlsPlaybackExpired(w)
+		writePlaybackSourceExpired(w)
 		return
 	}
 	target := session.resources[resourceID]
@@ -146,7 +145,7 @@ func (p *Proxy) ServeHLS(w http.ResponseWriter, r *http.Request, driveID, fileID
 	}
 	client := *p.http
 	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
-		if len(via) >= 10 || !allowedHLSResource(root, next.URL, session.policy.AllowedHosts) {
+		if len(via) >= 10 || !allowedPlaybackURL(root, next.URL, session.policy.AllowedHosts) {
 			return errors.New("HLS redirect is not allowed")
 		}
 		if err := streamhttp.CheckRedirect(next, via); err != nil {
@@ -201,7 +200,7 @@ func (p *Proxy) serveHLSPlaylist(w http.ResponseWriter, r *http.Request, id stri
 	p.hlsMu.Lock()
 	if p.hlsSessions[id] != session {
 		p.hlsMu.Unlock()
-		hlsPlaybackExpired(w)
+		writePlaybackSourceExpired(w)
 		return
 	}
 	root := session.resources["index.m3u8"]
@@ -234,28 +233,6 @@ func (p *Proxy) serveHLSPlaylist(w http.ResponseWriter, r *http.Request, id stri
 	}
 }
 
-func allowedHLSResource(root, target *url.URL, hosts []string) bool {
-	if root == nil || target == nil || target.Host == "" || target.User != nil || target.Fragment != "" ||
-		(target.Scheme != "https" && !(root.Scheme == "http" && target.Scheme == "http")) {
-		return false
-	}
-	for _, host := range hosts {
-		host = strings.ToLower(host)
-		if strings.HasPrefix(host, ".") {
-			if target.Port() != "" && target.Port() != "443" {
-				continue
-			}
-			name := strings.ToLower(target.Hostname())
-			if name == host[1:] || strings.HasSuffix(name, host) {
-				return true
-			}
-		} else if strings.EqualFold(target.Host, host) {
-			return true
-		}
-	}
-	return false
-}
-
 func resolveHLSResource(root, base *url.URL, raw string, hosts []string) (*url.URL, error) {
 	if raw == "" || strings.Contains(raw, "{$") {
 		return nil, errors.New("invalid HLS resource URI")
@@ -265,7 +242,7 @@ func resolveHLSResource(root, base *url.URL, raw string, hosts []string) (*url.U
 		return nil, errors.New("invalid HLS resource URI")
 	}
 	target := base.ResolveReference(ref)
-	if !allowedHLSResource(root, target, hosts) {
+	if !allowedPlaybackURL(root, target, hosts) {
 		return nil, errors.New("HLS resource host is not allowed")
 	}
 	return target, nil
@@ -281,12 +258,6 @@ func copyHLSMediaHeaders(dst, src http.Header) {
 
 func hlsRequestFailed(w http.ResponseWriter) {
 	http.Error(w, "HLS source request failed", http.StatusBadGateway)
-}
-
-func hlsPlaybackExpired(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(http.StatusGone)
-	_ = json.NewEncoder(w).Encode(map[string]string{"code": "playback_source_expired", "message": "兼容播放地址已过期，请重新获取"})
 }
 
 func (p *Proxy) removeHLSSessionLocked(id string) {

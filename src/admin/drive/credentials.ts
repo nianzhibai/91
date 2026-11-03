@@ -30,6 +30,12 @@ export function driveCredentialError(
   credentials: Credentials,
   isNew: boolean
 ): string {
+  if (kind === "googledrive") {
+    const index = (credentials.playback_auth_user ?? "").trim();
+    if (index && (!/^\d+$/.test(index) || Number(index) > 4294967295)) {
+      return "Google Drive 网页账号索引必须是非负整数";
+    }
+  }
   if (kind === "onedrive") {
     const authMode = oneDriveAuthMode(credentials);
     if (

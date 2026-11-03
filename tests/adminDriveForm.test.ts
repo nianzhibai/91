@@ -239,7 +239,7 @@ test("onedrive drive form supports default and custom OAuth applications", () =>
   assert.match(drivesPageSource, /driveCredentialsForForm\(/);
 });
 
-test("googledrive drive form only supports a custom OAuth client", () => {
+test("googledrive keeps custom OAuth and offers an optional web playback cookie", () => {
   assertDriveTypeOption("googledrive", "Google Drive");
 
   const match =
@@ -252,6 +252,8 @@ test("googledrive drive form only supports a custom OAuth client", () => {
   assert.match(fields, /key: "refresh_token"/);
   assert.match(fields, /key: "client_id"/);
   assert.match(fields, /key: "client_secret"/);
+  assert.match(fields, /key: "playback_cookie"/);
+  assert.match(fields, /key: "playback_auth_user"/);
   assert.doesNotMatch(fields, /key: "use_online_api"/);
   assert.doesNotMatch(fields, /OpenList 在线 API|api\.oplist\.org/);
   assert.doesNotMatch(fields, /key: "api_url_address"/);

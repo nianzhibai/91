@@ -1,6 +1,8 @@
+import "./helpers/dom-environment.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { videoSourceRelayURL } from "../src/lib/videoSource";
 import {
   calculateCanvasPixelSize,
   calculateTripleScreenViewport,
@@ -93,24 +95,18 @@ test("detail player exposes triple screen only for desktop portrait videos", () 
 });
 
 test("triple screen switches backend stream routes to same-origin relay", () => {
-  assert.match(playerSource, /const TRIPLE_SCREEN_RELAY_QUERY = "tripleScreenRelay"/);
-  assert.match(playerSource, /url\.searchParams\.set\(TRIPLE_SCREEN_RELAY_QUERY, "1"\)/);
-  assert.match(playerSource, /pathname\.startsWith\("\/p\/stream\/"\)/);
-  assert.match(playerSource, /pathname\.startsWith\("\/p\/share\/"\)[\s\S]*?pathname\.endsWith\("\/stream"\)/);
-  assert.match(playerSource, /art\.url = relaySrc/);
-  assert.match(playerSource, /activePlaybackSrc = relaySrc/);
-  assert.match(
-    playerSource,
-    /pendingSourceMatches\(pendingRelayEnable\.url\)/
-  );
-  assert.match(
-    playerSource,
-    /function clearPendingRelayEnable\(\)[\s\S]*?pendingRelayEnable = null/
-  );
-  assert.doesNotMatch(
-    playerSource,
-    /isTripleScreenRelayURL\(video\.currentSrc \|\| src\)/
-  );
+  for (const path of ["/p/stream/google/file", "/p/playback/video/cloud-18", "/p/share/share-id/stream", "/p/share/share-id/playback/cloud-18"]) {
+    const relay = videoSourceRelayURL(`${path}?playbackId=current#frame`);
+    assert.ok(relay);
+    const url = new URL(relay, window.location.href);
+    assert.equal(url.pathname, path);
+    assert.equal(url.searchParams.get("playbackId"), "current");
+    assert.equal(url.searchParams.get("tripleScreenRelay"), "1");
+    assert.equal(url.hash, "#frame");
+  }
+  for (const path of ["https://cdn.example/p/playback/video/cloud-18", "/api/video/video", "/p/share/share-id/hls/session/index.m3u8", "/assets/movie.mp4"]) {
+    assert.equal(videoSourceRelayURL(path), null);
+  }
 });
 
 test("triple screen renderer reuses one video texture and follows presented frames", () => {

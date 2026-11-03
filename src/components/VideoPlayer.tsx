@@ -24,7 +24,9 @@ import {
   retryVideoSource,
   selectPlaybackMode,
   selectPlaybackSource,
-  setOriginalVideoDelivery,
+  setVideoSourceRelay,
+  videoSourceRelayURL,
+  TRIPLE_SCREEN_RELAY_QUERY,
   type PlaybackState,
   type PlaybackMode,
 } from "@/lib/videoSource";
@@ -168,7 +170,6 @@ const COMPACT_SETTING_LAYOUT = {
 const ORIENTATION_CONTROL_NAME = "orientationToggle";
 const PLAYER_SURFACE_CLASS = "video-player__art";
 const TRIPLE_SCREEN_CONTROL_NAME = "tripleScreen";
-const TRIPLE_SCREEN_RELAY_QUERY = "tripleScreenRelay";
 const MANUAL_ORIENTATION_CLASS = "art-manual-orientation";
 const TRIPLE_SCREEN_ACTIVE_CLASS = "art-triple-screen-active";
 const FAST_RATE_CLASS = "art-fast-rate-active";
@@ -1634,8 +1635,8 @@ function bindTripleScreen(art: Artplayer, video: HTMLVideoElement, src: string) 
     if (state && (state.loading || state.error)) return;
     rememberRequestedSource();
     const source = state?.activeSource;
-    const originalFile = !source || (source.kind === "original" && source.protocol === "file");
-    const relaySrc = originalFile ? tripleScreenRelaySrc(activePlaybackSrc) : null;
+    const fileSource = !source || source.protocol === "file";
+    const relaySrc = fileSource ? videoSourceRelayURL(activePlaybackSrc) : null;
     if (relaySrc && !isTripleScreenRelayURL(activePlaybackSrc)) {
       pendingRelayEnable = {
         time: Number.isFinite(video.currentTime) ? video.currentTime : 0,
@@ -1646,7 +1647,7 @@ function bindTripleScreen(art: Artplayer, video: HTMLVideoElement, src: string) 
       updateTripleScreenControl(art, true, requested);
       art.notice.show = "正在切换到三屏中转播放";
       activePlaybackSrc = relaySrc;
-      if (!setOriginalVideoDelivery(video, relaySrc)) art.url = relaySrc;
+      if (!setVideoSourceRelay(video, true)) art.url = relaySrc;
       return;
     }
     if (renderer.enabled || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
@@ -1671,7 +1672,7 @@ function bindTripleScreen(art: Artplayer, video: HTMLVideoElement, src: string) 
         clearPendingRelayEnable();
         renderer.disable();
         updateTripleScreenControl(art, true, false);
-        setOriginalVideoDelivery(video, null);
+        setVideoSourceRelay(video, false);
         art.notice.show = "已关闭三屏画面";
         return;
       }
@@ -1704,24 +1705,6 @@ function bindTripleScreen(art: Artplayer, video: HTMLVideoElement, src: string) 
     binding.destroy();
     player.classList.remove(TRIPLE_SCREEN_ACTIVE_CLASS);
   };
-}
-
-function tripleScreenRelaySrc(src: string) {
-  if (typeof window === "undefined") return null;
-  let url: URL;
-  try {
-    url = new URL(src, window.location.href);
-  } catch {
-    return null;
-  }
-  if (url.origin !== window.location.origin) return null;
-  const pathname = url.pathname.toLowerCase();
-  const canRelay =
-    pathname.startsWith("/p/stream/") ||
-    (pathname.startsWith("/p/share/") && pathname.endsWith("/stream"));
-  if (!canRelay) return null;
-  url.searchParams.set(TRIPLE_SCREEN_RELAY_QUERY, "1");
-  return `${url.pathname}${url.search}${url.hash}`;
 }
 
 function isTripleScreenRelayURL(src: string) {

@@ -361,6 +361,17 @@ export function credentialFields(kind: Kind): CredentialField[] {
           multiline: true,
           required: true,
         },
+        {
+          key: "playback_cookie",
+          label: "网页登录 Cookie（兼容播放，可选）",
+          placeholder: "从已登录 drive.google.com 的请求头中复制完整 Cookie；清空可关闭网页兼容播放",
+          multiline: true,
+        },
+        {
+          key: "playback_auth_user",
+          label: "网页账号索引（可选）",
+          placeholder: "默认 0；多账号登录时填写视频页面 /u/ 后的数字，例如 /u/3/ 填 3",
+        },
       ];
     case "webdav":
       return [

@@ -12,7 +12,7 @@ import {
   selectPlaybackSource,
   playbackStateLabel,
   originalPlaybackLabel,
-  setOriginalVideoDelivery,
+  setVideoSourceRelay,
   setVideoSourceActive,
   type PlaybackSource,
 } from "../src/lib/videoSource.ts";
@@ -610,6 +610,34 @@ test("signed HLS failures refresh once while manual compatibility remains pinned
   assert.equal(video.getAttribute("src"), null);
 });
 
+test("opaque redirected MP4 failures refresh once before reporting a pinned rendition failure", async () => {
+  const video = media();
+  const file: PlaybackSource = { id: "cloud-22", label: "720p", kind: "transcoded", protocol: "file", status: "ready", mediaType: "video/mp4", url: "/p/playback/one/cloud-22", resolveUrl: "/api/video/one/playback?source=cloud-22" };
+  const calls: URL[] = [];
+  attachVideoSource(video, original.url!, "/api/video/one/playback", {
+    mode: "compatible", loadHls,
+    fetch: (async (path, init) => {
+      const url = new URL(String(path)); calls.push(url);
+      if (url.pathname.startsWith("/p/")) {
+        assert.equal(init?.redirect, "manual");
+        return new Response(null, { status: 302 });
+      }
+      return manifest(original, url.searchParams.has("source") ? file : cloud);
+    }) as typeof fetch,
+  });
+  await settle(); await settle();
+  mediaError(video, 4);
+  await settle(); await settle();
+  assert.equal(calls.filter((url) => url.searchParams.get("refresh") === "1").length, 1);
+  assert.equal(playbackSourceState(video)?.activeSource?.id, "cloud-22");
+  assert.equal(playbackSourceState(video)?.error, null);
+  mediaError(video, 4);
+  await settle(); await settle();
+  assert.equal(calls.filter((url) => url.searchParams.get("refresh") === "1").length, 1);
+  assert.ok(playbackSourceState(video)?.error);
+  assert.equal(playbackSourceState(video)?.mode, "compatible");
+});
+
 test("HLS throttling stops without refresh or source rotation", async () => {
   const { video, urls } = setup({ mode: "compatible" });
   await settle();
@@ -740,20 +768,20 @@ test("expired resolved links are refreshed before media loading", async () => {
   assert.equal(FakeHls.instances[0].url, readyCloud.url);
 });
 
-test("a canvas delivery override preserves smart selection, playback position and play intent", async () => {
+test("a canvas relay preference preserves smart selection, playback position and play intent", async () => {
   const { video } = setup();
   await settle();
   video.dispatchEvent(new Event("loadedmetadata"));
   video.currentTime = 33;
   await video.play();
-  assert.equal(setOriginalVideoDelivery(video, "/p/stream/wo/file?tripleScreenRelay=1"), true);
+  assert.equal(setVideoSourceRelay(video, true), true);
   await settle();
   video.dispatchEvent(new Event("loadedmetadata"));
   assert.equal(playbackSourceState(video)?.mode, "auto");
   assert.match(video.src, /tripleScreenRelay=1/);
   assert.equal(video.currentTime, 33);
   assert.equal(video.paused, false);
-  setOriginalVideoDelivery(video, null);
+  setVideoSourceRelay(video, false);
   await settle();
   video.dispatchEvent(new Event("loadedmetadata"));
   assert.equal(new URL(video.src).pathname, "/p/stream/wo/file");
@@ -762,19 +790,19 @@ test("a canvas delivery override preserves smart selection, playback position an
   assert.equal(playbackSourceState(video)?.mode, "auto");
 });
 
-test("changing original delivery during compatibility playback leaves HLS attached", async () => {
+test("file relay preferences leave active HLS playback attached", async () => {
   const { video, urls } = setup({ mode: "compatible" });
   await settle();
   const calls = urls.length;
   const hls = FakeHls.instances[0];
-  setOriginalVideoDelivery(video, "/p/stream/wo/file?tripleScreenRelay=1");
+  setVideoSourceRelay(video, true);
   await settle();
   assert.equal(playbackSourceState(video)?.mode, "compatible");
   assert.equal(playbackSourceState(video)?.activeSource?.id, "cloud");
   assert.equal(playbackSourceURL(video), readyCloud.url);
   assert.equal(hls.destroyed, false);
   assert.equal(urls.length, calls);
-  setOriginalVideoDelivery(video, null);
+  setVideoSourceRelay(video, false);
   await settle();
   assert.equal(hls.destroyed, false);
 });
@@ -782,7 +810,7 @@ test("changing original delivery during compatibility playback leaves HLS attach
 test("a relayed original can still fall back to compatible playback in smart mode", async () => {
   const { video } = setup();
   await settle();
-  setOriginalVideoDelivery(video, "/p/stream/wo/file?tripleScreenRelay=1");
+  setVideoSourceRelay(video, true);
   await settle();
   mediaError(video);
   await settle();
@@ -1016,6 +1044,170 @@ test("concrete HLS selection resolves only that rendition and preserves playback
   assert.equal(calls.at(-1), "cloud-low");
 });
 
+test("progressive compatibility uses native MP4 and preserves progress when changing quality", async () => {
+  const video = media();
+  const high: PlaybackSource = { id: "cloud-22", label: "720p", kind: "transcoded", protocol: "file", status: "ready", mediaType: "video/mp4", url: "/p/playback/one/cloud-22", resolveUrl: "/api/video/one/playback?source=cloud-22" };
+  const low: PlaybackSource = { ...high, id: "cloud-18", label: "360p", url: "/p/playback/one/cloud-18", resolveUrl: "/api/video/one/playback?source=cloud-18" };
+  const requests: string[] = [];
+  attachVideoSource(video, original.url!, "/api/video/one/playback", {
+    mode: "compatible", loadHls,
+    fetch: (async (path) => {
+      const source = new URL(String(path)).searchParams.get("source") ?? "";
+      requests.push(source);
+      if (!source) return manifest(original, cloud);
+      return manifest(original, high, low);
+    }) as typeof fetch,
+  });
+  await settle(); await settle();
+  assert.equal(playbackSourceState(video)?.activeSource?.id, "cloud-22");
+  assert.equal(video.getAttribute("src"), "/p/playback/one/cloud-22");
+  assert.equal(FakeHls.instances.length, 0);
+  video.dispatchEvent(new Event("loadedmetadata"));
+  video.currentTime = 42; video.playbackRate = 1.5;
+  await video.play();
+  setVideoSourceRelay(video, true);
+  await settle();
+  video.dispatchEvent(new Event("loadedmetadata"));
+  assert.match(video.src, /tripleScreenRelay=1/);
+  const requestCount = requests.length;
+  selectPlaybackSource(video, "cloud-18");
+  await settle(); await settle();
+  video.dispatchEvent(new Event("loadedmetadata"));
+  assert.equal(video.getAttribute("src"), "/p/playback/one/cloud-18?tripleScreenRelay=1");
+  assert.equal(video.currentTime, 42);
+  assert.equal(video.playbackRate, 1.5);
+  assert.equal(video.paused, false);
+  assert.equal(requests.length, requestCount);
+  assert.equal(FakeHls.instances.length, 0);
+  setVideoSourceRelay(video, false);
+  await settle();
+  assert.equal(video.getAttribute("src"), "/p/playback/one/cloud-18");
+});
+
+for (const shared of [false, true]) {
+  test(`${shared ? "shared" : "signed-in"} progressive playback refreshes a disappeared rendition and recovers to the current quality`, async () => {
+    const video = media();
+    const metadataURL = shared ? "/api/share/share-1/playback" : "/api/video/one/playback";
+    const mediaURL = shared ? "/p/share/share-1/playback" : "/p/playback/one";
+    const high: PlaybackSource = { id: "cloud-22", label: "720p", kind: "transcoded", protocol: "file", status: "ready", mediaType: "video/mp4", url: `${mediaURL}/cloud-22`, resolveUrl: `${metadataURL}?source=cloud-22` };
+    const low: PlaybackSource = { ...high, id: "cloud-18", label: "360p", url: `${mediaURL}/cloud-18`, resolveUrl: `${metadataURL}?source=cloud-18` };
+    let renditions = [high, low];
+    const calls: URL[] = [];
+    attachVideoSource(video, original.url!, metadataURL, {
+      mode: "compatible",
+      fetch: (async (path) => {
+        const url = new URL(String(path)); calls.push(url);
+        if (url.pathname.startsWith("/p/")) return json({ code: "playback_source_expired", message: "兼容播放地址已过期，请重新获取" }, 410);
+        return url.searchParams.has("source") ? manifest(original, ...renditions)
+          : manifest(original, { ...cloud, resolveUrl: `${metadataURL}?source=cloud` });
+      }) as typeof fetch,
+    });
+    await settle(); await settle();
+    video.dispatchEvent(new Event("loadedmetadata"));
+    video.currentTime = 42;
+    renditions = [low];
+    mediaError(video, 4);
+    await settle(); await settle();
+    video.dispatchEvent(new Event("loadedmetadata"));
+    assert.equal(playbackSourceState(video)?.error, null);
+    assert.equal(playbackSourceState(video)?.activeSource?.id, "cloud-18");
+    assert.equal(video.getAttribute("src"), low.url);
+    assert.equal(video.currentTime, 42);
+    assert.equal(calls.filter((url) => url.searchParams.get("refresh") === "1").length, 1);
+    assert.equal(calls.at(-1)?.searchParams.get("source"), "cloud-22");
+  });
+}
+
+test("a disappeared pinned rendition stays retryable without silently selecting another quality", async () => {
+  const video = media();
+  const high: PlaybackSource = { id: "cloud-22", label: "720p", kind: "transcoded", protocol: "file", status: "ready", mediaType: "video/mp4", url: "/p/playback/one/cloud-22", resolveUrl: "/api/video/one/playback?source=cloud-22" };
+  const low: PlaybackSource = { ...high, id: "cloud-18", label: "360p", url: "/p/playback/one/cloud-18", resolveUrl: "/api/video/one/playback?source=cloud-18" };
+  let renditions = [high, low];
+  const calls: URL[] = [];
+  attachVideoSource(video, original.url!, "/api/video/one/playback", {
+    mode: "compatible",
+    fetch: (async (path) => {
+      const url = new URL(String(path)); calls.push(url);
+      if (url.pathname.startsWith("/p/")) return json({ code: "playback_source_expired" }, 410);
+      return url.searchParams.has("source") ? manifest(original, ...renditions) : manifest(original, cloud);
+    }) as typeof fetch,
+  });
+  await settle(); await settle();
+  selectPlaybackSource(video, high.id);
+  await settle();
+  renditions = [low];
+  mediaError(video, 4);
+  await settle(); await settle();
+  assert.equal(playbackSourceState(video)?.selectedSourceID, high.id);
+  assert.equal(playbackSourceState(video)?.error?.sourceID, high.id);
+  assert.equal(playbackSourceState(video)?.error?.reason, "unavailable");
+  assert.deepEqual(playbackSourceState(video)?.error?.recoveryModes, ["original", "compatible"]);
+  assert.equal(video.getAttribute("src"), null);
+  assert.equal(calls.filter((url) => url.searchParams.has("refresh")).length, 1);
+  renditions = [high, low];
+  retryVideoSource(video);
+  await settle(); await settle();
+  assert.equal(calls.at(-1)?.searchParams.get("source"), high.id);
+  assert.equal(playbackSourceState(video)?.error, null);
+  assert.equal(playbackSourceState(video)?.activeSource?.id, high.id);
+  assert.equal(playbackSourceState(video)?.selectedSourceID, high.id);
+});
+
+for (const pinned of [false, true]) {
+  test(`Google web login failure during ${pinned ? "pinned" : "automatic"} compatibility playback preserves original recovery`, async () => {
+    const video = media();
+    const high: PlaybackSource = { id: "cloud-22", label: "720p", kind: "transcoded", protocol: "file", status: "ready", mediaType: "video/mp4", url: "/p/playback/one/cloud-22", resolveUrl: "/api/video/one/playback?source=cloud-22" };
+    const message = "Google Drive 网页登录已失效，请联系管理员更新兼容播放 Cookie";
+    let cookieValid = true;
+    attachVideoSource(video, original.url!, "/api/video/one/playback", {
+      mode: "compatible",
+      fetch: (async (path) => {
+        const url = new URL(String(path));
+        if (url.pathname.startsWith("/p/")) return json({ code: "playback_source_expired" }, 410);
+        return url.searchParams.has("source")
+          ? manifest(original, cookieValid ? high : { ...cloud, protocol: "file", status: "unavailable", message })
+          : manifest(original, cloud);
+      }) as typeof fetch,
+    });
+    await settle(); await settle();
+    if (pinned) { selectPlaybackSource(video, high.id); await settle(); }
+    cookieValid = false;
+    mediaError(video, 4);
+    await settle(); await settle();
+    assert.equal(playbackSourceState(video)?.error?.message, message);
+    assert.equal(playbackSourceState(video)?.error?.reason, "unavailable");
+    assert.deepEqual(playbackSourceState(video)?.error?.recoveryModes, ["original"]);
+    selectPlaybackMode(video, "original");
+    await settle();
+    assert.equal(playbackSourceState(video)?.error, null);
+    assert.equal(playbackSourceState(video)?.activeSource?.id, "original");
+    assert.equal(video.getAttribute("src"), original.url);
+  });
+}
+
+test("file relay refresh uses the current resolved URL and keeps its query parameters", async () => {
+  const video = media();
+  attachVideoSource(video, original.url!, "/api/video/one/playback", {
+    fetch: (async (path) => {
+      const refreshed = new URL(String(path)).searchParams.get("refresh") === "1";
+      return manifest({ ...original, url: `/p/stream/wo/file?token=${refreshed ? "new" : "old"}&playbackId=current` });
+    }) as typeof fetch,
+  });
+  await settle();
+  setVideoSourceRelay(video, true);
+  await settle();
+  retryVideoSource(video);
+  await settle(); await settle();
+  const url = new URL(video.src);
+  assert.equal(url.searchParams.get("token"), "new");
+  assert.equal(url.searchParams.get("playbackId"), "current");
+  assert.equal(url.searchParams.get("tripleScreenRelay"), "1");
+  setVideoSourceRelay(video, false);
+  await settle();
+  assert.equal(new URL(video.src).searchParams.get("token"), "new");
+  assert.equal(new URL(video.src).searchParams.has("tripleScreenRelay"), false);
+});
+
 test("compatibility chooses a ready lower rendition while the higher one is processing", async () => {
   const video = media();
   attachVideoSource(video, original.url!, "/api/video/one/playback", {
@@ -1115,7 +1307,7 @@ test("original source diagnostics follow actual playback and seeks without reloa
   assert.equal(originalPlaybackLabel("quark-download"), "原画播放（下载接口）");
   assert.equal(video.currentTime, 42);
   const before = playbackSourceURL(video);
-  setOriginalVideoDelivery(video, "/p/stream/wo/file?tripleScreenRelay=1"); await settle();
+  setVideoSourceRelay(video, true); await settle();
   const delivery = new URL(playbackSourceURL(video), window.location.href);
   assert.equal(delivery.searchParams.get("playbackId"), id);
   assert.equal(delivery.searchParams.get("tripleScreenRelay"), "1");

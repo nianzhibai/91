@@ -45,15 +45,18 @@ afterEach(() => {
 });
 const settle = async () => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
 
-async function tripleScreenPlayer(src = "/p/stream/115/file") {
+async function tripleScreenPlayer(src = "/p/stream/115/file", compatibleProtocol: "file" | "hls" = "hls") {
   const requests: string[] = [];
   const original = { id: "original", label: "原画播放", kind: "original", protocol: "file", status: "ready", url: src, mediaType: "video/mp4" };
-  const cloud = { id: "cloud", label: "兼容播放", kind: "transcoded", protocol: "hls", status: "unknown", resolveUrl: "/api/video/one/playback?source=cloud" };
+  const cloud = { id: compatibleProtocol === "file" ? "cloud-22" : "cloud", label: "兼容播放", kind: "transcoded", protocol: compatibleProtocol, status: "unknown", mediaType: compatibleProtocol === "file" ? "video/mp4" : undefined, resolveUrl: "/api/video/one/playback?source=cloud" };
+  const compatibleURL = compatibleProtocol === "file"
+    ? src.startsWith("/p/share/") ? src.replace(/\/stream$/, "/playback/cloud-22") : "/p/playback/one/cloud-22"
+    : "/p/hls/one/session/index.m3u8";
   window.fetch = (async (path) => {
     requests.push(String(path));
     if (String(path).includes("/p/stream/")) return new Response(null, { status: 206 });
     return new Response(JSON.stringify({ sources: [original, String(path).includes("source=cloud")
-      ? { ...cloud, status: "ready", url: "/p/hls/one/session/index.m3u8" } : cloud] }), { status: 200 });
+      ? { ...cloud, status: "ready", url: compatibleURL } : cloud] }), { status: 200 });
   }) as typeof fetch;
   const view = render(createElement(VideoPlayer, { src, playbackUrl: "/api/video/one/playback", title: "Example", poster: "" }));
   await settle();
@@ -156,6 +159,32 @@ test("shared compatible playback enables triple screen without selecting the sha
   assert.equal(playbackSourceState(env.video)?.activeSource?.id, "cloud");
   assert.doesNotMatch(env.video.src, /tripleScreenRelay/);
 });
+
+for (const shared of [false, true]) {
+  test(`${shared ? "shared" : "signed-in"} progressive playback switches between 302 delivery and triple-screen relay`, async (t) => {
+    const enable = t.mock.method(TripleScreenRenderer.prototype, "enable", () => true);
+    const src = shared ? "/p/share/share-token/stream" : "/p/stream/google/file";
+    const env = await tripleScreenPlayer(src, "file");
+    await act(async () => { selectPlaybackMode(env.video, "compatible"); });
+    await settle(); await env.frameReady();
+    const direct = env.video.src;
+    env.video.currentTime = 29;
+    await act(async () => { void env.video.play(); env.control.click(); });
+    await settle(); await env.frameReady();
+    assert.equal(playbackSourceState(env.video)?.mode, "compatible");
+    assert.equal(playbackSourceState(env.video)?.activeSource?.id, "cloud-22");
+    assert.equal(new URL(env.video.src).searchParams.get("tripleScreenRelay"), "1");
+    assert.equal(new URL(env.video.src).pathname, new URL(direct).pathname);
+    assert.equal(env.video.currentTime, 29);
+    assert.equal(env.video.paused, false);
+    assert.equal(enable.mock.callCount(), 1);
+    await act(async () => { env.control.click(); });
+    await settle(); await env.frameReady();
+    assert.equal(env.video.src, direct);
+    assert.equal(env.video.currentTime, 29);
+    assert.equal(playbackSourceState(env.video)?.activeSource?.id, "cloud-22");
+  });
+}
 
 test("ArtPlayer playback selector uses the shared controller without reconnecting an old source", async () => {
   const urls: URL[] = [];

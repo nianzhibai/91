@@ -12,6 +12,20 @@ import {
   ONEDRIVE_AUTH_MODE_OPENLIST_API,
 } from "../src/admin/drive/onedriveAuth.ts";
 
+test("Google Drive web account selection accepts an index and can reset to the default", () => {
+  for (const isNew of [true, false]) {
+    for (const index of ["", "0", "3", " 3 "]) {
+      assert.equal(driveCredentialError("googledrive", { playback_auth_user: index }, isNew), "");
+    }
+    for (const index of ["-1", "1.5", "account", "4294967296", "3\r\nX-Other: value"]) {
+      assert.equal(
+        driveCredentialError("googledrive", { playback_auth_user: index }, isNew),
+        "Google Drive 网页账号索引必须是非负整数"
+      );
+    }
+  }
+});
+
 test("onedrive accepts either the default app or a complete custom app", () => {
   assert.equal(
     driveCredentialError(

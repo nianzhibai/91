@@ -156,7 +156,7 @@ func TestPlaybackUsesSharedCacheAndRefreshFetchesNewHLS(t *testing.T) {
 	}
 	var originalURL string
 	for range 2 {
-		links, err := resolver.PlaybackSources(context.Background(), d.ID(), "file", false)
+		links, err := resolver.PlaybackSources(context.Background(), d.ID(), "file", "", false)
 		if err != nil || links[0].Link == nil {
 			t.Fatalf("resolve = %+v, %v", links, err)
 		}
@@ -165,7 +165,7 @@ func TestPlaybackUsesSharedCacheAndRefreshFetchesNewHLS(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("repeated preview requests bypassed shared cache: %d", calls)
 	}
-	links, err := resolver.PlaybackSources(context.Background(), d.ID(), "file", true)
+	links, err := resolver.PlaybackSources(context.Background(), d.ID(), "file", "", true)
 	if err != nil || links[0].Link.URL == originalURL || calls != 2 {
 		t.Fatalf("refresh reused expired source: calls=%d err=%v", calls, err)
 	}

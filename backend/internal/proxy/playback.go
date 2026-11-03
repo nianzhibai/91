@@ -2,8 +2,12 @@ package proxy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,17 +29,17 @@ type playbackCall struct {
 // PlaybackSources resolves optional cloud metadata only. A nil result uses the
 // existing original-file playback route. Refresh bypasses cache, not inflight
 // work, so simultaneous user retries still share one provider request.
-func (p *Proxy) PlaybackSources(ctx context.Context, driveID, fileID string, refresh bool) ([]drives.PlaybackSource, error) {
-	return p.resolvePlayback(ctx, driveID, fileID, refresh, false)
+func (p *Proxy) PlaybackSources(ctx context.Context, driveID, fileID, userAgent string, refresh bool) ([]drives.PlaybackSource, error) {
+	return p.resolvePlayback(ctx, driveID, fileID, userAgent, refresh, false)
 }
 
 // PreparePlaybackSources coalesces explicit preparation separately from read-only
 // lookups. Refreshing the metadata cache never resets provider submission guards.
 func (p *Proxy) PreparePlaybackSources(ctx context.Context, driveID, fileID string) ([]drives.PlaybackSource, error) {
-	return p.resolvePlayback(ctx, driveID, fileID, true, true)
+	return p.resolvePlayback(ctx, driveID, fileID, "", true, true)
 }
 
-func (p *Proxy) resolvePlayback(ctx context.Context, driveID, fileID string, refresh, prepare bool) ([]drives.PlaybackSource, error) {
+func (p *Proxy) resolvePlayback(ctx context.Context, driveID, fileID, userAgent string, refresh, prepare bool) ([]drives.PlaybackSource, error) {
 	d, ok := p.Registry.Get(driveID)
 	if !ok {
 		if failure, found := p.driveInitError(driveID); found {
@@ -43,11 +47,20 @@ func (p *Proxy) resolvePlayback(ctx context.Context, driveID, fileID string, ref
 		}
 		return nil, errDriveNotFound
 	}
-	provider, ok := d.(drives.PlaybackSourceProvider)
-	if !ok {
+	var resolve func(context.Context, string) ([]drives.PlaybackSource, error)
+	key := driveID + "/" + fileID
+	switch provider := d.(type) {
+	case drives.UserAgentPlaybackSourceProvider:
+		// Bound persistent keys independently of the request header's length.
+		key += fmt.Sprintf("|ua=%x", sha256.Sum256([]byte(userAgent)))
+		resolve = func(ctx context.Context, fileID string) ([]drives.PlaybackSource, error) {
+			return provider.PlaybackSourcesWithUserAgent(ctx, fileID, userAgent)
+		}
+	case drives.PlaybackSourceProvider:
+		resolve = provider.PlaybackSources
+	default:
 		return nil, nil
 	}
-	resolve := provider.PlaybackSources
 	if prepare {
 		preparer, ok := d.(drives.PlaybackSourcePreparer)
 		if !ok {
@@ -55,7 +68,6 @@ func (p *Proxy) resolvePlayback(ctx context.Context, driveID, fileID string, ref
 		}
 		resolve = preparer.PreparePlayback
 	}
-	key := driveID + "/" + fileID
 	p.cacheMu.Lock()
 	calls := p.playbackInflight
 	if prepare {
@@ -190,8 +202,12 @@ func (p *Proxy) HasPlaybackProvider(driveID string) bool {
 	if !ok {
 		return false
 	}
-	_, ok = d.(drives.PlaybackSourceProvider)
-	return ok
+	switch d.(type) {
+	case drives.PlaybackSourceProvider, drives.UserAgentPlaybackSourceProvider:
+		return true
+	default:
+		return false
+	}
 }
 
 func (p *Proxy) HasPlaybackPreparer(driveID string) bool {
@@ -201,4 +217,32 @@ func (p *Proxy) HasPlaybackPreparer(driveID string) bool {
 	}
 	_, ok = d.(drives.PlaybackSourcePreparer)
 	return ok
+}
+
+func allowedPlaybackURL(root, target *url.URL, hosts []string) bool {
+	if root == nil || target == nil || target.Host == "" || target.User != nil || target.Fragment != "" ||
+		(target.Scheme != "https" && !(root.Scheme == "http" && target.Scheme == "http")) {
+		return false
+	}
+	for _, host := range hosts {
+		host = strings.ToLower(host)
+		if strings.HasPrefix(host, ".") {
+			if target.Port() != "" && target.Port() != "443" {
+				continue
+			}
+			name := strings.ToLower(target.Hostname())
+			if name == host[1:] || strings.HasSuffix(name, host) {
+				return true
+			}
+		} else if strings.EqualFold(target.Host, host) {
+			return true
+		}
+	}
+	return false
+}
+
+func writePlaybackSourceExpired(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusGone)
+	_ = json.NewEncoder(w).Encode(map[string]string{"code": "playback_source_expired", "message": "兼容播放地址已过期，请重新获取"})
 }

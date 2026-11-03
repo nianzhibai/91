@@ -62,13 +62,14 @@ type SourceController = {
   retry(): void;
   selectMode(mode: PlaybackMode): void;
   selectSource(id: string): void;
-  setOriginalDelivery(url: string | null): void;
+  setRelay(enabled: boolean): void;
   setActive(active: boolean): void;
   destroy(): void;
 };
 type RestoreState = { time: number; playing: boolean; rate: number; volume: number; muted: boolean };
 const controllers = new WeakMap<HTMLVideoElement, SourceController>();
 const STARTUP_TIMEOUT_MS = 10_000;
+export const TRIPLE_SCREEN_RELAY_QUERY = "tripleScreenRelay";
 
 export function playbackSourceState(video: HTMLVideoElement) {
   const state = controllers.get(video)?.state;
@@ -113,12 +114,25 @@ export function selectPlaybackSource(video: HTMLVideoElement, id: string) {
   controller.selectSource(id);
   return true;
 }
-/** Override original-file delivery without changing the selected playback mode. */
-export function setOriginalVideoDelivery(video: HTMLVideoElement, url: string | null) {
+/** Keep the relay preference across file refreshes and rendition changes. */
+export function setVideoSourceRelay(video: HTMLVideoElement, enabled: boolean) {
   const controller = controllers.get(video);
   if (!controller) return false;
-  controller.setOriginalDelivery(url);
+  controller.setRelay(enabled);
   return true;
+}
+
+export function videoSourceRelayURL(src: string) {
+  if (typeof window === "undefined") return null;
+  let url: URL;
+  try { url = new URL(src, window.location.href); }
+  catch { return null; }
+  if (url.origin !== window.location.origin) return null;
+  const path = url.pathname;
+  if (!(path.startsWith("/p/stream/") || path.startsWith("/p/playback/") ||
+      (path.startsWith("/p/share/") && (path.endsWith("/stream") || /\/playback\/[^/]+$/.test(path))))) return null;
+  url.searchParams.set(TRIPLE_SCREEN_RELAY_QUERY, "1");
+  return `${url.pathname}${url.search}${url.hash}`;
 }
 export function disposeVideoSource(video: HTMLVideoElement) {
   controllers.get(video)?.destroy();
@@ -165,7 +179,7 @@ export function attachVideoSource(
   let frameStart: number | null = null;
   let wasPlaying = false;
   let initialized = false;
-  let originalURL: string | null = null;
+  let forceRelay = false;
   let startupTimer: ReturnType<typeof setTimeout> | null = null;
   let startupComplete = false;
   let sourceInfoSequence = 0;
@@ -224,12 +238,12 @@ export function attachVideoSource(
       changed();
       if (initialized) void start(source, false);
     },
-    setOriginalDelivery(url) {
-      if (originalURL === url) return;
-      originalURL = url;
-      if (initialized && !controller.state.loading && !controller.state.error &&
-          controller.state.activeSource?.kind === "original" && controller.state.activeSource.protocol === "file") {
-        const source = controller.state.sources.find((item) => item.kind === "original");
+    setRelay(enabled) {
+      if (forceRelay === enabled) return;
+      forceRelay = enabled;
+      const activeSource = controller.state.activeSource;
+      if (initialized && !controller.state.loading && !controller.state.error && activeSource?.protocol === "file") {
+        const source = controller.state.sources.find((item) => item.id === activeSource.id);
         if (source) void start(source, false);
       }
     },
@@ -446,7 +460,11 @@ export function attachVideoSource(
     if (disposed || controller.state.loading || controller.state.error) return;
     const code = video.error?.code;
     if (code === 1) return; // User/navigation aborts are not source failures.
-    void recover(code === 3 || code === 4 ? "unsupported" : "network", "视频源加载失败", true);
+    const source = controller.state.activeSource;
+    // A redirected MP4's HTTP failure can surface as SRC_NOT_SUPPORTED. Its
+    // response is opaque to diagnostics, so refresh a supported file once.
+    const refreshableFile = source?.kind === "transcoded" && source.protocol === "file" && !nativeUnsupported(source);
+    void recover(code === 3 || (code === 4 && !refreshableFile) ? "unsupported" : "network", "视频源加载失败", true);
   }
   async function recover(kind: "unsupported" | "network" | "throttled" | "timeout", message: string, diagnose = false) {
     if (disposed || controller.state.loading || controller.state.error) return;
@@ -626,25 +644,31 @@ export function attachVideoSource(
       const resolver = selected.resolveUrl || (refresh ? playbackUrl : undefined);
       if (resolver && (refresh || expired || selected.status === "unknown" || selected.status === "processing")) {
         if (!await requestManifest(resolver, epoch, refresh || expired, selected.kind === "original" ? "original" : undefined)) return;
-        selected = controller.state.sources.find((item) => item.id === selected.id) ??
-          controller.state.sources.find((item) => item.kind === selected.kind && item.status === "ready" && !failed.has(item.id)) ??
-          controller.state.sources.find((item) => item.kind === selected.kind && item.status === "processing" && !failed.has(item.id)) ??
-          controller.state.sources.find((item) => item.kind === selected.kind && item.status === "unavailable") ?? selected;
+        const resolved = controller.state.sources.find((item) => item.id === selected.id);
+        const unavailable = controller.state.sources.find((item) => item.kind === selected.kind && item.status === "unavailable");
+        if (resolved) selected = resolved;
+        else {
+          const missing: PlaybackSource = { ...selected, status: "unavailable", url: undefined,
+            message: unavailable?.message || "当前播放源已不可用，请重新获取或切换清晰度" };
+          if (selected.id !== "cloud" && controller.state.selectedSourceID === selected.id) {
+            // Keep a manual choice retryable without silently replacing it.
+            selected = missing;
+            controller.state.sources = [...controller.state.sources, missing];
+          } else {
+            selected = controller.state.sources.find((item) => item.kind === selected.kind && item.status === "ready" && !failed.has(item.id)) ??
+              controller.state.sources.find((item) => item.kind === selected.kind && item.status === "processing" && !failed.has(item.id)) ??
+              unavailable ?? missing;
+          }
+        }
       }
       if (selected.status === "processing") {
         const ready = await waitForProcessing(selected, epoch);
         if (!ready) return;
         selected = ready;
       }
-      if (selected.kind === "original" && originalURL) {
-        let deliveryURL = originalURL;
-        const playbackID = selected.url ? new URL(selected.url, window.location.href).searchParams.get("playbackId") : null;
-        if (playbackID) {
-          const url = new URL(originalURL, window.location.href);
-          url.searchParams.set("playbackId", playbackID);
-          deliveryURL = url.href;
-        }
-        selected = { ...selected, url: deliveryURL };
+      if (forceRelay && selected.protocol === "file" && selected.url) {
+        const relayURL = videoSourceRelayURL(selected.url);
+        if (relayURL) selected = { ...selected, url: relayURL };
       }
       if (selected.status !== "ready" || !selected.url) {
         throw new SourceRequestError(selected.message || "该播放源暂不可用，请重新获取",

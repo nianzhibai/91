@@ -16,6 +16,7 @@ import (
 
 	"github.com/video-site/backend/internal/catalog"
 	"github.com/video-site/backend/internal/driveevents"
+	"github.com/video-site/backend/internal/drives/googledrive"
 	"github.com/video-site/backend/internal/drives/guangyapan"
 	"github.com/video-site/backend/internal/drives/p115"
 	"github.com/video-site/backend/internal/drives/p123"
@@ -87,15 +88,22 @@ func strmAllowOutsideRootForDrive(d *catalog.Drive) *bool {
 	return &result
 }
 
-func mergeGoogleDriveCredentials(existing *catalog.Drive, incoming map[string]string) map[string]string {
-	return googleDriveCredentialPatch(mergeNonEmptyCredentials(existing, incoming))
-}
-
-func googleDriveCredentialPatch(incoming map[string]string) map[string]string {
+func googleDriveCredentialPatch(incoming map[string]string) (map[string]string, error) {
 	cleaned := nonEmptyCredentials(incoming)
+	// The optional web login can be removed without touching OAuth credentials.
+	if cookie, ok := incoming["playback_cookie"]; ok {
+		cleaned["playback_cookie"] = strings.TrimSpace(cookie)
+	}
+	if value, ok := incoming["playback_auth_user"]; ok {
+		authUser, err := googledrive.NormalizePlaybackAuthUser(value)
+		if err != nil {
+			return nil, err
+		}
+		cleaned["playback_auth_user"] = authUser
+	}
 	delete(cleaned, "use_online_api")
 	delete(cleaned, "api_url_address")
-	return cleaned
+	return cleaned, nil
 }
 
 // Preserve explicit empty custom-client values in an edit patch so switching

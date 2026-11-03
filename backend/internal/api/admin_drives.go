@@ -205,10 +205,10 @@ func (a *AdminServer) handleUpsertDrive(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	} else if body.Kind == "googledrive" {
-		if patchCredentials {
-			body.Credentials = googleDriveCredentialPatch(body.Credentials)
-		} else {
-			body.Credentials = mergeGoogleDriveCredentials(nil, body.Credentials)
+		body.Credentials, err = googleDriveCredentialPatch(body.Credentials)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
 		}
 	} else if body.Kind == "onedrive" && patchCredentials {
 		body.Credentials = oneDriveCredentialPatch(body.Credentials)

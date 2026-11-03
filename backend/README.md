@@ -211,7 +211,7 @@ internal/
     wopan/                  联通网盘（壳子 + OpenListTeam/wopan-sdk-go）
     guangyapan/             光鸭网盘（参考 AList GuangYaPan）
     onedrive/               OneDrive（OpenList 在线续期 + Microsoft Graph 文件接口）
-    googledrive/            Google Drive（自建 OAuth 续期 + Google Drive API；播放走后端代理）
+    googledrive/            Google Drive（OAuth 原画中转 + 网页 Cookie 获取 MP4 转码并按访客 UA 302）
     webdav/                 标准 WebDAV（扫描、代理播放、上传、移动和删除）
     localstorage/           本地目录扫描（服务器已有视频目录）
     localupload/            站内上传的伪网盘，文件落在 data/uploads/
@@ -422,12 +422,35 @@ sequenceDiagram
 
 设计要点：
 
-- **302 白名单**只放「URL 自带签名、不依赖持久请求头」的网盘：115、PikPak、OneDrive、123网盘、联通、光鸭。Google Drive 的下载地址必须带 `Authorization`，只能中转；WebDAV 遵循上游 —— 上游给 3xx 就把不含凭据的直链交给浏览器，给 200/206 就由后端转发。
+- **302 白名单**只放「URL 自带签名、不依赖持久请求头」的播放源：115、PikPak、OneDrive、123网盘、联通、光鸭，以及按访客 UA 签发的 Google Drive 网页兼容 MP4。Google Drive 的原画下载地址必须带 `Authorization`，只能中转；WebDAV 遵循上游 —— 上游给 3xx 就把不含凭据的直链交给浏览器，给 200/206 就由后端转发。
 - **链接缓存最长 5 分钟**，且要求离 `link.Expires` 至少还有 15 秒；最多保留 2048 项，满时淘汰最久未使用项。115 等 UA 绑定链接的 cache key 包含 UA。
 - 同一个 cache key 的并发请求只发起一次换链，其他请求等待同一个 inflight 结果；换链有 15 秒硬超时，即使某个 driver 不响应 context，也会清掉 inflight 并唤醒等待者。
 - `/api/shorts/next` 会在后台预热返回批次中前两条可代理视频的直链，不传输媒体字节；全局最多同时 4 个预热任务，真实播放与预热共用上述缓存和 inflight。
 - 每次取链和中转的结果都会回写网盘健康状态。浏览器主动断开、单个文件 404 不算网盘故障，只有真正影响整盘的错误才标记异常。
 - 播放器的「三屏画面」可以带 `?tripleScreenRelay=1` 请求强制中转（WebGL 需要同源帧），受 `proxy.allow_forced_relay` 开关控制。
+
+Google Drive 的「兼容播放」使用网页播放接口的 `progressiveTranscodes`，只选择同时包含视频和音频的 MP4，并按清晰度降序提供。管理员在网盘凭证中填写可选的「网页登录 Cookie」后启用；Cookie 应来自拥有视频访问权限的 Google 账号，失效后需要更新，清空可关闭。OAuth 仍负责原文件、扫描和上传，网页 Cookie 失败不会把原文件链路标记为故障。
+
+浏览器同时登录多个 Google 账号时，还需填写「网页账号索引」（`playback_auth_user`），与可正常播放该视频的 Drive 页面 `/u/N/` 中的 `N` 一致，例如 `/file/u/3/d/...` 填 `3`。默认和清空后均使用 `0`。Cookie 对应的默认账号与 OAuth 网盘账号可能不同，索引不匹配会收到权限拒绝。
+
+网页播放按请求的实际 User-Agent 取链，播放源缓存及并发合并按 `driveID + fileID + UA` 隔离；媒体请求也按自己的 UA 查询，避免原生播放器和元数据请求的 UA 不同时串链。驱动只接收 UA 字符串，不接收访客的完整请求头。缺少 UA 时兼容播放不可用，原画播放不受影响。
+
+转码文件使用 `/p/playback/{videoID}/{sourceID}` 鉴权入口，分享使用 `/p/share/{shareID}/playback/{sourceID}`；每个 GET/HEAD 都先校验视频或分享访问权限，再返回不缓存的 302，浏览器直接向 Google CDN 读取媒体。一次解析返回所有可用 MP4 清晰度，切换清晰度无需再次解析元数据；这些站内地址不随上游签名过期，签名更新由后端处理。签名地址通过 Location 下发，Google Cookie 始终留在服务端。三屏画面只保存是否中转，不保存旧播放地址；切换清晰度或刷新后，把 `?tripleScreenRelay=1` 应用到当前地址，在 `proxy.allow_forced_relay` 开启时切回同源中转。中转仅访问供应商白名单，透传 Range/If-Range，不传访客凭据。
+
+网页 Cookie 无效或网页接口返回 401 时，只把兼容源标为不可用并提示更新 Cookie，保留原画播放入口；403（限流除外）提示检查网页登录状态、账号索引和视频权限，不误判整个网盘或 OAuth 凭证失效。
+
+链接缓存不超过签名期限。清晰度消失或中转时签名失效返回 `playback_source_expired`，不视为视频或分享失效；重新解析会返回当前播放源列表，自动选择可恢复到其他清晰度，手动固定的清晰度则保留重试和切换入口。302 后 CDN 错误被媒体元素隐藏时，播放器会先重取一次受支持的 MP4，再按现有有界恢复逻辑处理。该接口为 Google 网页内部接口，字段与内置公开客户端 key 可能随网页更新。
+
+真实 Google 接口测试使用独立的临时数据库和 HTTP 服务，不改动现有视频、账号或分享。把有权访问测试视频的完整 Cookie 请求头值保存到本地文件后运行：
+
+```bash
+cd backend
+VIDEO_TEST_GOOGLE_DRIVE_COOKIE_FILE=/path/to/google-cookie.txt \
+VIDEO_TEST_GOOGLE_DRIVE_FILE_ID=google-video-file-id \
+go test ./integration -run '^TestGoogleDrivePlaybackLive$' -count=1 -v
+```
+
+测试实际请求 Google 转码接口、按同一 UA 从 CDN 读取 1024 字节，并验证登录及分享入口的 GET/HEAD、302、三屏 Range 中转和匿名访问限制。可通过 `VIDEO_TEST_GOOGLE_DRIVE_AUTH_USER` 指定网页账号索引，通过 `VIDEO_TEST_GOOGLE_DRIVE_USER_AGENT` 指定浏览器 UA。未设置上述两个必需变量时，普通测试跳过这一项；显式启用后，凭证无效、没有可用 MP4 或媒体读取失败都会使测试失败。Cookie 和签名直链不会写入测试日志。
 
 ### 4. 异步生成
 

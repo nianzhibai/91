@@ -66,6 +66,24 @@ test("expired HLS relay sources permit refresh instead of becoming access failur
   assert.equal(failure?.kind, "network");
 });
 
+for (const path of ["/p/playback/video/cloud-22", "/p/share/share-1/playback/cloud-22"]) {
+  test(`expired rendition at ${path} permits refresh while a real access failure still stops`, async () => {
+    const options = { baseHref: "https://video.example/videos/1" };
+    const failure = await diagnosePlaybackFailure(path, {
+      ...options,
+      fetch: async () => new Response(JSON.stringify({
+        code: "playback_source_expired", message: "兼容播放地址已过期，请重新获取",
+      }), { status: 410, headers: { "Content-Type": "application/json" } }),
+    });
+    assert.equal(failure?.kind, "network");
+    assert.equal(failure?.message, "兼容播放地址已过期，请重新获取");
+    const access = await diagnosePlaybackFailure(path, {
+      ...options, fetch: async () => new Response(null, { status: 404 }),
+    });
+    assert.equal(access?.kind, "access");
+  });
+}
+
 test("playback diagnostics surface the backend drive error message", async () => {
   let requestURL = "";
   let requestInit: RequestInit | undefined;

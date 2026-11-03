@@ -124,7 +124,7 @@ func (s *Server) servePlaybackMetadata(w http.ResponseWriter, r *http.Request, v
 	if prepare {
 		sources, err = s.Proxy.PreparePlaybackSources(r.Context(), v.DriveID, v.FileID)
 	} else {
-		sources, err = s.Proxy.PlaybackSources(r.Context(), v.DriveID, v.FileID, refresh)
+		sources, err = s.Proxy.PlaybackSources(r.Context(), v.DriveID, v.FileID, r.UserAgent(), refresh)
 	}
 	if err != nil {
 		s.Proxy.WritePlaybackError(w, v.DriveID, err)
@@ -141,13 +141,9 @@ func (s *Server) servePlaybackMetadata(w http.ResponseWriter, r *http.Request, v
 			}
 		}
 	}
-	found := selected == "cloud"
 	for _, source := range sources {
 		if source.ID == "" || source.ID == "original" || !validPlaybackSourceID(source.ID) {
 			continue
-		}
-		if source.ID == selected {
-			found = true
 		}
 		sourceURL := &url.URL{Path: basePath, RawPath: baseRawPath}
 		query := url.Values{"source": {source.ID}}
@@ -167,10 +163,18 @@ func (s *Server) servePlaybackMetadata(w http.ResponseWriter, r *http.Request, v
 			}
 			dto.PrepareURL = prepareURL.String()
 		}
-		if source.Status == "ready" && source.ID != resolvedID {
-			dto.Status = "unknown"
-		} else if source.Status == "ready" {
-			if source.Relay != nil {
+		if source.Status == "ready" {
+			if source.Protocol == "file" && source.FileRelay != nil && source.Link != nil {
+				// These authenticated routes resolve signatures on each request.
+				// Unlike HLS sessions, all file renditions are ready immediately
+				// and their public URLs do not inherit the upstream expiry.
+				dto.URL = "/p/playback/" + pathSegment(v.ID) + "/" + pathSegment(source.ID)
+				if shareID := routeParam(r, "shareID"); shareID != "" {
+					dto.URL = "/p/share/" + pathSegment(shareID) + "/playback/" + pathSegment(source.ID)
+				}
+			} else if source.ID != resolvedID {
+				dto.Status = "unknown"
+			} else if source.Relay != nil {
 				sessionID, expires, err := s.Proxy.StartHLSPlayback(v.DriveID, v.FileID, source)
 				if err == nil {
 					prefix := "/p/hls/" + pathSegment(v.ID)
@@ -194,10 +198,8 @@ func (s *Server) servePlaybackMetadata(w http.ResponseWriter, r *http.Request, v
 		}
 		manifest.Sources = append(manifest.Sources, dto)
 	}
-	if !found {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "未知的播放源"})
-		return
-	}
+	// A valid rendition ID may have disappeared since the last manifest.
+	// Return the current candidates so the player can recover or offer a switch.
 	if len(manifest.Sources) == 1 {
 		cloud.Status, cloud.Message = "unavailable", "网盘暂未提供该视频的兼容播放源"
 		manifest.Sources = append(manifest.Sources, cloud)
@@ -227,6 +229,32 @@ func (s *Server) handleVideoHLS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.serveVideoHLS(w, r, v)
+}
+
+func (s *Server) handleVideoPlaybackFile(w http.ResponseWriter, r *http.Request) {
+	v, err := s.availableVideo(r.Context(), routeParam(r, "id"))
+	if err != nil {
+		writeCatalogLookupError(w, r, err)
+		return
+	}
+	s.servePlaybackFile(w, r, v)
+}
+
+func (s *Server) handleSharedVideoPlaybackFile(w http.ResponseWriter, r *http.Request) {
+	v, ok := s.activeSharedVideo(w, r)
+	if !ok {
+		return
+	}
+	s.servePlaybackFile(w, r, v)
+}
+
+func (s *Server) servePlaybackFile(w http.ResponseWriter, r *http.Request, v *catalog.Video) {
+	sourceID := routeParam(r, "sourceID")
+	if s.Proxy == nil || sourceID == "" || sourceID == "original" || !validPlaybackSourceID(sourceID) {
+		http.NotFound(w, r)
+		return
+	}
+	s.Proxy.ServePlaybackFile(w, r, v.DriveID, v.FileID, sourceID)
 }
 
 func (s *Server) handleSharedVideoHLS(w http.ResponseWriter, r *http.Request) {

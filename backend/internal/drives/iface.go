@@ -64,10 +64,17 @@ type GenerationStreamScanResetter interface {
 // PlaybackSourceProvider supplies optional cloud playback sources. The common
 // playback layer always supplies the original through StreamURL independently.
 // Direct links must authorize browser requests without account headers and
-// support CORS. HLS sources that require server delivery explicitly supply a
-// relay policy. Background generation is a separate API.
+// support CORS. Sources that require server delivery explicitly supply an HLS
+// or file relay policy. Background generation is a separate API.
 type PlaybackSourceProvider interface {
 	PlaybackSources(context.Context, string) ([]PlaybackSource, error)
+}
+
+// UserAgentPlaybackSourceProvider resolves viewer-bound playback links. Only
+// User-Agent crosses this boundary; site cookies and authorization cannot.
+// The proxy isolates cached and concurrent resolutions by the exact UA.
+type UserAgentPlaybackSourceProvider interface {
+	PlaybackSourcesWithUserAgent(context.Context, string, string) ([]PlaybackSource, error)
 }
 
 // OriginalPlaybackProvider resolves an original-file link for viewers without
@@ -101,11 +108,19 @@ type PlaybackSource struct {
 	MediaType  string
 	Message    string
 	Relay      *HLSRelay
+	FileRelay  *FileRelay
 	Resolution string
 	Width      int
 	Height     int
 	Bitrate    int // kilobits per second, as reported by the provider
 	Codec      string
+}
+
+// FileRelay describes an authenticated file endpoint and its upstream hosts.
+// Browser-safe links may redirect; forced or required relays stream bytes.
+// The API reauthorizes each request, and account headers never reach media URLs.
+type FileRelay struct {
+	AllowedHosts []string
 }
 
 // HLSRelay opts a playback source into authenticated server delivery. When set,

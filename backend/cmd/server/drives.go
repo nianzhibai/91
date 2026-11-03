@@ -1127,14 +1127,16 @@ func (a *App) attachDriveConfigUnlocked(ctx context.Context, d *catalog.Drive, r
 		})
 	case googledrive.Kind:
 		drv = googledrive.New(googledrive.Config{
-			ID:           d.ID,
-			RootID:       d.RootID,
-			AccessToken:  d.Credentials["access_token"],
-			RefreshToken: d.Credentials["refresh_token"],
-			ClientID:     d.Credentials["client_id"],
-			ClientSecret: d.Credentials["client_secret"],
-			OAuthURL:     d.Credentials["oauth_url"],
-			APIBaseURL:   d.Credentials["api_base_url"],
+			ID:               d.ID,
+			RootID:           d.RootID,
+			AccessToken:      d.Credentials["access_token"],
+			RefreshToken:     d.Credentials["refresh_token"],
+			ClientID:         d.Credentials["client_id"],
+			ClientSecret:     d.Credentials["client_secret"],
+			PlaybackCookie:   d.Credentials["playback_cookie"],
+			PlaybackAuthUser: d.Credentials["playback_auth_user"],
+			OAuthURL:         d.Credentials["oauth_url"],
+			APIBaseURL:       d.Credentials["api_base_url"],
 			OnTokenUpdate: func(access, refresh string) {
 				a.persistDriveCredentials(credentialLease, map[string]string{
 					"access_token":  access,

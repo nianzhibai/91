@@ -154,7 +154,7 @@ func TestHLSRejectsUnsafeResourcesRedirectsAndAccountHeaders(t *testing.T) {
 	for _, host := range []string{"115.com.evil.example", "evil115.com", "115.com:22"} {
 		u, _ := url.Parse("https://" + host + "/test")
 		root, _ := url.Parse("https://115.com/master")
-		if allowedHLSResource(root, u, []string{".115.com"}) {
+		if allowedPlaybackURL(root, u, []string{".115.com"}) {
 			t.Errorf("allowed %s", host)
 		}
 	}
