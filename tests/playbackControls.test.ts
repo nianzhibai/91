@@ -1,6 +1,6 @@
 import "./helpers/dom-environment.ts";
 import assert from "node:assert/strict";
-import test, { afterEach } from "node:test";
+import test, { afterEach, type TestContext } from "node:test";
 import { createElement } from "react";
 import { cleanup, render, act } from "@testing-library/react";
 import Artplayer from "artplayer";
@@ -44,6 +44,403 @@ afterEach(() => {
   Artplayer.RECONNECT_SLEEP_TIME = reconnectDelay;
 });
 const settle = async () => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
+
+function visibilityPlayer(t: TestContext, touch = false, readyState = 4) {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  if (touch) t.mock.method(window, "matchMedia", (query: string) => Object.assign(new window.EventTarget(), {
+    matches: query.includes("pointer: coarse"), media: query, onchange: null,
+    addListener() {}, removeListener() {},
+  }));
+  const view = render(createElement(VideoPlayer, { src: "/sample.mp4", poster: "", title: "Controls" }));
+  const art = Artplayer.instances.at(-1)!;
+  art.video.currentTime = 1;
+  Object.defineProperty(art.video, "readyState", { configurable: true, value: readyState });
+  if (readyState >= art.video.HAVE_FUTURE_DATA) art.video.dispatchEvent(new Event("canplay"));
+  const tick = async (milliseconds: number) => { await act(async () => t.mock.timers.tick(milliseconds)); };
+  const pointer = (target: EventTarget, type: string, time?: number) => {
+    const event = new Event(type, { bubbles: true });
+    Object.assign(event, { pointerId: 1, pointerType: touch ? "touch" : "mouse", button: 0, clientX: 0, clientY: 0 });
+    if (time !== undefined) Object.defineProperty(event, "timeStamp", { value: time });
+    target.dispatchEvent(event);
+  };
+  const tap = () => art.emit("click", new Event("click"));
+  return { view, art, tick, pointer, tap };
+}
+
+test("playing controls fully hide after three seconds without depending on media timeupdate", async (t) => {
+  const { art, tick } = visibilityPlayer(t);
+  await act(async () => { await art.video.play(); });
+  await tick(2999);
+  assert.equal(art.controls.show, true);
+  await tick(1);
+  assert.equal(art.controls.show, false);
+  assert.equal(art.template.$bottom.hasAttribute("inert"), true);
+  assert.equal(art.template.$bottom.getAttribute("aria-hidden"), "true");
+  assert.equal(art.template.$player.classList.contains("art-mini-progress-bar"), false);
+});
+
+test("mouse movement restarts the idle period and hovering controls keeps them visible", async (t) => {
+  const { art, tick, pointer } = visibilityPlayer(t);
+  await act(async () => { await art.video.play(); });
+  await tick(2000);
+  pointer(art.video, "pointermove");
+  await tick(2000);
+  assert.equal(art.controls.show, true);
+  pointer(art.template.$controls, "pointermove");
+  await tick(10_000);
+  assert.equal(art.controls.show, true);
+  pointer(art.video, "pointermove");
+  await tick(3000);
+  assert.equal(art.controls.show, false);
+  pointer(art.video, "pointermove");
+  assert.equal(art.controls.show, true);
+});
+
+test("a progress drag stays visible across mouse leave and hides when released outside", async (t) => {
+  const { art, tick, pointer } = visibilityPlayer(t);
+  await act(async () => { await art.video.play(); });
+  pointer(art.template.$progress, "pointerdown");
+  await tick(10_000);
+  assert.equal(art.controls.show, true);
+  pointer(art.template.$player, "pointerleave");
+  await tick(10_000);
+  assert.equal(art.controls.show, true);
+  pointer(document, "pointerup");
+  assert.equal(art.controls.show, false);
+  await tick(3000);
+  assert.equal(art.controls.show, false);
+});
+
+for (const paused of [true, false]) {
+  test(`mouse leave immediately hides ${paused ? "paused" : "playing"} controls until re-entry`, async (t) => {
+    const { art, tick, pointer } = visibilityPlayer(t);
+    if (!paused) await act(async () => { await art.video.play(); });
+    pointer(art.video, "pointermove");
+    pointer(art.template.$player, "pointerleave");
+    assert.equal(art.controls.show, false);
+    assert.equal(art.template.$bottom.hasAttribute("inert"), true);
+    await tick(10_000);
+    assert.equal(art.controls.show, false);
+    pointer(art.template.$player, "pointerenter");
+    assert.equal(art.controls.show, true);
+    await tick(3000);
+    assert.equal(art.controls.show, false);
+  });
+}
+
+test("mouse leave keeps an open settings menu usable and hides after it closes", async (t) => {
+  const { art, tick, pointer } = visibilityPlayer(t);
+  art.setting.show = true;
+  pointer(art.template.$player, "pointerleave");
+  assert.equal(art.controls.show, true);
+  assert.equal(art.setting.show, true);
+  await tick(10_000);
+  assert.equal(art.controls.show, true);
+  art.setting.show = false;
+  assert.equal(art.controls.show, false);
+  await tick(3000);
+  assert.equal(art.controls.show, false);
+});
+
+test("mouse leave lets a held keyboard shortcut finish before hiding", async (t) => {
+  const { art, tick, pointer } = visibilityPlayer(t);
+  art.emit("hotkey", new KeyboardEvent("keydown", { code: "ArrowRight" }));
+  pointer(art.template.$player, "pointerleave");
+  await tick(10_000);
+  assert.equal(art.controls.show, true);
+  document.dispatchEvent(new KeyboardEvent("keyup", { code: "ArrowRight" }));
+  assert.equal(art.controls.show, false);
+  await tick(3000);
+  assert.equal(art.controls.show, false);
+});
+
+test("keyboard shortcuts can reveal controls after the mouse has left", async (t) => {
+  const { art, pointer } = visibilityPlayer(t);
+  pointer(art.template.$player, "pointerleave");
+  assert.equal(art.controls.show, false);
+  art.emit("hotkey", new KeyboardEvent("keydown", { code: "ArrowRight" }));
+  assert.equal(art.controls.show, true);
+  document.dispatchEvent(new KeyboardEvent("keyup", { code: "ArrowRight" }));
+  assert.equal(art.controls.show, false);
+});
+
+test("playback actions can reveal controls after mouse leave without keeping paused controls permanently visible", async (t) => {
+  const { art, tick, pointer } = visibilityPlayer(t);
+  await act(async () => { await art.video.play(); });
+  pointer(art.template.$player, "pointerleave");
+  assert.equal(art.controls.show, false);
+  art.video.pause();
+  assert.equal(art.controls.show, true);
+  await tick(3000);
+  assert.equal(art.controls.show, false);
+});
+
+test("keyboard focus is retained across mouse leave until focus moves away", async (t) => {
+  const { art, tick } = visibilityPlayer(t, true);
+  document.dispatchEvent(new KeyboardEvent("keydown", { code: "Tab" }));
+  const control = art.controls.orientationToggle!;
+  control.focus();
+  const leave = new Event("pointerleave");
+  Object.assign(leave, { pointerType: "mouse" });
+  art.template.$player.dispatchEvent(leave);
+  await tick(10_000);
+  assert.equal(art.controls.show, true);
+  control.blur();
+  assert.equal(art.controls.show, false);
+});
+
+test("an open settings menu pins controls and closing it starts a fresh idle period", async (t) => {
+  const { art, tick } = visibilityPlayer(t);
+  await act(async () => { await art.video.play(); });
+  art.setting.show = true;
+  await tick(10_000);
+  assert.equal(art.controls.show, true);
+  art.setting.show = false;
+  await tick(2999);
+  assert.equal(art.controls.show, true);
+  await tick(1);
+  assert.equal(art.controls.show, false);
+});
+
+test("touch controls use three seconds and a tap can dismiss them without pausing playback", async (t) => {
+  const { art, tick, tap } = visibilityPlayer(t, true);
+  await act(async () => { await art.video.play(); });
+  await tick(2999);
+  assert.equal(art.controls.show, true);
+  await tick(1);
+  assert.equal(art.controls.show, false);
+  tap();
+  assert.equal(art.controls.show, true);
+  assert.equal(art.video.paused, false);
+  tap();
+  assert.equal(art.controls.show, false);
+  assert.equal(art.video.paused, false);
+});
+
+test("a touch interaction releases stale mouse hover on hybrid devices", async (t) => {
+  const { art, tick, pointer } = visibilityPlayer(t, true);
+  await act(async () => { await art.video.play(); });
+  const mouse = new Event("pointermove", { bubbles: true });
+  Object.assign(mouse, { pointerId: 2, pointerType: "mouse", button: 0 });
+  art.template.$controls.dispatchEvent(mouse);
+  await tick(5000);
+  assert.equal(art.controls.show, true);
+  pointer(art.video, "pointerdown");
+  pointer(document, "pointerup");
+  await tick(3000);
+  assert.equal(art.controls.show, false);
+});
+
+test("releasing a long touch does not dismiss the overlay as if it were a tap", async (t) => {
+  const { art, tick, pointer, tap } = visibilityPlayer(t, true);
+  await act(async () => { await art.video.play(); });
+  pointer(art.video, "pointerdown", 0);
+  await tick(800);
+  pointer(document, "pointerup", 800);
+  tap();
+  assert.equal(art.controls.show, true);
+  await tick(2999);
+  assert.equal(art.controls.show, true);
+  await tick(1);
+  assert.equal(art.controls.show, false);
+});
+
+test("tapping outside settings closes the menu and leaves time for another action", async (t) => {
+  const { art, tick, tap } = visibilityPlayer(t, true);
+  await act(async () => { await art.video.play(); });
+  art.setting.show = true;
+  tap();
+  assert.equal(art.setting.show, false);
+  assert.equal(art.controls.show, true);
+  await tick(3000);
+  assert.equal(art.controls.show, false);
+});
+
+test("a user seek reveals the timeline while background progress updates leave it hidden", async (t) => {
+  const { art, tick } = visibilityPlayer(t);
+  await act(async () => { await art.video.play(); });
+  await tick(3000);
+  art.emit("setBar", "played", 0.5);
+  assert.equal(art.controls.show, false);
+  const gesture = new Event("touchmove");
+  art.video.dispatchEvent(gesture);
+  art.emit("setBar", "played", 0.5, gesture);
+  assert.equal(art.controls.show, true);
+});
+
+test("locking hides playback controls but allows taps to reveal the unlock button", async (t) => {
+  const { art, tick, tap } = visibilityPlayer(t, true);
+  await act(async () => { await art.video.play(); });
+  art.isLock = true;
+  art.emit("lock", true);
+  assert.equal(art.template.$bottom.hasAttribute("inert"), true);
+  await tick(3000);
+  assert.equal(art.controls.show, false);
+  tap();
+  assert.equal(art.controls.show, true);
+  assert.equal(art.template.$bottom.hasAttribute("inert"), true);
+  art.isLock = false;
+  art.emit("lock", false);
+  assert.equal(art.template.$bottom.hasAttribute("inert"), false);
+});
+
+test("paused touch controls use the same idle delay and can also be dismissed manually", async (t) => {
+  const { art, tick, tap } = visibilityPlayer(t, true);
+  await act(async () => { await art.video.play(); });
+  await tick(3000);
+  art.video.pause();
+  assert.equal(art.controls.show, true);
+  await tick(2999);
+  assert.equal(art.controls.show, true);
+  await tick(1);
+  assert.equal(art.controls.show, false);
+  tap();
+  assert.equal(art.controls.show, true);
+  tap();
+  assert.equal(art.controls.show, false);
+  assert.equal(art.video.paused, true);
+  assert.equal(art.template.$mask.hasAttribute("inert"), true);
+  tap();
+  assert.equal(art.controls.show, true);
+});
+
+test("background buffering and source load events do not reopen hidden controls", async (t) => {
+  const { art, tick } = visibilityPlayer(t);
+  await act(async () => { await art.video.play(); });
+  await tick(3000);
+  for (const name of ["waiting", "loadstart", "loadeddata", "canplay", "playing"]) {
+    await act(async () => art.video.dispatchEvent(new Event(name)));
+    assert.equal(art.controls.show, false, name);
+  }
+});
+
+test("initial loading keeps controls visible through mouse movement, leave and idle time", async (t) => {
+  const { art, tick, pointer } = visibilityPlayer(t, false, 0);
+  art.video.dispatchEvent(new Event("loadstart"));
+  assert.equal(art.loading.show, true);
+  await tick(10_000);
+  assert.equal(art.controls.show, true);
+  pointer(art.template.$player, "pointerenter");
+  pointer(art.video, "pointermove");
+  pointer(art.template.$player, "pointerleave");
+  assert.equal(art.controls.show, true);
+  await tick(10_000);
+  assert.equal(art.controls.show, true);
+  assert.equal(art.loading.show, true);
+  assert.equal(art.template.$bottom.hasAttribute("inert"), false);
+});
+
+for (const readyEvent of ["canplay", "playing"]) {
+  test(`initial loading keeps controls visible after ${readyEvent} until another interaction`, async (t) => {
+    const { art, tick, pointer } = visibilityPlayer(t, false, 0);
+    art.video.dispatchEvent(new Event("loadstart"));
+    pointer(art.template.$player, "pointerenter");
+    pointer(art.template.$player, "pointerleave");
+    if (readyEvent === "playing") await act(async () => { await art.video.play(); });
+    art.video.dispatchEvent(new Event("loadedmetadata"));
+    Object.defineProperty(art.video, "readyState", { configurable: true, value: 2 });
+    art.video.dispatchEvent(new Event("loadeddata"));
+    await tick(10_000);
+    assert.equal(art.controls.show, true);
+    Object.defineProperty(art.video, "readyState", { configurable: true, value: 4 });
+    art.video.dispatchEvent(new Event(readyEvent));
+    assert.equal(art.controls.show, true);
+    await tick(10_000);
+    assert.equal(art.controls.show, true);
+    assert.equal(art.template.$bottom.hasAttribute("inert"), false);
+    pointer(art.video, "pointermove");
+    assert.equal(art.controls.show, true);
+    await tick(3000);
+    assert.equal(art.controls.show, false);
+    pointer(art.video, "pointermove");
+    pointer(art.template.$player, "pointerleave");
+    assert.equal(art.controls.show, false);
+  });
+}
+
+for (const touch of [false, true]) {
+  test(`${touch ? "touch" : "mouse"} controls remain usable during buffering and hide independently of its loading indicator`, async (t) => {
+    const { art, tick, pointer, tap } = visibilityPlayer(t, touch);
+    await act(async () => { await art.video.play(); });
+    await tick(3000);
+    art.video.dispatchEvent(new Event("waiting"));
+    assert.equal(art.loading.show, true);
+    assert.equal(art.controls.show, false);
+    if (touch) tap(); else pointer(art.video, "pointermove");
+    assert.equal(art.controls.show, true);
+    await tick(3000);
+    assert.equal(art.controls.show, false);
+    assert.equal(art.loading.show, true);
+    art.video.dispatchEvent(new Event("canplay"));
+    assert.equal(art.controls.show, false);
+  });
+}
+
+test("loading and recovery do not restart an existing controls idle deadline", async (t) => {
+  const { art, tick } = visibilityPlayer(t);
+  await act(async () => { await art.video.play(); });
+  await tick(2000);
+  art.video.dispatchEvent(new Event("waiting"));
+  await tick(500);
+  art.video.dispatchEvent(new Event("canplay"));
+  await tick(499);
+  assert.equal(art.controls.show, true);
+  await tick(1);
+  assert.equal(art.controls.show, false);
+});
+
+test("buffering and recovery do not interrupt a progress drag outside the player", async (t) => {
+  const { art, tick, pointer } = visibilityPlayer(t);
+  await act(async () => { await art.video.play(); });
+  pointer(art.template.$progress, "pointerdown");
+  art.video.dispatchEvent(new Event("waiting"));
+  pointer(art.template.$player, "pointerleave");
+  await tick(10_000);
+  assert.equal(art.controls.show, true);
+  art.video.dispatchEvent(new Event("canplay"));
+  assert.equal(art.controls.show, true);
+  pointer(document, "pointerup");
+  assert.equal(art.controls.show, false);
+});
+
+test("keyboard focus holds controls until focus leaves, without pinning pointer activation", async (t) => {
+  const { art, tick, pointer } = visibilityPlayer(t, true);
+  await act(async () => { await art.video.play(); });
+  document.dispatchEvent(new KeyboardEvent("keydown", { code: "Tab" }));
+  const control = art.controls.orientationToggle!;
+  control.focus();
+  await tick(10_000);
+  assert.equal(art.controls.show, true);
+  pointer(control, "pointerdown");
+  pointer(document, "pointerup");
+  await tick(3000);
+  assert.equal(art.controls.show, false);
+});
+
+test("held playback shortcuts keep controls visible until key release", async (t) => {
+  const { art, tick } = visibilityPlayer(t);
+  await act(async () => { await art.video.play(); });
+  art.emit("hotkey", new KeyboardEvent("keydown", { code: "ArrowRight" }));
+  await tick(10_000);
+  assert.equal(art.controls.show, true);
+  document.dispatchEvent(new KeyboardEvent("keyup", { code: "ArrowRight" }));
+  await tick(3000);
+  assert.equal(art.controls.show, false);
+});
+
+test("entering and leaving web fullscreen follows the same visibility timeout", async (t) => {
+  const { art, tick } = visibilityPlayer(t, true);
+  await act(async () => { await art.video.play(); });
+  await tick(3000);
+  art.fullscreenWeb = true;
+  assert.equal(art.controls.show, true);
+  await tick(3000);
+  assert.equal(art.controls.show, false);
+  art.fullscreenWeb = false;
+  assert.equal(art.controls.show, true);
+  await tick(3000);
+  assert.equal(art.controls.show, false);
+});
 
 async function tripleScreenPlayer(src = "/p/stream/115/file", compatibleProtocol: "file" | "hls" = "hls") {
   const requests: string[] = [];

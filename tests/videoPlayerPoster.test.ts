@@ -446,50 +446,6 @@ test("gesture HUD uses matching duotone volume and mute icons", () => {
   assert.doesNotMatch(icons, /viewBox="0 0 24 24"/);
 });
 
-test("detail player auto-hides controls during mobile fullscreen playback", () => {
-  const helperStart = playerSource.indexOf(
-    "function bindMobileFullscreenControlAutoHide"
-  );
-  const helperEnd = playerSource.indexOf(
-    "function setPlayerFastRateHint",
-    helperStart
-  );
-  assert.ok(helperStart >= 0 && helperEnd > helperStart);
-  const helperBlock = playerSource.slice(helperStart, helperEnd);
-
-  assert.match(
-    playerSource,
-    /const ARTPLAYER_CONTROL_HIDE_TIME_MS = 2_000;/
-  );
-  assert.match(
-    playerSource,
-    /Artplayer\.CONTROL_HIDE_TIME = ARTPLAYER_CONTROL_HIDE_TIME_MS;/
-  );
-  assert.match(
-    playerSource,
-    /const unbindMobileFullscreenControlAutoHide =\s*bindMobileFullscreenControlAutoHide\(art\)/
-  );
-  assert.match(playerSource, /unbindMobileFullscreenControlAutoHide\(\)/);
-  assert.match(helperBlock, /if \(!isMobilePlaybackDevice\(\)\) return noop/);
-  assert.match(
-    helperBlock,
-    /!isPlayerExpanded\(art\) \|\| !art\.playing \|\| !art\.controls\.show/
-  );
-  assert.match(helperBlock, /Artplayer\.CONTROL_HIDE_TIME/);
-  assert.match(helperBlock, /art\.setting\.show/);
-  assert.match(helperBlock, /art\.isInput/);
-  assert.match(helperBlock, /classList\.contains\(FAST_RATE_CLASS\)/);
-  assert.match(helperBlock, /art\.controls\.show = false/);
-  assert.match(helperBlock, /art\.on\("fullscreen", handleExpandedChange\)/);
-  assert.match(helperBlock, /art\.on\("fullscreenWeb", handleExpandedChange\)/);
-  assert.match(helperBlock, /art\.on\("video:playing", scheduleHide\)/);
-  assert.match(helperBlock, /art\.on\("video:pause", clearHideTimer\)/);
-  assert.match(helperBlock, /art\.on\("control", handleControlChange\)/);
-  assert.match(helperBlock, /art\.on\("setting", handleSettingChange\)/);
-  assert.match(helperBlock, /art\.off\("fullscreen", handleExpandedChange\)/);
-  assert.match(helperBlock, /art\.off\("control", handleControlChange\)/);
-});
-
 test("detail player exits body-mounted web fullscreen before route cleanup", () => {
   const mountStart = playerSource.indexOf("function mountArtPlayer");
   const mountEnd = playerSource.indexOf(

@@ -38,6 +38,7 @@ import {
 } from "@/lib/playerGestures";
 import { disablePlayerVolumePersistence } from "@/lib/playerVolume";
 import { bindPlayerNativeBack } from "@/lib/playerNativeBack";
+import { bindPlayerControlVisibility } from "@/lib/playerControlVisibility";
 import {
   escapeHtml,
   formatSubtitleLabel,
@@ -141,8 +142,6 @@ const FAST_RATE = 2;
 const NORMAL_RATE = 1;
 /** ArtPlayer 内部播放失败自动重连次数。 */
 const ARTPLAYER_RECONNECT_TIME_MAX = 2;
-/** 播放状态下控制栏无操作后自动隐藏的时间。 */
-const ARTPLAYER_CONTROL_HIDE_TIME_MS = 2_000;
 /** 键盘左右键单次快进/快退秒数。 */
 const KEYBOARD_SEEK_SECONDS = 15;
 /** 浏览器丢失 keyup 时，最后一次重复按键后的兜底提交延迟。 */
@@ -150,7 +149,8 @@ const KEYBOARD_SEEK_IDLE_COMMIT_MS = 1_500;
 
 Artplayer.FAST_FORWARD_VALUE = FAST_RATE;
 Artplayer.RECONNECT_TIME_MAX = ARTPLAYER_RECONNECT_TIME_MAX;
-Artplayer.CONTROL_HIDE_TIME = ARTPLAYER_CONTROL_HIDE_TIME_MS;
+// One interaction controller owns visibility, including during buffering.
+Artplayer.CONTROL_HIDE_TIME = Infinity;
 
 const DEFAULT_SETTINGS: PlayerSettings = {
   volume: 1,
@@ -458,7 +458,7 @@ function mountArtPlayer({
     mutex: true,
     fullscreen: true,
     fullscreenWeb: enableWebFullscreen,
-    miniProgressBar: true,
+    miniProgressBar: false,
     backdrop: false,
     playsInline: true,
     lock: true,
@@ -666,8 +666,7 @@ function mountArtPlayer({
   );
   const unbindKeyboardHotkeys = bindPlayerKeyboardHotkeys(art);
   const unbindNativeBack = bindPlayerNativeBack(art);
-  const unbindMobileFullscreenControlAutoHide =
-    bindMobileFullscreenControlAutoHide(art);
+  const unbindControlVisibility = bindPlayerControlVisibility(art, isMobilePlaybackDevice(), LONG_PRESS_MS);
   const unbindFullscreenSubtitleLayout = bindFullscreenSubtitleLayout(
     art,
     video
@@ -719,7 +718,7 @@ function mountArtPlayer({
     unbindProgressPreview();
     unbindKeyboardHotkeys();
     unbindNativeBack();
-    unbindMobileFullscreenControlAutoHide();
+    unbindControlVisibility();
     unbindFullscreenSubtitleLayout();
     unbindTripleScreen();
     unbindOrientationToggle();
@@ -1281,101 +1280,6 @@ function isPlayerExpanded(art: Artplayer) {
   return Boolean(
     art.fullscreen || art.fullscreenWeb || getNativeFullscreenElement()
   );
-}
-
-/**
- * 安卓触摸全屏时可能留下一个不会再更新的 mousemove/hover 状态，导致
- * ArtPlayer 内置的控制栏隐藏判断一直认为用户仍悬停在进度条上。
- * 这里沿用 ArtPlayer 的隐藏延迟，但不依赖鼠标悬停状态做移动端兜底。
- */
-function bindMobileFullscreenControlAutoHide(art: Artplayer) {
-  if (!isMobilePlaybackDevice()) return noop;
-
-  let hideTimer: number | null = null;
-
-  function clearHideTimer() {
-    if (hideTimer === null) return;
-    window.clearTimeout(hideTimer);
-    hideTimer = null;
-  }
-
-  function shouldWaitForInteraction() {
-    return (
-      art.setting.show ||
-      art.isInput ||
-      art.template.$player.classList.contains(FAST_RATE_CLASS)
-    );
-  }
-
-  function hideControls() {
-    hideTimer = null;
-    if (!isPlayerExpanded(art) || !art.playing || !art.controls.show) return;
-    if (shouldWaitForInteraction()) {
-      scheduleHide();
-      return;
-    }
-    art.controls.show = false;
-  }
-
-  function scheduleHide() {
-    clearHideTimer();
-    if (!isPlayerExpanded(art) || !art.playing || !art.controls.show) return;
-    hideTimer = window.setTimeout(hideControls, Artplayer.CONTROL_HIDE_TIME);
-  }
-
-  function handleExpandedChange() {
-    if (isPlayerExpanded(art)) {
-      scheduleHide();
-    } else {
-      clearHideTimer();
-    }
-  }
-
-  function handleControlChange(show: boolean) {
-    if (show) {
-      scheduleHide();
-    } else {
-      clearHideTimer();
-    }
-  }
-
-  function handleSettingChange(show: boolean) {
-    if (show) {
-      clearHideTimer();
-    } else {
-      scheduleHide();
-    }
-  }
-
-  function handlePlayerInteractionEnd(event: Event) {
-    const target = event.target;
-    if (!(target instanceof Node)) return;
-    if (!art.template.$player.contains(target)) return;
-    scheduleHide();
-  }
-
-  art.on("fullscreen", handleExpandedChange);
-  art.on("fullscreenWeb", handleExpandedChange);
-  art.on("video:playing", scheduleHide);
-  art.on("video:pause", clearHideTimer);
-  art.on("video:ended", clearHideTimer);
-  art.on("control", handleControlChange);
-  art.on("setting", handleSettingChange);
-  art.on("document:pointerup", handlePlayerInteractionEnd);
-  art.on("document:touchend", handlePlayerInteractionEnd);
-
-  return () => {
-    clearHideTimer();
-    art.off("fullscreen", handleExpandedChange);
-    art.off("fullscreenWeb", handleExpandedChange);
-    art.off("video:playing", scheduleHide);
-    art.off("video:pause", clearHideTimer);
-    art.off("video:ended", clearHideTimer);
-    art.off("control", handleControlChange);
-    art.off("setting", handleSettingChange);
-    art.off("document:pointerup", handlePlayerInteractionEnd);
-    art.off("document:touchend", handlePlayerInteractionEnd);
-  };
 }
 
 function setPlayerFastRateHint(art: Artplayer, active: boolean) {

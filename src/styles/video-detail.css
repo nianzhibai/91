@@ -90,20 +90,26 @@
   aspect-ratio: 16 / 9;
   background: #000;
   width: 100%;
+}
+
+.video-player,
+.video-player__art.art-video-player {
   --video-player-progress: #ff5634;
   --video-player-progress-loaded: rgba(255, 86, 52, 0.34);
   --video-player-progress-track: rgba(255, 255, 255, 0.24);
   --video-player-progress-hover: rgba(255, 210, 198, 0.36);
 }
 
-:root[data-theme="pink"] .video-player {
+:root[data-theme="pink"] .video-player,
+:root[data-theme="pink"] .video-player__art.art-video-player {
   --video-player-progress: #ec4f86;
   --video-player-progress-loaded: rgba(236, 79, 134, 0.34);
   --video-player-progress-track: rgba(255, 255, 255, 0.28);
   --video-player-progress-hover: rgba(255, 197, 216, 0.42);
 }
 
-:root[data-theme="sky"] .video-player {
+:root[data-theme="sky"] .video-player,
+:root[data-theme="sky"] .video-player__art.art-video-player {
   --video-player-progress: #58b8ff;
   --video-player-progress-loaded: rgba(88, 184, 255, 0.36);
   --video-player-progress-track: rgba(210, 236, 255, 0.32);
@@ -119,7 +125,7 @@
   z-index: 1;
 }
 
-.video-player .art-video-player {
+.video-player__art.art-video-player {
   width: 100%;
   height: 100%;
   --art-theme: var(--video-player-progress);
@@ -132,6 +138,49 @@
   --art-bottom-height: 112px;
   --art-widget-background: rgba(8, 9, 13, 0.86);
   --art-tip-background: rgba(8, 9, 13, 0.78);
+}
+
+/* Fullscreen reparents the player; visibility and theme belong to that node. */
+.video-player__art.art-video-player .art-bottom {
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 180ms ease, visibility 0s 180ms;
+}
+
+.video-player__art.art-video-player.art-control-show .art-bottom {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 140ms ease, visibility 0s;
+}
+
+.video-player__art.art-video-player .art-bottom .art-controls,
+.video-player__art.art-video-player .art-bottom .art-progress {
+  transform: none;
+  transition: none;
+}
+
+.video-player__art.art-video-player .art-mask {
+  transition: opacity 180ms ease, visibility 0s 180ms;
+}
+
+.video-player__art.art-video-player.art-control-show .art-mask {
+  transition: opacity 140ms ease, visibility 0s;
+}
+
+.video-player__art.art-video-player:not(.art-control-show) .art-mask,
+.video-player__art.art-video-player.art-lock .art-bottom,
+.video-player__art.art-video-player.art-lock .art-mask {
+  opacity: 0;
+  visibility: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .video-player__art.art-video-player .art-bottom,
+  .video-player__art.art-video-player.art-control-show .art-bottom,
+  .video-player__art.art-video-player .art-mask,
+  .video-player__art.art-video-player.art-control-show .art-mask {
+    transition: none;
+  }
 }
 
 /* ArtPlayer 会在运行时后插入图标的 display:flex，保留完整层级以确保覆盖它。 */
