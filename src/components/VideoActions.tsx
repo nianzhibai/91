@@ -42,7 +42,6 @@ export function VideoActions({
   const { show } = useToast();
   const [likes, setLikes] = useState(video.likes ?? 0);
   const [dislikes, setDislikes] = useState(video.dislikes ?? 0);
-  const [bursting, setBursting] = useState(false);
   const [reaction, setReaction] = useState<VideoReaction>("none");
   const [reactionPending, setReactionPending] = useState(false);
   const [shareState, setShareState] = useState<
@@ -57,7 +56,6 @@ export function VideoActions({
   const reactionPendingRef = useRef(false);
   const reactionTouchedRef = useRef(false);
   const mountedRef = useRef(true);
-  const burstResetTimer = useRef<number | null>(null);
   const shareResetTimer = useRef<number | null>(null);
   const pendingShareURL = useRef("");
 
@@ -72,15 +70,10 @@ export function VideoActions({
     reactionTouchedRef.current = false;
     setLikes(initialCounts.likes);
     setDislikes(initialCounts.dislikes);
-    setBursting(false);
     setReaction("none");
     setReactionPending(false);
     setShareState("idle");
     pendingShareURL.current = "";
-    if (burstResetTimer.current !== null) {
-      window.clearTimeout(burstResetTimer.current);
-      burstResetTimer.current = null;
-    }
     if (shareResetTimer.current !== null) {
       window.clearTimeout(shareResetTimer.current);
       shareResetTimer.current = null;
@@ -105,9 +98,6 @@ export function VideoActions({
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      if (burstResetTimer.current !== null) {
-        window.clearTimeout(burstResetTimer.current);
-      }
       if (shareResetTimer.current !== null) {
         window.clearTimeout(shareResetTimer.current);
       }
@@ -139,19 +129,6 @@ export function VideoActions({
     setReaction(nextReaction);
     applyCounts(optimisticCounts);
 
-    if (burstResetTimer.current !== null) {
-      window.clearTimeout(burstResetTimer.current);
-      burstResetTimer.current = null;
-    }
-    const shouldBurst = selected === "like" && nextReaction === "like";
-    setBursting(shouldBurst);
-    if (shouldBurst) {
-      burstResetTimer.current = window.setTimeout(() => {
-        setBursting(false);
-        burstResetTimer.current = null;
-      }, 320);
-    }
-
     try {
       const result = await setVideoVisitReaction(
         video.id,
@@ -172,11 +149,6 @@ export function VideoActions({
       reactionRef.current = previousReaction;
       setReaction(previousReaction);
       applyCounts(previousCounts);
-      setBursting(false);
-      if (burstResetTimer.current !== null) {
-        window.clearTimeout(burstResetTimer.current);
-        burstResetTimer.current = null;
-      }
       show("操作失败，请稍后重试", "error");
     } finally {
       reactionPendingRef.current = false;
@@ -241,16 +213,13 @@ export function VideoActions({
           type="button"
           className={`vd-actions__pill vd-actions__like${
             reaction === "like" ? " is-active" : ""
-          }${bursting ? " is-bursting" : ""}`}
+          }`}
           onClick={() => handleReaction("like")}
           disabled={reactionPending}
           aria-pressed={reaction === "like"}
           aria-label={reaction === "like" ? "取消点赞" : "点赞"}
         >
-          <ThumbsUp
-            size={18}
-            fill={reaction === "like" ? "currentColor" : "none"}
-          />
+          <ThumbsUp size={18} fill="currentColor" />
           <span className="vd-actions__count">{formatCount(likes)}</span>
         </button>
         <button
@@ -263,10 +232,7 @@ export function VideoActions({
           aria-pressed={reaction === "dislike"}
           aria-label={reaction === "dislike" ? "取消点踩" : "点踩"}
         >
-          <ThumbsDown
-            size={18}
-            fill={reaction === "dislike" ? "currentColor" : "none"}
-          />
+          <ThumbsDown size={18} fill="currentColor" />
           <span className="vd-actions__count">{formatCount(dislikes)}</span>
         </button>
       </div>

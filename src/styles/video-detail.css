@@ -1005,8 +1005,16 @@
   font-size: var(--font-md);
   font-weight: var(--weight-semibold);
   cursor: pointer;
-  transition: background-color var(--transition-fast), color var(--transition-fast),
-    border-color var(--transition-fast);
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color var(--transition-normal), color var(--transition-normal),
+    border-color var(--transition-normal), transform 220ms var(--ease-out);
+}
+
+.vd-actions__pill > svg {
+  flex-shrink: 0;
+  fill-opacity: 0;
+  transition: fill-opacity var(--transition-normal),
+    transform 260ms cubic-bezier(0.2, 0.8, 0.2, 1.2);
 }
 
 /* Preserve hover feedback during submission without masking a selected reaction. */
@@ -1029,30 +1037,29 @@
   color: var(--accent);
 }
 
+.vd-actions__pill.is-active > svg {
+  fill-opacity: 1;
+  transform: scale(1.08);
+}
+
+.vd-actions__pill:active:not(:disabled) {
+  transform: scale(0.96);
+  transition-duration: 80ms;
+}
+
+.vd-actions__pill:active:not(:disabled) > svg {
+  transform: scale(0.94);
+  transition-duration: 80ms;
+}
+
 .vd-actions__pill:disabled {
-  cursor: wait;
+  cursor: pointer;
 }
 
 .vd-actions__count {
   min-width: 1.4em;
   text-align: left;
   font-variant-numeric: tabular-nums;
-}
-
-/* 点赞触发的发光动画 */
-.vd-actions__like.is-bursting {
-  animation: vd-like-burst 320ms var(--ease-out);
-}
-
-@keyframes vd-like-burst {
-  0%,
-  100% {
-    filter: drop-shadow(0 0 0 var(--accent-glow));
-  }
-  40% {
-    color: var(--accent);
-    filter: drop-shadow(0 0 10px var(--accent-glow));
-  }
 }
 
 /* 次要操作按钮 */
