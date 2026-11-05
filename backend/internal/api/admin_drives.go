@@ -16,19 +16,18 @@ import (
 )
 
 type driveConfigDTO struct {
-	ID                   string   `json:"id"`
-	Kind                 string   `json:"kind"`
-	Name                 string   `json:"name"`
-	RootID               string   `json:"rootId"`
-	ScanRootID           string   `json:"scanRootId"`
-	Status               string   `json:"status"`
-	LastError            string   `json:"lastError,omitempty"`
-	HasCredential        bool     `json:"hasCredential"`
-	CanUpload            bool     `json:"canUpload"`
-	SkipDirIDs           []string `json:"skipDirIds"`
-	DirectoryRevision    uint64   `json:"directoryRevision"`
-	LastCrawlAt          int64    `json:"lastCrawlAt,omitempty"`
-	STRMAllowOutsideRoot *bool    `json:"strmAllowOutsideRoot,omitempty"`
+	ID                string   `json:"id"`
+	Kind              string   `json:"kind"`
+	Name              string   `json:"name"`
+	RootID            string   `json:"rootId"`
+	ScanRootID        string   `json:"scanRootId"`
+	Status            string   `json:"status"`
+	LastError         string   `json:"lastError,omitempty"`
+	HasCredential     bool     `json:"hasCredential"`
+	CanUpload         bool     `json:"canUpload"`
+	SkipDirIDs        []string `json:"skipDirIds"`
+	DirectoryRevision uint64   `json:"directoryRevision"`
+	LastCrawlAt       int64    `json:"lastCrawlAt,omitempty"`
 }
 
 type driveRuntimeDTO struct {
@@ -72,8 +71,7 @@ func (a *AdminServer) driveConfig(d *catalog.Drive) driveConfigDTO {
 		Status: d.Status, LastError: d.LastError, HasCredential: hasCredential,
 		CanUpload:  drivepkg.CapabilitiesForKind(d.Kind).Upload,
 		SkipDirIDs: append([]string{}, d.SkipDirIDs...), LastCrawlAt: lastCrawlAt,
-		DirectoryRevision:    a.Catalog.DriveEvents().Version(d.ID, driveevents.DriveRuntimeChanged),
-		STRMAllowOutsideRoot: strmAllowOutsideRootForDrive(d),
+		DirectoryRevision: a.Catalog.DriveEvents().Version(d.ID, driveevents.DriveRuntimeChanged),
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -28,7 +29,7 @@ func TestServerListenDefaultsMatchDeploymentTemplate(t *testing.T) {
 	}
 }
 
-func TestLoadDefaultScannerVideoExtensionsIncludeSTRM(t *testing.T) {
+func TestLoadDefaultScannerVideoExtensions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(`{}`), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -38,8 +39,9 @@ func TestLoadDefaultScannerVideoExtensionsIncludeSTRM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	if !hasVideoExtension(cfg.Scanner.VideoExtensions, ".strm") {
-		t.Fatalf("video extensions = %#v, want .strm", cfg.Scanner.VideoExtensions)
+	want := []string{".mp4", ".mkv", ".mov", ".webm", ".avi"}
+	if !slices.Equal(cfg.Scanner.VideoExtensions, want) {
+		t.Fatalf("video extensions = %#v, want %#v", cfg.Scanner.VideoExtensions, want)
 	}
 }
 
@@ -122,24 +124,6 @@ func TestParseRejectsInvalidLoggingSizeLimits(t *testing.T) {
 		if _, err := Parse([]byte(data)); err == nil {
 			t.Fatalf("Parse(%q) succeeded, want validation error", data)
 		}
-	}
-}
-
-func TestLoadLegacyDefaultScannerVideoExtensionsIncludeSTRM(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte(`
-scanner:
-  video_extensions: [".mp4", ".mkv", ".mov", ".webm", ".avi"]
-`), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("load config: %v", err)
-	}
-	if !hasVideoExtension(cfg.Scanner.VideoExtensions, ".strm") {
-		t.Fatalf("video extensions = %#v, want .strm appended for legacy default list", cfg.Scanner.VideoExtensions)
 	}
 }
 
@@ -370,16 +354,6 @@ remote_upload:
 			t.Fatalf("remote upload config = %#v", cfg.RemoteUpload)
 		}
 	})
-}
-
-func hasVideoExtension(exts []string, want string) bool {
-	want = strings.ToLower(strings.TrimSpace(want))
-	for _, ext := range exts {
-		if strings.ToLower(strings.TrimSpace(ext)) == want {
-			return true
-		}
-	}
-	return false
 }
 
 func TestGenerationConcurrencyDefaultsAndValidation(t *testing.T) {

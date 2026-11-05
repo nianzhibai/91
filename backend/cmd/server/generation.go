@@ -151,10 +151,6 @@ func (a *App) regenFailedThumbnails(ctx context.Context, driveID string) {
 	a.regenerateDriveResources(ctx, driveID, api.DriveGenerationThumbnails)
 }
 
-func (a *App) regenFailedFingerprints(ctx context.Context, driveID string) {
-	a.regenerateDriveResources(ctx, driveID, api.DriveGenerationFingerprints)
-}
-
 // listScanTargetIDs 返回 nightly Phase 1 应扫描的所有 drive ID
 // （非爬虫、非 localupload）。它直接读 catalog，而不是 registry，这样
 // 进程刚启动、云盘还在后台挂载时，nightly 也不会漏掉配置过的 drive。

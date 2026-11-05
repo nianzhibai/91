@@ -146,9 +146,6 @@ export function DrivesPage() {
         d.kind,
         result.credentials ?? {}
       );
-      if (d.kind === "localstorage" && !("strm_allow_outside_root" in creds)) {
-        creds.strm_allow_outside_root = (d.strmAllowOutsideRoot ?? false) ? "true" : "false";
-      }
       const nextForm: FormState = {
         id: d.id,
         kind: d.kind,

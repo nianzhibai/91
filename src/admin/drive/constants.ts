@@ -402,17 +402,6 @@ export function credentialFields(kind: Kind): CredentialField[] {
           placeholder: "/mnt/videos",
           required: true,
         },
-        {
-          key: "strm_allow_outside_root",
-          label: ".strm 允许指向目录外",
-          placeholder: "",
-          type: "select",
-          defaultValue: "false",
-          options: [
-            { value: "false", label: "关闭（默认，仅允许目录内路径）" },
-            { value: "true", label: "开启（允许任意本地路径）" },
-          ],
-        },
       ];
   }
 }

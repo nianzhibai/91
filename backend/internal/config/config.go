@@ -25,10 +25,7 @@ const (
 var ErrInvalidNightlyStartTime = errors.New("nightly start time must use HH:mm")
 var ErrInvalidNightlyTimezone = schedule.ErrInvalidTimezone
 
-var (
-	legacyDefaultVideoExtensions = []string{".mp4", ".mkv", ".mov", ".webm", ".avi"}
-	defaultVideoExtensions       = []string{".mp4", ".mkv", ".mov", ".webm", ".avi", ".strm"}
-)
+var defaultVideoExtensions = []string{".mp4", ".mkv", ".mov", ".webm", ".avi"}
 
 type Config struct {
 	Server       Server       `yaml:"server"`
@@ -325,8 +322,6 @@ func (c *Config) applyDefaults() error {
 	}
 	if len(c.Scanner.VideoExtensions) == 0 {
 		c.Scanner.VideoExtensions = append([]string{}, defaultVideoExtensions...)
-	} else if isLegacyDefaultVideoExtensions(c.Scanner.VideoExtensions) {
-		c.Scanner.VideoExtensions = append(c.Scanner.VideoExtensions, ".strm")
 	}
 	for _, field := range []struct {
 		name  string
@@ -440,20 +435,4 @@ func writeFileAtomically(path string, data []byte, mode os.FileMode) error {
 	// save failed even though config.yaml was replaced.
 	_ = atomicfile.SyncDirectory(dir)
 	return nil
-}
-
-func isLegacyDefaultVideoExtensions(exts []string) bool {
-	if len(exts) != len(legacyDefaultVideoExtensions) {
-		return false
-	}
-	seen := make(map[string]struct{}, len(exts))
-	for _, ext := range exts {
-		seen[strings.ToLower(strings.TrimSpace(ext))] = struct{}{}
-	}
-	for _, ext := range legacyDefaultVideoExtensions {
-		if _, ok := seen[ext]; !ok {
-			return false
-		}
-	}
-	return true
 }

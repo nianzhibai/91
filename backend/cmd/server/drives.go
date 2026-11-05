@@ -66,41 +66,18 @@ func (a *App) reloadDriveRuntime(ctx context.Context, driveID string) error {
 	// Serialize the complete registry transition. The per-drive update lease
 	// prevents conflicting tasks/config writes; this lock also orders the shared
 	// registry and worker replacement against lazy/startup attachment.
-	var d *catalog.Drive
-	err := func() error {
-		a.driveAttachMu.Lock()
-		defer a.driveAttachMu.Unlock()
+	a.driveAttachMu.Lock()
+	defer a.driveAttachMu.Unlock()
 
-		var err error
-		d, err = a.cat.GetDrive(ctx, driveID)
-		if err != nil {
-			return err
-		}
-
-		// The API holds this drive's exclusive runtime-update lease. Reaching this
-		// point therefore means every tracked task and generation queue is idle;
-		// configuration saves must never stop work implicitly.
-		return a.attachDriveUnlocked(ctx, d)
-	}()
+	d, err := a.cat.GetDrive(ctx, driveID)
 	if err != nil {
 		return err
 	}
 
-	// 本地存储开启 .strm 越root后，之前因 strm 指向目录外而失败的封面/
-	// 预览/指纹应自动重试，省得用户再手动触发资源生成。
-	if d.Kind == localstorage.Kind &&
-		parseBoolDefault(strings.TrimSpace(d.Credentials["strm_allow_outside_root"]), false) {
-		a.scheduleDriveTaskAfterConfig(ctx, driveID, 0, func(taskCtx context.Context) {
-			a.regenFailedThumbnails(taskCtx, driveID)
-		})
-		a.scheduleDriveTaskAfterConfig(ctx, driveID, driveTaskScopePreview, func(taskCtx context.Context) {
-			a.regenFailedPreviews(taskCtx, driveID)
-		})
-		a.scheduleDriveTaskAfterConfig(ctx, driveID, 0, func(taskCtx context.Context) {
-			a.regenFailedFingerprints(taskCtx, driveID)
-		})
-	}
-	return nil
+	// The API holds this drive's exclusive runtime-update lease. Reaching this
+	// point therefore means every tracked task and generation queue is idle;
+	// configuration saves must never stop work implicitly.
+	return a.attachDriveUnlocked(ctx, d)
 }
 
 func (a *App) ensureDriveAttached(ctx context.Context, driveID string) error {
@@ -1154,9 +1131,8 @@ func (a *App) attachDriveConfigUnlocked(ctx context.Context, d *catalog.Drive, r
 		})
 	case localstorage.Kind:
 		drv = localstorage.New(localstorage.Config{
-			ID:                   d.ID,
-			RootPath:             d.Credentials["path"],
-			STRMAllowOutsideRoot: parseBoolDefault(strings.TrimSpace(d.Credentials["strm_allow_outside_root"]), false),
+			ID:       d.ID,
+			RootPath: d.Credentials["path"],
 		})
 	case scriptcrawler.Kind:
 		drv = scriptcrawler.New(scriptcrawler.Config{
@@ -1938,25 +1914,6 @@ func (a *App) driveTaskIDs() []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-func (a *App) scheduleDriveTaskAfterConfig(
-	ctx context.Context,
-	driveID string,
-	scope driveTaskScope,
-	run func(context.Context),
-) {
-	if run == nil {
-		return
-	}
-	go func() {
-		taskCtx, done := a.registerDriveTaskContextWaiting(ctx, driveID, scope)
-		defer done()
-		if err := taskCtx.Err(); err != nil {
-			return
-		}
-		run(taskCtx)
-	}()
 }
 
 func (a *App) scheduleDriveGenerationEnqueue(

@@ -73,21 +73,6 @@ func (a *AdminServer) removeImportedCrawlerScript(d *catalog.Drive) (bool, error
 	return true, nil
 }
 
-// strmAllowOutsideRootForDrive 返回 localstorage 的 .strm 越root开关；
-// 其它 kind 返回 nil（JSON 省略）。未配置时默认 false。
-func strmAllowOutsideRootForDrive(d *catalog.Drive) *bool {
-	if d == nil || d.Kind != "localstorage" {
-		return nil
-	}
-	result := false
-	if d.Credentials != nil {
-		if v, err := strconv.ParseBool(strings.TrimSpace(d.Credentials["strm_allow_outside_root"])); err == nil {
-			result = v
-		}
-	}
-	return &result
-}
-
 func googleDriveCredentialPatch(incoming map[string]string) (map[string]string, error) {
 	cleaned := nonEmptyCredentials(incoming)
 	// The optional web login can be removed without touching OAuth credentials.
