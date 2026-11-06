@@ -161,6 +161,7 @@ export default function HomePage() {
           variant="uiverse"
           placeholder=""
           className="search-panel--public search-panel--transparent"
+          loading={homeFeed.initialLoading}
         />
         <TagCloud linkBasePath="/" />
       </div>

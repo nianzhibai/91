@@ -1,13 +1,12 @@
-import { memo, type FormEvent, useCallback, useEffect, useState } from "react";
+import { memo, type FormEvent, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { Search } from "lucide-react";
 import { withListingNavigation } from "@/lib/listingSearchParams";
 
-const SEARCH_DEBOUNCE_MS = 500;
-
 type SearchPanelProps = {
   value?: string;
   onSearch?: (keyword: string) => void;
+  loading?: boolean;
   navigationPath?: string;
   variant?: "default" | "uiverse";
   placeholder?: string;
@@ -17,6 +16,7 @@ type SearchPanelProps = {
 export const SearchPanel = memo(function SearchPanel({
   value,
   onSearch,
+  loading = false,
   navigationPath = "/list",
   variant = "default",
   placeholder = "搜索视频标题或作者",
@@ -28,8 +28,14 @@ export const SearchPanel = memo(function SearchPanel({
   const urlKeyword = params.get("q") ?? "";
   const committedKeyword = value ?? urlKeyword;
   const [keyword, setKeyword] = useState(committedKeyword);
+  const [submittedKeyword, setSubmittedKeyword] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const composingRef = useRef(false);
+  const hasChanges = keyword.trim() !== committedKeyword.trim();
+  const submitUnavailable = loading && !hasChanges;
+  const searching = loading && submittedKeyword === committedKeyword.trim();
 
-  const commitSearch = useCallback((value: string) => {
+  function commitSearch(value: string) {
     const q = value.trim();
     if (onSearch) {
       onSearch(q);
@@ -42,36 +48,49 @@ export const SearchPanel = memo(function SearchPanel({
     });
     const query = next.toString();
     navigate(query ? `${navigationPath}?${query}` : navigationPath);
-  }, [navigate, navigationPath, onSearch, params]);
+  }
 
   useEffect(() => {
     setKeyword(committedKeyword);
   }, [committedKeyword]);
 
   useEffect(() => {
-    if (keyword.trim() === committedKeyword.trim()) return;
-    const timer = window.setTimeout(() => {
-      commitSearch(keyword);
-    }, SEARCH_DEBOUNCE_MS);
-    return () => window.clearTimeout(timer);
-  }, [commitSearch, committedKeyword, keyword]);
+    if (!loading && submittedKeyword === committedKeyword.trim()) {
+      setSubmittedKeyword(null);
+    }
+  }, [committedKeyword, loading, submittedKeyword]);
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    commitSearch(keyword);
+    if (composingRef.current || submitUnavailable) return;
+    const q = keyword.trim();
+    setKeyword(q);
+    setSubmittedKeyword(q);
+    inputRef.current?.blur();
+    commitSearch(q);
   }
 
   function handleReset() {
     setKeyword("");
-    commitSearch("");
+    inputRef.current?.focus();
   }
 
   const searchInput = (
     <input
+      ref={inputRef}
       className={isUiverse ? "search-panel__uiverse-input" : "search-panel__input"}
       type="text"
+      enterKeyHint="search"
       value={keyword}
       onChange={(e) => setKeyword(e.target.value)}
+      onCompositionStart={() => { composingRef.current = true; }}
+      onCompositionEnd={() => { composingRef.current = false; }}
+      onKeyDown={(e) => {
+        // Safari may clear isComposing before the IME's confirmation Enter.
+        if (e.key === "Enter" && (composingRef.current || e.nativeEvent.isComposing || e.keyCode === 229)) {
+          e.preventDefault();
+        }
+      }}
       placeholder={placeholder}
       aria-label="搜索关键词"
     />
@@ -82,10 +101,12 @@ export const SearchPanel = memo(function SearchPanel({
       className={`search-panel${isUiverse ? " search-panel--uiverse" : ""}${className ? ` ${className}` : ""}`}
       onSubmit={handleSubmit}
       role="search"
+      data-loading={loading || undefined}
+      data-searching={searching || undefined}
     >
       {isUiverse ? (
         <>
-          <button className="search-panel__uiverse-submit" type="submit" aria-label="搜索">
+          <button className="search-panel__uiverse-submit" type="submit" aria-label="搜索" aria-disabled={submitUnavailable || undefined}>
             <svg
               width="17"
               height="16"
@@ -108,6 +129,7 @@ export const SearchPanel = memo(function SearchPanel({
             type="button"
             onClick={handleReset}
             aria-label="清空搜索"
+            disabled={!keyword}
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -131,12 +153,13 @@ export const SearchPanel = memo(function SearchPanel({
             <Search size={16} className="search-panel__search-icon" aria-hidden="true" />
             {searchInput}
           </div>
-          <button className="search-panel__submit" type="submit" aria-label="搜索">
+          <button className="search-panel__submit" type="submit" aria-label="搜索" aria-disabled={submitUnavailable || undefined}>
             <Search size={16} className="search-panel__submit-icon" aria-hidden="true" />
             <span className="search-panel__submit-text">搜索</span>
           </button>
         </div>
       )}
+      <span className="sr-only" role="status">{loading ? "正在加载搜索结果" : ""}</span>
     </form>
   );
 });

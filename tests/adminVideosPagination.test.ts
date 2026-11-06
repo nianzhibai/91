@@ -156,7 +156,7 @@ test("normal videos keep source navigation separate from composable advanced fil
   assert.match(videosPageSource, /className="admin-btn admin-video-advanced-clear"/);
 });
 
-test("admin video searches reuse the debounced home search component", () => {
+test("admin video searches reuse the submitted home search component and loading state", () => {
   const searchBoxSource = videosPageSource.slice(
     videosPageSource.indexOf("function SearchBox"),
     videosPageSource.indexOf("function ErrorState")
@@ -165,9 +165,10 @@ test("admin video searches reuse the debounced home search component", () => {
   assert.match(videosPageSource, /import \{ SearchPanel \} from "@\/components\/SearchPanel";/);
   assert.match(searchBoxSource, /<SearchPanel[\s\S]*?className="admin-videos-filter__search search-panel--transparent"[\s\S]*?value=\{keyword\}[\s\S]*?onSearch=\{onSearch\}[\s\S]*?variant="uiverse"/);
   assert.match(searchBoxSource, /placeholder=""/);
+  assert.match(searchBoxSource, /loading=\{loading\}/);
   assert.doesNotMatch(videosPageSource, /搜索标题 \/ 作者|搜索文件名/);
   assert.equal(
-    Array.from(videosPageSource.matchAll(/<SearchBox keyword=\{searchKeyword\} onSearch=\{handleSearch\}/g)).length,
+    Array.from(videosPageSource.matchAll(/<SearchBox keyword=\{searchKeyword\} onSearch=\{handleSearch\} loading=\{listQueryPending\}/g)).length,
     2
   );
   assert.doesNotMatch(videosPageSource, /ADMIN_SEARCH_DEBOUNCE_MS/);

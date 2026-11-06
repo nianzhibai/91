@@ -613,7 +613,7 @@ function CurrentVideosTab({
         </div>
       ))}
       <div className="admin-page__actions admin-videos-filter admin-videos-filter--current">
-        <SearchBox keyword={searchKeyword} onSearch={handleSearch} />
+        <SearchBox keyword={searchKeyword} onSearch={handleSearch} loading={listQueryPending} />
         <div className="admin-videos-filter__current-actions">
           <button
             type="button"
@@ -1007,7 +1007,7 @@ function BlacklistTab({
         </div>
       ))}
       <div className="admin-page__actions admin-videos-filter admin-videos-filter--blacklist">
-        <SearchBox keyword={searchKeyword} onSearch={handleSearch} />
+        <SearchBox keyword={searchKeyword} onSearch={handleSearch} loading={listQueryPending} />
         {hasBlacklistActions && (
           <div
             className="admin-videos-filter__actions admin-blacklist-source-delete"
@@ -1349,15 +1349,18 @@ function AdvancedVideoFilters({
 function SearchBox({
   keyword,
   onSearch,
+  loading,
 }: {
   keyword: string;
   onSearch: (keyword: string) => void;
+  loading: boolean;
 }) {
   return (
     <SearchPanel
       className="admin-videos-filter__search search-panel--transparent"
       value={keyword}
       onSearch={onSearch}
+      loading={loading}
       variant="uiverse"
       placeholder=""
     />

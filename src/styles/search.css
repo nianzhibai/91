@@ -2,7 +2,40 @@
  * Search / Tag cloud / Sort toolbar
  * ========================================================= */
 .search-panel {
+  position: relative;
   margin-top: var(--space-5);
+}
+
+.search-panel::before {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent) no-repeat;
+  background-size: 35% 100%;
+  background-position: -55% 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.search-panel[data-searching]::before {
+  opacity: 1;
+  animation: search-panel-progress 1s ease-in-out infinite;
+}
+
+@keyframes search-panel-progress {
+  from { background-position: -55% 0; }
+  to { background-position: 155% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .search-panel[data-searching]::before {
+    animation: none;
+    background: var(--accent);
+  }
 }
 
 .search-panel__form {
@@ -14,7 +47,7 @@
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--border-default);
-  border-radius: var(--radius-xl);
+  border-radius: 0;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4), var(--shadow-inset);
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
@@ -69,7 +102,7 @@
   padding: 0 var(--space-5);
   background: var(--accent-gradient);
   color: var(--text-on-accent);
-  border-radius: var(--radius-lg);
+  border-radius: 0;
   font-weight: var(--weight-semibold);
   font-size: var(--font-md);
   display: inline-flex;
@@ -105,22 +138,16 @@
 
 /* styling of whole input container */
 .search-panel--uiverse {
-  --timing: 0.3s;
   --width-of-input: min(100%, 360px);
   --height-of-input: 40px;
-  --border-height: 2px;
   --input-bg: var(--bg-surface);
-  --border-color: var(--accent);
-  --border-radius: 30px;
-  --after-border-radius: 1px;
   position: relative;
   width: var(--width-of-input);
   height: var(--height-of-input);
   display: flex;
   align-items: center;
   padding-inline: 0.8em;
-  border-radius: var(--border-radius);
-  transition: border-radius 0.5s ease;
+  border-radius: 0;
   background: var(--input-bg, var(--bg-surface));
 }
 
@@ -144,33 +171,8 @@
   border: none;
 }
 
-/* styling of animated border */
-.search-panel--uiverse::before {
-  content: "";
-  position: absolute;
-  background: var(--border-color);
-  transform: scaleX(0);
-  transform-origin: center;
-  width: 100%;
-  height: var(--border-height);
-  left: 0;
-  bottom: 0;
-  border-radius: 1px;
-  transition: transform var(--timing) ease;
-}
-
-/* Hover on Input */
-.search-panel--uiverse:focus-within {
-  border-radius: var(--after-border-radius);
-}
-
 .search-panel--uiverse .search-panel__uiverse-input:focus {
   outline: none;
-}
-
-/* here is code of animated border */
-.search-panel--uiverse:focus-within::before {
-  transform: scale(1);
 }
 
 /* styling of close button */
@@ -266,7 +268,7 @@
     flex-wrap: nowrap;
     gap: 6px;
     padding: 4px;
-    border-radius: var(--radius-xl);
+    border-radius: 0;
   }
 
   .search-panel__input-wrapper {
@@ -288,7 +290,7 @@
     width: 36px;
     height: 36px;
     padding: 0;
-    border-radius: 50%;
+    border-radius: 0;
   }
 
   .search-panel__submit-text {

@@ -116,6 +116,7 @@ export default function ListingPage() {
           variant="uiverse"
           placeholder=""
           className="search-panel--public search-panel--transparent"
+          loading={listing.initialLoading}
         />
         <TagCloud />
       </div>
