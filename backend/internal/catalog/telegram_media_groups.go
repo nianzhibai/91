@@ -26,49 +26,33 @@ type TelegramImport struct {
 	ID, Title string
 }
 
-// StageTelegramMediaGroupUpdate persists the message before acknowledging its
-// update offset. Redelivery must not extend the group's collection window.
+// StageTelegramMediaGroupUpdate persists the message before acknowledging it.
+// Redelivery must not extend the group's collection window.
 func (c *Catalog) StageTelegramMediaGroupUpdate(ctx context.Context, u TelegramMediaGroupUpdate) error {
 	if u.MediaGroupID == "" || u.Payload == "" {
 		return errors.New("missing Telegram media group or payload")
 	}
-	tx, err := c.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `INSERT INTO telegram_media_group_updates
+	_, err := c.db.ExecContext(ctx, `INSERT INTO telegram_media_group_updates
  (bot_id,chat_id,media_group_id,message_id,update_id,payload,received_at)
  SELECT ?,?,?,?,?,?,? WHERE NOT EXISTS (
   SELECT 1 FROM telegram_receipts WHERE bot_id=? AND (update_id=? OR (chat_id=? AND message_id=?))
  ) ON CONFLICT DO NOTHING`, u.BotID, u.ChatID, u.MediaGroupID, u.MessageID, u.UpdateID, u.Payload, time.Now().UnixMilli(), u.BotID, u.UpdateID, u.ChatID, u.MessageID)
-	if err != nil {
-		return err
-	}
-	inserted, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if inserted > 0 {
-		if err := advanceTelegramOffset(ctx, tx, u.BotID, u.UpdateID); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
+	return err
 }
 
 // PendingTelegramMediaGroups returns groups with no new members since before.
-// One query takes a consistent snapshot, including members split across polls.
+// Order by receipt time, using message IDs to break ties within a millisecond.
+// Update IDs are opaque identities and do not encode arrival order.
 func (c *Catalog) PendingTelegramMediaGroups(ctx context.Context, botID int64, before time.Time) ([]TelegramMediaGroup, error) {
 	rows, err := c.db.QueryContext(ctx, `WITH ready AS (
- SELECT bot_id,chat_id,media_group_id,MIN(update_id) AS first_update
+ SELECT bot_id,chat_id,media_group_id,MIN(received_at) AS first_received, MIN(message_id) AS first_message
  FROM telegram_media_group_updates WHERE bot_id=?
  GROUP BY bot_id,chat_id,media_group_id HAVING MAX(received_at)<=?
- ORDER BY first_update LIMIT 30
+ ORDER BY first_received,first_message,chat_id,media_group_id LIMIT 30
  ) SELECT u.bot_id,u.chat_id,u.media_group_id,u.message_id,u.update_id,u.payload,u.received_at
  FROM telegram_media_group_updates u JOIN ready r
  ON u.bot_id=r.bot_id AND u.chat_id=r.chat_id AND u.media_group_id=r.media_group_id
- ORDER BY r.first_update,u.message_id`, botID, before.UnixMilli())
+ ORDER BY r.first_received,r.first_message,r.chat_id,r.media_group_id,u.message_id`, botID, before.UnixMilli())
 	if err != nil {
 		return nil, err
 	}
@@ -88,9 +72,9 @@ func (c *Catalog) PendingTelegramMediaGroups(ctx context.Context, botID int64, b
 	return groups, rows.Err()
 }
 
-// AcceptTelegramMediaGroup atomically replaces buffered updates with receipts
-// and import jobs. If another member arrived after the snapshot, collect again
-// before publishing any titles. The polling offset was committed at staging.
+// AcceptTelegramMediaGroup atomically replaces buffered updates with import
+// jobs, one group receipt, and silent deduplication receipts for other members.
+// If a new member arrived after the snapshot, collect again before admission.
 func (c *Catalog) AcceptTelegramMediaGroup(ctx context.Context, group TelegramMediaGroup, imports []TelegramImport, limit int) (bool, error) {
 	if len(imports) == 0 || len(imports) != len(group.Updates) {
 		return false, errors.New("incomplete Telegram media group admission")
@@ -131,8 +115,41 @@ func (c *Catalog) AcceptTelegramMediaGroup(ctx context.Context, group TelegramMe
 			return false, errors.New("Telegram media group receipt does not match buffered update")
 		}
 	}
+	anchor := 0
+	for i, input := range imports {
+		if input.Source != nil || input.Receipt.Response != "__ignore__" {
+			anchor = i
+			break
+		}
+	}
+	response := ""
+	var videos []TelegramImport
 	for _, input := range imports {
-		if err := acceptTelegramUpdate(ctx, tx, input.Receipt, input.Source, input.ID, input.Title, limit); err != nil {
+		if input.Source != nil {
+			videos = append(videos, input)
+		} else if input.Receipt.Response != "__ignore__" && response == "" {
+			response = input.Receipt.Response
+		}
+	}
+	var jobIDs, duplicateJobIDs []string
+	if len(videos) == 0 && response == "" {
+		response = "__ignore__"
+	}
+	if len(videos) > 0 && response == "" {
+		jobIDs, duplicateJobIDs, response, err = admitTelegramBatch(ctx, tx, videos, limit)
+		if err != nil {
+			return false, err
+		}
+	}
+	for i, input := range imports {
+		receipt := input.Receipt
+		receipt.JobID, receipt.JobIDs, receipt.Response = "", nil, "__ignore__"
+		receipt.DuplicateJobIDs = nil
+		if i == anchor {
+			receipt.JobIDs, receipt.Response = jobIDs, response
+			receipt.DuplicateJobIDs = duplicateJobIDs
+		}
+		if err := acceptTelegramUpdate(ctx, tx, receipt, nil, "", "", limit); err != nil {
 			return false, err
 		}
 	}

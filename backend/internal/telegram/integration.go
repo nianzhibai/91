@@ -2,13 +2,9 @@ package telegram
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"sync"
 	"time"
-
-	"gopkg.in/yaml.v3"
 
 	"github.com/video-site/backend/internal/catalog"
 	"github.com/video-site/backend/internal/config"
@@ -17,7 +13,7 @@ import (
 )
 
 // Integration consumes the validated YAML snapshot and replaces receiver sessions.
-// The Bot API server is an independently managed HTTP service.
+// Receiver sessions own their MTProto connections, update state and downloads.
 type Integration struct {
 	cat           *catalog.Catalog
 	configManager *config.Manager
@@ -26,8 +22,8 @@ type Integration struct {
 	mu            sync.RWMutex
 	active        *Service
 	status        Status
-	version       string
 	wake          func()
+	newTransport  transportFactory
 	cancel        context.CancelFunc
 	done          chan struct{}
 }
@@ -35,7 +31,7 @@ type Integration struct {
 func NewIntegration(cat *catalog.Catalog, manager *config.Manager, uploadDir string, reserve int64) *Integration {
 	cfg := manager.TelegramSettings()
 	return &Integration{cat: cat, configManager: manager, uploadDir: uploadDir, reserve: reserve,
-		status: Status{State: "disabled", Config: cfg}}
+		status: Status{State: "disabled", Config: cfg}, newTransport: newMTProtoClient}
 }
 func (i *Integration) SetWake(wake func()) { i.mu.Lock(); i.wake = wake; i.mu.Unlock() }
 func (i *Integration) Start(ctx context.Context) {
@@ -81,12 +77,6 @@ func (i *Integration) Status() Status {
 	} else if n, err := mediaimport.AvailableBytes(status.Config.LocalFilesRoot); err == nil {
 		status.CacheAvailableBytes = n
 	}
-	// Transfer settings are applied by the next upload task, independently of
-	// the receiver session's configuration snapshot.
-	cfg := i.configManager.TelegramSettings()
-	status.Config.UploadDriveID = cfg.UploadDriveID
-	status.Config.UploadDirectory = cfg.UploadDirectory
-	status.Config.UploadProxy = cfg.UploadProxy
 	return status
 }
 func (i *Integration) Available() bool { s := i.session(); return s != nil && s.Available() }
@@ -103,18 +93,11 @@ func (i *Integration) Resume(ctx context.Context) error {
 	}
 	return errors.New("请先启用 Telegram 并等待连接配置生效")
 }
-func (i *Integration) PreparePolling(ctx context.Context) error {
-	if s := i.session(); s != nil {
-		return s.PreparePolling(ctx)
-	}
-	return errors.New("请先启用 Telegram 并等待连接配置生效")
-}
 func (i *Integration) Test(ctx context.Context) (string, error) {
-	if err := i.configManager.TelegramDeploymentError(); err != nil {
-		return "", err
+	if s := i.session(); s != nil {
+		return s.Test(ctx)
 	}
-	cfg := i.configManager.TelegramSettings()
-	return TestConnection(ctx, cfg, cfg.BotToken)
+	return "", errors.New("请先启用 Telegram 并等待连接配置生效")
 }
 func (i *Integration) Fetch(ctx context.Context, j *catalog.RemoteUploadJob, progress func(string, int64, int64) error) (mediaimport.SourceFile, error) {
 	if s := i.session(); s != nil {
@@ -132,7 +115,7 @@ func (i *Integration) stop() {
 	i.active = nil
 	i.mu.Unlock()
 	if s != nil {
-		// Cancellation interrupts polling, notifications and outstanding downloads.
+		// Cancellation interrupts reception, notifications and outstanding downloads.
 		// Wait for the old receiver before exposing a new bot identity.
 		_ = s.Shutdown(context.Background())
 	}
@@ -144,32 +127,19 @@ func (i *Integration) setStatus(cfg config.Telegram, state, message string) {
 }
 func (i *Integration) reconcile(ctx context.Context) {
 	cfg := i.configManager.TelegramSettings()
-	// Cloud transfer settings do not affect polling or active TG downloads.
-	receiverCfg := cfg
-	receiverCfg.UploadDriveID, receiverCfg.UploadDirectory, receiverCfg.UploadProxy = "", "", ""
-	raw, _ := yaml.Marshal(struct {
-		Settings           config.Telegram
-		APIBaseURL         string
-		APIRoot, LocalRoot string
-	}{receiverCfg, cfg.APIBaseURL, cfg.APIFilesRoot, cfg.LocalFilesRoot})
-	digest := sha256.Sum256(raw)
-	version := hex.EncodeToString(digest[:])
-	if version != i.version {
+	if active := i.session(); active != nil && !sameConnection(active.settings(), cfg) {
 		i.stop()
-		i.version = version
 	}
 	if !cfg.Enabled {
 		i.stop()
 		i.setStatus(cfg, "disabled", "")
 		return
 	}
-	if err := i.configManager.TelegramDeploymentError(); err != nil {
-		i.stop()
-		i.setStatus(cfg, "error", err.Error())
-		return
-	}
-	if i.session() == nil {
+	if active := i.session(); active != nil {
+		active.applySettings(cfg)
+	} else {
 		s := New(cfg, cfg.BotToken, i.cat, i.uploadDir, i.reserve)
+		s.newTransport = i.newTransport
 		// Read the live calendar timezone without restarting the receiver when
 		// scheduling settings change.
 		s.statusTimezone = func() string { return i.configManager.LiveSettings().NightlyTimezone }
@@ -187,4 +157,11 @@ func (i *Integration) reconcile(ctx context.Context) {
 
 func (i *Integration) Discard(ctx context.Context, j *catalog.RemoteUploadJob) error {
 	return telegramstorage.New(i.cat, func() string { return i.configManager.TelegramSettings().LocalFilesRoot }).Remove(ctx, j.ID+".media")
+}
+
+// Only credentials, transport and storage placement require a new session.
+func sameConnection(a, b config.Telegram) bool {
+	return a.APIID == b.APIID && a.APIHash == b.APIHash && a.BotToken == b.BotToken &&
+		a.ConnectionProxy == b.ConnectionProxy && a.LocalFilesRoot == b.LocalFilesRoot &&
+		a.DownloadThreads == b.DownloadThreads
 }

@@ -1599,10 +1599,12 @@ export function unbanIP(ip: string) {
 // Telegram imports use the same authenticated administrator API as settings.
 export type TelegramConfig = {
   enabled: boolean;
-  apiBaseUrl: string;
+  apiId: number;
+  storageDirectory: string;
   allowedUserIds: number[];
   siteBaseUrl: string;
   maxFileSizeBytes: number;
+  downloadThreads: number;
   maxPendingJobs: number;
   fetchTimeoutSeconds: number;
   uploadDriveId: string;
@@ -1612,7 +1614,7 @@ export type TelegramStatus = {
   enabled: boolean;
   connection: {
     enabled: boolean; state: string; botId: string; username: string; error: string;
-    lastPoll: string; lastMessage: string; cacheAvailableBytes: number;
+    lastConnected: string; lastMessage: string; cacheAvailableBytes: number;
     notificationFailures: number; config: TelegramConfig;
   };
 };
@@ -1626,7 +1628,6 @@ export type ImportJob = {
 export const getTelegramAvailability = (signal?: AbortSignal) => request<{ enabled: boolean }>("/telegram/availability", { signal });
 export const getTelegramStatus = (signal?: AbortSignal) => request<TelegramStatus>("/telegram/status", { signal });
 export const testTelegram = () => request<{username: string}>("/telegram/test", {method: "POST"});
-export const prepareTelegramPolling = () => request<void>("/telegram/prepare-polling", {method:"POST"});
 export const resumeTelegram = () => request<void>("/telegram/resume", {method:"POST"});
 // The Telegram page filters and paginates within this recent record window.
 export const listTelegramImports = (limit: number, signal?: AbortSignal) => request<ImportJob[]>(`/import-jobs?${new URLSearchParams({source: "telegram", limit: String(limit)})}`, { signal });

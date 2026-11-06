@@ -3,7 +3,6 @@ package telegram
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/video-site/backend/internal/applog"
@@ -16,11 +15,6 @@ const (
 	commandID     = "id"
 	commandStatus = "status"
 )
-
-type botCommand struct {
-	Command     string `json:"command"`
-	Description string `json:"description"`
-}
 
 // Menu configuration belongs to the receiver session, not the connection probe.
 // Run it independently so a slow or failed registration cannot delay imports.
@@ -38,7 +32,7 @@ func (s *Service) syncCommandMenu(ctx context.Context) {
 		}
 
 		requestCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		err := registerCommandMenu(requestCtx, c)
+		err := c.SetCommands(requestCtx)
 		cancel()
 		if err == nil || ctx.Err() != nil {
 			return
@@ -54,28 +48,6 @@ func (s *Service) syncCommandMenu(ctx context.Context) {
 		}
 		backoff = min(backoff*2, 5*time.Minute)
 	}
-}
-
-func registerCommandMenu(ctx context.Context, c *client) error {
-	// Commands are handled only in private chats. An omitted language_code
-	// supplies this list to every language without a more specific override.
-	if err := c.call(ctx, "setMyCommands", map[string]any{
-		"commands": []botCommand{
-			{Command: commandStart, Description: "开始"},
-			{Command: commandHelp, Description: "使用说明"},
-			{Command: commandStatus, Description: "转存统计"},
-			{Command: commandID, Description: "我的 Telegram ID"},
-		},
-		"scope": map[string]string{"type": "all_private_chats"},
-	}, nil); err != nil {
-		return fmt.Errorf("注册 TG 指令列表失败: %w", err)
-	}
-	if err := c.call(ctx, "setChatMenuButton", map[string]any{
-		"menu_button": map[string]string{"type": "commands"},
-	}, nil); err != nil {
-		return fmt.Errorf("设置 TG 菜单按钮失败: %w", err)
-	}
-	return nil
 }
 
 func (s *Service) statusMessage(ctx context.Context, now time.Time) (botMessage, error) {

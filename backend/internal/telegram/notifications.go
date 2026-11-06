@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/video-site/backend/internal/applog"
@@ -36,14 +37,35 @@ func (s *Service) notify(ctx context.Context) {
 		}
 	}
 }
-func (s *Service) notifyOne(ctx context.Context, c *client, r catalog.TelegramReceipt) {
+func (s *Service) notifyOne(ctx context.Context, c transport, r catalog.TelegramReceipt) {
 	message, state := renderReceiptMessage(r), "replied"
-	if r.JobID != "" {
+	if len(r.JobIDs) > 0 {
+		jobs := make([]*catalog.RemoteUploadJob, 0, len(r.JobIDs))
+		terminal := true
+		for _, id := range r.JobIDs {
+			job, err := s.cat.GetRemoteUploadJob(ctx, id)
+			if err != nil {
+				return
+			}
+			jobs = append(jobs, job)
+			terminal = terminal && job.Terminal()
+		}
+		message = renderMediaGroupMessage(jobs, r.DuplicateJobIDs, s.settings().SiteBaseURL, func(id string) int64 {
+			return s.downloadProgress.speed(id, time.Now())
+		})
+		state = "group:terminal"
+		if !terminal {
+			state = fmt.Sprintf("progress:%x", sha256.Sum256([]byte(message.text)))
+		}
+	} else if r.JobID != "" {
 		j, err := s.cat.GetRemoteUploadJob(ctx, r.JobID)
 		if err != nil {
 			return
 		}
-		message = renderImportMessage(j, s.cfg.SiteBaseURL)
+		message = renderImportMessage(j, s.settings().SiteBaseURL, s.downloadProgress.speed(j.ID, time.Now()))
+		if slices.Contains(r.DuplicateJobIDs, j.ID) {
+			message = renderDuplicateImportMessage(j, s.settings().SiteBaseURL)
+		}
 		state = j.State
 		if !j.Terminal() {
 			// Persist the rendered content identity so restarts and unchanged
@@ -69,33 +91,13 @@ func (s *Service) notifyOne(ctx context.Context, c *client, r catalog.TelegramRe
 		_ = s.cat.SaveTelegramNotification(ctx, r, r.ReplyID, state, 0)
 		return
 	}
-	request := map[string]any{"chat_id": r.ChatID, "text": message.text, "parse_mode": "HTML", "link_preview_options": map[string]bool{"is_disabled": true}}
-	if message.videoURL != "" {
-		request["reply_markup"] = map[string]any{"inline_keyboard": [][]map[string]string{{{"text": "打开视频", "url": message.videoURL}}}}
-	}
-	replyParameters := map[string]any{"message_id": r.MessageID, "allow_sending_without_reply": true}
-	method := "sendMessage"
-	if r.ReplyID != 0 {
-		method = "editMessageText"
-		request["message_id"] = r.ReplyID
-	} else if r.MessageID > 0 {
-		request["reply_parameters"] = replyParameters
-	}
 	sendCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	var response struct {
-		ID int64 `json:"message_id"`
-	}
-	err := c.call(sendCtx, method, request, &response)
-	// An edit may fail because the original response was deleted. Retry with a
-	// new message, without ever changing the import result.
+	replyID, err := c.Send(sendCtx, r, message)
 	var apiErr *APIError
 	if err != nil && r.ReplyID != 0 && errors.As(err, &apiErr) && apiErr.Code == 400 {
-		delete(request, "message_id")
-		if r.MessageID > 0 {
-			request["reply_parameters"] = replyParameters
-		}
-		err = c.call(sendCtx, "sendMessage", request, &response)
+		r.ReplyID = 0
+		replyID, err = c.Send(sendCtx, r, message)
 	}
 	if err != nil {
 		delay := time.Duration(1<<min(r.Attempts, 8)) * 10 * time.Second
@@ -105,8 +107,8 @@ func (s *Service) notifyOne(ctx context.Context, c *client, r catalog.TelegramRe
 		_ = s.cat.SaveTelegramNotification(ctx, r, 0, "", delay)
 		return
 	}
-	if response.ID == 0 {
-		response.ID = r.ReplyID
+	if replyID == 0 {
+		replyID = r.ReplyID
 	}
-	_ = s.cat.SaveTelegramNotification(ctx, r, response.ID, state, 0)
+	_ = s.cat.SaveTelegramNotification(ctx, r, replyID, state, 0)
 }

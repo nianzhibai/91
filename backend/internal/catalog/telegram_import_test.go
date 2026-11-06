@@ -18,7 +18,7 @@ func telegramTestCatalog(t *testing.T) *Catalog {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { c.Close() })
-	if _, _, err = c.TelegramOffset(context.Background(), 123); err != nil {
+	if _, err = c.TelegramPaused(context.Background(), 123); err != nil {
 		t.Fatal(err)
 	}
 	return c
@@ -94,16 +94,37 @@ func TestTelegramAdmissionIsAtomicWhenTaskCreationFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected task insertion failure")
 	}
-	offset, _, err := c.TelegramOffset(ctx, 123)
-	if err != nil || offset != 2 {
-		t.Fatalf("cursor advanced on rollback: %d %v", offset, err)
-	}
 	var receipts int
 	if err = c.db.QueryRow(`SELECT COUNT(*) FROM telegram_receipts`).Scan(&receipts); err != nil || receipts != 1 {
 		t.Fatalf("partial receipt survived: %d %v", receipts, err)
 	}
 	if _, err = c.LatestTelegramFileID(ctx, *source); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("partial file claim survived: %v", err)
+	}
+}
+
+func TestRetiringBotAPIOffsetPreservesRestorePause(t *testing.T) {
+	c := telegramTestCatalog(t)
+	ctx := context.Background()
+	if _, err := c.db.Exec(`ALTER TABLE telegram_connections ADD COLUMN next_offset INTEGER NOT NULL DEFAULT 0;
+UPDATE telegram_connections SET next_offset=1234,needs_reconnect=1 WHERE bot_id=123`); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.migrateImports(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if paused, err := c.TelegramPaused(ctx, 123); err != nil || !paused {
+		t.Fatalf("migration lost the restore pause: %v %v", paused, err)
+	}
+	var oldColumns int
+	if err := c.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('telegram_connections') WHERE name='next_offset'`).Scan(&oldColumns); err != nil || oldColumns != 0 {
+		t.Fatalf("retired offset remains: %d %v", oldColumns, err)
+	}
+	if err := c.ResumeTelegram(ctx, 123); err != nil {
+		t.Fatal(err)
+	}
+	if paused, err := c.TelegramPaused(ctx, 123); err != nil || paused {
+		t.Fatalf("migrated bot could not resume: %v %v", paused, err)
 	}
 }
 func TestTelegramFileClaimSerializesConcurrentForwards(t *testing.T) {
@@ -188,14 +209,14 @@ func TestTelegramRestoreGateAppliesToNewBotIdentity(t *testing.T) {
 	if _, err := c.db.Exec(`INSERT INTO telegram_connections(bot_id,needs_reconnect) VALUES(0,1)`); err != nil {
 		t.Fatal(err)
 	}
-	_, paused, err := c.TelegramOffset(ctx, 456)
+	paused, err := c.TelegramPaused(ctx, 456)
 	if err != nil || !paused {
 		t.Fatal("restored bot was not paused", err)
 	}
 	if err = c.ResumeTelegram(ctx, 456); err != nil {
 		t.Fatal(err)
 	}
-	_, paused, err = c.TelegramOffset(ctx, 456)
+	paused, err = c.TelegramPaused(ctx, 456)
 	if err != nil || paused {
 		t.Fatal("resume failed", err)
 	}

@@ -21,6 +21,7 @@ func migrateTelegramConfig(ctx context.Context, cat *catalog.Catalog, manager *c
 		}
 	}
 	legacy.BotToken = stored.BotToken
+	legacy.APIID, legacy.APIHash = int(stored.APIID), stored.APIHash
 	if err = manager.MigrateTelegramSettings(legacy); err != nil {
 		return err
 	}

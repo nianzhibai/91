@@ -18,6 +18,7 @@ import (
 	"github.com/video-site/backend/internal/applog"
 	"github.com/video-site/backend/internal/catalog"
 	"github.com/video-site/backend/internal/drives"
+	"github.com/video-site/backend/internal/drives/telegramstorage"
 	"github.com/video-site/backend/internal/persistence"
 	"github.com/video-site/backend/internal/scopedproxy"
 )
@@ -64,8 +65,11 @@ func Run(ctx context.Context, cfg Config) (runErr error) {
 	if err != nil {
 		return errors.Join(cleanupErr, failure("proxy", "TG 转存代理地址无效，请检查 telegram.upload_proxy 配置", err))
 	}
-	parent := ""
-	var existing map[string][]drives.Entry
+	type targetFolder struct {
+		parent   string
+		existing map[string][]drives.Entry
+	}
+	folders := make(map[string]targetFolder)
 	after := ""
 	failed, completed := 0, 0
 	var failures []error
@@ -80,26 +84,39 @@ func Run(ctx context.Context, cfg Config) (runErr error) {
 		if len(videos) == 0 {
 			break
 		}
-		if parent == "" {
-			parent, err = uploader.EnsureDir(uploadCtx, cfg.TargetDirectory)
-			if err != nil || strings.TrimSpace(parent) == "" {
-				return errors.Join(cleanupErr, failure("directory", "无法创建或读取 TG 转存目标目录", err))
-			}
-			entries, err := cfg.Target.List(uploadCtx, parent)
-			if err != nil {
-				return errors.Join(cleanupErr, failure("listing", "无法检查目标目录中已有的 TG 文件", err))
-			}
-			existing = make(map[string][]drives.Entry)
-			for _, e := range entries {
-				existing[e.Name] = append(existing[e.Name], e)
-			}
-		}
 		for _, v := range videos {
 			after = v.ID
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			if err := transferOne(uploadCtx, cfg, uploader, parent, existing, v); err != nil {
+			transferCfg := cfg
+			if v.DriveID == telegramstorage.DriveID {
+				local, err := cfg.Catalog.TelegramLocalFile(ctx, v.FileID)
+				if err != nil {
+					return errors.Join(cleanupErr, failure("source", "无法读取 TG 视频目录", err))
+				}
+				if _, err := telegramstorage.RelativePath(local); err != nil {
+					return errors.Join(cleanupErr, failure("source", "TG 视频目录无效", err))
+				}
+				transferCfg.TargetDirectory = path.Join(cfg.TargetDirectory, local.Directory)
+			}
+			folder, exists := folders[transferCfg.TargetDirectory]
+			if !exists {
+				parent, err := uploader.EnsureDir(uploadCtx, transferCfg.TargetDirectory)
+				if err != nil || strings.TrimSpace(parent) == "" {
+					return errors.Join(cleanupErr, failure("directory", "无法创建或读取 TG 转存目标目录", err))
+				}
+				entries, err := cfg.Target.List(uploadCtx, parent)
+				if err != nil {
+					return errors.Join(cleanupErr, failure("listing", "无法检查目标目录中已有的 TG 文件", err))
+				}
+				folder = targetFolder{parent: parent, existing: make(map[string][]drives.Entry)}
+				for _, e := range entries {
+					folder.existing[e.Name] = append(folder.existing[e.Name], e)
+				}
+				folders[transferCfg.TargetDirectory] = folder
+			}
+			if err := transferOne(uploadCtx, transferCfg, uploader, folder.parent, folder.existing, v); err != nil {
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}

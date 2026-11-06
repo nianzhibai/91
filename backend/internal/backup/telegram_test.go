@@ -30,7 +30,7 @@ func TestTelegramBackupSanitizesRuntimeStateAndPreservesFileIdentity(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err = c.TelegramOffset(ctx, 123); err != nil {
+			if _, err = c.TelegramPaused(ctx, 123); err != nil {
 				t.Fatal(err)
 			}
 			if err = c.AcceptTelegramUpdate(ctx, catalog.TelegramReceipt{BotID: 123, UpdateID: 1, ChatID: 42, MessageID: 1, SenderID: 42}, &catalog.TelegramSource{BotID: 123, SenderID: 42, FileID: "PRIVATE_ID", UniqueID: "stable"}, "tg-job", "video", 100); err != nil {
@@ -148,7 +148,7 @@ func TestTelegramSelectiveRestoreMergesFileMapAndPausesReceiver(t *testing.T) {
 	if err != nil || id != "tg-video" {
 		t.Fatalf("mapping=%s err=%v", id, err)
 	}
-	_, paused, err := target.TelegramOffset(ctx, 123)
+	paused, err := target.TelegramPaused(ctx, 123)
 	if err != nil || !paused {
 		t.Fatalf("receiver was not paused: %v %v", paused, err)
 	}

@@ -63,8 +63,8 @@ type Manager struct {
 	observedVersion string
 	apply           func(LiveSettings) error
 
-	telegramDeployment    telegramDeployment
-	telegramDeploymentErr error
+	workingDir   string
+	telegramRoot string
 }
 
 func NewManager(path string) (*Manager, error) {
@@ -76,15 +76,22 @@ func NewManager(path string) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
+	workingDir, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("resolve working directory: %w", err)
+	}
+	storage, err := ResolveStoragePaths(parsed.Storage, workingDir)
+	if err != nil {
+		return nil, err
+	}
 	version := configVersion(data)
 	m := &Manager{
 		path:            path,
 		current:         parsed,
 		observedVersion: version,
+		workingDir:      workingDir,
+		telegramRoot:    filepath.Join(storage.DataDir, "telegram"),
 	}
-	// Telegram is optional. Keep deployment errors for its status/probe rather
-	// than prevent an otherwise configured website from starting.
-	_ = m.LoadTelegramCompose(filepath.Join(filepath.Dir(path), "telegram.yml"))
 	return m, nil
 }
 
@@ -171,9 +178,6 @@ func (m *Manager) ReplaceYAML(data []byte, expectedVersion string) (SaveResult, 
 		return SaveResult{}, errors.New("configuration manager is unavailable")
 	}
 	if err := validateAdminConfigRemoved(data); err != nil {
-		return SaveResult{}, err
-	}
-	if err := validateTelegramDeploymentFieldsRemoved(data); err != nil {
 		return SaveResult{}, err
 	}
 	candidate, err := Parse(data)

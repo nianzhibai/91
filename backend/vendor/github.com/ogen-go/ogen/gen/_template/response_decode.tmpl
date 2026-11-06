@@ -1,0 +1,251 @@
+{{ define "response_decoders" }}
+{{- /*gotype: github.com/ogen-go/ogen/gen.TemplateConfig*/ -}}
+{{ template "header" $ }}
+
+{{- if $.PathsClientEnabled }}
+{{- range $op := $.Operations }}
+	{{- template "response_decoders/operation" op_elem $op $ }}
+{{ end }}
+{{- end }}
+
+{{- if $.WebhookClientEnabled }}
+{{- range $op := $.Webhooks }}
+    {{- template "response_decoders/operation" op_elem $op $ }}
+{{ end }}
+{{- end }}
+
+{{ end }}
+
+{{ define "response_decoders/operation" }}
+{{- /*gotype: github.com/ogen-go/ogen/gen.OperationElem*/ -}}{{ $op := $.Operation }}
+func decode{{ $op.Name }}Response(resp *http.Response) (res {{ $op.Responses.GoType }}, _ error) {
+	{{- with $statusCodes := $op.Responses.StatusCode }}
+	switch resp.StatusCode {
+	{{- range $statusCode, $response := $statusCodes }}{{/* Range over responses */}}
+	case {{ $statusCode }}:
+		// Code {{ $statusCode }}.
+		{{- template "decode_response" response_elem $response $op.Responses.DoTakePtr }}
+	{{- end }}
+	}
+    {{- end }}
+
+	{{- if $op.Responses.HasPattern }}
+	switch resp.StatusCode / 100 {
+    {{- range $idx, $response := $op.Responses.Pattern }}{{- if $response }}
+	case {{ add $idx 1 }}:
+		// Pattern {{ add $idx 1 }}XX.
+		res, err := func() (res {{ $op.Responses.GoType }}, err error) {
+			{{- template "decode_response" response_elem $response $op.Responses.DoTakePtr }}
+		}()
+		if err != nil {
+			return res, errors.Wrapf(err, "pattern {{ add $idx 1 }}XX (code %d)", resp.StatusCode)
+		}
+		return res, nil
+    {{- end }}{{- end }}
+	}
+	{{- end }}
+
+	{{- if $op.Responses.Default }}
+		// Default response.
+		res, err := func() (res {{ $op.Responses.GoType }}, err error) {
+			{{- template "decode_response" response_elem $op.Responses.Default $op.Responses.DoTakePtr }}
+		}()
+		if err != nil {
+			return res, errors.Wrapf(err, "default (code %d)", resp.StatusCode)
+		}
+		return res, nil
+	{{- else if and $.Config.Error (not $op.WebhookInfo) }}
+		// Convenient error response.
+		defRes, err := func() (res {{ $.Config.ErrorGoType }}, err error) {
+			{{- template "decode_response" response_elem $.Config.Error true }}
+		}()
+		if err != nil {
+			return res, errors.Wrapf(err, "default (code %d)", resp.StatusCode)
+		}
+		return res, errors.Wrap(defRes, "error")
+	{{- else }}
+		return res, validate.UnexpectedStatusCodeWithResponse(resp)
+	{{- end }}
+}
+{{ end }}
+
+{{- define "decode_response" }}
+{{- /*gotype: github.com/ogen-go/ogen/gen.ResponseElem*/ -}}
+{{- $response := $.Response }}
+{{- $ptr := $.Ptr }}
+{{- if $response.NoContent }}{{/* Decode NoContent response */}}
+	{{- if $response.WithHeaders }}
+		var wrapper {{ $response.NoContent.Name }}
+		{{- if $response.WithStatusCode }}
+		wrapper.StatusCode = resp.StatusCode
+		{{- end }}
+		{{- template "decode_response_headers" $response }}
+		return {{ if $ptr }}&{{ end }}wrapper, nil
+	{{- else if $response.WithStatusCode }}
+		return {{ if $ptr }}&{{ end }}{{ $response.NoContent.Name }}{
+			StatusCode: resp.StatusCode,
+		}, nil
+	{{- else }}
+		return {{ if $ptr }}&{{ end }}{{ $response.NoContent.Name }}{}, nil
+	{{- end }}
+{{- else }}{{/* Decode content response */}}
+	ct, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if err != nil {
+		return res, errors.Wrap(err, "parse media type")
+	}
+	switch {
+	{{- range $contentType, $media := $response.Contents }}{{/* Range over contents */}}
+		{{- $originalType := $media.Type }}
+		{{- $encoding := $media.Encoding }}
+		{{- if not $contentType.Mask }}
+		case ct == {{ quote $contentType }}:
+		{{- else }}
+		case ht.MatchContentType({{ quote $contentType }}, ct):
+		{{- end }}
+		{{- if $media.RawResponse }}
+		// Raw response - return the http.Response directly
+		return {{ if $ptr }}&{{ end }}{{ $originalType.Name }}{
+			Response: resp,
+		}, nil
+		{{- else }}
+		{{- $type := $originalType }}
+		{{- if or $response.WithStatusCode $response.WithHeaders }}
+			{{- $type = ($type.MustField "Response").Type }}
+		{{- end }}
+
+		{{- if $media.SSEEventShape.Enabled }}
+			{{- if $type.IsPointer }}
+			response := &{{ $type.PointerTo.Go }}{resp: resp}
+			{{- else }}
+			response := {{ $type.Go }}{resp: resp}
+			{{- end }}
+		{{- else if or $encoding.JSON $encoding.ProblemJSON }}
+			{{- if $media.JSONStreaming }}
+			d := jx.Decode(resp.Body, -1)
+			{{- else }}
+			buf, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return res, err
+			}
+			d := jx.DecodeBytes(buf)
+			{{- end }}
+
+			var response {{ $type.Go }}
+			if err := func() error {
+				{{- template "json/dec" elem $type "response" }}
+				if err := d.Skip(); err != io.EOF {
+					return errors.New("unexpected trailing data")
+				}
+				return nil
+			}(); err != nil {
+        		{{- if not $media.JSONStreaming }}
+				err = &ogenerrors.DecodeBodyError{
+					ContentType: ct,
+					Body: buf,
+					Err: err,
+				}
+				{{- end }}
+				return res, err
+			}
+		{{- else if $type.IsStream }}
+			{{- if $type.IsBase64Stream }}
+			reader := base64.NewDecoder(base64.StdEncoding, resp.Body)
+			{{- else }}
+			reader := resp.Body
+			{{- end }}
+			b, err := io.ReadAll(reader)
+			if err != nil {
+				return res, err
+			}
+
+			response := {{ $type.Name }}{Data: bytes.NewReader(b)}
+		{{- else }}
+			{{- errorf "%q: %s decoder not implemented" $encoding $type }}
+		{{- end }}
+
+		{{- if $type.NeedValidation }}
+		// Validate response.
+		if err := func() error {
+			{{- template "validate" elem $type "response" }}
+		}(); err != nil {
+				return res, errors.Wrap(err, "validate")
+		}
+		{{- end }}
+
+		{{- if $response.WithHeaders }}
+			var wrapper {{ $originalType.Name }}
+			wrapper.Response = response
+			{{- if $response.WithStatusCode }}
+			wrapper.StatusCode = resp.StatusCode
+			{{- end }}
+			{{- template "decode_response_headers" $response }}
+			return {{ if $ptr }}&{{ end }}wrapper, nil
+		{{- else if $response.WithStatusCode }}
+			return {{ if $ptr }}&{{ end }}{{ $originalType.Name }}{
+				StatusCode: resp.StatusCode,
+				Response:   response,
+			}, nil
+		{{- else }}
+			{{- if and $media.SSEEventShape.Enabled $type.IsPointer }}
+			return response, nil
+			{{- else }}
+			return {{ if $ptr }}&{{ end }}response, nil
+			{{- end }}
+		{{- end }}
+		{{- end }}{{/* End of RawResponse else block */}}
+	{{- end }}{{/* Range over contents */}}
+	default:
+		return res, validate.InvalidContentType(ct)
+	}
+{{- end }}{{/* Decode content response */}}
+{{- end }}
+
+{{- define "decode_response_headers" }}
+{{- $response := $ }}
+h := uri.NewHeaderDecoder(resp.Header)
+{{- range $_, $header := $response.Headers }}
+// Parse {{ quote $header.Spec.Name }} header.
+{
+	cfg := uri.HeaderParameterDecodingConfig{
+		Name:    {{ quote $header.Spec.Name }},
+		Explode: {{ if $header.Spec.Explode }}true{{ else }}false{{ end }},
+	}
+	{{- $el := elem $header.Type (printf "wrapper.%s" $header.Name) }}
+	if err := func() error {
+		if err := h.HasParam(cfg); err == nil {
+			if err := h.DecodeParam(cfg, func(d uri.Decoder) error {
+				{{- if $header.Spec.Content }}
+					val, err := d.DecodeValue()
+					if err != nil {
+						return err
+					}
+					if err := func(d *jx.Decoder) error {
+						{{- template "json/dec" $el }}
+						return nil
+					}(jx.DecodeStr(val)); err != nil {
+						return err
+					}
+					return nil
+				{{- else }}
+					{{- template "uri/decode" $el }}
+				{{- end }}
+			}); err != nil {
+				return err
+			}
+			{{- if $header.Type.NeedValidation }}
+			if err := func() error {
+				{{- template "validate" $el }}
+			}(); err != nil {
+				return err
+			}
+			{{- end }}
+		} {{ if $header.Spec.Required }} else {
+			return err
+		} {{ end }}
+		return nil
+	}(); err != nil {
+		return res, errors.Wrap(err, {{ printf "parse %s header" $header.Spec.Name | quote }})
+	}
+}
+{{- end }}
+{{- end }}

@@ -1,0 +1,218 @@
+{{- /*gotype: github.com/ogen-go/ogen/gen.TemplateConfig*/ -}}
+{{ define "response_encoders" }}
+{{ template "header" $ }}
+
+{{- if $.PathsServerEnabled }}
+{{- range $op := $.Operations }}
+	{{- template "response_encoders/operation" op_elem $op $ }}
+{{ end }}
+
+{{- if $.Error }}
+{{- $otel := $.OpenTelemetryEnabled }}
+func encodeErrorResponse(response {{ $.ErrorGoType }}, w http.ResponseWriter, {{ if $otel }}span trace.Span{{ end }}) error {
+	{{- $infos := $.Error.ResponseInfo $otel }}
+	{{- if eq (len $infos) 1 }}
+		{{- range $info := $infos }}
+			{{- if and $info.Type.NeedValidation $.ResponseValidationEnabled }}
+			if err := func() error {
+				{{- template "validate" elem $info.Type "response" }}
+			}(); err != nil {
+				return errors.Wrap(err, "validate")
+			}
+			{{- end }}
+			{{- template "respond" $info }}
+		{{- end }}
+	{{- else }}
+		switch response := response.(type) {
+		{{- range $info := uniqueResponseTypes $infos }}
+			case *{{ $info.Type.Name }}:
+			{{- if and $info.Type.NeedValidation $.ResponseValidationEnabled }}
+			if err := func() error {
+				{{- template "validate" elem $info.Type "response" }}
+			}(); err != nil {
+				return errors.Wrap(err, "validate")
+			}
+			{{- end }}
+			{{- template "respond" $info }}
+		{{- end }}
+		default:
+			return errors.Errorf("unexpected response type: %T", response)
+		}
+	{{- end }}
+}
+{{- end }}
+{{- end }}
+
+{{- if $.WebhookServerEnabled }}
+{{- range $op := $.Webhooks }}
+    {{- template "response_encoders/operation" op_elem $op $ }}
+{{ end }}
+{{- end }}
+
+{{ end }}
+
+{{ define "response_encoders/operation" }}
+{{- /*gotype: github.com/ogen-go/ogen/gen.OperationElem*/ -}}{{ $op := $.Operation }}
+{{- /*gotype: github.com/ogen-go/ogen/gen.TemplateConfig*/ -}}{{ $cfg := $.Config }}
+{{- $otel := $cfg.OpenTelemetryEnabled }}
+{{- if $op.HasSSEStreamResponse }}
+	{{- template "response_encoders/operation_sse" . }}
+{{- else }}
+func encode{{ $op.Name }}Response(response {{ $op.Responses.GoType }}, w http.ResponseWriter, {{ if $otel }}span trace.Span{{ end }}) error {
+	{{- $types := $op.ListResponseTypes $otel }}
+	{{- $hasRawResponse := false }}
+	{{- range $info := $types }}{{- if $info.RawResponse }}{{- $hasRawResponse = true }}{{- end }}{{- end }}
+	{{- if and (eq (len $types) 1) (not $hasRawResponse) }}
+		{{- range $info := $types }}
+			{{- if and $info.Type.NeedValidation $cfg.ResponseValidationEnabled }}
+			if err := func() error {
+				{{- template "validate" elem $info.Type "response" }}
+			}(); err != nil {
+				return errors.Wrap(err, "validate")
+			}
+			{{- end }}
+			{{- template "respond" $info }}
+		{{- end }}
+	{{- else }}
+		switch response := response.(type) {
+		{{- range $info := uniqueResponseTypes $types }}
+			case *{{ $info.Type.Name }}:
+				{{- if and $info.Type.NeedValidation $cfg.ResponseValidationEnabled }}
+				if err := func() error {
+					{{- template "validate" elem $info.Type "response" }}
+				}(); err != nil {
+					return errors.Wrap(err, "validate")
+				}
+				{{- end }}
+				{{- template "respond" $info }}
+		{{- end }}
+		default:
+			return errors.Errorf("unexpected response type: %T", response)
+		}
+	{{- end -}}
+}
+{{- end }}
+{{ end }}
+
+{{ define "response_encoders/operation_sse" }}
+{{- /*gotype: github.com/ogen-go/ogen/gen.OperationElem*/ -}}
+{{- sse_server_response_encoding $.Operation }}
+{{ end }}
+
+{{ define "respond" }}
+{{- /*gotype: github.com/ogen-go/ogen/gen/ir.ResponseInfo*/ -}}
+
+{{- if and (not $.NoContent) (not $.ContentType.Mask) }}
+	w.Header().Set("Content-Type", {{ $.ContentTypeHeader }})
+{{- end }}
+
+{{- if $.WithHeaders }}
+{{- with $exposeHeaders := $.ExposeHeadersHeader }}
+w.Header().Set("Access-Control-Expose-Headers", {{ $exposeHeaders }})
+{{- end }}
+// Encoding response headers.
+{
+	h := uri.NewHeaderEncoder(w.Header())
+	{{- range $_, $header := $.Headers }}
+	// Encode {{ quote $header.Spec.Name }} header.
+	{
+		cfg := uri.HeaderParameterEncodingConfig{
+			Name:    {{ quote $header.Spec.Name }},
+			Explode: {{ if $header.Spec.Explode }}true{{ else }}false{{ end }},
+		}
+		if err := h.EncodeParam(cfg, func(e uri.Encoder) error{
+			{{- $el := elem $header.Type (printf "response.%s" $header.Name) }}
+			{{- if $header.Spec.Content }}
+				var enc jx.Encoder
+				func(e *jx.Encoder) {
+					{{ template "json/enc" $el }}
+				}(&enc)
+				return e.EncodeValue(string(enc.Bytes()))
+			{{- else }}
+				{{- template "uri/encode" $el }}
+			{{- end }}
+		}); err != nil {
+			return errors.Wrap(err, {{ printf "encode %s header" $header.Spec.Name | quote }})
+		}
+	}
+	{{- end }}
+}
+{{- end }}
+
+{{- if $.WithStatusCode }}
+	code := response.StatusCode
+	if code == 0 {
+		// Set default status code.
+		code = http.StatusOK
+	}
+	w.WriteHeader(code)
+	{{- if $.OpenTelemetry }}
+	if code >= http.StatusInternalServerError {
+		span.SetStatus(codes.Error, http.StatusText(code))
+	}
+	{{- end }}
+{{- else }}
+	w.WriteHeader({{ $.StatusCode }})
+	{{- if $.OpenTelemetry }}
+		{{- if ge .StatusCode 500 }}
+			span.SetStatus(codes.Error, http.StatusText({{ $.StatusCode }}))
+		{{- end }}
+	{{- end }}
+{{- end }}
+
+{{ if $.NoContent }}
+	{{ template "respond/return" $}}
+{{- else }}
+	{{- $type := $.Type }}
+	{{- $var := "response" }}
+	{{- if or $.WithStatusCode $.WithHeaders }}
+		{{- $type = ($.Type.MustField "Response").Type }}
+		{{- $var = "response.Response" }}
+	{{- end }}
+
+	{{- if or $.Encoding.JSON $.Encoding.ProblemJSON }}
+		{{- if $.JSONStreaming }}
+		e := jx.NewStreamingEncoder(w, -1)
+		{{- template "json/enc" elem $type $var }}
+		if err := e.Close(); err != nil {
+			return errors.Wrap(err, "flush streaming")
+		}
+		{{- else }}
+		e := new(jx.Encoder)
+		{{- template "json/enc" elem $type $var }}
+		if _, err := e.WriteTo(w); err != nil {
+			return errors.Wrap(err, "write")
+		}
+		{{- end }}
+		{{ template "respond/return" $}}
+	{{- else if $type.IsStream }}
+		{{- if $type.IsBase64Stream }}
+		writer := base64.NewEncoder(base64.StdEncoding, w)
+		defer writer.Close()
+		{{- else }}
+		writer := w
+		{{- end }}
+		if closer, ok := {{ $var }}.Data.(io.Closer); ok {
+			defer closer.Close()
+		}
+		if _, err := io.Copy(writer, {{ $var }}); err != nil {
+			return errors.Wrap(err, "write")
+		}
+		{{ template "respond/return" $}}
+	{{- else }}
+		{{- errorf "%q: %s encoder not implemented" $.Encoding $type }}
+	{{- end }}
+{{- end }}
+{{ end }}
+
+{{ define "respond/return" }}
+{{- /*gotype: github.com/ogen-go/ogen/gen/ir.ResponseInfo*/ -}}
+{{- if $.WithStatusCode }}
+if code >= http.StatusInternalServerError {
+	return errors.Wrapf(ht.ErrInternalServerErrorResponse, "code: %d, message: %s", code, http.StatusText(code))
+}
+return nil
+{{- else }}
+return nil
+{{- end }}
+{{- end }}

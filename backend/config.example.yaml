@@ -70,16 +70,25 @@ remote_upload:
 
 # Telegram：热更新
 telegram:
-  # 启用需填写 Bot Token；关闭只停止本站接收和导入，不控制 Bot API 进程
+  # Go 后端通过 MTProto 直接连接 Telegram；配置保存后自动重连
   enabled: false
+  # 从 my.telegram.org 的 API development tools 获取
+  api_id: 0
+  api_hash: ""
+  # 视频与会话目录；留空使用 storage.data_dir 下的 telegram/
+  storage_directory: ""
   # BotFather 提供的机器人 Token
   bot_token: ""
+  # 登录、消息收发和视频下载的代理；留空直连，支持 HTTP/HTTPS、SOCKS5/SOCKS5H 及用户名密码
+  connection_proxy: ""
   # 允许发送视频的用户 ID；留空时仅响应 /id 等引导消息
   allowed_user_ids: []
   # 选填，用于生成机器人回复中的视频链接
   site_base_url: ""
   # 单文件上限（字节）；消息未提供有效大小或已超限时，拒绝下载
   max_file_size_bytes: 4294967296
+  # 同时只下载一个视频；单个视频的并行下载路数（1–8）
+  download_threads: 6
   # 待处理任务上限、文件获取超时（秒）
   max_pending_jobs: 100
   fetch_timeout_seconds: 1800

@@ -1,0 +1,85 @@
+{{- /*gotype: github.com/ogen-go/ogen/gen/ir.Type*/ -}}
+{{- define "json/encoders_map" }}
+{{- $va := $.Validators }}
+// Encode implements json.Marshaler.
+func (s {{ $.ReadOnlyReceiver }}) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields implements json.Marshaler.
+func (s {{ $.ReadOnlyReceiver }}) encodeFields(e *jx.Encoder) {
+	for k, elem := range s {
+		e.FieldStart(k)
+		{{ template "json/enc" map_elem $.Item }}
+	}
+}
+
+// Decode decodes {{ $.Name }} from json.
+func (s *{{ $.Name }}) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New({{ printf "invalid: unable to decode %s to nil" $.Name | quote }})
+	}
+	m := s.init()
+
+	{{- if $va.Object.Set }}
+	var propertiesCount int
+	{{- end }}
+
+	{{- if $.MapPattern }}
+	pattern := regexMap[{{ quote $.MapPattern.String }}]
+	{{- end }}
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		{{- if $va.Object.Set }}
+		propertiesCount++
+		{{- end }}
+		{{- if $.MapPattern }}
+		switch match, err := pattern.Match(k); {
+		case err != nil:
+			return errors.Wrap(err, "execute regex")
+		case !match:
+			{{- if $.DenyAdditionalProps }}
+			switch string(k) {
+			{{- range $k, $_ := $.AllowedProps }}
+			case {{ quote $k }}:
+				return d.Skip()
+			{{- end }}
+			default:
+				return errors.Errorf("unexpected field %q", k)
+			}
+			{{- else }}
+			return d.Skip()
+			{{- end }}
+		}
+		{{- end }}
+		var elem {{ $.Item.Go }}
+		if err := func() error {
+			{{- template "json/dec" map_elem $.Item }}
+			return nil
+		}(); err != nil {
+			return errors.Wrapf(err, "decode field %q", k)
+		}
+		m[string(k)] = elem
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, {{ printf "decode %s" $.Name | quote }})
+	}
+
+	{{- if $va.Object.Set }}
+	{{- $v := $va.Object }}
+	// Validate properties count.
+	if err := (validate.Object{
+		MinProperties:	{{ $v.MinProperties }},
+		MinPropertiesSet: {{ $v.MinPropertiesSet }},
+		MaxProperties:	{{ $v.MaxProperties }},
+		MaxPropertiesSet: {{ $v.MaxPropertiesSet }},
+	}).ValidateProperties(propertiesCount); err != nil {
+		return errors.Wrap(err, "object")
+	}
+	{{- end }}
+
+	return nil
+}
+
+{{ end }}

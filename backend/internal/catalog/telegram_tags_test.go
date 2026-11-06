@@ -187,7 +187,7 @@ func TestStartupPreservesAndReclassifiesTelegramSourceTag(t *testing.T) {
 					_ = c.Close()
 				}
 			})
-			if _, _, err := c.TelegramOffset(ctx, 123); err != nil {
+			if _, err := c.TelegramPaused(ctx, 123); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := c.EnsureTag(ctx, "content", "user"); err != nil {

@@ -63,7 +63,8 @@ func TestMissingMessageDateUsesPersistedReceptionTime(t *testing.T) {
 
 func TestTimestampFallbackPreservesCaptionAndFilenamePriority(t *testing.T) {
 	for _, tc := range []struct{ caption, filename, want string }{
-		{"附文标题\n第二行", "原文件.mp4", "附文标题"},
+		{"附文标题\n第二行", "原文件.mp4", "附文标题 第二行"},
+		{"\n  第一段  \r\n\n 第二段\t#标签 \n 第三段  ", "原文件.mp4", "第一段 第二段 #标签 第三段"},
 		{"", "原文件.mp4", "原文件"},
 		{"", "", "1789975384"},
 		{" \n ", "", "1789975384"},

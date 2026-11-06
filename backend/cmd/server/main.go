@@ -148,11 +148,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("configure config manager: %v", err)
 	}
-	if composeFile := strings.TrimSpace(os.Getenv("VIDEO_TELEGRAM_COMPOSE")); composeFile != "" {
-		// The deployment endpoint and paths are resolved once, separately from panel settings.
-		// A missing/invalid file is reported by the Telegram status and probe.
-		_ = configManager.LoadTelegramCompose(composeFile)
-	}
 	if err := migrateApplicationConfig(context.Background(), cat, configManager); err != nil {
 		log.Fatalf("migrate config.yaml: %v", err)
 	}

@@ -1,0 +1,77 @@
+{{- /*gotype: github.com/ogen-go/ogen/gen.TemplateConfig*/ -}}
+
+{{ define "test_examples" }}
+{{ template "header_test" $ }}
+
+{{- range $typ := $.Types }}{{- if $typ.HasFeature "json" }}
+
+{{- if not $typ.IsGeneric }}
+func Test{{ $typ.Go }}_EncodeDecode(t *testing.T) {
+	{{- if $.SkipTest $typ }}
+	t.Skip("Skipped by regex")
+	{{- end }}
+	var typ {{ $typ.Go }}
+	{{- if $typ.IsMap }}{{- if not $typ.Fields }}
+	typ = make({{ $typ.Go }})
+	{{- end }}{{- end }}
+	typ.SetFake()
+
+	e := jx.Encoder{}
+	typ.Encode(&e)
+	data := e.Bytes()
+	require.True(t, std.Valid(data), "Encoded: %s", data)
+
+	var typ2 {{ $typ.Go }}
+	{{- if $typ.IsMap }}
+	typ2 = make({{ $typ.Go }})
+	{{- end }}
+	require.NoError(t, typ2.Decode(jx.DecodeBytes(data)))
+}
+{{- end }}
+
+{{- with $examples := $typ.Examples }}
+
+func Test{{ $typ.Go }}_Examples(t *testing.T) {
+	{{- if $.SkipTest $typ }}
+	t.Skip("Skipped by regex")
+	{{- end }}
+
+	for i, tc := range []struct{
+		Input string
+	}{
+		{{- range $example := $examples }}
+		{Input: {{ quote $example }}},
+		{{- end }}
+	}{
+		tc := tc
+		t.Run(fmt.Sprintf("Test%d", i+1), func(t *testing.T) {
+			var typ {{ $typ.Go }}
+			{{- if $typ.IsMap }}{{- if not $typ.Fields }}
+			typ = make({{ $typ.Go }})
+			{{- end }}{{- end }}
+
+			if err := typ.Decode(jx.DecodeStr(tc.Input)); err != nil {
+				if validateErr, ok := errors.Into[*validate.Error](err); ok {
+					t.Skipf("Validation error: %v", validateErr)
+					return
+				}
+				require.NoErrorf(t, err, "Input: %s", tc.Input)
+			}
+
+			e := jx.Encoder{}
+			typ.Encode(&e)
+			require.True(t, std.Valid(e.Bytes()), "Encoded: %s", e.Bytes())
+
+			var typ2 {{ $typ.Go }}
+			{{- if $typ.IsMap }}{{- if not $typ.Fields }}
+			typ2 = make({{ $typ.Go }})
+			{{- end }}{{- end }}
+			require.NoError(t, typ2.Decode(jx.DecodeBytes(e.Bytes())))
+		})
+	}
+}
+
+{{- end }}
+{{- end }}{{- end }}
+
+{{- end }}

@@ -1,0 +1,101 @@
+{{- /*gotype: github.com/ogen-go/ogen/gen/ir.Type*/ -}}
+{{- define "schema/sum" }}
+// {{ $.Name }} represents sum type.
+type {{ $.Name }} struct {
+	{{- if $.HasGeneratedReservedField }}
+	// WARNING: schema property named Type is generated as TypeValue,
+	// Type field is reserved.
+	//
+	{{- end }}
+	// Type selects the active sum variant, switch on this field.
+	Type {{ $.Name }}Type
+	{{- range $s := $.SumOf }}
+		{{ $s.Name }} {{ $s.Go }}
+	{{- end }}
+}
+
+// {{ $.Name }}Type is oneOf type of {{ $.Name }}.
+type {{ $.Name }}Type string
+
+// Possible values for {{ $.Name }}Type.
+const (
+	{{- range $s := $.SumOf }}
+		{{- $entries := $.SumSpec.PickMappingEntriesFor $ $s }}
+		{{- range $e := $entries}}
+			{{ $e.Name }} {{ $.Name }}Type = {{ quote $e.Key }}
+		{{- end }}
+	{{- end }}
+)
+
+{{- range $s := $.SumOf }}
+	{{- $entries := $.SumSpec.PickMappingEntriesFor $ $s }}
+	{{- if eq (len $entries) 1 }}
+		{{- range $e := $entries }}
+		// Is{{ $s.Name }} reports whether {{ $.Name }} is {{ $s.Go }}.
+		func (s {{ $.ReadOnlyReceiver }}) Is{{ $s.Name }}() bool { return s.Type == {{ $e.Name }} }
+		{{- end }}
+	{{- else }}
+		// Is{{ $s.Name }} reports whether {{ $.Name }} is {{ $s.Go }}.
+		func (s {{ $.ReadOnlyReceiver }}) Is{{ $s.Name }}() bool {
+			switch s.Type {
+			case {{ $entries.JoinConstNames }}:
+				return true
+			default:
+				return false
+			}
+		}
+	{{- end }}
+{{- end }}
+
+{{- range $s := $.SumOf }}
+	{{- $entries := $.SumSpec.PickMappingEntriesFor $ $s }}
+	{{- $isMulti := gt (len $entries) 1}}
+	// Set{{ $s.Name }} sets {{ $.Name }} to {{ $s.Go }}.
+	{{- if $isMulti }}
+	// panics if `t` is not associated with {{ $s.Name }}
+	{{- end }}
+	func (s *{{ $.Go }}) Set{{ $s.Name }}({{- if $isMulti }}t {{ $.Name }}Type, {{- end }}v {{ $s.Go }}) {
+		{{- if $isMulti }}
+		s.Type = t
+		{{- else }}
+			{{- range $e := $entries }}
+			s.Type = {{ $e.Name }}
+			{{- end }}
+		{{- end }}
+		s.{{ $s.Name }} = v
+		{{- if $isMulti }}
+		if !s.Is{{ $s.Name }}() {
+			panic(fmt.Errorf("invariant: %v is not {{ $s.Name }}", t))
+		}
+		{{- end }}
+	}
+
+	// Get{{ $s.Name }} returns {{ $s.Go }} and true boolean if {{ $.Go }} is {{ $s.Go }}.
+	func (s {{ $.ReadOnlyReceiver }}) Get{{ $s.Name }}()(v {{ $s.Go }}, ok bool) {
+		if !s.Is{{ $s.Name }}() {
+			return v, false
+		}
+		return s.{{ $s.Name }}, true
+	}
+
+	{{- if $isMulti }}
+		{{- range $e := $entries }}
+		// New{{ $e.Name }} returns new {{ $.Go }} from {{ $s.Go }}.
+		func New{{ $e.Name }}(v {{ $s.Go }}) {{ $.Go }} {
+			var s {{ $.Name }}
+			s.Set{{ $s.Name }}({{ $e.Name }}, v)
+			return s
+		}
+		{{- end }}
+	{{- else }}
+		{{- range $e := $entries }}
+		// New{{ $e.Name }} returns new {{ $.Go }} from {{ $s.Go }}.
+		func New{{ $e.Name }}(v {{ $s.Go }}) {{ $.Go }} {
+			var s {{ $.Name }}
+			s.Set{{ $s.Name }}(v)
+			return s
+		}
+		{{- end }}
+	{{- end }}
+{{- end }}
+{{ end }}{{- /* end define */}}

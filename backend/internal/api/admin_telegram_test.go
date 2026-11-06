@@ -20,7 +20,7 @@ import (
 func TestAdminTelegramVideoFilterSurvivesCloudMigrationAndIgnoresTags(t *testing.T) {
 	ctx := context.Background()
 	c := openRemoteUploadAPICatalog(t)
-	if _, _, err := c.TelegramOffset(ctx, 123); err != nil {
+	if _, err := c.TelegramPaused(ctx, 123); err != nil {
 		t.Fatal(err)
 	}
 	for i := int64(1); i <= 2; i++ {
@@ -106,7 +106,7 @@ func TestTelegramAdminRoutesRejectAnonymousAndViewers(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, route := range []struct{ method, path string }{
-		{"GET", "/config.yaml"}, {"PUT", "/config.yaml"}, {"GET", "/telegram/availability"}, {"GET", "/telegram/status"}, {"POST", "/telegram/test"}, {"POST", "/telegram/prepare-polling"}, {"POST", "/telegram/resume"},
+		{"GET", "/config.yaml"}, {"PUT", "/config.yaml"}, {"GET", "/telegram/availability"}, {"GET", "/telegram/status"}, {"POST", "/telegram/test"}, {"POST", "/telegram/resume"},
 		{"GET", "/import-jobs"}, {"POST", "/import-jobs/job/cancel"}, {"POST", "/import-jobs/job/retry"},
 	} {
 		for _, viewer := range []bool{false, true} {
@@ -127,7 +127,7 @@ func TestTelegramAdminRoutesRejectAnonymousAndViewers(t *testing.T) {
 func TestImportAPIHidesPrivateSourceAndUsesCursor(t *testing.T) {
 	ctx := context.Background()
 	c := openRemoteUploadAPICatalog(t)
-	if _, _, err := c.TelegramOffset(ctx, 123); err != nil {
+	if _, err := c.TelegramPaused(ctx, 123); err != nil {
 		t.Fatal(err)
 	}
 	source := &catalog.TelegramSource{BotID: 123, SenderID: 42, FileID: "PRIVATE_FILE_ID", UniqueID: "PRIVATE_UNIQUE", FileName: "raw-name.mp4"}
@@ -157,7 +157,7 @@ func TestImportAPIHidesPrivateSourceAndUsesCursor(t *testing.T) {
 func TestImportAPIStateFiltersBeforePagination(t *testing.T) {
 	ctx := context.Background()
 	c := openRemoteUploadAPICatalog(t)
-	if _, _, err := c.TelegramOffset(ctx, 123); err != nil {
+	if _, err := c.TelegramPaused(ctx, 123); err != nil {
 		t.Fatal(err)
 	}
 	fixtures := []struct {
@@ -257,7 +257,7 @@ func TestImportAPIStateFiltersBeforePagination(t *testing.T) {
 func TestImportAPIHonorsRecentRecordLimit(t *testing.T) {
 	ctx := context.Background()
 	c := openRemoteUploadAPICatalog(t)
-	if _, _, err := c.TelegramOffset(ctx, 123); err != nil {
+	if _, err := c.TelegramPaused(ctx, 123); err != nil {
 		t.Fatal(err)
 	}
 	for i := int64(1); i <= 55; i++ {

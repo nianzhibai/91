@@ -1,0 +1,191 @@
+{{ define "parameter_decoder" }}
+{{- /*gotype: github.com/ogen-go/ogen/gen/ir.Operation*/ -}}
+{{ if $.Params }}
+func unpack{{ $.Name }}Params(packed middleware.Parameters) (params {{ $.Name }}Params) {
+	{{- range $p := $.Params }}
+	{
+		key := middleware.ParameterKey{
+			Name: {{ quote $p.Spec.Name }},
+			In: {{ quote $p.Spec.In }},
+		}
+		{{- if $p.Spec.Required }}
+		params.{{ $p.Name }} = packed[key].({{ $p.Type.Go }})
+		{{- else }}
+		if v, ok := packed[key]; ok {
+			params.{{ $p.Name }} = v.({{ $p.Type.Go }})
+		}
+		{{- end }}
+	}
+	{{- end }}
+	return params
+}
+
+func decode{{ $.Name }}Params(args [{{ $.PathParamsCount }}]string, argsEscaped bool, r *http.Request) (params {{ $.Name }}Params, _ error) {
+	{{- if $.HasQueryParams }}
+		q := uri.NewQueryDecoder(r.URL.Query())
+	{{- end }}
+	{{- if $.HasHeaderParams }}
+		h := uri.NewHeaderDecoder(r.Header)
+	{{- end }}
+	{{- if $.HasCookieParams }}
+		c := uri.NewCookieDecoder(r)
+	{{- end }}
+
+	{{- range $p := $.Params }}{{/* Range params */}}
+    {{- $loc             := printf "%s: %s" $p.Spec.In $p.Spec.Name }}
+    {{- $el              := elem $p.Type (printf "params.%s" $p.Name) }}
+	{{- $default 		 := $p.Default }}
+	{{- if $default.Set }}
+	// Set default value for {{ $loc }}.
+	{
+    	{{- template "defaults/set" default_elem $p.Type (printf "params.%s" $p.Name) $default }}
+	}
+	{{- end }}
+	// Decode {{ $loc }}.
+	if err := func() error {
+	{{- if $p.Spec.In.Query }}{{/* Switch location */}}
+		cfg := uri.QueryParameterDecodingConfig{
+			Name:    {{ quote $p.Spec.Name }},
+			Style:   uri.QueryStyle{{ capitalize $p.Spec.Style.String }},
+			Explode: {{ if $p.Spec.Explode }}true{{ else }}false{{ end }},
+			{{- if isObjectParam $p }}
+			Fields: {{ paramObjectFields $p.Type }},
+			{{- end }}
+		}
+
+		if err := q.HasParam(cfg); err == nil {
+			if err := q.DecodeParam(cfg, func(d uri.Decoder) error {
+    			{{- template "decode_parameter" $p -}}
+			}); err != nil {
+				return err
+			}
+
+			{{- if $p.Type.NeedValidation }}
+			if err := func() error {
+				{{- template "validate" $el }}
+			}(); err != nil {
+				return err
+			}
+			{{- end }}
+		} {{- if $p.Spec.Required }} else {
+			return err
+		} {{- end }}
+	{{- else if $p.Spec.In.Path }}
+	{{- /* If we cannot find such path parameter, defined path parameter is not used */ -}}
+	{{- $idx := $.PathParamIndex $p.Spec.Name }}
+	{{- if ge $idx 0 }}
+		param := args[{{ $idx }}]
+		if argsEscaped {
+			unescaped, err := url.PathUnescape(args[{{ $idx }}])
+			if err != nil {
+				return errors.Wrap(err, "unescape path")
+			}
+			param = unescaped
+		}
+		if len(param) > 0 {
+			d := uri.NewPathDecoder(uri.PathDecoderConfig{
+				Param: {{ quote $p.Spec.Name }},
+				Value: param,
+				Style: uri.PathStyle{{ capitalize $p.Spec.Style.String }},
+				Explode: {{ if $p.Spec.Explode }}true{{ else }}false{{ end }},
+			})
+
+			if err := func() error {
+        		{{- template "decode_parameter" $p -}}
+			}(); err != nil {
+				return err
+			}
+
+			{{- if $p.Type.NeedValidation }}
+			if err := func() error {
+				{{- template "validate" $el }}
+			}(); err != nil {
+				return err
+			}
+			{{- end }}
+		} {{ if $p.Spec.Required }} else {
+			return validate.ErrFieldRequired
+		} {{ end }}
+	{{- else }}
+	// Not used.
+	{{- end }}
+	{{- else if $p.Spec.In.Header }}
+		cfg := uri.HeaderParameterDecodingConfig{
+			Name:   {{ quote $p.Spec.Name }},
+			Explode:{{ if $p.Spec.Explode }}true{{ else }}false{{ end }},
+		}
+		if err := h.HasParam(cfg); err == nil {
+			if err := h.DecodeParam(cfg, func(d uri.Decoder) error {
+        		{{- template "decode_parameter" $p -}}
+			}); err != nil {
+				return err
+			}
+
+			{{- if $p.Type.NeedValidation }}
+			if err := func() error {
+				{{- template "validate" $el }}
+			}(); err != nil {
+				return err
+			}
+			{{- end }}
+		} {{ if $p.Spec.Required }} else {
+			return err
+		} {{ end }}
+	{{- else if $p.Spec.In.Cookie }}
+		cfg := uri.CookieParameterDecodingConfig{
+			Name:   {{ quote $p.Spec.Name }},
+			Explode:{{ if $p.Spec.Explode }}true{{ else }}false{{ end }},
+		}
+		if err := c.HasParam(cfg); err == nil {
+			if err := c.DecodeParam(cfg, func(d uri.Decoder) error {
+        		{{- template "decode_parameter" $p -}}
+			}); err != nil {
+				return err
+			}
+
+			{{- if $p.Type.NeedValidation }}
+			if err := func() error {
+				{{- template "validate" $el }}
+			}(); err != nil {
+				return err
+			}
+			{{- end }}
+		} {{ if $p.Spec.Required }} else {
+			return err
+		} {{ end }}
+	{{- else }}
+		{{ errorf "unsupported location %s" $p.Spec.In }}
+	{{- end }}{{/* Switch location */}}
+		return nil
+	}(); err != nil {
+		return params, &ogenerrors.DecodeParamError{
+			Name: {{ quote $p.Spec.Name }},
+			In: {{ quote $p.Spec.In }},
+			Err: err,
+		}
+	}
+	{{- end }}{{/* Range params */}}
+	return params, nil
+}
+{{ end }}
+{{ end }}
+
+{{ define "decode_parameter" }}{{ $param := $ }}
+{{- /*gotype: github.com/ogen-go/ogen/gen/ir.Parameter*/ -}}
+{{- $el := elem $param.Type (printf "params.%s" $param.Name) }}
+{{- if $param.Spec.Content }}
+	val, err := d.DecodeValue()
+	if err != nil {
+		return err
+	}
+	if err := func(d *jx.Decoder) error {
+    	{{- template "json/dec" $el }}
+		return nil
+	}(jx.DecodeStr(val)); err != nil {
+		return err
+	}
+	return nil
+{{- else }}
+    {{- template "uri/decode" $el }}
+{{- end }}
+{{ end }}

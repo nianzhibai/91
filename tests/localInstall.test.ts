@@ -8,7 +8,6 @@ import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const installer = fileURLToPath(new URL("../install.sh", import.meta.url));
-const telegramTemplate = fileURLToPath(new URL("../telegram.example.yml", import.meta.url));
 
 function fixture(t: TestContext) {
   const root = mkdtempSync(join(tmpdir(), "91-local-package-"));
@@ -32,7 +31,6 @@ ${name === "curl" ? "exit 93" : "exit 0"}
       writeFileSync(join(packageRoot, "server"), contents, { mode: 0o755 });
       writeFileSync(join(packageRoot, "dist", "index.html"), contents);
       writeFileSync(join(packageRoot, "config.example.yaml"), 'server:\n  listen: "0.0.0.0:9191"\n');
-      copyFileSync(telegramTemplate, join(packageRoot, "telegram.example.yml"));
       const path = join(root, `${label} release.tar.gz`);
       const result = spawnSync("tar", ["-C", source, "-czf", path, "video-site-91-linux-amd64"], { encoding: "utf8" });
       assert.equal(result.status, 0, result.stderr);
@@ -78,7 +76,7 @@ test("local installation uses the archive for the complete file and manager inst
   assert.equal(readFileSync(join(f.installation, "server"), "utf8"), "local binary one");
   assert.equal(readFileSync(join(f.installation, "dist", "index.html"), "utf8"), "local binary one");
   assert.ok(existsSync(join(f.installation, "config.yaml")));
-  assert.ok(existsSync(join(f.installation, "telegram.yml")));
+  assert.equal(existsSync(join(f.installation, "telegram.yml")), false);
   assert.equal(readFileSync(join(f.installation, ".version"), "utf8").split("\n")[0], archive.version);
   const help = spawnSync(join(f.bin, "91"), ["--help"], { encoding: "utf8" });
   assert.equal(help.status, 0, help.stderr);

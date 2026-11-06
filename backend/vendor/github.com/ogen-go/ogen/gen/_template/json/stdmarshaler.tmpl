@@ -1,0 +1,41 @@
+{{- define "json/stdmarshaler" }}
+{{- /*gotype: github.com/ogen-go/ogen/gen/ir.Type*/ -}}
+{{- $g := $.GenericOf -}}
+// MarshalJSON implements stdjson.Marshaler.
+func (s {{ $.ReadOnlyReceiver }}) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+{{- if $.IsGeneric }}
+	{{- if $g.Format }}
+		{{ if $g.JSON.TimeFormat -}}
+			s.Encode(&e, json.NewTimeEncoder({{ $g.JSON.TimeFormat }}))
+		{{- else -}}
+			s.Encode(&e, json.Encode{{ $g.JSON.Encoder }})
+		{{- end }}
+	{{- else }}
+	s.Encode(&e)
+	{{- end }}
+{{- else }}
+	s.Encode(&e)
+{{- end }}
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *{{ $.Name }}) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+{{- if $.IsGeneric }}
+	{{- if $g.Format }}
+		{{ if $g.JSON.TimeFormat -}}
+			return s.Decode(d, json.NewTimeDecoder({{ $g.JSON.TimeFormat }}))
+		{{- else -}}
+			return s.Decode(d, json.Decode{{ $g.JSON.Decoder }})
+		{{- end }}
+	{{- else }}
+	return s.Decode(d)
+	{{- end }}
+{{- else }}
+	return s.Decode(d)
+{{- end }}
+}
+
+{{ end }}

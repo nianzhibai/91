@@ -1,0 +1,409 @@
+package gen
+
+import (
+	"fmt"
+	"go/token"
+	"iter"
+	"net/url"
+	"path"
+	"slices"
+	"strconv"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/go-faster/errors"
+
+	"github.com/ogen-go/ogen/internal/naming"
+	"github.com/ogen-go/ogen/jsonschema"
+)
+
+func cleanRef(r jsonschema.Ref) string {
+	ref := r.String()
+
+	before, result, _ := strings.Cut(ref, "#")
+	if result == "" {
+		result = ref
+		// Cuts file name.
+		//
+		// https://example.com/foo/bar.json -> bar
+		// foo/bar.json -> bar
+		if u, err := url.Parse(before); before != "" && err == nil {
+			_, result = path.Split(u.Path)
+			result = strings.TrimSuffix(result, path.Ext(result))
+		}
+	}
+
+	idx := strings.LastIndexByte(result, '/')
+	if idx < 0 {
+		return result
+	}
+	if cut := result[idx+1:]; cut != "" {
+		result = cut
+	}
+	return result
+}
+
+type nameGen struct {
+	parts []string
+	src   []rune
+	pos   int
+
+	allowSpecial bool            // special characters like +, -, /
+	initialisms  bool            // treat lower->upper case transitions as word boundaries
+	rules        *naming.Ruleset // custom initialism ruleset, nil means package default
+}
+
+func (g *nameGen) next() (rune, bool) {
+	if len(g.src) == g.pos {
+		return rune(0), false
+	}
+
+	defer func() { g.pos++ }()
+	return g.src[g.pos], true
+}
+
+var namedChar = map[rune][]rune{
+	'+': []rune("Plus"),
+	'-': []rune("Minus"),
+	'/': []rune("Slash"),
+	'<': []rune("Less"),
+	'>': []rune("Greater"),
+	'=': []rune("Eq"),
+	'.': []rune("Dot"),
+}
+
+func (g *nameGen) generate() (string, error) {
+	var (
+		part     []rune
+		upper    = true
+		pushPart = func() {
+			g.parts = append(g.parts, g.checkPart(string(part)))
+			part = nil
+		}
+	)
+	for {
+		r, ok := g.next()
+		if !ok {
+			pushPart()
+
+			name := strings.Join(g.parts, "")
+			// FIXME(tdakkota): choose prefix according to context
+			if len(name) > 0 && name[0] >= '0' && name[0] <= '9' {
+				name = "R" + name
+			}
+			if !token.IsIdentifier(name) {
+				return "", errors.Errorf("can't generate valid name: %+v", g.parts)
+			}
+			return name, nil
+		}
+
+		if g.isAllowed(r) {
+			// Treat a lower->upper case transition inside a camelCase token as a
+			// word boundary, so that e.g. "userId" splits into ["user", "Id"] and
+			// the "Id" part can match the "ID" initialism rule.
+			//
+			// A run of consecutive upper-case runes is kept together ("URL" stays
+			// "URL", not "U", "R", "L"), so the rule still fires on acronyms.
+			if g.initialisms && len(part) > 0 &&
+				unicode.IsUpper(r) && !unicode.IsUpper(part[len(part)-1]) {
+				pushPart()
+				upper = true
+			}
+
+			if upper {
+				r = unicode.ToUpper(r)
+				upper = false
+			}
+
+			part = append(part, r)
+			continue
+		}
+
+		upper = true
+		if g.allowSpecial {
+			if p, ok := namedChar[r]; ok {
+				pushPart()
+				part = p
+			}
+		}
+
+		pushPart()
+	}
+}
+
+func (g *nameGen) clean() string {
+	var (
+		part     []rune
+		pushPart = func() {
+			g.parts = append(g.parts, g.checkPart(string(part)))
+			part = nil
+		}
+	)
+	for {
+		r, ok := g.next()
+		if !ok {
+			pushPart()
+			return strings.Join(g.parts, "")
+		}
+
+		if g.isAllowed(r) {
+			part = append(part, r)
+			continue
+		}
+
+		if g.allowSpecial {
+			if p, ok := namedChar[r]; ok {
+				pushPart()
+				part = p
+			}
+		}
+
+		pushPart()
+	}
+}
+
+func (g *nameGen) isAllowed(r rune) bool {
+	r = unicode.ToLower(r)
+	return (r >= 'a' && r <= 'z') ||
+		(r >= '0' && r <= '9')
+}
+
+func (g *nameGen) checkPart(part string) string {
+	rule, ok := g.ruleFor(part)
+	if ok {
+		return rule
+	}
+	return part
+}
+
+// ruleFor looks up the initialism rule for part, using the configured ruleset
+// if any, or the package default otherwise.
+func (g *nameGen) ruleFor(part string) (string, bool) {
+	if g.rules != nil {
+		return g.rules.Rule(part)
+	}
+	return naming.Rule(part)
+}
+
+// namer generates Go identifiers from arbitrary strings.
+//
+// The zero value preserves ogen's historical naming behavior. A namer with
+// initialisms set additionally applies the initialism rules to camelCase input
+// (see nameGen.initialisms and the [NamingCamelInitialisms] feature).
+type namer struct {
+	initialisms bool
+	rules       *naming.Ruleset // custom initialism ruleset, nil means package default
+}
+
+func (n namer) cleanSpecial(strs ...string) string {
+	return (&nameGen{
+		src:          []rune(strings.Join(strs, " ")),
+		allowSpecial: true,
+		initialisms:  n.initialisms,
+		rules:        n.rules,
+	}).clean()
+}
+
+func (n namer) pascal(strs ...string) (string, error) {
+	return (&nameGen{
+		src:         []rune(strings.Join(strs, " ")),
+		initialisms: n.initialisms,
+		rules:       n.rules,
+	}).generate()
+}
+
+func (n namer) pascalSpecial(strs ...string) (string, error) {
+	return (&nameGen{
+		src:          []rune(strings.Join(strs, " ")),
+		allowSpecial: true,
+		initialisms:  n.initialisms,
+		rules:        n.rules,
+	}).generate()
+}
+
+func (n namer) pascalNonEmpty(strs ...string) (string, error) {
+	r, err := n.pascal(strs...)
+	if err == nil && r != "" {
+		return r, nil
+	}
+
+	r, err = n.pascalSpecial(strs...)
+	if err != nil {
+		return "", err
+	}
+	if r != "" {
+		return r, nil
+	}
+	return "", errors.Errorf("can't generate name for %+v", strs)
+}
+
+func (n namer) camel(s ...string) (string, error) {
+	r, err := n.pascal(s...)
+	if err != nil {
+		return "", err
+	}
+	return firstLower(r), nil
+}
+
+func (n namer) camelSpecial(s ...string) (string, error) {
+	r, err := n.pascalSpecial(s...)
+	if err != nil {
+		return "", err
+	}
+	return firstLower(r), nil
+}
+
+// Package-level helpers (initialisms disabled) for callers without a configured
+// namer: standalone funcs on already-generated names and template helpers.
+// Naming that honors [NamingCamelInitialisms] uses a namer instead (see Generator.namer).
+
+func pascal(strs ...string) (string, error) { return namer{}.pascal(strs...) }
+
+func pascalSpecial(strs ...string) (string, error) { return namer{}.pascalSpecial(strs...) }
+
+func camel(s ...string) (string, error) { return namer{}.camel(s...) }
+
+func camelSpecial(s ...string) (string, error) { return namer{}.camelSpecial(s...) }
+
+// firstLower returns s with first rune mapped to lower case.
+func firstLower(s string) string {
+	var out []rune
+	for i, c := range s {
+		if i == 0 {
+			c = unicode.ToLower(c)
+		}
+		out = append(out, c)
+	}
+	return string(out)
+}
+
+// valueMappingNameGen creates a name generator for either an enum or discriminator mapping
+func (n namer) valueMappingNameGen(
+	mapType, name string,
+	values iter.Seq[any],
+	valuesLen int,
+	allowSpecial bool,
+) (func(v any, idx int) (string, error), error) {
+	type namingStrategy int
+	const (
+		pascalName namingStrategy = iota
+		pascalSpecialName
+		cleanSuffix
+		indexSuffix
+		_lastStrategy
+	)
+
+	vstrCache := make(map[int]string, valuesLen)
+	nameGen := func(s namingStrategy, v any, idx int) (string, error) {
+		vstr, ok := vstrCache[idx]
+		if !ok {
+			vstr = fmt.Sprintf("%v", v)
+			if vstr == "" {
+				vstr = "Empty"
+			}
+			vstrCache[idx] = vstr
+		}
+		switch s {
+		case pascalName:
+			return n.pascal(name, vstr)
+		case pascalSpecialName:
+			return n.pascalSpecial(name, vstr)
+		case cleanSuffix:
+			return name + "_" + n.cleanSpecial(vstr), nil
+		case indexSuffix:
+			return name + "_" + strconv.Itoa(idx), nil
+		default:
+			panic(unreachable(s))
+		}
+	}
+
+	isException := func(start namingStrategy) bool {
+		if start == pascalName {
+			// This code is called when vstrCache is fully populated, so it's ok.
+			for _, v := range vstrCache {
+				if v == "" {
+					continue
+				}
+
+				// Do not use pascal strategy for enum values starting with special characters.
+				//
+				// This rule is created to be able to distinguish
+				// between negative and positive numbers in this case:
+				//
+				// enum:
+				//   - '1'
+				//   - '-2'
+				//   - '3'
+				//   - '-4'
+				firstRune, _ := utf8.DecodeRuneInString(v)
+				if firstRune == utf8.RuneError {
+					panic(fmt.Sprintf("invalid %s variant for %s: %q", mapType, name, v))
+				}
+
+				_, isFirstCharSpecial := namedChar[firstRune]
+				if isFirstCharSpecial {
+					return true
+				}
+			}
+		}
+
+		return false
+	}
+
+nextStrategy:
+	for strategy := pascalName; strategy < _lastStrategy; strategy++ {
+		if !allowSpecial && strategy == pascalSpecialName {
+			continue nextStrategy
+		}
+
+		// Treat enum type name as duplicate to prevent collisions.
+		names := map[string]struct{}{
+			name: {},
+		}
+		idx := -1
+		for v := range values {
+			idx++
+			k, err := nameGen(strategy, v, idx)
+			if err != nil {
+				continue nextStrategy
+			}
+			if _, ok := names[k]; ok {
+				continue nextStrategy
+			}
+			names[k] = struct{}{}
+		}
+		if isException(strategy) {
+			continue nextStrategy
+		}
+		return func(v any, idx int) (string, error) {
+			return nameGen(strategy, v, idx)
+		}, nil
+	}
+	return nil, errors.Errorf("unable to generate %s variant names for %q", mapType, name)
+}
+
+// enumVariantNameGen creates a name generator for enum values.
+func (n namer) enumVariantNameGen(name string, values []any) (func(v any, idx int) (string, error), error) {
+	return n.valueMappingNameGen("enum", name, slices.Values(values), len(values), true)
+}
+
+// discriminatorMappingNameGen creates a name generator for discriminator mapping keys.
+func (n namer) discriminatorMappingNameGen(name string, keys []string) (func(v any, idx int) (string, error), error) {
+	if len(keys) == 0 {
+		return nil, errors.New("empty discriminator keys")
+	}
+
+	// Create sequence that yields the mapping keys
+	seq := func(yield func(any) bool) {
+		for _, key := range keys {
+			// ensure user_id => UserId and not UserID
+			key := strings.ReplaceAll(key, "_", "+")
+			if !yield(key) {
+				return
+			}
+		}
+	}
+
+	return n.valueMappingNameGen("discriminator", name, seq, len(keys), false)
+}

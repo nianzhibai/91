@@ -1,0 +1,135 @@
+// Package exchange contains Telegram key exchange algorithm flows.
+// See https://core.telegram.org/mtproto/auth_key.
+package exchange
+
+import (
+	"io"
+	"time"
+
+	"github.com/gotd/log"
+
+	"github.com/gotd/td/clock"
+	"github.com/gotd/td/crypto"
+	"github.com/gotd/td/proto"
+	"github.com/gotd/td/transport"
+)
+
+// DefaultTimeout is default WithTimeout parameter value.
+const DefaultTimeout = 1 * time.Minute
+
+// ExchangeMode controls type of generated auth key.
+type ExchangeMode int
+
+const (
+	// ExchangeModePermanent creates permanent authorization key.
+	ExchangeModePermanent ExchangeMode = iota
+	// ExchangeModeTemporary creates temporary authorization key.
+	ExchangeModeTemporary
+)
+
+// Exchanger is builder for key exchangers.
+type Exchanger struct {
+	conn transport.Conn
+
+	clock   clock.Clock
+	rand    io.Reader
+	log     log.Helper
+	timeout time.Duration
+	dc      int
+	// mode/expires define auth key type produced by client exchange.
+	mode    ExchangeMode
+	expires int
+}
+
+// WithClock sets exchange flow clock.
+func (e Exchanger) WithClock(c clock.Clock) Exchanger {
+	e.clock = c
+	return e
+}
+
+// WithRand sets exchange flow random source.
+func (e Exchanger) WithRand(reader io.Reader) Exchanger {
+	e.rand = reader
+	return e
+}
+
+// WithLogger sets exchange flow logger.
+func (e Exchanger) WithLogger(logger log.Logger) Exchanger {
+	e.log = log.For(logger)
+	return e
+}
+
+// WithTimeout sets write/read deadline of every exchange request.
+func (e Exchanger) WithTimeout(timeout time.Duration) Exchanger {
+	e.timeout = timeout
+	return e
+}
+
+// WithTempMode configures temporary authorization key exchange.
+//
+// expiresIn is temporary key lifetime in seconds.
+func (e Exchanger) WithTempMode(expiresIn int) Exchanger {
+	// Switching mode changes only client flow payload type; server flow remains
+	// backward-compatible and accepts both variants.
+	e.mode = ExchangeModeTemporary
+	e.expires = expiresIn
+	return e
+}
+
+// NewExchanger creates new Exchanger.
+func NewExchanger(conn transport.Conn, dc int) Exchanger {
+	return Exchanger{
+		conn: conn,
+
+		clock:   clock.System,
+		rand:    crypto.DefaultRand(),
+		log:     log.For(nil),
+		timeout: DefaultTimeout,
+		dc:      dc,
+		// Preserve old behavior by default: generate permanent key unless
+		// caller explicitly requests temporary mode.
+		mode: ExchangeModePermanent,
+	}
+}
+
+func (e Exchanger) unencryptedWriter(input, output proto.MessageType) unencryptedWriter {
+	return unencryptedWriter{
+		clock:   e.clock,
+		conn:    e.conn,
+		timeout: e.timeout,
+		input:   input,
+		output:  output,
+	}
+}
+
+// Client creates new ClientExchange using parameters from Exchanger.
+func (e Exchanger) Client(keys []PublicKey) ClientExchange {
+	return ClientExchange{
+		unencryptedWriter: e.unencryptedWriter(
+			proto.MessageServerResponse,
+			proto.MessageFromClient,
+		),
+		rand: e.rand,
+		log:  e.log,
+		keys: keys,
+		dc:   e.dc,
+		mode: e.mode,
+
+		expiresIn: e.expires,
+	}
+}
+
+// Server creates new ServerExchange using parameters from Exchanger.
+func (e Exchanger) Server(key PrivateKey) ServerExchange {
+	return ServerExchange{
+		unencryptedWriter: e.unencryptedWriter(
+			proto.MessageFromClient,
+			proto.MessageServerResponse,
+		),
+		rand: e.rand,
+		log:  e.log,
+		rng:  TestServerRNG{rand: e.rand},
+		key:  key,
+		dc:   e.dc,
+	}
+}

@@ -2,11 +2,15 @@ package telegram
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/video-site/backend/internal/catalog"
@@ -15,7 +19,7 @@ import (
 	"github.com/video-site/backend/internal/persistence"
 )
 
-// Check both new messages and persisted jobs before getFile can start a download.
+// Check both new messages and persisted jobs before starting a download.
 func validateVideoSize(size, limit int64) error {
 	if size <= 0 {
 		return errors.New("无法确认视频大小，已拒绝下载，请重新发送视频")
@@ -24,6 +28,27 @@ func validateVideoSize(size, limit int64) error {
 		return errors.New("视频超过配置的单文件大小限制")
 	}
 	return nil
+}
+
+func mediaGroupStorage(source catalog.TelegramSource) (directory, key string) {
+	if source.MediaGroupID == "" {
+		return "", ""
+	}
+	digest := sha256.Sum256([]byte(fmt.Sprintf("%d:%d:%s", source.BotID, source.SenderID, source.MediaGroupID)))
+	// Directory labels keep the group's first nonempty line; video titles use
+	// the full caption independently of the stable storage directory name.
+	directoryCaption := ""
+	for _, line := range strings.Split(source.MediaGroupTitle, "\n") {
+		if strings.TrimSpace(line) != "" {
+			directoryCaption = strings.TrimSpace(line)
+			break
+		}
+	}
+	title := videoTitle(directoryCaption, "", source.MediaGroupDate)
+	if strings.TrimSpace(source.MediaGroupTitle) == "" {
+		title = time.Unix(source.MediaGroupDate, 0).UTC().Format("2006-01-02_15-04-05")
+	}
+	return fmt.Sprintf("%s-%x", title, digest[:8]), fmt.Sprintf("%x", digest[:])
 }
 
 func (s *Service) Fetch(ctx context.Context, j *catalog.RemoteUploadJob, progress func(string, int64, int64) error) (mediaimport.SourceFile, error) {
@@ -35,6 +60,7 @@ func (s *Service) Fetch(ctx context.Context, j *catalog.RemoteUploadJob, progres
 		defer stop()
 		defer cancel()
 	}
+	cfg := s.settings()
 	var out mediaimport.SourceFile
 	source, err := catalog.DecodeTelegramSource(j)
 	if err != nil {
@@ -47,7 +73,7 @@ func (s *Service) Fetch(ctx context.Context, j *catalog.RemoteUploadJob, progres
 		return out, &mediaimport.SourceError{Message: "发送者已不在允许用户列表中"}
 	}
 	size := source.Size
-	if err := validateVideoSize(size, s.cfg.MaxFileSizeBytes); err != nil {
+	if err := validateVideoSize(size, cfg.MaxFileSizeBytes); err != nil {
 		return out, &mediaimport.SourceError{Message: err.Error()}
 	}
 	// Persist the destination before moving bytes, including across restarts.
@@ -56,33 +82,31 @@ func (s *Service) Fetch(ctx context.Context, j *catalog.RemoteUploadJob, progres
 	}
 	local, localErr := s.cat.TelegramLocalFile(ctx, j.ID+".media")
 	if errors.Is(localErr, sql.ErrNoRows) {
-		local, err = s.cat.ReserveTelegramLocalFile(ctx, catalog.TelegramLocalFile{FileID: j.ID + ".media", JobID: j.ID})
+		directory, key := mediaGroupStorage(source)
+		local, err = s.cat.ReserveTelegramLocalFile(ctx, catalog.TelegramLocalFile{FileID: j.ID + ".media", JobID: j.ID, Directory: directory, GroupKey: key})
 	} else {
 		err = localErr
 	}
+	var destination string
 	if err == nil {
-		err = os.MkdirAll(filepath.Join(s.cfg.LocalFilesRoot, "library"), 0750)
+		destination, err = telegramstorage.Prepare(cfg.LocalFilesRoot, local)
 	}
 	persistence.RUnlock()
 	if err != nil {
 		return out, &mediaimport.SourceError{Message: "无法准备 TG 视频存储目录", WaitForAvailability: true}
 	}
-	destination, err := telegramstorage.Path(s.cfg.LocalFilesRoot, local.FileID)
-	if err != nil {
-		return out, &mediaimport.SourceError{Message: "TG 视频存储目录不可用", WaitForAvailability: true}
-	}
 	if info, e := os.Stat(destination); e == nil {
-		if info.Size() <= 0 || info.Size() > s.cfg.MaxFileSizeBytes || source.Size != info.Size() {
+		if info.Size() <= 0 || info.Size() > cfg.MaxFileSizeBytes || source.Size != info.Size() {
 			return out, &mediaimport.SourceError{Message: "TG 视频大小无效"}
 		}
-		if err = syncLibrary(destination, filepath.Dir(destination)); err != nil {
+		if err = syncLibrary(destination, filepath.Dir(destination), filepath.Join(cfg.LocalFilesRoot, "library")); err != nil {
 			return out, &mediaimport.SourceError{Message: "无法确认 TG 视频已落盘", WaitForAvailability: true}
 		}
 		return acquiredFile(source, local, destination, info.Size()), nil
 	}
-	free, err := mediaimport.AvailableBytes(s.cfg.LocalFilesRoot)
+	free, err := mediaimport.AvailableBytes(cfg.LocalFilesRoot)
 	if err != nil || free < s.reserve || size > free-s.reserve {
-		return out, &mediaimport.SourceError{Message: "TG 共享目录空间不足或不可用", WaitForAvailability: true}
+		return out, &mediaimport.SourceError{Message: "TG 视频目录空间不足或不可用", WaitForAvailability: true}
 	}
 	if err = progress("telegram_download", 0, source.Size); err != nil {
 		return out, err
@@ -97,100 +121,132 @@ func (s *Service) Fetch(ctx context.Context, j *catalog.RemoteUploadJob, progres
 	if c == nil {
 		return out, &mediaimport.SourceError{Message: "Telegram 尚未连接", RetryAfter: time.Minute}
 	}
-	fetchCtx, cancel := context.WithTimeout(ctx, time.Duration(s.cfg.FetchTimeoutSeconds)*time.Second)
+	fetchCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.FetchTimeoutSeconds)*time.Second)
 	defer cancel()
-	var file struct {
-		Path string `json:"file_path"`
-		Size int64  `json:"file_size"`
+	partPath := destination + ".part"
+	// Interrupted downloads are retried from zero at this deterministic path.
+	if err := os.Remove(partPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return out, &mediaimport.SourceError{Message: "无法清理未完成的 Telegram 下载", WaitForAvailability: true}
 	}
-	if err = c.call(fetchCtx, "getFile", map[string]string{"file_id": fileID}, &file); err != nil {
+	part, err := os.OpenFile(partPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return out, &mediaimport.SourceError{Message: "无法创建 Telegram 下载文件", WaitForAvailability: true}
+	}
+	defer os.Remove(part.Name())
+	defer part.Close()
+	s.downloadProgress.start(j.ID, time.Now())
+	writer := &downloadWriter{file: part, limit: source.Size, progress: func(stage string, done, total int64) error {
+		if !s.Allowed(source.SenderID) {
+			return &mediaimport.SourceError{Message: "发送者已不在允许用户列表中"}
+		}
+		if err := progress(stage, done, total); err != nil {
+			return err
+		}
+		s.downloadProgress.update(j.ID, done, time.Now())
+		return nil
+	}}
+	if err = c.Download(fetchCtx, fileID, writer); err != nil {
 		if ctx.Err() != nil {
 			return out, ctx.Err()
 		}
+		if errors.Is(err, catalog.ErrRemoteUploadCanceled) {
+			return out, catalog.ErrRemoteUploadCanceled
+		}
+		var sourceErr *mediaimport.SourceError
+		if errors.As(err, &sourceErr) {
+			return out, sourceErr
+		}
+		var outputErr *localError
+		if errors.As(err, &outputErr) {
+			return out, &mediaimport.SourceError{Message: outputErr.message, WaitForAvailability: outputErr.retry}
+		}
+		var connectionErr *connectionError
+		if errors.As(err, &connectionErr) {
+			return out, &mediaimport.SourceError{Message: connectionErr.Error(), RetryAfter: 10 * time.Second}
+		}
 		var apiErr *APIError
 		if errors.As(err, &apiErr) {
-			if apiErr.Code == 401 || apiErr.Code == 403 {
-				s.setState("error", errors.New("机器人鉴权失败，请检查 Token"))
-			}
 			return out, &mediaimport.SourceError{Message: apiErr.Error(), RetryAfter: apiErr.RetryAfter}
 		}
-		return out, &mediaimport.SourceError{Message: "TG 文件获取超时或响应无效", RetryAfter: 10 * time.Second}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return out, &mediaimport.SourceError{Message: "Telegram 视频下载超时", RetryAfter: 10 * time.Second}
+		}
+		return out, &mediaimport.SourceError{Message: "Telegram 视频下载失败，请检查原消息或重新发送"}
 	}
-	localPath, err := mapAPIFilePath(s.cfg.APIFilesRoot, s.cfg.LocalFilesRoot, file.Path)
-	if err != nil {
-		return out, &mediaimport.SourceError{Message: "TG 返回的文件路径不在 Bot API 文件目录内，请检查目录映射"}
+	if !s.Allowed(source.SenderID) {
+		return out, &mediaimport.SourceError{Message: "发送者已不在允许用户列表中"}
 	}
-	f, info, err := openCachedFile(s.cfg.LocalFilesRoot, localPath)
-	if err != nil {
-		return out, &mediaimport.SourceError{Message: "TG 返回的文件路径不可用，请检查共享目录挂载"}
+	if writer.done != source.Size {
+		return out, &mediaimport.SourceError{Message: "Telegram 视频大小不一致", RetryAfter: 10 * time.Second}
 	}
-	defer f.Close()
-	libraryRoot, _ := filepath.EvalSymlinks(filepath.Join(s.cfg.LocalFilesRoot, "library"))
-	if rel, e := filepath.Rel(libraryRoot, f.Name()); e == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-		return out, &mediaimport.SourceError{Message: "TG 返回了已接管的视频路径"}
+	if err = part.Sync(); err != nil {
+		return out, &mediaimport.SourceError{Message: "无法保存 Telegram 视频", WaitForAvailability: true}
 	}
-	if info.Size() <= 0 || info.Size() > s.cfg.MaxFileSizeBytes {
-		return out, &mediaimport.SourceError{Message: "视频为空或超过当前大小限制"}
+	info, err := part.Stat()
+	if err != nil || info.Size() != source.Size {
+		return out, &mediaimport.SourceError{Message: "Telegram 视频文件大小无效"}
 	}
-	if info.Size() != source.Size || (file.Size > 0 && info.Size() != file.Size) {
-		return out, &mediaimport.SourceError{Message: "TG 文件大小不一致，请重新获取", RetryAfter: 10 * time.Second}
-	}
-	if err = ctx.Err(); err != nil {
+	if err = part.Close(); err != nil {
 		return out, err
 	}
-	// Both locations must be on the same filesystem. Never fall back to copying.
 	if err = persistence.RLockContext(ctx); err != nil {
 		return out, err
 	}
 	defer persistence.RUnlock()
-	current, e := os.Lstat(f.Name())
-	if e != nil || !os.SameFile(info, current) {
-		return out, &mediaimport.SourceError{Message: "TG 下载文件发生变化，请重试", RetryAfter: time.Second}
+	if err = os.Rename(part.Name(), destination); err != nil {
+		return out, &mediaimport.SourceError{Message: "无法保存 Telegram 视频，请检查目录写入权限", WaitForAvailability: true}
 	}
-	if err = f.Close(); err != nil {
-		return out, &mediaimport.SourceError{Message: "无法关闭 TG 下载文件"}
+	if err = syncLibrary(destination, filepath.Dir(destination), filepath.Join(cfg.LocalFilesRoot, "library")); err != nil {
+		return out, &mediaimport.SourceError{Message: "无法确认 Telegram 视频已落盘", WaitForAvailability: true}
 	}
-	if err = os.Rename(f.Name(), destination); err != nil {
-		return out, &mediaimport.SourceError{Message: "无法接管 TG 视频，请检查共享目录写入权限及 library 是否位于同一文件系统", WaitForAvailability: true}
-	}
-	if err = syncLibrary(destination, filepath.Dir(destination), filepath.Dir(f.Name())); err != nil {
-		return out, &mediaimport.SourceError{Message: "无法确认 TG 视频已落盘", WaitForAvailability: true}
-	}
-	if err = progress("telegram_download", info.Size(), info.Size()); err != nil {
+	if err = progress("telegram_download", source.Size, source.Size); err != nil {
 		return out, err
 	}
 	return acquiredFile(source, local, destination, info.Size()), nil
 }
-func openCachedFile(root, path string) (*os.File, os.FileInfo, error) {
-	if !filepath.IsAbs(path) {
-		return nil, nil, errors.New("expected local Bot API absolute path")
+
+// Writer and progress errors cross the downloader boundary without becoming
+// network failures. Error() is safe for users; Unwrap preserves cancellation.
+type localError struct {
+	message string
+	cause   error
+	retry   bool
+}
+
+func (e *localError) Error() string { return e.message }
+func (e *localError) Unwrap() error { return e.cause }
+
+// Enforce advertised size while writing and report measured byte progress.
+type downloadWriter struct {
+	mu          sync.Mutex
+	file        io.WriterAt
+	done, limit int64
+	progress    func(string, int64, int64) error
+	last        time.Time
+}
+
+func (w *downloadWriter) WriteAt(data []byte, offset int64) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if offset < 0 || offset > w.limit || int64(len(data)) > w.limit-offset || int64(len(data)) > w.limit-w.done {
+		return 0, &localError{message: "Telegram 视频超过声明的文件大小"}
 	}
-	base, err := filepath.EvalSymlinks(root)
+	n, err := w.file.WriteAt(data, offset)
+	w.done += int64(n)
+	if err == nil && n < len(data) {
+		err = io.ErrShortWrite
+	}
 	if err != nil {
-		return nil, nil, err
+		return n, &localError{message: "无法写入 Telegram 视频，请检查磁盘空间和目录权限", cause: err, retry: true}
 	}
-	actual, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return nil, nil, err
+	if w.last.IsZero() || time.Since(w.last) >= time.Second {
+		err = w.progress("telegram_download", w.done, w.limit)
+		w.last = time.Now()
+		if err != nil {
+			return n, &localError{message: "无法保存 Telegram 下载进度，请检查数据库状态", cause: err, retry: true}
+		}
 	}
-	rel, err := filepath.Rel(base, actual)
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
-		return nil, nil, errors.New("file outside cache")
-	}
-	before, err := os.Stat(actual)
-	if err != nil || !before.Mode().IsRegular() {
-		return nil, nil, errors.New("cache file is not regular")
-	}
-	f, err := os.Open(actual)
-	if err != nil {
-		return nil, nil, err
-	}
-	after, err := f.Stat()
-	if err != nil || !after.Mode().IsRegular() || !os.SameFile(before, after) {
-		f.Close()
-		return nil, nil, errors.New("cache file changed")
-	}
-	return f, after, nil
+	return n, err
 }
 
 func acquiredFile(source catalog.TelegramSource, local catalog.TelegramLocalFile, path string, size int64) mediaimport.SourceFile {
@@ -201,5 +257,6 @@ func acquiredFile(source catalog.TelegramSource, local catalog.TelegramLocalFile
 	return mediaimport.SourceFile{Name: name, MIME: source.MIME, Size: size, Path: path, DriveID: telegramstorage.DriveID, FileID: local.FileID}
 }
 func (s *Service) Discard(ctx context.Context, j *catalog.RemoteUploadJob) error {
-	return telegramstorage.New(s.cat, func() string { return s.cfg.LocalFilesRoot }).Remove(ctx, j.ID+".media")
+	cfg := s.settings()
+	return telegramstorage.New(s.cat, func() string { return cfg.LocalFilesRoot }).Remove(ctx, j.ID+".media")
 }

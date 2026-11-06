@@ -260,7 +260,6 @@ install_dependencies() {
 ensure_ownership() {
   local paths=()
   [[ -e "$REPO_DIR/backend/config.yaml" ]] && paths+=("$REPO_DIR/backend/config.yaml")
-  [[ -e "$REPO_DIR/backend/telegram.yml" ]] && paths+=("$REPO_DIR/backend/telegram.yml")
   [[ -d "$REPO_DIR/backend/data" ]] && paths+=("$REPO_DIR/backend/data")
   [[ -d "$REPO_DIR/dist" ]] && paths+=("$REPO_DIR/dist")
   [[ -d "$REPO_DIR/node_modules" ]] && paths+=("$REPO_DIR/node_modules")
@@ -414,10 +413,6 @@ install_or_update() {
   # Migrate the listen address only after both builds succeed. A failed build
   # must leave the currently running two-service installation restart-safe.
   # Deployment credentials and mounts belong to the user, not the release.
-  if [[ ! -f "$REPO_DIR/backend/telegram.yml" ]]; then
-    cp "$REPO_DIR/telegram.example.yml" "$REPO_DIR/backend/telegram.yml"
-    chmod 600 "$REPO_DIR/backend/telegram.yml"
-  fi
   prepare_config
   write_systemd_units
   open_firewall_port

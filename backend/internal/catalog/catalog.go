@@ -76,6 +76,10 @@ func Open(path string) (*Catalog, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate catalog: %w", err)
 	}
+	if err := c.migrateTelegramVideoDirectories(context.Background()); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate Telegram directories: %w", err)
+	}
 	if err := c.migrateAdminSetup(context.Background()); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate administrator setup: %w", err)

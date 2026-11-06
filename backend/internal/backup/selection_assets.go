@@ -242,7 +242,7 @@ func (m *Manager) snapshotTelegramUploads(ctx context.Context, snapshotRoot stri
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		source, err := telegramstorage.Path(root, local.FileID)
+		source, err := telegramstorage.Path(root, local)
 		if err != nil {
 			return fmt.Errorf("backup: TG video %s is unavailable", fileName)
 		}

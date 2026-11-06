@@ -1,0 +1,13 @@
+{{- /*gotype: github.com/ogen-go/ogen/gen/ir.Type*/ -}}
+{{- define "uri/encoders" }}
+
+{{- if $.IsStruct }}
+	{{- template "uri/encoders_struct" $ }}
+{{- else if $.IsMap }}
+	{{- template "uri/encoders_map" $ }}
+{{- else }}
+	{{ errorf "unexpected kind %s" $.Kind }}
+{{- end }}
+
+{{ end }}
+

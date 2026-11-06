@@ -42,33 +42,24 @@ test("installer distinguishes readiness failures from process start failures", (
   assert.doesNotMatch(installSource, /die "service failed to start"/);
 });
 
-test("installer creates Telegram deployment once and preserves user configuration across upgrades", (t) => {
-  const root = mkdtempSync(join(tmpdir(), "91-telegram-deployment-"));
+test("installer preserves website Telegram settings without a separate deployment", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "91-telegram-settings-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  writeFileSync(join(root, "config.example.yaml"), 'server:\n  listen: "0.0.0.0:9191"\n');
-  const example = readFileSync(new URL("../telegram.example.yml", import.meta.url), "utf8");
-  writeFileSync(join(root, "telegram.example.yml"), example);
+  const configuration = 'telegram: {enabled: false, api_id: 12345, api_hash: "0123456789abcdef0123456789abcdef"}\n';
+  writeFileSync(join(root, "config.example.yaml"), configuration);
   const installer = fileURLToPath(new URL("../install.sh", import.meta.url));
   const prepare = () => {
     const result = spawnSync("bash", ["-c", 'source "$1" help >/dev/null; prepare_config', "bash", installer], {
-      encoding: "utf8",
-      env: { ...process.env, INSTALL_PATH: root },
+      encoding: "utf8", env: { ...process.env, INSTALL_PATH: root },
     });
     assert.equal(result.status, 0, result.stderr);
   };
   prepare();
-  const compose = join(root, "telegram.yml");
-  assert.equal(readFileSync(compose, "utf8"), example);
-  assert.equal(statSync(compose).mode & 0o777, 0o600);
-  const customized = example
-    .replace('TELEGRAM_API_ID: ""', 'TELEGRAM_API_ID: "12345"')
-    .replace('TELEGRAM_API_HASH: ""', 'TELEGRAM_API_HASH: "0123456789abcdef0123456789abcdef"')
-    .replace("aiogram/telegram-bot-api:latest", "aiogram/telegram-bot-api:pinned")
-    .replace("./data/telegram:/var/lib/telegram-bot-api", "/nzb/tg:/var/lib/telegram-bot-api");
-  writeFileSync(compose, customized);
-  writeFileSync(join(root, "telegram.example.yml"), `# Updated release template\n${example}`);
+  assert.equal(existsSync(join(root, "telegram.yml")), false);
+  const custom = configuration.replace("12345", "54321");
+  writeFileSync(join(root, "config.yaml"), custom);
   prepare();
-  assert.equal(readFileSync(compose, "utf8"), customized);
+  assert.equal(readFileSync(join(root, "config.yaml"), "utf8"), custom);
 });
 
 test("password reset delegates to the server without prompting for a password", () => {

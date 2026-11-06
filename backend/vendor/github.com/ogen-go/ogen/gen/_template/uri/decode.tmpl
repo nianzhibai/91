@@ -1,0 +1,109 @@
+{{- /*gotype: github.com/ogen-go/ogen/gen.Elem*/ -}}
+{{- define "uri/decode" }}
+{{- $t := $.Type }}
+{{- $var := $.Var }}
+{{- $tmpVar := camelSpecial (printf "%sVal" $var) }}
+{{- if $t.IsPrimitive }}
+	val, err := d.DecodeValue()
+	if err != nil {
+		return err
+	}
+
+	{{ if $t.JSON.TimeFormat -}}
+		c, err := time.Parse({{ $t.JSON.TimeFormat }}, val)
+	{{- else -}}
+		c, err := conv.{{ $t.FromString }}(val)
+	{{- end }}
+	if err != nil {
+		return err
+	}
+
+	{{ $var }} = c
+	return nil
+{{- else if $t.IsEnum }}
+	val, err := d.DecodeValue()
+	if err != nil {
+		return err
+	}
+
+	c, err := conv.{{ $t.FromString }}(val)
+	if err != nil {
+		return err
+	}
+
+	{{ $var }} = {{ $t.Go }}(c)
+	return nil
+{{- else if $t.IsArray }}
+	{{ $var }} = nil
+	return d.DecodeArray(func(d uri.Decoder) error {
+		var {{ $tmpVar }} {{ $t.Item.Go }}
+		if err := func() error {
+			{{- template "uri/decode" elem $t.Item $tmpVar }}
+		}(); err != nil {
+			return err
+		}
+		{{ $var }} = append({{ $var }}, {{ $tmpVar }})
+		return nil
+	})
+{{- else if $t.IsAlias }}
+	var {{ $tmpVar }} {{ $t.AliasTo.Go }}
+	if err := func() error {
+		{{- template "uri/decode" elem $t.AliasTo $tmpVar }}
+	}(); err != nil {
+		return err
+	}
+	{{ $var }} = {{ $t.Go }}({{ $tmpVar }})
+	return nil
+{{- else if $t.IsGeneric }}
+	var {{ $tmpVar }} {{ $t.GenericOf.Go }}
+	if err := func() error {
+		{{- template "uri/decode" elem $t.GenericOf $tmpVar }}
+	}(); err != nil {
+		return err
+	}
+	{{ $var }}.SetTo({{ $tmpVar }})
+	return nil
+{{- else if $t.IsPointer }}
+	var {{ $tmpVar }} {{ $t.PointerTo.Go }}
+	if err := func() error {
+		{{- template "uri/decode" elem $t.PointerTo $tmpVar }}
+	}(); err != nil {
+		return err
+	}
+	{{ $var }} = &{{ $tmpVar }}
+	return nil
+{{- else if $t.IsStruct }}
+	return {{ $var }}.DecodeURI(d)
+{{- else if $t.IsMap }}
+	return {{ $var }}.DecodeURI(d)
+{{- else if $t.IsAny }}
+	val, err := d.DecodeValue()
+	if err != nil {
+		return err
+	}
+	{{ $var }} = val
+	return nil
+{{- else if $t.IsSum }}
+	var failures []error
+	{{- range $t.SumOf }}
+	// Try to decode as {{ .Name }}
+	if err := func() error {
+		var variant {{ .Go }}
+		if err := func() error {
+			{{- template "uri/decode" elem . "variant" }}
+		}(); err != nil {
+			return err
+		}
+		{{ $var }}.Set{{ .Name }}(variant)
+		return nil
+	}(); err == nil {
+		return nil
+	} else {
+		failures = append(failures, errors.Wrap(err, {{ printf "%q" .Name }}))
+	}
+	{{- end }}
+	return errors.Wrap(errors.Join(failures...), "failed to decode {{ $t.Go }}")
+{{- else }}
+    {{ errorf "unexpected kind" $t.Kind }}
+{{- end }}
+{{- end }}

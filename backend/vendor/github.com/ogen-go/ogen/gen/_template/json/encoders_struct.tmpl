@@ -1,0 +1,299 @@
+{{- define "json/encode_struct_fields" }}
+{{- /*gotype: github.com/ogen-go/ogen/gen/ir.JSON*/ -}}
+	{{- $fields := $.Fields }}
+	{{- $additional := $.AdditionalProps }}
+	{{- $pattern := $.PatternProps }}
+	{{- $sum := $.SumProps }}
+
+	{{- range $i, $f := $fields }}
+		{
+		{{- $const := $f.Const }}
+		{{- if $const.Set }}
+		{{- /* Field has const value, encode it directly */}}
+		e.FieldStart({{ $f.Tag.EscapedJSON }})
+		{{- $t := $f.Type }}
+		{{- $constVal := print_go $const.Value }}
+		{{- /* For generic types, get JSON encoding from underlying type */}}
+		{{- if $t.IsGeneric }}
+		{{- $g := $t.GenericOf }}
+		{{- if $g.IsNull }}
+		e.Null()
+		{{- else }}
+		{{- $j := $g.JSON }}
+		{{- if $j.TimeFormat }}
+		json.EncodeTimeFormat(e, {{ $constVal }}, {{ $j.TimeFormat }})
+		{{- else if $j.Encoder }}
+		json.Encode{{ $j.Encoder }}(e, {{ $constVal }})
+		{{- else if $j.Fn }}
+		e.{{ $j.Fn }}({{ $constVal }})
+		{{- else }}
+		{{ errorf "unsupported const encoding for generic type: %s (underlying: %s)" $t $g }}
+		{{- end }}
+		{{- end }}
+		{{- else }}
+		{{- if $t.IsNull }}
+		e.Null()
+		{{- else }}
+		{{- $j := $t.JSON }}
+		{{- if $j.TimeFormat }}
+		json.EncodeTimeFormat(e, {{ $constVal }}, {{ $j.TimeFormat }})
+		{{- else if $j.Encoder }}
+		json.Encode{{ $j.Encoder }}(e, {{ $constVal }})
+		{{- else if $j.Fn }}
+		e.{{ $j.Fn }}({{ $constVal }})
+		{{- else }}
+		{{ errorf "unsupported const encoding for type: %s" $t }}
+		{{- end }}
+		{{- end }}
+		{{- end }}
+		{{- else }}
+		{{- $elem := field_elem $f }}
+		{{- template "json/enc" $elem }}
+		{{- end }}
+		}
+	{{- end }}
+	{{- if $additional }}
+	for k, elem := range s.{{ $additional.Name }} {
+		e.FieldStart(k)
+    	{{ template "json/enc" map_elem $additional.Type.Item }}
+	}
+	{{- end }}
+	{{- range $p := $pattern }}
+	for k, elem := range s.{{ $p.Name }} {
+		e.FieldStart(k)
+    	{{ template "json/enc" map_elem $p.Type.Item }}
+	}
+	{{- end }}
+	{{- range $s := $sum }}
+	s.{{ $s.Name }}.encodeFields(e)
+	{{- end }}
+{{- end }}
+
+{{- define "json/encoders_struct" }}
+{{- /*gotype: github.com/ogen-go/ogen/gen/ir.Type*/ -}}
+{{- $fields := $.JSON.Fields }}
+{{- $additional := $.JSON.AdditionalProps }}
+{{- $pattern := $.JSON.PatternProps }}
+{{- $sum := $.JSON.SumProps }}
+{{- $va := $.Validators }}
+// Encode implements json.Marshaler.
+func (s {{ $.ReadOnlyReceiver }}) Encode(e *jx.Encoder) {
+	{{- if $.Tuple }}
+	e.ArrStart()
+	s.encodeTuple(e)
+	e.ArrEnd()
+	{{- else }}
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+	{{- end }}
+}
+
+{{- if $.Tuple }}
+// encodeTuple encodes fields.
+func (s {{ $.ReadOnlyReceiver }}) encodeTuple(e *jx.Encoder) {
+	{{- range $f := $.Fields }}
+	{
+		elem := s.{{ $f.Name }}
+		{{- template "json/enc" array_elem $f.Type }}
+	}
+	{{- end }}
+}
+
+// Decode decodes {{ $.Name }} from json.
+func (s *{{ $.Name }}) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New({{ printf "invalid: unable to decode %s to nil" $.Name | quote }})
+	}
+	n := 0
+	if err := d.Arr(func(d *jx.Decoder) error {
+		switch n {
+		{{- range $i, $f := $.Fields }}
+		case {{ $i }}:
+			n++
+			{{- template "json/dec" elem $f.Type (printf "s.%s" $f.Name) }}
+			return nil
+		{{- end }}
+		default:
+			return errors.Errorf({{ printf "expected %d elements, got %%d" (len $.Fields) | quote }}, n)
+		}
+	}); err != nil {
+		return err
+	}
+	if n == 0 {
+		return errors.Errorf({{ printf "expected %d elements, got %%d" (len $.Fields) | quote }}, n)
+	}
+	return nil
+}
+{{- else }}
+// encodeFields encodes fields.
+func (s {{ $.ReadOnlyReceiver }}) encodeFields(e *jx.Encoder) {
+	{{- template "json/encode_struct_fields" $.JSON }}
+}
+
+var jsonFieldsNameOf{{ $.Name }} = [{{ len $fields }}]string{
+	{{- range $i, $f := $fields }}
+	{{ $i }}: {{ quote $f.Tag.JSON }},
+	{{- end }}
+}
+
+// Decode decodes {{ $.Name }} from json.
+func (s *{{ $.Name }}) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New({{ printf "invalid: unable to decode %s to nil" $.Name | quote }})
+	}
+
+	{{- range $s := $sum }}
+	if err := d.Capture(func(d *jx.Decoder) error {
+		return s.{{ $s.Name }}.Decode(d)
+	}); err != nil {
+		return errors.Wrap(err, {{ printf "decode field %s" $s.Name | quote }})
+	}
+	{{- end }}
+
+	{{- $requiredMask := $fields.RequiredMask }}
+	{{- if $fields.HasRequired }}
+	var requiredBitSet [{{ len $requiredMask }}]uint8
+	{{- end }}
+	{{- if $va.Object.Set }}
+	var propertiesCount int
+	{{- end }}
+
+	{{- if $.HasDefaultFields }}
+	s.setDefaults()
+	{{- end }}
+
+	{{- if $additional }}
+	{{- $item := $additional.Type.Item }}
+	s.{{ $additional.Name }} = map[string]{{ $item.Go }}{}
+	{{- end }}
+	{{- range $p := $pattern }}
+	{{- $item := $p.Type.Item }}
+	s.{{ $p.Name }} = map[string]{{ $item.Go }}{}
+	{{- end }}
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		{{- if $va.Object.Set }}
+		propertiesCount++
+		{{- end }}
+		switch string(k) {
+	{{- range $i, $f := $fields }}
+		case {{ quote $f.Tag.JSON }}:
+			{{- if $f.Spec.Required }}
+			requiredBitSet[{{ div $i 8 }}] |= 1 << {{ mod $i 8 }}
+			{{ end -}}
+
+			if err := func() error {
+				{{- template "json/dec" field_elem $f }}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, {{ printf "decode field %q" $f.Tag.JSON | quote }})
+			}
+	{{- end }}
+	{{- range $k, $_ := $.AllowedProps }}
+		case {{ quote $k }}:
+			return d.Skip()
+	{{- end }}
+		default:
+			{{- if $pattern }}
+			var handled bool
+			{{- range $p := $pattern }}
+			{{- $item := $p.Type.Item }}
+			switch match, err := regexMap[{{ quote $p.Type.MapPattern }}].Match(k); {
+			case err != nil:
+				return errors.Wrap(err, "execute regex")
+			case match:
+				handled = true
+				var elem {{ $item.Go }}
+				if err := func() error {
+					{{- template "json/dec" map_elem $item }}
+					return nil
+				}(); err != nil {
+					return errors.Wrapf(err, "decode field %q", k)
+				}
+				s.{{ $p.Name }}[string(k)] = elem
+			}
+			{{- end }}
+			if handled {
+				return nil
+			}
+			{{- end }}
+
+			{{- if $additional }}
+			{{- $item := $additional.Type.Item }}
+			var elem {{ $item.Go }}
+			if err := func() error {
+				{{- template "json/dec" map_elem $item }}
+				return nil
+			}(); err != nil {
+				return errors.Wrapf(err, "decode field %q", k)
+			}
+			s.{{ $additional.Name }}[string(k)] = elem
+            {{- else if $.DenyAdditionalProps }}
+			return errors.Errorf("unexpected field %q", k)
+			{{- else }}
+			return d.Skip()
+			{{- end }}
+		}
+		{{- if or (ne (len $fields) 0) $additional }}
+		return nil
+		{{- end }}
+	}); err != nil {
+		return errors.Wrap(err, {{ printf "decode %s" $.Name | quote }})
+	}
+
+	{{- if $va.Object.Set }}
+	{{- $v := $va.Object }}
+	// Validate properties count.
+	if err := (validate.Object{
+		MinProperties:	{{ $v.MinProperties }},
+		MinPropertiesSet: {{ $v.MinPropertiesSet }},
+		MaxProperties:	{{ $v.MaxProperties }},
+		MaxPropertiesSet: {{ $v.MaxPropertiesSet }},
+	}).ValidateProperties(propertiesCount); err != nil {
+		return errors.Wrap(err, "object")
+	}
+	{{- end }}
+
+	{{- if $fields.HasRequired }}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [{{ len $requiredMask }}]uint8{
+	{{- range $mask := $requiredMask }}
+		{{ printf "%#08b" $mask }},
+	{{- end }}
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i * 8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOf{{ $.Name }}) {
+					name = jsonFieldsNameOf{{ $.Name }}[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	{{- end }}
+
+	return nil
+}
+{{- end }}
+
+{{ end }}

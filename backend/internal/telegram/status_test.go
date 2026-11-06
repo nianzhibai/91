@@ -2,10 +2,7 @@ package telegram
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -52,23 +49,11 @@ func TestStatusCommandUsesGlobalLiveCountsWithoutCreatingImport(t *testing.T) {
 		t.Fatal(err)
 	}
 	sent := make(chan string, 2)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var input struct {
-			ChatID    int64  `json:"chat_id"`
-			Text      string `json:"text"`
-			ParseMode string `json:"parse_mode"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-			t.Error(err)
-		}
-		if input.ChatID != 42 || input.ParseMode != "HTML" {
-			t.Errorf("invalid status response: %+v", input)
-		}
-		sent <- input.Text
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": map[string]int{"message_id": 55}})
-	}))
-	defer server.Close()
-	c := &client{base: server.URL, token: s.token, http: server.Client()}
+	c := &fakeTransport{send: func(ctx context.Context, r catalog.TelegramReceipt, m botMessage) (int64, error) {
+		sent <- m.text
+		return 55, nil
+	}}
+
 	s.notifyOne(ctx, c, receipts[0])
 	text := <-sent
 	assertValidMessage(t, text)
@@ -150,16 +135,12 @@ func TestStatusNotificationReportsQueryFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	sent := make(chan string, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var input struct{ Text string }
-		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-			t.Error(err)
-		}
-		sent <- input.Text
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": map[string]int{"message_id": 55}})
-	}))
-	defer server.Close()
-	s.notifyOne(context.Background(), &client{base: server.URL, token: s.token, http: server.Client()}, catalog.TelegramReceipt{
+	c := &fakeTransport{send: func(ctx context.Context, r catalog.TelegramReceipt, m botMessage) (int64, error) {
+		sent <- m.text
+		return 55, nil
+	}}
+
+	s.notifyOne(context.Background(), c, catalog.TelegramReceipt{
 		BotID: 123, ChatID: 42, MessageID: 1, SenderID: 42, Response: responseStatus,
 	})
 	text := <-sent

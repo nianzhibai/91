@@ -3,10 +3,15 @@ import { parseTelegramUserIDs } from "../telegram/config";
 
 export const TELEGRAM_DEFAULTS = {
   telegramEnabled: false,
+  telegramApiId: 0,
+  telegramApiHash: "",
   telegramBotToken: "",
+  telegramConnectionProxy: "",
+  telegramStorageDirectory: "",
   telegramAllowedUserIds: "",
   telegramSiteBaseUrl: "",
   telegramMaxFileSizeBytes: 4 * 1024 ** 3,
+  telegramDownloadThreads: 6,
   telegramMaxPendingJobs: 100,
   telegramFetchTimeoutSeconds: 1800,
   telegramUploadDriveId: "",
@@ -19,10 +24,15 @@ export type TelegramField = keyof TelegramDraft;
 
 export const TELEGRAM_YAML_KEYS: Record<TelegramField, string> = {
   telegramEnabled: "enabled",
+  telegramApiId: "api_id",
+  telegramApiHash: "api_hash",
   telegramBotToken: "bot_token",
+  telegramConnectionProxy: "connection_proxy",
+  telegramStorageDirectory: "storage_directory",
   telegramAllowedUserIds: "allowed_user_ids",
   telegramSiteBaseUrl: "site_base_url",
   telegramMaxFileSizeBytes: "max_file_size_bytes",
+  telegramDownloadThreads: "download_threads",
   telegramMaxPendingJobs: "max_pending_jobs",
   telegramFetchTimeoutSeconds: "fetch_timeout_seconds",
   telegramUploadDriveId: "upload_drive_id",

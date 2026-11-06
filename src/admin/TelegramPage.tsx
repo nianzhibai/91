@@ -37,7 +37,6 @@ const stateLabels: Record<string, string> = {
   connecting: "连接中",
   connected: "连接正常",
   error: "连接异常",
-  conflict: "接收冲突",
   needs_reconnect: "等待恢复接收",
 };
 const dateLabel = (value?: string) =>
@@ -146,7 +145,7 @@ function TelegramWorkspace() {
               onClick={() =>
                 void run("test", async () => {
                   const result = await api.testTelegram();
-                  show(`已连接 @${result.username}，共享目录可读`, "success");
+                  show(`已连接 @${result.username}`, "success");
                 })
               }
             >
@@ -171,7 +170,7 @@ function TelegramWorkspace() {
           <dl className="tg-connection-metrics">
             <div>
               <dt>最近连接</dt>
-              <dd>{dateLabel(connection?.lastPoll)}</dd>
+              <dd>{dateLabel(connection?.lastConnected)}</dd>
             </div>
             <div>
               <dt>最近消息</dt>
@@ -190,37 +189,20 @@ function TelegramWorkspace() {
               条结果通知发送失败，视频保存结果不受影响。
             </p>
           )}
-          {(connection?.state === "needs_reconnect" ||
-            connection?.error.includes("webhook")) && (
+          {connection?.state === "needs_reconnect" && (
             <div className="tg-actions tg-panel-footer">
-              {connection?.state === "needs_reconnect" && (
-                <button
-                  className="admin-btn"
-                  disabled={!!busy}
-                  onClick={() =>
-                    void run("resume", async () => {
-                      await api.resumeTelegram();
-                      show("已恢复接收", "success");
-                    })
-                  }
-                >
-                  恢复接收
-                </button>
-              )}
-              {connection?.error.includes("webhook") && (
-                <button
-                  className="admin-btn"
-                  disabled={!!busy}
-                  onClick={() =>
-                    void run("prepare", async () => {
-                      await api.prepareTelegramPolling();
-                      show("已切换为轮询，将保留未处理消息", "success");
-                    })
-                  }
-                >
-                  切换为轮询接收
-                </button>
-              )}
+              <button
+                className="admin-btn"
+                disabled={!!busy}
+                onClick={() =>
+                  void run("resume", async () => {
+                    await api.resumeTelegram();
+                    show("已恢复接收", "success");
+                  })
+                }
+              >
+                恢复接收
+              </button>
             </div>
           )}
         </section>

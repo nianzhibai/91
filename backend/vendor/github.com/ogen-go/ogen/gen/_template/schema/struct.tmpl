@@ -1,0 +1,27 @@
+{{- /*gotype: github.com/ogen-go/ogen/gen/ir.Type*/ -}}
+{{- define "schema/struct" }}
+{{- if eq (len $.Fields) 0 }}{{/* Blank struct */}}
+	type {{ $.Name }} struct{}
+{{- else }}
+	type {{ $.Name }} struct {
+	{{- range $f := $.Fields }}
+		{{- template "godoc" $f.GoDoc }}
+		{{ $f.Name }} {{ $f.Type.Go }} {{ if $f.Tag.GetTags }}{{ backquote $f.Tag.GetTags }}{{ end }}
+	{{- end }}
+	}
+{{- end }}
+
+{{- range $f := $.Fields }}
+// Get{{ $f.Name }} returns the value of {{ $f.Name }}.
+func (s {{ $.ReadOnlyReceiver }}) Get{{ $f.Name }}() {{ $f.Type.Go }} {
+	return s.{{ $f.Name }}
+}
+{{- end }}
+{{- range $f := $.Fields }}
+// Set{{ $f.Name }} sets the value of {{ $f.Name }}.
+func (s *{{ $.Name }}) Set{{ $f.Name }}(val {{ $f.Type.Go }}) {
+	s.{{ $f.Name }} = val
+}
+{{- end }}
+
+{{ end }}

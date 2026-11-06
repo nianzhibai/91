@@ -27,7 +27,7 @@ type Status struct {
 	BotID                string          `json:"botId"`
 	Username             string          `json:"username"`
 	Error                string          `json:"error"`
-	LastPoll             time.Time       `json:"lastPoll"`
+	LastConnected        time.Time       `json:"lastConnected"`
 	LastMessage          time.Time       `json:"lastMessage"`
 	CacheAvailableBytes  int64           `json:"cacheAvailableBytes"`
 	NotificationFailures int             `json:"notificationFailures"`
@@ -43,25 +43,28 @@ type Service struct {
 	uploadDir        string
 	reserve          int64
 	mu               sync.RWMutex
-	control          sync.Mutex
 	mediaGroupMu     sync.Mutex
-	mediaGroupsReady bool
 	status           Status
-	client           *client
+	client           transport
+	newTransport     transportFactory
+	downloadProgress downloadProgress
 	botID            int64
 	wg               sync.WaitGroup
 	cancel           context.CancelFunc
 }
 
 func New(cfg config.Telegram, token string, cat *catalog.Catalog, uploadDir string, reserve int64) *Service {
-	return &Service{cfg: cfg, token: token, cat: cat, uploadDir: uploadDir, reserve: reserve, status: Status{Enabled: cfg.Enabled, State: "disabled", Config: cfg}}
+	return &Service{cfg: cfg, token: token, cat: cat, uploadDir: uploadDir, reserve: reserve, status: Status{Enabled: cfg.Enabled, State: "disabled", Config: cfg}, newTransport: newMTProtoClient}
 }
 func (s *Service) SetWake(wake func()) { s.mu.Lock(); s.wakeImports = wake; s.mu.Unlock() }
 
 func (s *Service) Start(ctx context.Context) {
-	if !s.cfg.Enabled {
+	if !s.settings().Enabled {
 		return
 	}
+	s.mu.Lock()
+	s.botID = tokenBotID(s.token)
+	s.mu.Unlock()
 	ctx, s.cancel = context.WithCancel(ctx)
 	s.runCtx = ctx
 	s.wg.Add(4)
@@ -87,7 +90,7 @@ func (s *Service) Status() Status {
 	s.mu.RLock()
 	out := s.status
 	s.mu.RUnlock()
-	if n, err := mediaimport.AvailableBytes(s.cfg.LocalFilesRoot); err == nil {
+	if n, err := mediaimport.AvailableBytes(s.settings().LocalFilesRoot); err == nil {
 		out.CacheAvailableBytes = n
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -107,14 +110,26 @@ func (s *Service) setState(state string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.status.State = state
-	s.mediaGroupsReady = false
 	s.status.Error = ""
 	if err != nil {
 		s.status.Error = err.Error()
 	}
 }
+func (s *Service) settings() config.Telegram {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cfg
+}
+
+func (s *Service) applySettings(cfg config.Telegram) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cfg = cfg
+	s.status.Config = cfg
+}
+
 func (s *Service) Allowed(id int64) bool {
-	for _, allowed := range s.cfg.AllowedUserIDs {
+	for _, allowed := range s.settings().AllowedUserIDs {
 		if allowed == id {
 			return true
 		}
@@ -123,78 +138,20 @@ func (s *Service) Allowed(id int64) bool {
 }
 func (s *Service) BotID() int64 { s.mu.RLock(); defer s.mu.RUnlock(); return s.botID }
 func (s *Service) Resume(ctx context.Context) error {
-	s.control.Lock()
-	defer s.control.Unlock()
-	if !s.cfg.Enabled {
-		return errors.New("请先在面板启用 Telegram")
-	}
-	c, u, err := checkConnection(ctx, s.cfg, s.token)
-	if err != nil {
-		return err
-	}
-	if _, _, err = s.cat.TelegramOffset(ctx, u.ID); err != nil {
-		return err
-	}
-	if err = s.cat.ResumeTelegram(ctx, u.ID); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	s.client = c
-	s.botID = u.ID
-	s.mu.Unlock()
-	s.setState("connecting", nil)
-	return nil
+	return s.cat.ResumeTelegram(ctx, tokenBotID(s.token))
 }
-func (s *Service) PreparePolling(ctx context.Context) error {
-	s.control.Lock()
-	defer s.control.Unlock()
-	if s.Available() {
-		return errors.New("机器人正在接收消息，无需切换")
+
+func (s *Service) Test(ctx context.Context) (string, error) {
+	s.mu.RLock()
+	c := s.client
+	s.mu.RUnlock()
+	if c == nil || !s.Available() {
+		return "", errors.New("Telegram 尚未连接，请启用后等待连接完成")
 	}
-	c, err := newClient(s.cfg.APIBaseURL, s.token)
-	if err != nil {
-		return err
-	}
-	return c.call(ctx, "deleteWebhook", map[string]any{"drop_pending_updates": false}, nil)
-}
-func TestConnection(ctx context.Context, cfg config.Telegram, token string) (string, error) {
-	if err := cfg.Validate(); err != nil {
-		return "", err
-	}
-	_, u, err := checkConnection(ctx, cfg, token)
+	u, err := c.Self(ctx)
 	return u.Username, err
 }
-func checkConnection(ctx context.Context, cfg config.Telegram, token string) (*client, user, error) {
-	c, err := newClient(cfg.APIBaseURL, token)
-	if err != nil {
-		return nil, user{}, err
-	}
-	var u user
-	if err = c.call(ctx, "getMe", struct{}{}, &u); err != nil {
-		return nil, u, err
-	}
-	if u.ID <= 0 {
-		return nil, u, errors.New("机器人身份无效")
-	}
-	var hook struct {
-		URL string `json:"url"`
-	}
-	if err = c.call(ctx, "getWebhookInfo", struct{}{}, &hook); err != nil {
-		return nil, u, err
-	}
-	if hook.URL != "" {
-		return nil, u, errors.New("机器人已有 webhook，请先切换为轮询接收")
-	}
-	dir, err := os.Open(cfg.LocalFilesRoot)
-	if err != nil {
-		return nil, u, errors.New("无法读取共享视频目录")
-	}
-	defer dir.Close()
-	if info, err := dir.Stat(); err != nil || !info.IsDir() {
-		return nil, u, errors.New("共享视频路径不是目录")
-	}
-	return c, u, nil
-}
+
 func wait(ctx context.Context, d time.Duration) bool {
 	t := time.NewTimer(d)
 	defer t.Stop()
@@ -207,93 +164,75 @@ func wait(ctx context.Context, d time.Duration) bool {
 }
 func (s *Service) receive(ctx context.Context) {
 	for ctx.Err() == nil {
-		s.control.Lock()
-		checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		c, u, err := checkConnection(checkCtx, s.cfg, s.token)
-		cancel()
-		if err == nil {
-			s.mu.Lock()
-			s.client = c
-			s.botID = u.ID
-			s.status.BotID = strconv.FormatInt(u.ID, 10)
-			s.status.Username = u.Username
-			s.mu.Unlock()
-		}
-		s.control.Unlock()
-		if err != nil {
-			s.setState("error", err)
-			if !wait(ctx, 10*time.Second) {
-				return
-			}
-			continue
-		}
-		offset, paused, err := s.cat.TelegramOffset(ctx, u.ID)
+		botID := tokenBotID(s.token)
+		paused, err := s.cat.TelegramPaused(ctx, botID)
 		if err != nil {
 			s.setState("error", errors.New("无法读取 Telegram 接收状态"))
-			if !wait(ctx, 5*time.Second) {
-				return
-			}
-			continue
-		}
-		if paused {
-			s.setState("needs_reconnect", errors.New("备份已恢复，请检查连接后恢复接收"))
-			if !wait(ctx, 5*time.Second) {
-				return
-			}
-			continue
-		}
-		s.setState("connected", nil)
-		for ctx.Err() == nil {
-			pollCtx, cancel := context.WithTimeout(ctx, 40*time.Second)
-			var updates []update
-			err = c.call(pollCtx, "getUpdates", map[string]any{"offset": offset, "timeout": 30, "allowed_updates": []string{"message"}}, &updates)
-			cancel()
-			if err != nil {
-				var apiErr *APIError
-				if errors.As(err, &apiErr) && apiErr.Code == 409 {
-					s.setState("conflict", errors.New("同一机器人有其他接收实例，请停止其他实例后重启"))
-					return
-				}
-				s.setState("error", err)
-				delay := 10 * time.Second
-				if errors.As(err, &apiErr) && apiErr.RetryAfter > delay {
-					delay = apiErr.RetryAfter
-				}
-				if !wait(ctx, delay) {
-					return
-				}
-				break
-			}
-			s.mu.Lock()
-			s.status.LastPoll = time.Now()
-			s.mu.Unlock()
-			// Admit a complete polling batch before the album worker can flush.
-			// On reconnect, first drain a successful poll so buffered messages do
-			// not publish before captions still waiting at the Bot API arrive.
-			s.mediaGroupMu.Lock()
-			for _, u := range updates {
-				if err = s.accept(ctx, u); err != nil {
-					s.setState("error", errors.New("保存 TG 消息失败，稍后重试"))
-					break
-				}
-				offset = u.ID + 1
+		} else if paused {
+			s.setState("needs_reconnect", errors.New("备份已恢复，请检查配置后恢复接收"))
+		} else {
+			s.setState("connecting", nil)
+			c, connectErr := s.newTransport(s.settings(), s.token)
+			if connectErr == nil {
 				s.mu.Lock()
-				s.status.LastMessage = time.Now()
+				s.client = c
+				s.mu.Unlock()
+				connectErr = c.Run(ctx, func(u user) error {
+					if u.ID != botID {
+						return errors.New("Telegram 会话与机器人身份不匹配")
+					}
+					s.mu.Lock()
+					s.botID, s.status.BotID, s.status.Username = u.ID, strconv.FormatInt(u.ID, 10), u.Username
+					s.status.LastConnected = time.Now()
+					s.mu.Unlock()
+					s.setState("connected", nil)
+					return nil
+				}, func(ctx context.Context, updates []update) error {
+					// A complete batch is durable before albums can be flushed.
+					s.mediaGroupMu.Lock()
+					defer s.mediaGroupMu.Unlock()
+					for _, u := range updates {
+						if err := s.accept(ctx, u); err != nil {
+							return err
+						}
+					}
+					s.mu.Lock()
+					s.status.LastMessage = time.Now()
+					s.mu.Unlock()
+					return nil
+				}, func(connected bool) {
+					s.mu.Lock()
+					if s.status.State == "connected" || s.status.State == "connecting" {
+						if connected && s.botID != 0 {
+							s.status.State = "connected"
+							s.status.LastConnected = time.Now()
+						} else {
+							s.status.State = "connecting"
+						}
+					}
+					s.mu.Unlock()
+				})
+				s.mu.Lock()
+				s.client = nil
 				s.mu.Unlock()
 			}
-			s.mu.Lock()
-			s.mediaGroupsReady = err == nil
-			s.mu.Unlock()
-			s.mediaGroupMu.Unlock()
-			if err != nil {
-				if !wait(ctx, 5*time.Second) {
-					return
-				}
-				break
+			if ctx.Err() != nil {
+				return
 			}
+			err = connectErr
+			s.setState("error", err)
+		}
+		delay := 5 * time.Second
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.RetryAfter > delay {
+			delay = apiErr.RetryAfter
+		}
+		if !wait(ctx, delay) {
+			return
 		}
 	}
 }
+
 func (s *Service) accept(ctx context.Context, u update) error {
 	// Keep the fallback timestamp in the buffered message too, so collecting an
 	// album or restarting the receiver does not change an untitled video's name.
@@ -303,11 +242,16 @@ func (s *Service) accept(ctx context.Context, u update) error {
 	if m := u.Message; m != nil && m.MediaGroupID != "" && m.Chat.Type == "private" && s.Allowed(m.From.ID) {
 		return s.stageMediaGroup(ctx, u)
 	}
+	if m := u.Message; m != nil && m.Chat.Type == "private" && s.Allowed(m.From.ID) && videoMedia(m) == nil {
+		if link, ok := parseMessageLink(m.Text); ok {
+			return s.acceptMessageLink(ctx, u, link)
+		}
+	}
 	input, err := s.prepareImport(ctx, u)
 	if err != nil {
 		return err
 	}
-	err = s.cat.AcceptTelegramUpdate(ctx, input.Receipt, input.Source, input.ID, input.Title, s.cfg.MaxPendingJobs)
+	err = s.cat.AcceptTelegramUpdate(ctx, input.Receipt, input.Source, input.ID, input.Title, s.settings().MaxPendingJobs)
 	if err == nil {
 		s.wakeImportWorker()
 	}
@@ -347,7 +291,7 @@ func (s *Service) prepareImport(ctx context.Context, u update) (catalog.Telegram
 					r.Response = ""
 					if file.FileID == "" || file.UniqueID == "" {
 						r.Response = "视频文件信息不完整，请重新发送"
-					} else if err := validateVideoSize(file.Size, s.cfg.MaxFileSizeBytes); err != nil {
+					} else if err := validateVideoSize(file.Size, s.settings().MaxFileSizeBytes); err != nil {
 						r.Response = err.Error()
 					} else {
 						source = &catalog.TelegramSource{BotID: botID, SenderID: m.From.ID, FileID: file.FileID, UniqueID: file.UniqueID, FileName: file.Name, Size: file.Size, MIME: file.MIME}
@@ -391,7 +335,7 @@ func (s *Service) invalidateMissingVideo(ctx context.Context, botID int64, uniqu
 		return err
 	}
 	if err == nil && v != nil && v.DriveID == telegramstorage.DriveID {
-		info, e := telegramstorage.New(s.cat, func() string { return s.cfg.LocalFilesRoot }).Stat(ctx, v.FileID)
+		info, e := telegramstorage.New(s.cat, func() string { return s.settings().LocalFilesRoot }).Stat(ctx, v.FileID)
 		if e == nil && info.Size > 0 {
 			return nil
 		}
@@ -432,13 +376,7 @@ func videoTitle(caption, name string, timestamp int64) string {
 }
 
 func videoTitleWithSuffix(caption, name string, timestamp int64, suffix string) string {
-	title := ""
-	for _, line := range strings.Split(caption, "\n") {
-		if strings.TrimSpace(line) != "" {
-			title = strings.TrimSpace(line)
-			break
-		}
-	}
+	title := strings.TrimSpace(caption)
 	if title == "" {
 		title = strings.TrimSuffix(filepath.Base(strings.ReplaceAll(name, `\`, "/")), filepath.Ext(name))
 	}

@@ -13,7 +13,7 @@ import (
 )
 
 // Telegram sends album members as separate updates without an end marker.
-// Wait for a quiet interval so captions on photos and subsequent polls can be
+// Wait for a quiet interval so captions on photos and subsequent updates can be
 // included before any video is queued. The inbox survives receiver restarts.
 const mediaGroupQuietPeriod = 2 * time.Second
 
@@ -39,7 +39,7 @@ func (s *Service) processMediaGroups(ctx context.Context) {
 		case <-ticker.C:
 			s.mediaGroupMu.Lock()
 			s.mu.RLock()
-			ready := s.status.State == "connected" && s.mediaGroupsReady
+			ready := s.status.State == "connected" && s.client != nil && s.client.Synced()
 			s.mu.RUnlock()
 			if !ready {
 				s.mediaGroupMu.Unlock()
@@ -70,7 +70,7 @@ func (s *Service) flushMediaGroups(ctx context.Context, before time.Time) error 
 		if err != nil {
 			return err
 		}
-		accepted, err := s.cat.AcceptTelegramMediaGroup(ctx, group, imports, s.cfg.MaxPendingJobs)
+		accepted, err := s.cat.AcceptTelegramMediaGroup(ctx, group, imports, s.settings().MaxPendingJobs)
 		if err != nil {
 			return err
 		}
@@ -83,8 +83,6 @@ func (s *Service) flushMediaGroups(ctx context.Context, before time.Time) error 
 
 func (s *Service) prepareMediaGroup(ctx context.Context, group catalog.TelegramMediaGroup) ([]catalog.TelegramImport, error) {
 	updates := make([]update, len(group.Updates))
-	caption := ""
-	videoCount := 0
 	for i, entry := range group.Updates {
 		u := &updates[i]
 		if err := json.Unmarshal([]byte(entry.Payload), u); err != nil {
@@ -97,10 +95,23 @@ func (s *Service) prepareMediaGroup(ctx context.Context, group catalog.TelegramM
 		if m.Date <= 0 {
 			m.Date = entry.ReceivedAt / 1000
 		}
+	}
+	return s.prepareMediaGroupImports(ctx, updates, group.ID)
+}
+
+func (s *Service) prepareMediaGroupImports(ctx context.Context, updates []update, groupID string) ([]catalog.TelegramImport, error) {
+	caption := ""
+	var groupDate int64
+	videoCount := 0
+	for _, u := range updates {
+		m := u.Message
 		// Recheck authorization after a configuration change or restart, including
 		// messages used only as a caption source.
 		if m.Chat.Type != "private" || !s.Allowed(m.From.ID) {
 			continue
+		}
+		if groupDate == 0 {
+			groupDate = m.Date
 		}
 		if caption == "" {
 			caption = strings.TrimSpace(m.Caption)
@@ -123,6 +134,9 @@ func (s *Service) prepareMediaGroup(ctx context.Context, group catalog.TelegramM
 				videoIndex++
 			}
 			if input.Source != nil {
+				input.Source.MediaGroupID = groupID
+				input.Source.MediaGroupTitle = caption
+				input.Source.MediaGroupDate = groupDate
 				ownCaption := strings.TrimSpace(m.Caption)
 				if ownCaption == "" {
 					ownCaption = caption

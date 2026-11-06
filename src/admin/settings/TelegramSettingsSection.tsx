@@ -60,6 +60,28 @@ export function TelegramSettingsSection({
             <h3 id="tg-credentials-title">机器人凭据</h3>
             <div className="tg-fields tg-fields--thirds">
               <label>
+                API ID
+                <input
+                  type="number"
+                  min="1"
+                  max="2147483647"
+                  value={draft.telegramApiId || ""}
+                  onChange={(e) => onChange("telegramApiId", Number(e.target.value))}
+                  placeholder="从 my.telegram.org 获取"
+                />
+              </label>
+              <label>
+                API Hash
+                <input
+                  type="text"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={draft.telegramApiHash}
+                  onChange={(e) => onChange("telegramApiHash", e.target.value)}
+                  placeholder="32 位 API Hash"
+                />
+              </label>
+              <label>
                 Bot Token
                 <input
                   type="text"
@@ -68,6 +90,24 @@ export function TelegramSettingsSection({
                   value={draft.telegramBotToken}
                   onChange={(e) => onChange("telegramBotToken", e.target.value)}
                   placeholder="填写 BotFather 提供的 Token"
+                />
+              </label>
+            </div>
+          </section>
+          <section
+            className="tg-setting-group"
+            aria-labelledby="tg-connection-title"
+          >
+            <h3 id="tg-connection-title">连接设置</h3>
+            <div className="tg-fields tg-fields--thirds">
+              <label>
+                Telegram 连接代理（选填）
+                <input
+                  value={draft.telegramConnectionProxy}
+                  onChange={(e) => onChange("telegramConnectionProxy", e.target.value)}
+                  placeholder="如 socks5h://127.0.0.1:1080 或 http://127.0.0.1:7890"
+                  autoComplete="off"
+                  spellCheck={false}
                 />
               </label>
             </div>
@@ -106,6 +146,29 @@ export function TelegramSettingsSection({
             aria-labelledby="tg-download-title"
           >
             <h3 id="tg-download-title">下载设置</h3>
+            <div className="tg-fields tg-fields--thirds">
+              <label>
+                视频与会话目录（选填）
+                <input
+                  value={draft.telegramStorageDirectory}
+                  onChange={(e) => onChange("telegramStorageDirectory", e.target.value)}
+                  placeholder="默认使用数据目录下的 telegram/"
+                />
+              </label>
+              <label>
+                单个视频下载并发路数
+                <input
+                  type="number"
+                  min="1"
+                  max="8"
+                  step="1"
+                  value={draft.telegramDownloadThreads}
+                  onChange={(e) =>
+                    onChange("telegramDownloadThreads", Number(e.target.value))
+                  }
+                />
+              </label>
+            </div>
             <div className="tg-fields tg-fields--thirds">
               <label>
                 文件上限（GiB）

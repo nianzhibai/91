@@ -1,0 +1,341 @@
+{{ define "handlers" }}
+{{- /*gotype: github.com/ogen-go/ogen/gen.TemplateConfig*/ -}}
+{{ template "header" $ }}
+
+type codeRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (c *codeRecorder) WriteHeader(status int) {
+	c.status = status
+	c.ResponseWriter.WriteHeader(status)
+}
+
+func (c *codeRecorder) Unwrap() http.ResponseWriter {
+	return c.ResponseWriter
+}
+
+{{- if not $.OpenTelemetryEnabled }}
+{{/* Define static no-op recordError, it would be optimized to nothing. */}}
+func recordError(string, error) {}
+{{- end }}
+
+{{- if $.PathsServerEnabled }}
+{{- range $op := $.Operations }}
+	{{- template "handlers/operation" op_elem $op $ }}
+{{ end }}
+{{- end }}
+
+{{- if $.WebhookServerEnabled }}
+{{- range $op := $.Webhooks }}
+	{{- template "handlers/operation" op_elem $op $ }}
+{{ end }}
+{{- end }}
+
+{{ end }}
+
+{{ define "handlers/operation" }}
+{{- /*gotype: github.com/ogen-go/ogen/gen.OperationElem*/ -}}{{ $op := $.Operation }}
+{{- $otel := $.Config.OpenTelemetryEnabled }}
+// handle{{ $op.Name }}Request handles {{ $op.PrettyOperationID }} operation.
+//
+{{- template "godoc_op" $op }}
+func (s *{{ if $op.WebhookInfo }}Webhook{{ end }}Server) handle{{ $op.Name }}Request(args [{{ $op.PathParamsCount }}]string, argsEscaped bool, w http.ResponseWriter, r *http.Request) {
+	statusWriter := &codeRecorder{ResponseWriter: w}
+	w = statusWriter
+    {{- if $.Config.OpenTelemetryEnabled }}
+		{{- $hasOTELAttrs := false }}
+		{{- $ogenAttrs := $op.OTELAttributes }}
+		{{- if or $ogenAttrs (not $op.WebhookInfo) }}
+		{{- $hasOTELAttrs = true }}
+		otelAttrs := []attribute.KeyValue{
+			{{- range $attr := $ogenAttrs }}
+			{{ $attr.String }},
+			{{- end }}
+			{{- if not $op.WebhookInfo }}
+			semconv.HTTPRequestMethodKey.String({{ upper $op.Spec.HTTPMethod | quote }}),
+			semconv.HTTPRouteKey.String({{ quote $op.Spec.Path }}),
+			{{- end }}
+		}
+		{{- else }}
+		var otelAttrs []attribute.KeyValue
+		{{- end }}
+		// Add attributes from config.
+		otelAttrs = append(otelAttrs, s.cfg.Attributes...)
+
+		// Start a span for this request.
+		ctx, span := s.cfg.Tracer.Start(r.Context(), {{ $op.Name }}Operation,
+			{{- if $hasOTELAttrs }}
+			trace.WithAttributes(otelAttrs...),
+			{{- end }}
+			serverSpanKind,
+		)
+		defer span.End()
+
+		// Add Labeler to context.
+		labeler := &Labeler{attrs: otelAttrs}
+		ctx = contextWithLabeler(ctx, labeler)
+
+		// Run stopwatch.
+		startTime := time.Now()
+		defer func() {
+			elapsedDuration := time.Since(startTime)
+
+			attrSet := labeler.AttributeSet()
+			attrs := attrSet.ToSlice()
+			code := statusWriter.status
+			if code != 0 {
+				codeAttr := semconv.HTTPResponseStatusCode(code)
+				attrs = append(attrs, codeAttr)
+				span.SetAttributes(attrs...)
+			}
+			attrOpt := metric.WithAttributes(attrs...)
+
+			// Increment request counter.
+			s.requests.Add(ctx, 1, attrOpt)
+
+			// Use floating point division here for higher precision (instead of Millisecond method).
+			s.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), attrOpt)
+		}()
+	{{- else }}
+	ctx := r.Context()
+	{{- end }}
+
+	var (
+		{{- if $.Config.OpenTelemetryEnabled }}
+		recordError = func(stage string, err error) {
+				span.RecordError(err)
+
+				// https://opentelemetry.io/docs/specs/semconv/http/http-spans/#status
+				// Span Status MUST be left unset if HTTP status code was in the 1xx, 2xx or 3xx ranges,
+				// unless there was another error (e.g., network error receiving the response body; or 3xx codes with
+				// max redirects exceeded), in which case status MUST be set to Error.
+				code := statusWriter.status
+				if code < 100 || code >= 500 {
+				    span.SetStatus(codes.Error, stage)
+				}
+
+				attrSet := labeler.AttributeSet()
+				attrs := attrSet.ToSlice()
+				if code != 0 {
+					attrs = append(attrs, semconv.HTTPResponseStatusCode(code))
+				}
+
+				s.errors.Add(ctx, 1, metric.WithAttributes(attrs...))
+		}
+		{{- end }}
+		err error
+		{{- if or $op.Request $op.Params $op.Security.Securities }}
+		opErrContext = ogenerrors.OperationContext{
+			Name: {{ $op.Name }}Operation,
+			ID: {{ quote $op.Spec.OperationID }},
+		}
+		{{- end }}
+	)
+
+	{{- with $securities := $op.Security.Securities }}
+	{
+		type bitset = [{{ $op.Security.BitArrayLen }}]uint8
+		var satisfied bitset
+		{{- range $idx, $s := $securities }}
+		{{- $securityName := $s.Type.Name }}
+		{
+			sctx, ok, err := s.security{{ $securityName }}(ctx, {{ $op.Name }}Operation, r)
+			if err != nil {
+				err = &ogenerrors.SecurityError{
+					OperationContext: opErrContext,
+					Security: {{ quote $securityName }},
+					Err: err,
+				}
+				{{- if and $.Config.Error (not $op.WebhookInfo) }}
+				if encodeErr := encodeErrorResponse(s.h.NewError(ctx, err), w, {{ if $otel }}span{{ end }}); encodeErr != nil {
+					defer recordError({{ printf "Security:%s" $securityName | quote }}, err)
+				}
+				{{- else }}
+				defer recordError({{ printf "Security:%s" $securityName | quote }}, err)
+				s.cfg.ErrorHandler(ctx, w, r, err)
+				{{- end }}
+				return
+			}
+			if ok {
+				satisfied[{{ div $idx 8 }}] |= 1 << {{ mod $idx 8 }}
+				ctx = sctx
+			}
+		}
+		{{- end }}
+
+		if ok := func() bool {
+			nextRequirement:
+			for _, requirement := range []bitset{
+				{{- range $req := $op.Security.Requirements }}
+				{
+					{{- range $mask := $req }}{{ printf "%#08b" $mask }},{{ end }}
+				},
+				{{- end }}
+			} {
+				for i, mask := range requirement {
+					if satisfied[i] & mask != mask {
+						continue nextRequirement
+					}
+				}
+				return true
+			}
+			return false
+		}(); !ok {
+			err = &ogenerrors.SecurityError{
+				OperationContext: opErrContext,
+				Err: ogenerrors.ErrSecurityRequirementIsNotSatisfied,
+			}
+			{{- if and $.Config.Error (not $op.WebhookInfo) }}
+			if encodeErr := encodeErrorResponse(s.h.NewError(ctx, err), w, {{ if $otel }}span{{ end }}); encodeErr != nil {
+				defer recordError({{ quote "Security" }}, err)
+			}
+			{{- else }}
+			defer recordError({{ quote "Security" }}, err)
+			s.cfg.ErrorHandler(ctx, w, r, err)
+			{{- end }}
+			return
+		}
+	}
+	{{- end }}
+
+	{{- if $op.Params }}
+	params, err := decode{{ $op.Name }}Params(args, argsEscaped, r)
+	if err != nil {
+		err = &ogenerrors.DecodeParamsError{
+			OperationContext: opErrContext,
+			Err: err,
+		}
+		defer recordError("DecodeParams", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
+	{{- end }}
+
+    var rawBody []byte
+	{{- if $op.Request }}
+	request, rawBody, close, err := s.decode{{ $op.Name }}Request(r)
+	if err != nil {
+		err = &ogenerrors.DecodeRequestError{
+			OperationContext: opErrContext,
+			Err: err,
+		}
+		defer recordError("DecodeRequest", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
+	defer func() {
+		if err := close(); err != nil {
+			recordError("CloseRequest", err)
+		}
+	}()
+	{{- end }}
+
+	{{- if not $op.HasRawResponse }}
+
+	var response {{ $op.Responses.GoType }}
+	{{- end }}
+	if m := s.cfg.Middleware; m != nil {
+		mreq := middleware.Request{
+			Context: ctx,
+			OperationName: {{ $op.Name }}Operation,
+			OperationSummary: {{ quote $op.Summary }},
+			OperationID: {{ quote $op.Spec.OperationID }},
+			Body: {{- if $op.Request }}request{{- else }}nil{{- end }},
+			RawBody: rawBody,
+			Params: middleware.Parameters{
+				{{- range $param := $op.Params }}
+				{
+					Name: {{ quote $param.Spec.Name }},
+					In: {{ quote $param.Spec.In }},
+				}: params.{{ $param.Name }},
+				{{- end }}
+			},
+			Raw: r,
+		}
+
+		type (
+			Request = {{ if $op.Request }}{{ $op.Request.GoType }}{{ else }}struct{}{{ end }}
+			Params = {{ if $op.Params }}{{ $op.Name }}Params{{ else }}struct{}{{ end }}
+			Response = {{ if $op.HasRawResponse }}struct{}{{ else }}{{ $op.Responses.GoType }}{{ end }}
+		)
+		{{- if $op.HasRawResponse }}
+		_, err = middleware.HookMiddleware[
+			Request,
+			Params,
+			Response,
+		](
+			m,
+			mreq,
+			{{ if $op.Params }}unpack{{ $op.Name }}Params{{ else }}nil{{ end }},
+			func(ctx context.Context, request Request, params Params) (response Response, err error) {
+				{{- if $op.OperationGroup }}
+				err = s.h.{{ $op.Name }}(ctx{{ if $op.Request }}, request{{ end }}{{ if $op.Params }}, params{{ end }}, w)
+				{{- else }}
+				err = s.rh.{{ $op.Name }}(ctx{{ if $op.Request }}, request{{ end }}{{ if $op.Params }}, params{{ end }}, w)
+				{{- end }}
+				return response, err
+			},
+		)
+		{{- else }}
+		response, err = middleware.HookMiddleware[
+			Request,
+			Params,
+			Response,
+		](
+			m,
+			mreq,
+			{{ if $op.Params }}unpack{{ $op.Name }}Params{{ else }}nil{{ end }},
+			func(ctx context.Context, request Request, params Params) (response Response, err error) {
+				{{- if $op.Responses.DoPass }}response,{{ end }}err = s.h.{{ $op.Name }}(ctx{{ if $op.Request }}, request{{ end }}{{ if $op.Params }}, params{{ end }})
+				return response, err
+			},
+		)
+		{{- end }}
+	} else {
+		{{- if $op.HasRawResponse }}
+		{{- if $op.OperationGroup }}
+		err = s.h.{{ $op.Name }}(ctx{{ if $op.Request }}, request{{ end }}{{ if $op.Params }}, params{{ end }}, w)
+		{{- else }}
+		err = s.rh.{{ $op.Name }}(ctx{{ if $op.Request }}, request{{ end }}{{ if $op.Params }}, params{{ end }}, w)
+		{{- end }}
+		{{- else }}
+		{{- if $op.Responses.DoPass }}response,{{ end }} err = s.h.{{ $op.Name }}(ctx{{ if $op.Request }}, request{{ end }}{{ if $op.Params }}, params{{ end }})
+		{{- end }}
+	}
+	if err != nil {
+		{{- /* It is not secure to expose internal error to client, but better than nothing. */ -}}
+		{{- if and $.Config.Error (not $op.WebhookInfo) }}
+		if errRes, ok := errors.Into[{{ $.Config.ErrorGoType }}](err); ok {
+			if err := encodeErrorResponse(errRes, w, {{ if $otel }}span{{ end }}); err != nil {
+				defer recordError("Internal", err)
+			}
+			return
+		}
+		if errors.Is(err, ht.ErrNotImplemented) {
+			s.cfg.ErrorHandler(ctx, w, r, err)
+			return
+		}
+		if err := encodeErrorResponse(s.h.NewError(ctx, err), w, {{ if $otel }}span{{ end }}); err != nil {
+			defer recordError("Internal", err)
+		}
+		{{- else }}
+		defer recordError("Internal", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		{{- end }}
+		return
+	}
+
+	{{- if not $op.HasRawResponse }}
+
+	if err := encode{{ $op.Name }}Response(response, w, {{ if $otel }}span{{ end }}); err != nil {
+		defer recordError("EncodeResponse", err)
+		if !errors.Is(err, ht.ErrInternalServerErrorResponse) {
+			s.cfg.ErrorHandler(ctx, w, r, err)
+		}
+		return
+	}
+	{{- end }}
+}
+{{ end }}

@@ -6,8 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
+	"io"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -56,9 +55,6 @@ func TestAcceptRequiresKnownVideoSizeWithinLimit(t *testing.T) {
 				} else if len(jobs) != 1 || receipts[0].JobID != jobs[0].ID {
 					t.Fatalf("valid video was rejected: jobs=%+v receipt=%+v", jobs, receipts[0])
 				}
-				if offset, _, err := cat.TelegramOffset(ctx, s.BotID()); err != nil || offset != 2 {
-					t.Fatalf("receipt did not advance cursor: offset=%d error=%v", offset, err)
-				}
 			})
 		}
 	}
@@ -82,12 +78,7 @@ func TestFetchRejectsInvalidQueuedSizeBeforeRequestingFile(t *testing.T) {
 				t.Fatal(err)
 			}
 			var requests atomic.Int64
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				requests.Add(1)
-				http.Error(w, "unexpected download", http.StatusInternalServerError)
-			}))
-			defer server.Close()
-			s.client = &client{base: server.URL, token: "123:test", http: server.Client()}
+			s.client = &fakeTransport{download: func(context.Context, string, io.WriterAt) error { requests.Add(1); return nil }}
 			progressCalled := false
 			_, err = s.Fetch(ctx, job, func(string, int64, int64) error {
 				progressCalled = true

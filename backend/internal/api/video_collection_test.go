@@ -5,12 +5,61 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/video-site/backend/internal/catalog"
 )
+
+func TestTelegramImportsUseTheSameDirectoryCollectionRules(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cat.Close()
+	for i, directory := range []string{"海边旅行-a1b2", "海边旅行-a1b2", "另一组-c3d4", "", ""} {
+		id := "episode-" + strconv.Itoa(i+1)
+		if err := cat.AcceptTelegramUpdate(ctx, catalog.TelegramReceipt{BotID: 123, ChatID: 42, SenderID: 42, MessageID: int64(i + 1), UpdateID: int64(i + 1)}, &catalog.TelegramSource{BotID: 123, SenderID: 42, FileID: id, UniqueID: id, Size: 5}, id, id, 100); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := cat.ReserveTelegramLocalFile(ctx, catalog.TelegramLocalFile{FileID: id + ".media", JobID: id, Directory: directory}); err != nil {
+			t.Fatal(err)
+		}
+		if err := cat.TransitionRemoteUploadJob(ctx, id, catalog.RemoteUploadQueued, catalog.RemoteUploadSaving); err != nil {
+			t.Fatal(err)
+		}
+		if err := cat.FinalizeRemoteUpload(ctx, id, &catalog.Video{ID: id, DriveID: catalog.TelegramLocalDriveID, FileID: id + ".media", FileName: id + ".mp4", Title: id, Size: 5}, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	server := &Server{Catalog: cat}
+	request := requestWithVideoID(http.MethodGet, "/api/video/episode-1/collection", "episode-1", strings.NewReader(""))
+	response := httptest.NewRecorder()
+	server.handleVideoCollection(response, request)
+	var collection VideoCollectionDTO
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &collection) != nil {
+		t.Fatalf("collection response: %d %s", response.Code, response.Body.String())
+	}
+	if collection.Name != "海边旅行-a1b2" || collection.Total != 2 || len(collection.Items) != 2 || collection.Items[0].ID != "episode-1" || collection.Items[1].ID != "episode-2" {
+		t.Fatalf("Telegram directories were not respected by the collection API: %+v", collection)
+	}
+	request = requestWithVideoID(http.MethodGet, "/api/video/episode-1/collection/summary", "episode-1", strings.NewReader(""))
+	response = httptest.NewRecorder()
+	server.handleVideoCollectionSummary(response, request)
+	var summary VideoCollectionSummary
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &summary) != nil || summary.Total != 2 || summary.Name != collection.Name {
+		t.Fatalf("Telegram collection summary differs from the full collection: %s", response.Body.String())
+	}
+	request = requestWithVideoID(http.MethodGet, "/api/video/episode-4/collection", "episode-4", strings.NewReader(""))
+	response = httptest.NewRecorder()
+	server.handleVideoCollection(response, request)
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &collection) != nil || collection.Name != "library" || collection.Total != 2 || collection.Items[0].ID != "episode-4" || collection.Items[1].ID != "episode-5" {
+		t.Fatalf("Telegram root directory did not form a collection: %s", response.Body.String())
+	}
+}
 
 func TestVideoDetailDefersCollectionAndSummaryMatchesNaturalDirectoryOrder(t *testing.T) {
 	ctx := context.Background()

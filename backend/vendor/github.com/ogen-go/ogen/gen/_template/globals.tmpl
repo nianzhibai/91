@@ -1,0 +1,40 @@
+{{- /*gotype: github.com/ogen-go/ogen/gen.TemplateConfig*/ -}}
+
+{{ define "globals" }}
+
+{{- with $regexStrings := $.RegexStrings }}
+var regexMap = map[string]ogenregex.Regexp{
+	{{- range $regex := $regexStrings }}
+	{{ quote $regex }}: ogenregex.MustCompile({{ quote $regex }}),
+	{{- end }}
+}
+{{- end }}
+
+{{- with $ratStrings := $.RatStrings }}
+var ratMap = map[string]*big.Rat{
+	{{- range $rat := $ratStrings }}
+	{{ quote $rat }}: func() *big.Rat {
+		r, ok := new(big.Rat).SetString({{ quote $rat }})
+		if !ok {
+			panic(fmt.Sprintf("rat %q: can't parse", {{ quote $rat }}))
+		}
+		return r
+	}(),
+	{{- end }}
+}
+{{- end }}
+
+{{- if $.AnyInstrumentable }}
+var (
+	{{- if $.AnyClientEnabled }}
+	// Allocate option closure once.
+	clientSpanKind = trace.WithSpanKind(trace.SpanKindClient)
+	{{- end }}
+	{{- if $.AnyServerEnabled }}
+	// Allocate option closure once.
+	serverSpanKind = trace.WithSpanKind(trace.SpanKindServer)
+	{{- end }}
+)
+{{- end }}
+
+{{- end }}

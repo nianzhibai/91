@@ -61,7 +61,6 @@ build_package() {
   )
 
   cp "$ROOT_DIR/backend/config.example.yaml" "$work/config.example.yaml"
-  cp "$ROOT_DIR/telegram.example.yml" "$work/telegram.example.yml"
   cp "$ROOT_DIR/install.sh" "$work/install.sh"
   cp -R "$ROOT_DIR/dist" "$work/dist"
 

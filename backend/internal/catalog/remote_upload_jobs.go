@@ -283,13 +283,17 @@ SELECT state, cancel_requested, source_kind
 	}
 
 	if video.DriveID == TelegramLocalDriveID {
-		var owner string
-		if err := tx.QueryRowContext(ctx, `SELECT job_id FROM telegram_local_files WHERE file_id=?`, video.FileID).Scan(&owner); err != nil {
+		var owner, directory string
+		if err := tx.QueryRowContext(ctx, `SELECT job_id,directory FROM telegram_local_files WHERE file_id=?`, video.FileID).Scan(&owner, &directory); err != nil {
 			return err
 		}
 		if owner != jobID || sourceKind != "telegram" {
 			return errors.New("catalog: TG file belongs to another import")
 		}
+		if directory == "" {
+			directory = TelegramLibraryRootID
+		}
+		video.ParentID, video.DirName = directory, directory
 	}
 	type assignment struct {
 		tagID    int64
@@ -376,15 +380,17 @@ SELECT state, cancel_requested, source_kind
 	}
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO videos (
-  id, drive_id, file_id, file_name, fingerprint_status,
+  id, drive_id, file_id, file_name, parent_id, dir_name, fingerprint_status,
   title, author, tags, size_bytes, ext,
   thumbnail_status, preview_status, tags_manual,
   published_at, created_at, updated_at
-) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, 'pending', 'pending', ?, ?, ?, ?)`,
+) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, 'pending', 'pending', ?, ?, ?, ?)`,
 		video.ID,
 		video.DriveID,
 		video.FileID,
 		video.FileName,
+		video.ParentID,
+		video.DirName,
 		video.Title,
 		video.Author,
 		string(tagsJSON),

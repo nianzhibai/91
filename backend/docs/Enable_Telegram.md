@@ -1,56 +1,55 @@
-# 接入 Telegram
+# 配置 Telegram
 
-项目通过本地 TG Bot API 获取私聊视频。Bot API 与网站必须共享下载目录，后台只配置机器人及接收规则。
+原生和 Docker 部署均在网站后台配置，无需额外部署 Bot API 服务。
 
-```mermaid
-flowchart LR
-    TG["用户私聊机器人"] --> API["TG Bot API"]
-    SITE["91 网站"] -->|获取消息、请求下载| API
-    API --> FILES[("共享视频目录")]
-    FILES -->|读取并导入| SITE
+## 启用 Telegram
+
+1. 向 `@BotFather` 发送 `/newbot`，创建机器人并取得 **Bot Token**。
+2. 在 `my.telegram.org` 的 API development tools 获取 **API ID / API Hash**。
+3. 打开「配置面板 → Telegram」，填写这三项凭据。需要代理时，在「连接设置」填写网站进程可访问的 HTTP/HTTPS 或 SOCKS5/SOCKS5H 地址；留空直连。
+4. 启用并保存，在后台 Telegram 页面点击「测试连接」。
+5. 私聊机器人发送 `/id`，将回复的数字填入「允许的用户 ID」并保存。名单为空时不接收视频。
+6. 向机器人发送或转发视频，检查接收结果。选填「站点地址」后，机器人回复会附带视频链接。
+
+也可修改 `config.yaml` 中的 `telegram` 配置，保留其他已有配置项：
+
+```yaml
+telegram:
+  enabled: true
+  api_id: 12345
+  api_hash: "填写 32 位 API Hash"
+  bot_token: "填写 BotFather 提供的 Token"
+  allowed_user_ids: [123456789]
+  connection_proxy: ""
+  site_base_url: "https://video.example.com"
+  storage_directory: ""
 ```
 
-## 准备凭证
+配置保存后自动应用；修改凭据、连接代理或存储目录会自动重连。Docker 中的 `127.0.0.1` 指网站容器自身，代理地址需从容器内可访问。
 
-- **Bot Token**：向 Telegram 的 `@BotFather` 发送 `/newbot` 创建机器人。
-- **API ID / API Hash**：在 `my.telegram.org` 的 API development tools 申请。API ID 为正整数，API Hash 为 32 位十六进制字符串。
+## 修改存储目录
 
-## 部署 Bot API
+「配置面板 → Telegram → 下载设置 → 视频与会话目录」对应 `telegram.storage_directory`。填写新目录的绝对路径，例如 `/mnt/telegram`，并确保网站进程有读写权限。留空时使用 `storage.data_dir` 下的 `telegram/`；相对路径按网站进程的工作目录解析。
 
-### 一键安装脚本部署的网站
+该目录包含 `library/`（视频）和 `sessions/`（机器人会话）。仅修改配置不会自动迁移文件；已有数据时按以下顺序操作：
 
-编辑安装目录中的 `telegram.yml`，在已有 `environment` 下填写 `TELEGRAM_API_ID` 和 `TELEGRAM_API_HASH`，然后启动 Bot API 并重启网站：
+1. 停止网站服务，避免下载或转存期间移动文件。
+2. 将旧目录的全部内容复制到新目录，保留子目录结构和文件权限，包括 `library/`、`sessions/`。
+3. 修改 `config.yaml` 中的 `telegram.storage_directory` 为新目录的绝对路径。一键安装的配置文件默认为 `/opt/video-site-91/config.yaml`，源码部署为 `backend/config.yaml`。
+4. 启动网站，测试连接，确认旧视频可播放、新视频写入新目录后，再清理旧目录。
 
-```bash
-cd /opt/video-site-91
-sudo nano telegram.yml
-sudo docker compose -f telegram.yml up -d --pull always
-sudo 91 restart
+尚无旧数据时，可直接在配置面板修改并保存。`sessions/` 包含会话密钥，不要公开或供多个实例同时使用。
+
+### Docker 目录挂载
+
+配置面板填写的是**容器内路径**。例如将宿主机 `/mnt/telegram` 挂载到容器 `/telegram`，在原 Compose 服务中保留现有数据挂载并追加：
+
+```yaml
+services:
+  video-site-91:
+    volumes:
+      - ./data:/opt/video-site-91/data
+      - /mnt/telegram:/telegram
 ```
 
-该方式默认将 Bot API 端口绑定到 `127.0.0.1:7878`，共享目录为安装目录的 `data/telegram/`。
-
-### Docker Compose 部署的网站
-
-在原 Compose 部署目录下载管理脚本并启用 Telegram：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/nianzhibai/91/main/91-docker.sh -o 91-docker.sh
-bash 91-docker.sh update --telegram enable
-```
-
-首次部署用 `bash 91-docker.sh install --telegram enable`。脚本复用已有 API 凭证，缺失或无效时交互输入；非交互环境通过 `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` 环境变量提供，也可覆盖旧值。交互输入明文显示，包含凭证的主 Compose 文件权限设为 600。
-
-脚本保留网站配置并合入 Bot API 服务、共享挂载和依赖，然后重建容器。默认在服务网络内使用 7878，不新增宿主机端口；bind 数据目录使用其 `telegram/` 子目录，命名卷部署默认创建独立 TG 卷。后续普通 `update` 保留 Telegram 部署。
-
-自定义 Compose 文件按原顺序通过 `-f` 传入，必要时用 `-p` 指定项目名。脚本要求支持所需选项的 Compose，缺少模板或发现连接/存储配置冲突时退出；更新失败尝试恢复原配置和镜像，不回滚数据。完整更新规则见 [后端部署说明](../README.md#docker-部署与更新)。
-
-手动部署可参考 [TG Compose 模板](../../tg-docker-compose.yml)，将 Bot API 服务、网站环境变量、共享目录及配置文件挂载合入现有配置；保留原端口、数据挂载和其他服务。模板将当前 `docker-compose.yml` 只读挂载为容器内 `telegram.yml`，改用其他文件名时需同步调整。
-
-## 网站后台配置
-
-1. 在「配置面板 → Telegram」填写 Bot Token，启用并保存，再到 Telegram 页面测试连接。
-2. 私聊机器人发送 `/id`，将回复的数字填入「允许的用户 ID」并保存；名单为空时仅响应引导消息，不接收视频。
-3. 向机器人发送视频，检查导入结果。可选填站点地址以生成回复链接。
-
-视频默认保存在媒体库本地目录。配置「上传网盘」和目标目录后，由定时维护转存；保存配置不会立即启动转存，停用网站接收也不会停止 Bot API 容器。
+将 `telegram.storage_directory` 设为 `/telegram`，运行 `docker compose up -d video-site-91` 应用挂载。已有数据时，先停止容器、将旧目录内容复制到宿主机 `/mnt/telegram/`，再修改配置并启动；默认部署的配置文件位于宿主机 `./data/config.yaml`，旧存储目录为 `./data/telegram/`。

@@ -136,44 +136,7 @@ test("systemd deployment migrates only the legacy default listen address", () =>
   );
 });
 
-test("source deployment creates Telegram configuration once and preserves it across upgrades", (t) => {
-  const root = mkdtempSync(join(tmpdir(), "91-source-telegram-"));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  mkdirSync(join(root, "backend"));
-  writeFileSync(join(root, "package.json"), "{}");
-  writeFileSync(join(root, "backend", "config.example.yaml"), 'server:\n  listen: "0.0.0.0:9191"\n');
-  const template = join(root, "telegram.example.yml");
-  const example = readFileSync(new URL("../telegram.example.yml", import.meta.url), "utf8");
-  writeFileSync(template, example);
-  const deployScript = fileURLToPath(new URL("../deploy.sh", import.meta.url));
-  const update = () => {
-    const result = spawnSync("bash", ["-c", `
-      source "$1" help >/dev/null
-      REPO_DIR="$2"
-      detect_deploy_user() { :; }
-      install_dependencies() { :; }
-      install_frontend() { :; }
-      build_backend() { :; }
-      ensure_ownership() { :; }
-      write_systemd_units() { :; }
-      open_firewall_port() { :; }
-      restart_services() { :; }
-      show_status() { :; }
-      install_or_update update
-    `, "bash", deployScript, root], { encoding: "utf8" });
-    assert.equal(result.status, 0, result.stderr);
-  };
-  update();
-  const compose = join(root, "backend", "telegram.yml");
-  assert.equal(readFileSync(compose, "utf8"), example);
-  assert.equal(statSync(compose).mode & 0o777, 0o600);
-  const customized = example
-    .replace('TELEGRAM_API_ID: ""', 'TELEGRAM_API_ID: "12345"')
-    .replace('TELEGRAM_API_HASH: ""', 'TELEGRAM_API_HASH: "0123456789abcdef0123456789abcdef"')
-    .replace("aiogram/telegram-bot-api:latest", "aiogram/telegram-bot-api:pinned")
-    .replace("./data/telegram:/var/lib/telegram-bot-api", "/nzb/tg:/var/lib/telegram-bot-api");
-  writeFileSync(compose, customized);
-  writeFileSync(template, `# Updated release template\n${example}`);
-  update();
-  assert.equal(readFileSync(compose, "utf8"), customized);
+test("source deployment needs no separate Telegram deployment", () => {
+  const source = readFileSync(new URL("../deploy.sh", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /telegram\.example\.yml|telegram-bot-api/);
 });

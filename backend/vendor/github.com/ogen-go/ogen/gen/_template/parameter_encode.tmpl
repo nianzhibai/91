@@ -1,0 +1,100 @@
+{{ define "encode_path_parameters" }}{{/*gotype: github.com/ogen-go/ogen/gen/ir.Operation*/}}
+var pathParts [{{ len $.PathParts }}]string
+{{- range $idx, $part := $.PathParts }}{{/* Range over path parts */}}
+	{{- if $part.Raw }}
+		pathParts[{{ $idx }}] = {{ quote $part.Raw }}
+	{{- else }}
+	{
+		{{- $p := $part.Param }}
+		// Encode {{ quote $p.Spec.Name }} parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param: {{ quote $p.Spec.Name }},
+			Style: uri.PathStyle{{ capitalize $p.Spec.Style.String }},
+			Explode: {{ if $p.Spec.Explode }}true{{ else }}false{{ end }},
+		})
+		if err := func() error {
+    		{{- template "encode_parameter" $p -}}
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[{{ $idx }}] = encoded
+	}
+	{{- end }}
+{{- end }}
+uri.AddPathParts(u, pathParts[:]...)
+{{- end }}
+
+{{ define "encode_query_parameters" }}{{/*gotype: github.com/ogen-go/ogen/gen/ir.Operation*/}}
+q := uri.NewQueryEncoder()
+{{- range $p := $.QueryParams }}
+{
+	// Encode {{ quote $p.Spec.Name }} parameter.
+	cfg := uri.QueryParameterEncodingConfig{
+		Name:    {{ quote $p.Spec.Name }},
+		Style:   uri.QueryStyle{{ capitalize $p.Spec.Style.String }},
+		Explode: {{ if $p.Spec.Explode }}true{{ else }}false{{ end }},
+	}
+
+	if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+		{{- template "encode_parameter" $p -}}
+	}); err != nil {
+		return res, errors.Wrap(err, "encode query")
+	}
+}
+{{- end }}
+u.RawQuery = q.Values().Encode()
+{{- end }}
+
+{{ define "encode_header_parameters" }}{{/*gotype: github.com/ogen-go/ogen/gen/ir.Operation*/}}
+h := uri.NewHeaderEncoder(r.Header)
+{{- range $p := $.HeaderParams }}
+{
+	cfg := uri.HeaderParameterEncodingConfig{
+		Name:    {{ quote $p.Spec.Name }},
+		Explode: {{ if $p.Spec.Explode }}true{{ else }}false{{ end }},
+	}
+	if err := h.EncodeParam(cfg, func(e uri.Encoder) error {
+		{{- template "encode_parameter" $p -}}
+	}); err != nil {
+		return res, errors.Wrap(err, "encode header")
+	}
+}
+{{- end }}
+{{ end }}
+
+{{ define "encode_cookie_parameters" }}{{/*gotype: github.com/ogen-go/ogen/gen/ir.Operation*/}}
+cookie := uri.NewCookieEncoder(r)
+{{- range $p := $.CookieParams }}
+{
+	// Encode {{ quote $p.Spec.Name }} parameter.
+	cfg := uri.CookieParameterEncodingConfig{
+		Name:    {{ quote $p.Spec.Name }},
+		Explode: {{ if $p.Spec.Explode }}true{{ else }}false{{ end }},
+	}
+
+	if err := cookie.EncodeParam(cfg, func(e uri.Encoder) error {
+		{{- template "encode_parameter" $p -}}
+	}); err != nil {
+		return res, errors.Wrap(err, "encode cookie")
+	}
+}
+{{- end }}
+{{ end }}
+
+{{ define "encode_parameter" }}{{/*gotype: github.com/ogen-go/ogen/gen/ir.Parameter*/}}
+{{- $param := $ }}
+{{- $el := elem $param.Type (printf "params.%s" $param.Name) }}
+{{- if $param.Spec.Content }}
+	var enc jx.Encoder
+	func(e *jx.Encoder) {
+    	{{- template "json/enc" $el }}
+	}(&enc)
+	return e.EncodeValue(string(enc.Bytes()))
+{{- else }}
+    {{- template "uri/encode" $el }}
+{{- end }}
+{{ end }}

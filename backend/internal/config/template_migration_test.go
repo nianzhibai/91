@@ -98,7 +98,7 @@ future_section:
 	if after.Telegram.UploadDirectory != "2026-09-16" {
 		t.Fatal("migration changed a string that resembles a date")
 	}
-	for _, removed := range []string{"outdated", "interval_seconds:", "max_depth:", "duration_seconds:", "segments:", "future_option:", "future_section:", "api_base_url:", "api_id:", "api_hash:", "api_files_root:", "local_files_root:"} {
+	for _, removed := range []string{"outdated", "interval_seconds:", "max_depth:", "duration_seconds:", "segments:", "future_option:", "future_section:", "api_base_url:", "api_files_root:", "local_files_root:"} {
 		if strings.Contains(string(written), removed) {
 			t.Errorf("retained %s", removed)
 		}

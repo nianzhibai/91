@@ -24,7 +24,7 @@ func TestCountTelegramImportsAcrossSendersAndHistoryCompaction(t *testing.T) {
 		}
 	}
 	assertStats(TelegramImportStats{})
-	if _, _, err := c.TelegramOffset(ctx, 456); err != nil {
+	if _, err := c.TelegramPaused(ctx, 456); err != nil {
 		t.Fatal(err)
 	}
 	for n, fixture := range []struct {

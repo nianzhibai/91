@@ -92,17 +92,26 @@ func TestMediaGroupPhotoCaptionNamesVideosBeforeAdmission(t *testing.T) {
 	}
 	for id := int64(26); id <= 28; id++ {
 		job := jobs[fmt.Sprintf("unique-%d", id)]
-		if job == nil || job.RequestedTitle != fmt.Sprintf("海边旅行 - %d", id-25) || job.State != "queued" {
+		if job == nil || job.RequestedTitle != fmt.Sprintf("海边旅行 #旅行 - %d", id-25) || job.State != "queued" {
 			t.Fatalf("message %d: %+v", id, job)
+		}
+		source, err := catalog.DecodeTelegramSource(job)
+		if err != nil || source.MediaGroupID != "album" || source.MediaGroupTitle != "海边旅行\n#旅行" || source.MediaGroupDate == 0 {
+			t.Fatalf("album storage metadata was not persisted: %+v %v", source, err)
 		}
 	}
 	receipts, err := cat.PendingTelegramReceipts(ctx, s.BotID())
-	if err != nil || len(receipts) != 3 {
-		t.Fatalf("photo produced a rejection reply: %v %v", receipts, err)
+	if err != nil || len(receipts) != 1 {
+		t.Fatalf("album did not share one receipt: %v %v", receipts, err)
 	}
 	for _, r := range receipts {
-		if r.MessageID == 25 || r.JobID == "" || r.Response != "" {
+		if r.MessageID != 26 || len(r.JobIDs) != 3 || r.JobID != "" || r.Response != "" {
 			t.Fatalf("unexpected receipt: %+v", r)
+		}
+		for i, id := range r.JobIDs {
+			if id != jobs[fmt.Sprintf("unique-%d", 26+i)].ID {
+				t.Fatalf("group receipt lost a member: %+v", r)
+			}
 		}
 	}
 	for _, u := range updates {
@@ -113,9 +122,6 @@ func TestMediaGroupPhotoCaptionNamesVideosBeforeAdmission(t *testing.T) {
 	flushTestAlbum(t, s)
 	if len(albumJobs(t, cat)) != 3 {
 		t.Fatal("redelivery created duplicate jobs")
-	}
-	if offset, _, err := cat.TelegramOffset(ctx, s.BotID()); err != nil || offset != 104 {
-		t.Fatalf("redelivery moved cursor backwards: %d %v", offset, err)
 	}
 }
 
@@ -263,42 +269,45 @@ func TestMediaGroupRechecksAuthorizationAfterBuffering(t *testing.T) {
 	}
 }
 
-func TestMediaGroupPreservesQueueAndFileSizeRejections(t *testing.T) {
-	s, cat := testService(t)
-	s.cfg.MaxPendingJobs = 1
-	s.cfg.MaxFileSizeBytes = 5
-	ctx := context.Background()
-	tooLarge := albumVideo(4, "")
-	tooLarge.Message.Video.Size = 6
-	for _, u := range []update{albumPhoto(1, "说明"), albumVideo(2, ""), albumVideo(3, ""), tooLarge} {
-		if err := s.accept(ctx, u); err != nil {
-			t.Fatal(err)
-		}
-	}
-	flushTestAlbum(t, s)
-	if jobs := albumJobs(t, cat); len(jobs) != 1 || jobs["unique-2"] == nil {
-		t.Fatalf("queue limit ignored: %v", jobs)
-	}
-	receipts, err := cat.PendingTelegramReceipts(ctx, s.BotID())
-	if err != nil || len(receipts) != 3 {
-		t.Fatalf("receipts=%v err=%v", receipts, err)
-	}
-	for _, r := range receipts {
-		switch r.MessageID {
-		case 2:
-			if r.JobID == "" {
-				t.Fatal("valid video was rejected")
+func TestMediaGroupRejectsWholeGroupWithOneExplanation(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		limit int
+		size  int64
+		want  string
+	}{
+		{"queue full", 1, 5, "队列已满"},
+		{"file too large", 100, 6, "超过配置"},
+		{"file size unknown", 100, 0, "无法确认视频大小"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, cat := testService(t)
+			s.cfg.MaxPendingJobs, s.cfg.MaxFileSizeBytes = tc.limit, 5
+			ctx := context.Background()
+			last := albumVideo(3, "")
+			last.Message.Video.Size = tc.size
+			updates := []update{albumPhoto(1, "说明"), albumVideo(2, ""), last}
+			for _, u := range updates {
+				if err := s.accept(ctx, u); err != nil {
+					t.Fatal(err)
+				}
 			}
-		case 3:
-			if !strings.Contains(renderReceiptMessage(r).text, "队列已满") {
-				t.Fatalf("queue rejection lost: %+v", r)
+			flushTestAlbum(t, s)
+			if jobs := albumJobs(t, cat); len(jobs) != 0 {
+				t.Fatalf("rejected album partially queued: %v", jobs)
 			}
-		case 4:
-			if !strings.Contains(r.Response, "超过配置") {
-				t.Fatalf("size rejection lost: %+v", r)
+			receipts, err := cat.PendingTelegramReceipts(ctx, s.BotID())
+			if err != nil || len(receipts) != 1 || !strings.Contains(renderReceiptMessage(receipts[0]).text, tc.want) {
+				t.Fatalf("expected one group rejection: %v %v", receipts, err)
 			}
-		default:
-			t.Fatalf("unexpected reply: %+v", r)
-		}
+			for _, u := range updates {
+				if err := s.accept(ctx, u); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if groups, err := cat.PendingTelegramMediaGroups(ctx, s.BotID(), time.Now().Add(time.Hour)); err != nil || len(groups) != 0 {
+				t.Fatalf("rejected group messages staged again: %v %v", groups, err)
+			}
+		})
 	}
 }

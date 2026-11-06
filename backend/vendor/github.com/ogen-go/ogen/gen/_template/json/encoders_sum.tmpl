@@ -1,0 +1,285 @@
+{{- /*gotype: github.com/ogen-go/ogen/gen/ir.Type*/ -}}
+{{- define "json/encoders_sum" }}{{ $d := $.JSON.Sum -}}
+// Encode encodes {{ $.Name }} as json.
+func (s {{ $.ReadOnlyReceiver }}) Encode(e *jx.Encoder) {
+	{{- if $d.Discriminator -}}
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+	{{- else }}
+	switch s.Type {
+	{{- range $s := $.SumOf }}
+	case {{ $s.Name }}{{ $.Name }}:
+		{{- template "json/enc" elem $s (printf "s.%s" $s.Name) -}}
+	{{- end }}
+	}
+    {{- end }}
+}
+
+{{ if or $d.Discriminator $d.Fields -}}
+func (s {{ $.ReadOnlyReceiver }}) encodeFields(e *jx.Encoder) {
+	{{- if $d.Discriminator -}}
+		switch s.Type {
+		{{- range $s := $.SumOf }}
+			{{- $entries := $.SumSpec.PickMappingEntriesFor $ $s }}
+			case {{ $entries.JoinConstNames }}:
+				{{- if eq (len $entries) 1}}
+					{{- range $e := $entries }}
+						e.FieldStart({{ quote $.SumSpec.Discriminator }})
+						{{- if $e.DiscriminatorType.IsInteger }}
+							e.Int({{ $e.Key }})
+						{{- else }}
+							e.Str({{ quote $e.Key }})
+						{{- end }}
+					{{- end }}
+				{{- else }}
+				switch s.Type {
+				{{- range $e := $entries }}
+				case {{ $e.Name }}:
+					e.FieldStart({{ quote $.SumSpec.Discriminator }})
+					{{- if $e.DiscriminatorType.IsInteger }}
+						e.Int({{ $e.Key }})
+					{{- else }}
+						e.Str({{ quote $e.Key }})
+					{{- end }}
+				{{- end }}
+				}
+				{{- end }}
+				{{- $j := $s.JSON.Except $.SumSpec.Discriminator }}
+				{{- if $j.AnyFields }}
+				{
+					{{- if $j.NeedsReceiver }}
+					s := s.{{ $s.Name }}
+					{{- end }}
+					{{- template "json/encode_struct_fields" $j }}
+				}
+			{{- end }}
+		{{- end }}
+		}
+	{{- else if $d.Fields }}
+		switch s.Type {
+		{{- range $s := $.SumOf }}
+		case {{ $s.Name }}{{ $.Name }}:
+			s.{{ $s.Name }}.encodeFields(e)
+		{{- end }}
+		}
+	{{- else }}
+		{{ errorf "unexpected sum type %s" $d }}
+	{{- end }}
+}
+{{- end }}
+
+// Decode decodes {{ $.Name }} from json.
+func (s *{{ $.Name }}) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New({{ printf "invalid: unable to decode %s to nil" $.Name | quote }})
+	}
+	// Sum type {{ $d }}.
+	{{- if or ($d.Primitive) ($d.TypeDiscriminator) }}
+	switch t := d.Next(); t {
+	{{- range $cse := $.TypeDiscriminator }}
+	case {{ $cse.JXTypes }}:
+		{{- with $intType := $cse.IntType }}
+		num, err := d.Num()
+		if err != nil {
+			return errors.Wrap(err, "parse number")
+		}
+		if d := jx.DecodeBytes(num); num.IsInt() {
+			{{- $s := $intType }}
+			{{- template "json/dec" elem $s (printf "s.%s" $s.Name) }}
+			s.Type = {{ $s.Name }}{{ $.Name }}
+		} else {
+        	{{- $s = $cse.Type }}
+        	{{- template "json/dec" elem $s (printf "s.%s" $s.Name) }}
+			s.Type = {{ $s.Name }}{{ $.Name }}
+		}
+		{{- else }}
+			{{- $s := $cse.Type }}
+			{{- template "json/dec" elem $s (printf "s.%s" $s.Name) }}
+			s.Type = {{ $s.Name }}{{ $.Name }}
+		{{- end }}
+	{{- end }}
+	default:
+		return errors.Errorf("unexpected json type %q", t)
+	}
+	{{- else if or ($d.Fields) ($d.Discriminator) }}
+	if typ := d.Next(); typ != jx.Object {
+		return errors.Errorf("unexpected json type %q", typ)
+	}
+
+	var found bool
+	if err := d.Capture(func(d *jx.Decoder) error {
+		return d.ObjBytes(func(d *jx.Decoder, key []byte) error {
+    		{{- if $d.Discriminator -}}
+			if found {
+				return d.Skip()
+			}
+			{{- end }}
+			switch string(key) {
+			{{- if $d.Discriminator -}}
+			case {{ quote $.SumSpec.Discriminator }}:
+				typ, err := d.Str()
+				if err != nil {
+					return err
+				}
+				switch typ {
+				{{- range $s := $.SumOf }}
+					{{- $entries := $.SumSpec.PickMappingEntriesFor $ $s }}
+					{{- range $e := $entries }}
+						case {{ quote $e.Key }}:
+							s.Type = {{ $e.Name }}
+							found = true
+					{{- end }}
+				{{- end }}
+				default:
+					return errors.Errorf("unknown type %s", typ)
+				}
+				return nil
+			{{- else }}
+			{{- range $fieldName, $variants := $.SumSpec.UniqueFields }}
+			case {{ quote $fieldName }}:
+				{{- if eq (len $variants) 1 }}
+					{{- $v := index $variants 0 }}
+					{{- if $v.FieldType }}
+						{{- if $v.Nullable }}
+				// Type-based discrimination: check if field has expected JSON type (nullable)
+				typ := d.Next()
+				if typ != {{ $v.FieldType }} && typ != jx.Null {
+					// Field exists but has wrong type, not a match for this variant
+					return d.Skip()
+				}
+						{{- else }}
+				// Type-based discrimination: check if field has expected JSON type
+				if typ := d.Next(); typ != {{ $v.FieldType }} {
+					// Field exists but has wrong type, not a match for this variant
+					return d.Skip()
+				}
+						{{- end }}
+					{{- end }}
+				match := {{ $v.VariantType }}
+				if found && s.Type != match {
+					s.Type = ""
+					return errors.Errorf("multiple oneOf matches: (%v, %v)", s.Type, match)
+				}
+				found = true
+				s.Type = match
+				{{- else if needsArrayElementDiscrimination $variants }}
+				// Array element discrimination: peek into array to check first element type
+				if typ := d.Next(); typ != jx.Array {
+					return d.Skip()
+				}
+				// Capture array to peek at first element without consuming
+				if err := d.Capture(func(d *jx.Decoder) error {
+					// Check if array is empty
+					iter, err := d.ArrIter()
+					if err != nil {
+						return err
+					}
+					if !iter.Next() {
+						// Empty array - use first variant as default
+						{{- $firstVariant := index (dedupeVariantsByArrayElementType $variants) 0 }}
+						if !found {
+							found = true
+							s.Type = {{ $firstVariant.VariantType }}
+						}
+						return nil
+					}
+					elemType := d.Next()
+					switch elemType {
+					{{- range $v := dedupeVariantsByArrayElementType $variants }}
+					{{- if $v.ArrayElementType }}
+					case {{ $v.ArrayElementType }}:
+						match := {{ $v.VariantType }}
+						if found && s.Type != match {
+							s.Type = ""
+							return errors.Errorf("multiple oneOf matches: (%v, %v)", s.Type, match)
+						}
+						found = true
+						s.Type = match
+					{{- end }}
+					{{- end }}
+					}
+					return nil
+				}); err != nil {
+					return err
+				}
+				{{- else }}
+				// Multiple variants have this field - use type checking to discriminate
+				typ := d.Next()
+				switch typ {
+					{{- range $v := dedupeVariantsByType $variants }}
+					{{- if $v.FieldType }}
+						{{- if $v.Nullable }}
+				case {{ $v.FieldType }}, jx.Null:
+						{{- else }}
+				case {{ $v.FieldType }}:
+						{{- end }}
+					match := {{ $v.VariantType }}
+					if found && s.Type != match {
+						s.Type = ""
+						return errors.Errorf("multiple oneOf matches: (%v, %v)", s.Type, match)
+					}
+					found = true
+					s.Type = match
+					{{- end }}
+					{{- end }}
+				default:
+					// Unknown type for this field
+					return d.Skip()
+				}
+				{{- end }}
+			{{- end }}
+			{{- range $fieldName, $discriminator := $.SumSpec.ValueDiscriminators }}
+			case {{ quote $fieldName }}:
+				// Value-based discrimination: check enum value
+				if typ := d.Next(); typ != jx.String {
+					return d.Skip()
+				}
+				value, err := d.StrBytes()
+				if err != nil {
+					return err
+				}
+				switch string(value) {
+					{{- range $enumValue, $variantType := $discriminator.ValueToVariant }}
+				case {{ quote $enumValue }}:
+					match := {{ $variantType }}
+					if found && s.Type != match {
+						s.Type = ""
+						return errors.Errorf("multiple oneOf matches: (%v, %v)", s.Type, match)
+					}
+					found = true
+					s.Type = match
+					{{- end }}
+				default:
+					// Unknown enum value, ignore and continue
+				}
+				return nil
+			{{- end }}
+			{{- end }}
+			}
+			return d.Skip()
+		})
+	}); err != nil {
+		return errors.Wrap(err, "capture")
+	}
+	if !found {
+		{{- if $.SumSpec.DefaultMapping }}
+		s.Type = {{ $.SumSpec.DefaultMapping }}{{ $.Name }}
+		{{- else }}
+		return errors.New("unable to detect sum type variant")
+		{{- end }}
+	}
+	switch s.Type {
+	{{- range $s := $.SumOf }}
+	{{- $entries := $.SumSpec.PickMappingEntriesFor $ $s }}
+	case {{ $entries.JoinConstNames }}:
+		{{- template "json/dec" elem $s (printf "s.%s" $s.Name) }}
+	{{- end }}
+	default:
+		return errors.Errorf("inferred invalid type: %s", s.Type)
+	}
+	{{- end }}
+	return nil
+}
+
+{{ end }}

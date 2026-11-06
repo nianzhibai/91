@@ -1,0 +1,140 @@
+linters-settings:
+  govet:
+    check-shadowing: true
+  gocyclo:
+    min-complexity: 15
+  maligned:
+    suggest-new: true
+  dupl:
+    threshold: 120
+  goconst:
+    min-len: 2
+    min-occurrences: 3
+  misspell:
+    locale: US
+  lll:
+    line-length: 140
+  goimports:
+    local-prefixes: github.com/go-faster/
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - experimental
+      - opinionated
+      - performance
+      - style
+    disabled-checks:
+      # https://github.com/go-critic/go-critic/issues/1245
+      - typeUnparen
+
+      - hugeParam
+      - rangeValCopy
+      - exitAfterDefer
+      - whyNoLint
+      - singleCaseSwitch
+      - commentedOutCode
+      - appendAssign
+      - unnecessaryBlock
+      - redundantSprint
+      - ptrToRefParam
+      - typeDefFirst
+
+linters:
+  disable-all: true
+  enable:
+    - deadcode
+    - depguard
+    - dogsled
+    - errcheck
+    - goconst
+    - gocritic
+    - gofmt
+    - goimports
+    - revive
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - nakedret
+    - structcheck
+    - typecheck
+    - unconvert
+    - unparam
+    - varcheck
+    - whitespace
+    # Disable until https://github.com/dominikh/go-tools/issues/1270 fix be released.
+    # - staticcheck
+    # - gosimple
+    # - unused
+    # - stylecheck
+
+    # Do not enable:
+    # - wsl       (too opinionated about newlines)
+    # - godox     (todos are OK)
+    # - bodyclose (false positives on helper functions)
+    # - prealloc  (not worth it in scope of this project)
+    # - maligned  (same as prealloc)
+    # - funlen    (gocyclo is enough)
+    # - gochecknoglobals (we know when it is ok to use globals)
+    # - gochecknoinits (we know when it is ok to use inits)
+    # - dupl (too opinionated)
+
+issues:
+  exclude-use-default: false
+  exclude-rules:
+    # Disable linters that are annoying in tests.
+    - path: _test\.go
+      linters:
+        - gocyclo
+        - errcheck
+        - dupl
+        - gosec
+        - funlen
+        - goconst
+        - gocognit
+        - scopelint
+        - lll
+    - path: _test\.go
+      text: "structtag: struct field tag .* bad syntax for struct tag pair"
+
+    # Ignore shadowing of err.
+    - linters: [govet]
+      text: 'declaration of "(err|ctx|log|c)"'
+
+    # Ignore linters in main packages.
+    - path: main\.go
+      linters: [goconst, funlen, gocognit, gocyclo]
+
+    - text: "exported: exported .+ should have comment.*or be unexported"
+      linters: [revive]
+
+    # Annoying and useless.
+    - linters: [revive, golint]
+      text: "unused-parameter"
+
+    - path: encode\.go
+      text: 'shadow: declaration of "tail" shadows declaration'
+      source: "var tail string"
+
+    # Disable some linters for translated C code.
+    - path: (apic|writerc|emitterc|parserc|scannerc|readerc|yamlh|yamlprivateh)\.go
+      linters: [whitespace, deadcode, varcheck, ineffassign, unparam]
+    - path: (apic|writerc|emitterc|parserc|scannerc|readerc|yamlh|yamlprivateh)\.go
+      linters: [revive]
+      text: "(var-naming: don't use underscores|increment-decrement:|indent-error-flow:|empty-block:)"
+    # More precise matching:
+    - path: apic\.go
+      linters: [gocritic]
+      text: "commentFormatting"
+    - path: emitterc\.go
+      linters: [gocritic]
+      text: "(elseIf|ifElseChain)"
+    - path: parserc\.go
+      linters: [govet, gocritic]
+      text: "(shadow|ifElseChain)"
+    - path: scannerc\.go
+      linters: [gocritic]
+      text: "(elseIf|ifElseChain|boolExprSimplify|commentFormatting|appendCombine)"
+    - path: readerc\.go
+      linters: [gocritic]
+      text: "(ifElseChain|paramTypeCombine)"

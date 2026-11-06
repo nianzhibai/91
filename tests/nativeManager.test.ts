@@ -140,7 +140,7 @@ test("native status preserves the systemctl exit code", (t) => {
 
 test("native command help and invalid arguments never operate on the deployment", (t) => {
   const f = fixture(t);
-  for (const action of ["install", "start", "stop", "restart", "status", "logs", "update", "telegram", "uninstall", "reset-password"]) {
+  for (const action of ["install", "start", "stop", "restart", "status", "logs", "update", "uninstall", "reset-password"]) {
     const help = f.run([action, "--help"]);
     assert.equal(help.status, 0, help.stderr);
     const invocation = action === "install" ? "sudo bash install.sh [install]" : `91 ${action}`;
@@ -182,7 +182,7 @@ test("privileged native actions retain their command and arguments when elevated
   writeFileSync(join(bin, "id"), "#!/bin/sh\nprintf '1000\\n'\n", { mode: 0o755 });
   writeFileSync(join(bin, "sudo"), commandProbe, { mode: 0o755 });
   const actions = [
-    ["install"], ["start"], ["stop"], ["restart"], ["update"], ["telegram"], ["uninstall"],
+    ["install"], ["start"], ["stop"], ["restart"], ["update"], ["uninstall"],
     ["reset-password", "--user-id", "7"],
   ];
   const archive = join(f.root, "local package.tar.gz");

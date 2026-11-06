@@ -44,25 +44,14 @@ func (a *AdminServer) handleTelegramTest(w http.ResponseWriter, r *http.Request)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"username": name})
 }
-func (a *AdminServer) handleTelegramPrepare(w http.ResponseWriter, r *http.Request) {
-	a.telegramAction(w, r, false)
-}
 func (a *AdminServer) handleTelegramResume(w http.ResponseWriter, r *http.Request) {
-	a.telegramAction(w, r, true)
-}
-func (a *AdminServer) telegramAction(w http.ResponseWriter, r *http.Request, resume bool) {
 	if a.Telegram == nil {
 		http.Error(w, "Telegram 服务未配置", http.StatusServiceUnavailable)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	var err error
-	if resume {
-		err = a.Telegram.Resume(ctx)
-	} else {
-		err = a.Telegram.PreparePolling(ctx)
-	}
+	err := a.Telegram.Resume(ctx)
 	if err != nil {
 		writeErr(w, r, http.StatusConflict, err)
 		return

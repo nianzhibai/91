@@ -26,7 +26,7 @@ func TestAuthenticationInitializesTelegramAvailabilityForAdmins(t *testing.T) {
 		yaml    string
 		enabled bool
 	}{
-		{"enabled", "telegram: {enabled: true, bot_token: '123:private_token'}\n", true},
+		{"enabled", "telegram: {enabled: true, api_id: 12345, api_hash: '0123456789abcdef0123456789abcdef', bot_token: '123:private_token'}\n", true},
 		{"disabled", "telegram: {enabled: false}\n", false},
 	} {
 		for _, role := range []string{"admin", "user"} {
@@ -100,7 +100,7 @@ func TestTelegramAvailabilityReadsSavedConfigWithoutRuntimeService(t *testing.T)
 	for _, enabled := range []bool{true, false} {
 		body := "telegram: {enabled: false}\n"
 		if enabled {
-			body = "telegram: {enabled: true, bot_token: '123:private_token'}\n"
+			body = "telegram: {enabled: true, api_id: 12345, api_hash: '0123456789abcdef0123456789abcdef', bot_token: '123:private_token'}\n"
 		}
 		if _, err := manager.ReplaceYAML([]byte(body), ""); err != nil {
 			t.Fatal(err)
@@ -133,7 +133,7 @@ func TestTelegramSettingsUseSharedYAMLAPI(t *testing.T) {
 	integration := telegram.NewIntegration(cat, manager, t.TempDir(), 1)
 	server := &AdminServer{Catalog: cat, ConfigManager: manager, Telegram: integration}
 	token := "123:private_token"
-	body := "telegram:\n  enabled: true\n  bot_token: " + token + "\n"
+	body := "telegram:\n  enabled: true\n  api_id: 12345\n  api_hash: 0123456789abcdef0123456789abcdef\n  bot_token: " + token + "\n"
 	response := httptest.NewRecorder()
 	server.handlePutConfigYAML(response, httptest.NewRequest("PUT", "/admin/api/config.yaml", strings.NewReader(body)))
 	if response.Code != 200 || strings.Contains(response.Body.String(), `"restartRequired":true`) {

@@ -1,0 +1,119 @@
+{{- /*gotype: github.com/ogen-go/ogen/gen/ir.Type*/ -}}
+{{- define "json/encoders_generic" }}
+{{ $g := $.GenericOf }}
+{{ $v := $.GenericVariant }}
+// Encode encodes {{ $g.Go }} as json.
+func (o {{ $.ReadOnlyReceiver }}) Encode(e *jx.Encoder{{ if $g.Format }}, format func(*jx.Encoder, {{ $g.Go }}){{ end }}) {
+{{- if $v.Optional }}
+	if !o.Set {
+		return
+	}
+{{- end }}
+{{- if $v.Nullable }}
+	if o.Null {
+		e.Null()
+		return
+	}
+{{- end }}
+{{- if $g.Format }}
+	format(e, o.Value)
+{{- else if $g.JSON.TimeFormat }}
+	json.EncodeTimeFormat(e, o.Value, {{ $g.JSON.TimeFormat }})
+{{- else if $g.JSON.Encoder }}
+	json.Encode{{ $g.JSON.Encoder }}(e, o.Value)
+{{- else if $g.JSON.Fn }}
+	{{- if $g.IsAny }}
+		{{ errorf "unexpected optional any" }}
+	{{- end }}
+	e.{{ $g.JSON.Fn }}({{ $g.Primitive }}(o.Value))
+{{- else if $g.IsNull }}
+	e.Null()
+{{- else if $g.IsArray }}
+	{{- template "json/enc_array_elems" elem $g "o.Value" -}}
+{{- else if or ($g.IsStruct) ($g.IsMap) ($g.IsEnum) ($g.IsPointer) ($g.IsSum) ($g.IsAlias) }}
+	o.Value.Encode(e)
+{{- else }}
+	{{ errorf "unexpected kind %s" $g.Kind }}
+{{- end }}
+}
+
+// Decode decodes {{ $g.Go }} from json.
+func (o *{{ $.Name }}) Decode(d *jx.Decoder{{ if $g.Format }}, format func(*jx.Decoder) ({{ $g.Go }}, error){{ end }}) error {
+	if o == nil {
+		return errors.New({{ printf "invalid: unable to decode %s to nil" $.Name | quote }})
+	}
+	{{- if $v.Nullable }}
+	if d.Next() == jx.Null {
+		if err := d.Null(); err != nil {
+			return err
+		}
+
+		var v {{ $g.Go }}
+		o.Value = v
+		{{- if $v.Optional }}
+			o.Set = true
+		{{- end }}
+		o.Null = true
+		return nil
+	}
+	{{- end }}
+
+	{{- if $v.Optional }}
+		o.Set = true
+	{{- end }}
+	{{- if $v.Nullable }}
+		o.Null = false
+	{{- end }}
+	{{- if $g.Format }}
+		v, err := format(d)
+		if err != nil {
+			return err
+		}
+		o.Value = v
+	{{- else if $g.JSON.TimeFormat }}
+		v, err := json.DecodeTimeFormat(d, {{ $g.JSON.TimeFormat }})
+		if err != nil {
+			return err
+		}
+		o.Value = v
+	{{- else if $g.JSON.Decoder }}
+		v, err := json.Decode{{ $g.JSON.Decoder }}(d)
+		if err != nil {
+			return err
+		}
+		o.Value = v
+	{{- else if $g.IsPointer }}
+		o.Value = new({{ $g.PointerTo.Go }})
+		if err := o.Value.Decode(d); err != nil {
+			return err
+		}
+	{{- else if or ($g.IsStruct) ($g.IsEnum) ($g.IsSum) ($g.IsAlias)  }}
+		if err := o.Value.Decode(d); err != nil {
+			return err
+		}
+	{{- else if $g.IsMap }}
+		{{- if not $g.Fields }}
+		o.Value = make({{ $g.Go }})
+		{{- end }}
+		if err := o.Value.Decode(d); err != nil {
+			return err
+		}
+	{{- else if $g.IsArray }}
+		{{ template "json/dec_array_elems" elem $g "o.Value" }}
+	{{- else if $g.JSON.Fn }}
+		v, err := d.{{ $g.JSON.Decode }}
+		if err != nil {
+			return err
+		}
+		o.Value = {{ $g.Go }}(v)
+	{{- else if $g.IsNull }}
+		if err := d.Null(); err != nil {
+			return err
+		}
+	{{- else }}
+		{{ errorf "unexpected kind %s" $g.Kind }}
+	{{- end }}
+	return nil
+}
+
+{{ end }}

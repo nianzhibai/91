@@ -132,7 +132,7 @@ function fixture(t: TestContext) {
   mkdirSync(join(root, "templates"));
   const target = join(root, "docker-compose.yml");
   copyFileSync(join(repository, "docker-compose.yml"), target);
-  for (const name of ["docker-compose.yml", "docker-compose.gpu-nvidia.yml", "docker-compose.gpu-vaapi.yml", "docker-compose.gpu-rockchip.yml", "tg-docker-compose.yml"]) {
+  for (const name of ["docker-compose.yml", "docker-compose.gpu-nvidia.yml", "docker-compose.gpu-vaapi.yml", "docker-compose.gpu-rockchip.yml"]) {
     copyFileSync(join(repository, name), join(root, "templates", name));
   }
   writeFileSync(join(bin, "docker"), dockerProbe, { mode: 0o755 });
@@ -268,7 +268,8 @@ test("uninstall honors custom Compose files, overlays and the dotenv project nam
 
 test("uninstall removes separate Telegram storage and custom 91 data/config mounts", requiresCompose, (t) => {
   const f = fixture(t);
-  const config = parse(readFileSync(join(repository, "tg-docker-compose.yml"), "utf8"));
+  const config = parse(readFileSync(join(repository, "docker-compose.yml"), "utf8"));
+  config.services["telegram-bot-api"] = {image: "legacy-bot-api", volumes: []};
   Object.assign(config.services[service].environment, { VIDEO_DATA_DIR: "/app-data", VIDEO_CONFIG: "/app-config.yaml" });
   config.services[service].volumes = ["./site:/app-data", "./settings.yaml:/app-config.yaml:ro", "./bot:/var/lib/telegram-bot-api"];
   config.services["telegram-bot-api"].volumes = ["./bot:/var/lib/telegram-bot-api"];
@@ -532,241 +533,13 @@ test("Telegram is absent from the default installation", requiresCompose, (t) =>
   assert.equal(services[service].environment.VIDEO_TELEGRAM_COMPOSE, undefined);
 });
 
-test("Telegram enable prepares credentials, shared data, service network and actual Compose filename", requiresCompose, (t) => {
+test("the retired Telegram setup command cannot create containers", requiresCompose, (t) => {
   const f = fixture(t);
-  const original = readFileSync(f.target, "utf8");
-  mkdirSync(join(f.root, "data"));
-  const config = join(f.root, "data/config.yaml");
-  const app = "telegram:\n  enabled: false\n  bot_token: keep-token\n  allowed_user_ids: [123]\n";
-  writeFileSync(config, app);
-  succeeded(f.run(["telegram"], telegramCredentials));
-  const result = f.raw();
-  const bot = result.services["telegram-bot-api"];
-  const site = result.services[service];
-  assert.equal(bot.environment.TELEGRAM_API_ID, telegramCredentials.TELEGRAM_API_ID);
-  assert.equal(bot.environment.TELEGRAM_API_HASH, telegramCredentials.TELEGRAM_API_HASH);
-  assert.equal(bot.environment.TELEGRAM_LOCAL, "1");
-  assert.equal(bot.environment.TELEGRAM_HTTP_PORT, "7878");
-  assert.equal(bot.volumes[0].source, join(f.root, "data/telegram"));
-  assert.ok(site.depends_on["telegram-bot-api"]);
-  assert.ok(site.volumes.some((mount: any) => mount.source === bot.volumes[0].source && mount.target === "/var/lib/telegram-bot-api"));
-  assert.ok(site.volumes.some((mount: any) => mount.source === f.target && mount.target === site.environment.VIDEO_TELEGRAM_COMPOSE && mount.read_only));
-  assert.equal(readFileSync(config, "utf8"), app);
-  assert.equal(statSync(f.target).mode & 0o777, 0o600);
-  assert.equal(readFileSync(join(f.root, f.backups()[0]), "utf8"), original);
-  assert.ok(f.state().calls.some((args) => args[0] === "pull" && args[1] === bot.image));
-  assert.equal(f.state().calls.some((args) => args[0] === "pull" && args[1].startsWith("ghcr.io/nianzhibai/91:")), false);
-  assert.equal(f.state().starts[0].services[service].image, oldImage);
-  const up = f.state().calls.find((args) => args.includes("up"))!;
-  assert.ok(up.includes("--no-deps"));
-  assert.deepEqual(up.slice(-2), ["telegram-bot-api", service]);
-  assert.ok(f.state().calls.some((args) => args.includes("up") && args.includes("--force-recreate")));
-});
-
-test("separate install, GPU and Telegram commands respect Compose storage settings", requiresCompose, (t) => {
-  const f = freshDeployment(t);
-  const target = join(f.root, "custom.yml");
-  const data = join(f.root, "private data");
-  writeFileSync(join(f.root, ".env"), "COMPOSE_FILE=custom.yml\n");
-  succeeded(f.run(["install"]));
-  f.changeState({ existingContainer: true });
-  const installed = parse(readFileSync(target, "utf8"));
-  installed.services[service].volumes = [{ type: "bind", source: data, target: "/opt/video-site-91/data" }];
-  writeFileSync(target, JSON.stringify(installed));
-  succeeded(f.run(["gpu"], { TEST_READY_GPU: "nvidia" }));
-  succeeded(f.run(["telegram"], telegramCredentials));
-  const document = parse(readFileSync(target, "utf8"));
-  const site = document.services[service];
-  assert.equal(document.services["telegram-bot-api"].volumes[0].source, join(data, "telegram"));
-  assert.ok(site.volumes.some((mount: any) => mount.source === target && mount.read_only));
-  assert.equal(site.deploy.resources.reservations.devices[0].driver, "nvidia");
-});
-
-test("Telegram enable reuses existing credentials, pinned image, port and data", requiresCompose, (t) => {
-  const f = fixture(t);
-  const document = parse(readFileSync(join(repository, "tg-docker-compose.yml"), "utf8"));
-  const bot = document.services["telegram-bot-api"];
-  bot.image = "aiogram/telegram-bot-api:pinned";
-  Object.assign(bot.environment, telegramCredentials);
-  bot.environment.TELEGRAM_HTTP_PORT = "8787";
-  bot.volumes = ["./custom-tg:/var/lib/telegram-bot-api"];
-  document.services[service].volumes[1] = "./custom-tg:/var/lib/telegram-bot-api";
-  writeFileSync(f.target, JSON.stringify(document));
-  f.changeState({ telegramContainer: true });
-  succeeded(f.run(["telegram"]));
-  const after = f.raw().services["telegram-bot-api"];
-  assert.equal(after.image, bot.image);
-  assert.equal(after.environment.TELEGRAM_API_HASH, telegramCredentials.TELEGRAM_API_HASH);
-  assert.equal(after.environment.TELEGRAM_HTTP_PORT, "8787");
-  assert.equal(after.volumes[0].source, join(f.root, "custom-tg"));
-});
-
-test("Telegram enable supports application named volumes and custom Compose networks", requiresCompose, (t) => {
-  const f = fixture(t);
-  const document = parse(readFileSync(f.target, "utf8"));
-  document.services[service].volumes = ["app-data:/opt/video-site-91/data"];
-  document.services[service].networks = ["private"];
-  document.volumes = { "app-data": {} };
-  document.networks = { private: {} };
-  writeFileSync(f.target, JSON.stringify(document));
-  succeeded(f.run(["telegram"], telegramCredentials));
-  const after = f.raw();
-  assert.equal(after.services["telegram-bot-api"].volumes[0].source, "91-telegram-data");
-  assert.ok(after.volumes["91-telegram-data"]);
-  assert.ok("private" in after.services["telegram-bot-api"].networks);
-});
-
-test("Telegram remains configured during an ordinary update", requiresCompose, (t) => {
-  const f = fixture(t);
-  succeeded(f.run(["telegram"], telegramCredentials));
-  const before = f.raw().services["telegram-bot-api"];
-  const previousCalls = f.state().calls.length;
-  succeeded(f.run(["update"]));
-  assert.deepEqual(f.raw().services["telegram-bot-api"], before);
-  assert.ok(f.state().calls.slice(previousCalls).some((args) => args.includes("up") && args.includes("--force-recreate")), "Refresh the website's Compose file bind mount after atomic replacement");
-});
-
-for (const settings of [
-  {},
-  { TELEGRAM_API_ID: "12345" },
-  { TELEGRAM_API_ID: "wrong", TELEGRAM_API_HASH: telegramCredentials.TELEGRAM_API_HASH },
-  { TELEGRAM_API_ID: "12345", TELEGRAM_API_HASH: "wrong" },
-]) {
-  test(`Telegram missing or invalid credentials stop non-interactive changes: ${Object.keys(settings).join(",")}`, requiresCompose, (t) => {
-    const f = fixture(t);
-    const original = readFileSync(f.target, "utf8");
-    const result = f.run(["telegram"], settings);
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /missing or invalid/);
-    assert.equal(readFileSync(f.target, "utf8"), original);
-    assert.deepEqual(f.state().starts, []);
-  });
-}
-
-test("Telegram prompts visibly for missing parameters and retries invalid input", requiresCompose, (t) => {
-  if (spawnSync("script", ["--version"]).status !== 0) return t.skip("PTY utility script is unavailable");
-  const f = fixture(t);
-  const entry = join(f.root, "interactive.sh");
-  writeFileSync(entry, 'source "$TEST_SCRIPT"\ndetect_host_gpu() { GPU_CHOICES="[]"; }\nmain telegram\n');
-  const result = spawnSync("script", ["-q", "-e", "-c", `bash '${entry}'`, "/dev/null"], {
-    cwd: f.root, env: { ...f.env, TEST_SCRIPT: script }, encoding: "utf8", timeout: 30_000,
-    input: `invalid\n${telegramCredentials.TELEGRAM_API_ID}\ninvalid\n${telegramCredentials.TELEGRAM_API_HASH}\n`,
-  });
-  succeeded(result);
-  assert.match(result.stdout, /TELEGRAM_API_ID/);
-  assert.match(result.stdout, /TELEGRAM_API_HASH/);
-  assert.ok(result.stdout.includes(telegramCredentials.TELEGRAM_API_HASH), "Hash is echoed in the terminal as requested");
-  assert.equal(f.raw().services["telegram-bot-api"].environment.TELEGRAM_API_HASH, telegramCredentials.TELEGRAM_API_HASH);
-});
-
-test("Telegram image pull failure leaves application configuration untouched", requiresCompose, (t) => {
-  const f = fixture(t);
-  const original = readFileSync(f.target, "utf8");
-  f.changeState({ failTelegramPull: true });
-  const result = f.run(["telegram"], telegramCredentials);
-  assert.notEqual(result.status, 0);
-  assert.equal(readFileSync(f.target, "utf8"), original);
-  assert.deepEqual(f.backups(), []);
-  assert.deepEqual(f.state().starts, []);
-});
-
-test("Telegram new-service rollback removes its container without deleting data", requiresCompose, (t) => {
-  const f = fixture(t);
-  const original = readFileSync(f.target, "utf8");
-  f.changeState({ failStart: true });
-  const result = f.run(["telegram"], telegramCredentials);
-  assert.notEqual(result.status, 0);
-  assert.equal(readFileSync(f.target, "utf8"), original);
-  assert.equal(f.state().starts.length, 2);
-  const cleanup = f.state().calls.find((args) => args[0] === "compose" && args.includes("rm"));
-  assert.ok(cleanup?.includes("telegram-bot-api"));
-  assert.equal(cleanup?.includes("-v"), false);
-  assert.equal(f.state().starts[1].services[service].image, oldImage);
-});
-
-test("Telegram existing-service rollback restores the previous Bot API image", requiresCompose, (t) => {
-  const f = fixture(t);
-  const document = parse(readFileSync(join(repository, "tg-docker-compose.yml"), "utf8"));
-  Object.assign(document.services["telegram-bot-api"].environment, telegramCredentials);
-  writeFileSync(f.target, JSON.stringify(document));
-  const original = readFileSync(f.target, "utf8");
-  f.changeState({ failStart: true, telegramContainer: true });
   const result = f.run(["telegram"]);
   assert.notEqual(result.status, 0);
-  assert.equal(readFileSync(f.target, "utf8"), original);
-  assert.ok(f.state().starts.some((deployment) => deployment.services["telegram-bot-api"].image === oldTelegramImage));
-  assert.equal(f.state().starts.at(-1).services[service].image, oldImage);
+  assert.match(result.stderr, /Unknown command/);
+  assert.deepEqual(f.state().calls, []);
 });
-
-test("Telegram rollback preserves an existing stopped Bot API", requiresCompose, (t) => {
-  const f = fixture(t);
-  const document = parse(readFileSync(join(repository, "tg-docker-compose.yml"), "utf8"));
-  Object.assign(document.services["telegram-bot-api"].environment, telegramCredentials);
-  writeFileSync(f.target, JSON.stringify(document));
-  f.changeState({ failStart: true, telegramContainer: true, telegramRunning: false });
-  const result = f.run(["telegram"]);
-  assert.notEqual(result.status, 0);
-  const calls = f.state().calls;
-  assert.ok(calls.some((args) => args.includes("stop") && args.at(-1) === "telegram-bot-api"));
-  assert.ok(calls.filter((args) => args.includes("up")).at(-1)?.includes("--no-deps"));
-  assert.equal(f.state().starts.length, 2);
-});
-
-test("Telegram missing image template fails before prompting or changing configuration", requiresCompose, (t) => {
-  const f = fixture(t);
-  const original = readFileSync(f.target, "utf8");
-  rmSync(join(f.root, "templates/tg-docker-compose.yml"));
-  const result = f.run(["telegram"]);
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /no Telegram deployment template/);
-  assert.equal(readFileSync(f.target, "utf8"), original);
-});
-
-test("Telegram credential conflicts in overlays leave both files untouched", requiresCompose, (t) => {
-  const f = fixture(t);
-  const overlay = join(f.root, "telegram.yml");
-  const document = parse(readFileSync(join(repository, "tg-docker-compose.yml"), "utf8"));
-  Object.assign(document.services["telegram-bot-api"].environment, telegramCredentials, { TELEGRAM_API_HASH: "a".repeat(32) });
-  writeFileSync(overlay, JSON.stringify(document));
-  const original = readFileSync(f.target, "utf8");
-  const other = readFileSync(overlay, "utf8");
-  writeFileSync(join(f.root, ".env"), `COMPOSE_FILE=${f.target}:${overlay}\n`);
-  const result = f.run(["telegram"], telegramCredentials);
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /overlay conflicts/);
-  assert.equal(readFileSync(f.target, "utf8"), original);
-  assert.equal(readFileSync(overlay, "utf8"), other);
-});
-
-test("Telegram rejects unsupported host networking before changing configuration", requiresCompose, (t) => {
-  const f = fixture(t);
-  const document = parse(readFileSync(f.target, "utf8"));
-  delete document.services[service].ports;
-  document.services[service].network_mode = "host";
-  writeFileSync(f.target, JSON.stringify(document));
-  const original = readFileSync(f.target, "utf8");
-  const result = f.run(["telegram"], telegramCredentials);
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /Compose service network/);
-  assert.equal(readFileSync(f.target, "utf8"), original);
-});
-
-for (const invalid of ["fractional port", "Bot API child mount", "website child mount"]) {
-  test(`Telegram rejects invalid ${invalid} accepted by generic Compose validation`, requiresCompose, (t) => {
-    const f = fixture(t);
-    const document = parse(readFileSync(join(repository, "tg-docker-compose.yml"), "utf8"));
-    const bot = document.services["telegram-bot-api"];
-    Object.assign(bot.environment, telegramCredentials);
-    if (invalid === "fractional port") bot.environment.TELEGRAM_HTTP_PORT = "8787.5";
-    else document.services[invalid === "website child mount" ? service : "telegram-bot-api"].volumes.push("./other:/var/lib/telegram-bot-api/library");
-    writeFileSync(f.target, JSON.stringify(document));
-    const original = readFileSync(f.target, "utf8");
-    const result = f.run(["telegram"]);
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, invalid === "fractional port" ? /valid TELEGRAM_HTTP_PORT/ : /independent child mounts/);
-    assert.equal(readFileSync(f.target, "utf8"), original);
-  });
-}
 
 test("Shell updater has valid Bash syntax and working help", () => {
   succeeded(spawnSync("bash", ["-n", script], { encoding: "utf8" }));
@@ -786,7 +559,7 @@ test("no arguments show help without installing or updating", requiresCompose, (
 });
 
 test("each command provides help without contacting Docker", requiresCompose, (t) => {
-  for (const action of ["install", "update", "uninstall", "reset-password", "gpu", "telegram"]) {
+  for (const action of ["install", "update", "uninstall", "reset-password", "gpu"]) {
     const f = fixture(t);
     const result = f.run([action, "--help"]);
     succeeded(result);
@@ -834,8 +607,8 @@ test("options without a command cannot trigger deployment changes", requiresComp
   }
 });
 
-test("GPU and Telegram commands reject image changes before invoking Docker", requiresCompose, (t) => {
-  for (const action of ["gpu", "telegram", "reset-password", "uninstall"]) {
+test("deployment commands reject image changes before invoking Docker", requiresCompose, (t) => {
+  for (const action of ["gpu", "reset-password", "uninstall"]) {
     const f = fixture(t);
     const result = f.run([action, "--image", "main"]);
     assert.notEqual(result.status, 0);

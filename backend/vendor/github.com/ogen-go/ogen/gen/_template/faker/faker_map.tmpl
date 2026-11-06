@@ -1,0 +1,13 @@
+{{- /*gotype: github.com/ogen-go/ogen/gen/ir.Type*/ -}}
+{{- define "faker/faker_map" }}
+// SetFake set fake values.
+func (s *{{ $.Name }}) SetFake() {
+	var (
+		elem {{ $.Item.Go }}
+		m map[string]{{ $.Item.Go }} = s.init()
+	)
+	for i := 0; i < {{ $.Validators.Object.MinProperties }}; i++ {
+		m[fmt.Sprintf("fake%d", i)] = elem
+	}
+}
+{{- end }}

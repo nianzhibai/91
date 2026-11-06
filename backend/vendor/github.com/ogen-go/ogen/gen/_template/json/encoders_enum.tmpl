@@ -1,0 +1,39 @@
+{{- /*gotype: github.com/ogen-go/ogen/gen/ir.Type*/ -}}
+{{- define "json/encoders_enum" }}
+// Encode encodes {{ $.Name }} as json.
+func (s {{ $.ReadOnlyReceiver }}) Encode(e *jx.Encoder) {
+	e.{{ $.JSON.Fn }}({{ $.Primitive }}(s))
+}
+
+// Decode decodes {{ $.Name }} from json.
+func (s *{{ $.Name }}) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New({{ printf "invalid: unable to decode %s to nil" $.Name | quote }})
+	}
+
+	{{- if $.Primitive.IsString }}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch {{ $.Name }}(v) {
+    {{- range $variant := $.EnumVariants }}
+	case {{ $variant.Name }}:
+		*s = {{ $variant.Name }}
+	{{- end }}
+	default:
+		*s = {{ $.Name }}(v)
+	}
+	{{- else }}
+	v, err := d.{{ $.JSON.Decode }}
+	if err != nil {
+		return err
+	}
+	*s = {{ $.Name }}(v)
+    {{- end }}
+
+	return nil
+}
+
+{{ end }}

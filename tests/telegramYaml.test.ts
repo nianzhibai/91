@@ -5,18 +5,36 @@ import { applyVisualFields, changedVisualFields, configDocument, parseConfig } f
 test("Telegram settings and credentials round-trip through the shared YAML draft", () => {
   for (const source of ["# keep\npreview: { enabled: true }\n", "{}\n", "telegram:\n", "telegram: null\n", "telegram: {}\n"]) {
     const before = parseConfig(source).draft;
-    const draft = { ...before, telegramEnabled: true, telegramBotToken: "123:test_token", telegramAllowedUserIds: "123, 456",
-      telegramUploadDriveId: "cloud", telegramUploadDirectory: "Telegram/videos", telegramUploadProxy: "socks5h://user:pass@proxy:1080", telegramMaxPendingJobs: 25 };
+    const draft = { ...before, telegramEnabled: true, telegramApiId: 12345, telegramApiHash: "0123456789abcdef0123456789abcdef", telegramStorageDirectory: "data/telegram", telegramBotToken: "123:test_token", telegramAllowedUserIds: "123, 456",
+      telegramConnectionProxy: "socks5h://user:pass@connection:1080", telegramDownloadThreads: 8, telegramUploadDriveId: "cloud", telegramUploadDirectory: "Telegram/videos", telegramUploadProxy: "socks5h://user:pass@proxy:1080", telegramMaxPendingJobs: 25 };
     const output = applyVisualFields(source, draft, changedVisualFields(before, draft));
     assert.deepEqual(parseConfig(output).draft, draft);
     assert.equal(configDocument(output).getIn(["telegram", "bot_token"]), draft.telegramBotToken);
     assert.equal(configDocument(output).hasIn(["telegram", "api_base_url"]), false);
-    assert.equal(configDocument(output).hasIn(["telegram", "api_id"]), false);
-    assert.equal(configDocument(output).hasIn(["telegram", "api_hash"]), false);
+    assert.equal(configDocument(output).getIn(["telegram", "api_id"]), draft.telegramApiId);
+    assert.equal(configDocument(output).getIn(["telegram", "api_hash"]), draft.telegramApiHash);
+    assert.equal(configDocument(output).getIn(["telegram", "download_threads"]), 8);
     assert.equal(configDocument(output).hasIn(["telegram", "api_files_root"]), false);
     assert.equal(configDocument(output).hasIn(["telegram", "local_files_root"]), false);
     if (source.startsWith("# keep")) assert.ok(output.startsWith("# keep\npreview: { enabled: true }\n"));
   }
+});
+
+test("download threads default to six and edits preserve concurrent queue settings", () => {
+  assert.equal(parseConfig("{}\n").draft.telegramDownloadThreads, 6);
+  for (const source of [
+    "telegram:\n  download_threads: 6 # threads\n  max_pending_jobs: 100\n",
+    "telegram: { download_threads: 6, max_pending_jobs: 100 }\n",
+  ]) {
+    const before = parseConfig(source).draft;
+    const draft = { ...before, telegramDownloadThreads: 8 };
+    const latest = source.replace("max_pending_jobs: 100", "max_pending_jobs: 50");
+    const output = applyVisualFields(latest, draft, changedVisualFields(before, draft));
+    assert.equal(output, latest.replace("download_threads: 6", "download_threads: 8"));
+    assert.equal(parseConfig(output).draft.telegramDownloadThreads, 8);
+    assert.equal(parseConfig(output).draft.telegramMaxPendingJobs, 50);
+  }
+  assert.throws(() => parseConfig("telegram: {download_threads: '6'}"), /telegram/);
 });
 
 test("Telegram edits preserve unrelated comments, keys, and concurrent field changes", () => {
@@ -85,4 +103,24 @@ test("upload proxy edits and clearing preserve comments and concurrent target ch
       assert.equal(parseConfig(output).draft.telegramUploadProxy, proxy);
     }
   }
+});
+
+test("connection proxy edits preserve the upload proxy and concurrent credentials", () => {
+  for (const source of [
+    "telegram:\n  connection_proxy: 'http://old:7890' # connection\n  upload_proxy: 'http://upload:7890'\n  bot_token: '123:old'\n",
+    "telegram: { connection_proxy: 'http://old:7890', upload_proxy: 'http://upload:7890', bot_token: '123:old' }\n",
+  ]) {
+    const before = parseConfig(source).draft;
+    for (const proxy of ["socks5h://user:p%40ss@proxy:1080", ""]) {
+      const draft = { ...before, telegramConnectionProxy: proxy };
+      const latest = source.replace("123:old", "456:new");
+      const output = applyVisualFields(latest, draft, changedVisualFields(before, draft));
+      assert.equal(output, latest.replace("'http://old:7890'", `'${proxy}'`));
+      const parsed = parseConfig(output).draft;
+      assert.equal(parsed.telegramConnectionProxy, proxy);
+      assert.equal(parsed.telegramUploadProxy, "http://upload:7890");
+      assert.equal(parsed.telegramBotToken, "456:new");
+    }
+  }
+  assert.throws(() => parseConfig("telegram: {connection_proxy: 7890}"), /telegram/);
 });

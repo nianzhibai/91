@@ -1,0 +1,104 @@
+version: "2"
+linters:
+  default: none
+  enable:
+    - dogsled
+    - errcheck
+    - goconst
+    - gocritic
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - nakedret
+    - revive
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+    - whitespace
+  settings:
+    dupl:
+      threshold: 120
+    goconst:
+      min-len: 2
+      min-occurrences: 3
+    gocritic:
+      disabled-checks:
+        - hugeParam
+        - rangeValCopy
+        - exitAfterDefer
+        - whyNoLint
+        - singleCaseSwitch
+        - commentedOutCode
+        - appendAssign
+        - unnecessaryBlock
+        - redundantSprint
+      enabled-tags:
+        - diagnostic
+        - experimental
+        - opinionated
+        - performance
+        - style
+    gocyclo:
+      min-complexity: 15
+    govet:
+      enable:
+        - shadow
+    lll:
+      line-length: 140
+    misspell:
+      locale: US
+  exclusions:
+    generated: lax
+    rules:
+      - linters:
+          - dupl
+          - errcheck
+          - funlen
+          - gocognit
+          - goconst
+          - gocyclo
+          - gosec
+          - lll
+          - scopelint
+        path: _test\.go
+      - linters:
+          - gocritic
+        path: _test\.go
+        text: Combine
+      - linters:
+          - govet
+        text: declaration of "(err|ctx|log|c)"
+      - linters:
+          - funlen
+          - gocognit
+          - goconst
+          - gocyclo
+        path: main\.go
+      - linters:
+          - gocritic
+        path: _test\.go
+        text: suspicious identical
+      - linters:
+          - staticcheck
+        path: _test\.go
+        text: identical expressions
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/go-faster/errors
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

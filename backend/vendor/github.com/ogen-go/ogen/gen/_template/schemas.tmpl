@@ -1,0 +1,20 @@
+{{- /*gotype: github.com/ogen-go/ogen/gen.TemplateConfig*/ -}}
+
+{{ define "schemas/body" }}
+{{- range $_, $s := $.Types }}
+	{{- template "schema/schema" $s }}
+{{- end }}
+{{- end }}
+
+{{ define "schemas" }}
+{{ template "header" $ }}
+
+{{- if $.Error }}
+func (s *{{ $.ErrorType.Name }}) Error() string {
+	return fmt.Sprintf("code %d: %+v", s.StatusCode, s.Response)
+}
+{{- end }}
+
+{{ template "schemas/body" $ }}
+
+{{- end }}

@@ -1,0 +1,77 @@
+{{- /*gotype: github.com/ogen-go/ogen/gen.Elem*/ -}}
+{{- define "uri/encode" }}
+{{- $t := $.Type }}
+{{- $var := $.Var }}
+{{- if $t.IsPrimitive }}
+	{{ if $t.JSON.TimeFormat -}}
+		return e.EncodeValue({{ $var }}.Format({{ $t.JSON.TimeFormat }}))
+	{{- else -}}
+		return e.EncodeValue(conv.{{ $t.ToString }}({{ $var }}))
+	{{- end }}
+{{- else if $t.IsEnum }}
+	return e.EncodeValue(conv.{{ $t.ToString }}({{ $t.Primitive.String }}({{ $var }})))
+{{- else if $t.IsArray  }}
+	{{- if $t.NilSemantic.Invalid -}}
+		{{- template "uri/encode_array_elems" $ }}
+	{{- else if $t.NilSemantic.Optional -}}
+		if {{ $.Var }} != nil {
+			{{- template "uri/encode_array_elems" $ }}
+		}
+		return nil
+	{{- else -}}
+		{{ errorf "unexpected nil semantic %s" $t.NilSemantic }}
+	{{- end -}}
+{{- else if $t.IsAlias }}
+	if unwrapped := {{ $t.AliasTo.Go }}({{ $var }}); true {
+		{{- template "uri/encode" elem $t.AliasTo "unwrapped" }}
+	}
+	return nil
+{{- else if $t.IsGeneric }}
+	if val, ok := {{ $var }}.Get(); ok {
+		{{- template "uri/encode" elem $t.GenericOf "val" }}
+	}
+	return nil
+{{- else if $t.IsPointer }}
+	if v := {{ $var }}; v != nil {
+		{{- template "uri/encode" elem $t.PointerTo "(*v)" }}
+	}
+	return nil
+{{- else if $t.IsStruct }}
+	return {{ $var }}.EncodeURI(e)
+{{- else if $t.IsMap }}
+	return {{ $var }}.EncodeURI(e)
+{{- else if $t.IsAny }}
+	if {{ $var }} != nil {
+		return e.EncodeValue(fmt.Sprint({{ $var }}))
+	}
+	return nil
+{{- else if $t.IsSum }}
+	switch {{ $var }}.Type {
+	{{- range $s := $t.SumOf }}
+		{{- $entries := $t.SumSpec.PickMappingEntriesFor $t $s }}
+		{{- range $e := $entries }}
+	case {{ $e.Name }}:
+		{{- template "uri/encode" elem $s (printf "%s.%s" $var $s.Name) }}
+		{{- end }}
+	{{- end }}
+	default:
+		return errors.Errorf("invalid {{ $t.Go }} type: %q", {{ $var }}.Type)
+	}
+	return nil
+{{- else }}
+	{{ errorf "unexpected kind %s" $t.Kind }}
+{{- end }}
+{{- end }}
+
+{{- define "uri/encode_array_elems" }}
+return e.EncodeArray(func(e uri.Encoder) error {
+	for i, item := range {{ $.Var }} {
+		if err := func() error {
+			{{- template "uri/encode" elem $.Type.Item "item" }}
+		}(); err != nil {
+			return errors.Wrapf(err, "[%d]", i)
+		}
+	}
+	return nil
+})
+{{- end }}

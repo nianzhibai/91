@@ -1,0 +1,137 @@
+version: "2"
+linters:
+  enable:
+    - dogsled
+    - gocritic
+    - gosec
+    - lll
+    - misspell
+    - nakedret
+    - revive
+    - unconvert
+    - unparam
+    - whitespace
+  settings:
+    dupl:
+      threshold: 120
+    goconst:
+      min-len: 2
+      min-occurrences: 3
+    gocritic:
+      disabled-checks:
+        - emptyStringTest
+        - hugeParam
+        - rangeValCopy
+        - exitAfterDefer
+        - octalLiteral
+        - httpNoBody
+        - unnecessaryBlock
+      enabled-tags:
+        - diagnostic
+        - experimental
+        - opinionated
+        - performance
+        - style
+    gocyclo:
+      min-complexity: 15
+    gosec:
+      excludes:
+        - G115
+      config:
+        G306: "0644"
+    lll:
+      line-length: 140
+    misspell:
+      locale: US
+  exclusions:
+    generated: lax
+    rules:
+      - linters:
+          - lll
+        source: //go:generate
+      - linters:
+          - lll
+        source: // See https://
+      - linters:
+          - dupl
+          - errcheck
+          - funlen
+          - gocognit
+          - goconst
+          - gocyclo
+          - gosec
+          - lll
+          - scopelint
+        path: _test\.go
+      - linters:
+          - unparam
+        path: _test\.go
+        text: .*\$\d?
+      - linters:
+          - govet
+        text: declaration of "(err|ctx|log)"
+      - linters:
+          - funlen
+          - gocognit
+          - goconst
+          - gocyclo
+        path: (cmd|tools)
+      - linters:
+          - golint
+          - revive
+        path: (conv|uri|gen|otelogen)
+        text: (should have comment.+or be unexported|comment on exported)
+      - linters:
+          - golint
+          - revive
+        path: (cmd|tools|internal)
+        text: should have (comment.+or be unexported|a package comment)
+      - linters:
+          - golint
+          - revive
+        text: (unused-parameter|if-return)
+      - linters:
+          - gocritic
+        text: ptrToRefParam
+        source: handleSchemaDepth
+      - path: (cmd|tools)
+        text: G(304|306|307)
+      - path: techempower
+        text: G114
+      - linters:
+          - gocritic
+        path: (http|uri)
+        text: sprintfQuotedString
+        source: form-data; name="%s"
+      - linters:
+          - gocritic
+        path: ogenregex[/\\]convert\.go
+        text: emptyFallthrough
+      - linters:
+          - goconst
+        text: string `(string|number|u?int\d{0,2}|float\d{2}|decimal)`
+      - linters:
+          - goconst
+        text: string `(Unix|unix|date|time|http-date|ipv6|String|DateTime|HTTPDate|Number)
+      - linters:
+          - goconst
+        text: string `(query)`
+      - linters: [revive]
+        text: avoid.+package names
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/ogen-go/ogen
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

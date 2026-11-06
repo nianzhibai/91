@@ -26,8 +26,9 @@ func TestTelegramLibraryBackupRestoresPortableVideosAndPreservesLiveLibrary(t *t
 			seed := func(id, body string) {
 				t.Helper()
 				fileID := id + ".media"
-				writeTestFile(t, filepath.Join(root, fileID), []byte(body))
-				if _, err := env.cat.ReserveTelegramLocalFile(ctx, catalog.TelegramLocalFile{FileID: fileID, JobID: id}); err != nil {
+				directory := "海边旅行-" + id
+				writeTestFile(t, filepath.Join(root, directory, fileID), []byte(body))
+				if _, err := env.cat.ReserveTelegramLocalFile(ctx, catalog.TelegramLocalFile{FileID: fileID, JobID: id, Directory: directory, GroupKey: id}); err != nil {
 					t.Fatal(err)
 				}
 				if err := env.cat.UpsertVideo(ctx, &catalog.Video{ID: id, DriveID: catalog.TelegramLocalDriveID, FileID: fileID, FileName: id + ".mp4", Title: id, Size: int64(len(body)), Ext: "mp4"}); err != nil {
@@ -41,7 +42,7 @@ func TestTelegramLibraryBackupRestoresPortableVideosAndPreservesLiveLibrary(t *t
 			}
 			root = filepath.Join(relocated, "library")
 			env.cfg.Telegram.LocalFilesRoot = relocated
-			writeTestFile(t, filepath.Join(filepath.Dir(root), "bot-session"), []byte("PRIVATE_BOT_SESSION"))
+			writeTestFile(t, filepath.Join(filepath.Dir(root), "sessions/bot.session.json"), []byte("PRIVATE_BOT_SESSION"))
 			writeTestFile(t, filepath.Join(root, "unregistered.media"), []byte("unregistered file"))
 			record := createAndWaitForBackup(t, env.manager, selection)
 			archive, _, err := env.manager.resolveBackup(record.ID)
@@ -57,7 +58,7 @@ func TestTelegramLibraryBackupRestoresPortableVideosAndPreservesLiveLibrary(t *t
 				if f.Name == "payload/uploads/telegram-source.media" {
 					found = true
 				}
-				if strings.Contains(f.Name, "unregistered") || strings.Contains(f.Name, "bot-session") {
+				if strings.Contains(f.Name, "unregistered") || strings.Contains(f.Name, "sessions/bot.session.json") {
 					t.Fatal("unrelated TG files exported")
 				}
 				if f.Name == "payload/database.sqlite" {
@@ -85,7 +86,7 @@ func TestTelegramLibraryBackupRestoresPortableVideosAndPreservesLiveLibrary(t *t
 			if err := env.cat.DeleteTelegramLocalFile(ctx, "source.media"); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.Remove(filepath.Join(root, "source.media")); err != nil {
+			if err := os.Remove(filepath.Join(root, "海边旅行-source", "source.media")); err != nil {
 				t.Fatal(err)
 			}
 			seed("target", "live video")
@@ -125,10 +126,10 @@ func TestTelegramLibraryBackupRestoresPortableVideosAndPreservesLiveLibrary(t *t
 			if err != nil || v.DriveID != catalog.TelegramLocalDriveID {
 				t.Fatalf("live TG video replaced: %+v %v", v, err)
 			}
-			if _, err := restored.TelegramLocalFile(ctx, "target.media"); err != nil {
-				t.Fatal("live TG location lost", err)
+			if file, err := restored.TelegramLocalFile(ctx, "target.media"); err != nil || file.Directory != "海边旅行-target" || file.GroupKey != "target" {
+				t.Fatal("live TG album location lost", err)
 			}
-			if data, err := os.ReadFile(filepath.Join(root, "target.media")); err != nil || string(data) != "live video" {
+			if data, err := os.ReadFile(filepath.Join(root, "海边旅行-target", "target.media")); err != nil || string(data) != "live video" {
 				t.Fatal("live TG volume overwritten")
 			}
 

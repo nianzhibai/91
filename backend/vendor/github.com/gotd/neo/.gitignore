@@ -1,0 +1,9 @@
+*-fuzz.zip
+.idea
+benchmark.*.write
+*.test
+*.out
+bench.go-*
+
+coverage.txt
+

@@ -1,0 +1,106 @@
+{{- /*gotype: github.com/ogen-go/ogen/gen.Elem*/ -}}
+
+{{- define "json/dec_pointer" }}
+{{ $.Var }} = nil
+var {{ $.NextVar }} {{ $.Type.PointerTo.Go }}
+{{- template "json/dec" pointer_elem $ }}
+{{ $.Var }} = &{{ $.NextVar }}
+{{- end -}}
+
+{{- define "json/dec_array_elems" }}
+{{- $t := $.Type -}}
+{{ $.Var }} = make({{ $t.Go }}, 0)
+if err := d.Arr(func(d *jx.Decoder) error {
+	var {{ $.NextVar }} {{ $t.Item.Go }}
+	{{- template "json/dec" sub_array_elem $ $t.Item }}
+	{{ $.Var }} = append({{ $.Var }}, {{ $.NextVar }})
+	return nil
+}); err != nil {
+	return err
+}
+{{- end }}
+
+{{- define "json/dec_array" }}
+{{- $t := $.Type -}}
+{{- if $t.NilSemantic.Null -}}
+	switch tt := d.Next(); tt {
+	case jx.Null:
+		if err := d.Skip(); err != nil {
+			return err
+		}
+	default:
+		{{- template "json/dec_array_elems" $ }}
+	}
+{{- else -}}
+	{{ template "json/dec_array_elems" $ }}
+{{- end }}
+
+{{- end -}}
+
+{{- define "json/dec_generic" }}
+{{- $t := $.Type -}}
+{{- $g := $t.GenericOf }}
+{{- if $t.GenericVariant.Optional }}
+	{{ $.Var }}.Reset()
+{{- end }}
+{{- if $g.Format }}
+	{{ if $g.JSON.TimeFormat -}}
+		if err := {{ $.Var }}.Decode(d, json.NewTimeDecoder({{ $g.JSON.TimeFormat }})); err != nil {
+			return err
+		}
+	{{- else -}}
+		if err := {{ $.Var }}.Decode(d, json.Decode{{ $g.JSON.Decoder }}); err != nil {
+			return err
+		}
+	{{- end }}
+{{- else }}
+	if err := {{ $.Var }}.Decode(d); err != nil {
+		return err
+	}
+{{- end }}
+{{- end -}}
+
+
+{{- define "json/dec" -}}
+	{{- $t := $.Type -}}
+	{{- $j := $t.JSON -}}
+	{{- if $t.IsPointer }}
+		{{- template "json/dec_pointer" $ }}
+	{{- else if $t.IsGeneric }}
+		{{- template "json/dec_generic" $ }}
+	{{- else if $t.IsArray }}
+		{{ template "json/dec_array" $ }}
+	{{- else if $t.IsMap }}
+		if err := {{ $.Var }}.Decode(d); err != nil {
+			return err
+		}
+	{{- else if or ($t.IsStruct) ($t.IsEnum) ($t.IsSum) ($t.IsAlias) }}
+		if err := {{ $.Var }}.Decode(d); err != nil {
+			return err
+		}
+	{{- else if $t.IsNull }}
+		if err := d.Null(); err != nil {
+			return err
+		}
+	{{- else if $j.TimeFormat }}
+		v, err := json.DecodeTimeFormat(d, {{ $j.TimeFormat }})
+		{{ $.Var }} = v
+		if err != nil {
+			 return err
+		}
+	{{- else if $j.Decoder }}
+		v, err := json.Decode{{ $j.Decoder }}(d)
+		{{ $.Var }} = v
+		if err != nil {
+			 return err
+		}
+	{{- else if $j.Fn }}
+		v, err := d.{{ $j.Decode }}
+		{{ $.Var }} = {{ $t.Go }}(v)
+		if err != nil {
+			return err
+		}
+	{{- else }}
+		{{ errorf "unsupported kind: %s" $t.Kind }}
+	{{- end }}
+{{- end -}}

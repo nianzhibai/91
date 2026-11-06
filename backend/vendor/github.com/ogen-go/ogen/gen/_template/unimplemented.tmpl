@@ -1,0 +1,65 @@
+{{ define "unimplemented" }}
+{{- /*gotype: github.com/ogen-go/ogen/gen.TemplateConfig*/ -}}
+{{ template "header" $ }}
+
+// UnimplementedHandler is no-op Handler which returns http.ErrNotImplemented.
+type UnimplementedHandler struct{}
+
+{{- if $.PathsServerEnabled }}
+{{- with $ops := $.Operations }}
+var _ Handler = UnimplementedHandler{}
+
+{{- $hasRawOps := false }}
+{{- range $op := $ops }}
+	{{- if $op.HasRawResponse }}
+		{{- $hasRawOps = true }}
+	{{- end }}
+{{- end }}
+{{- if $hasRawOps }}
+var _ RawHandler = UnimplementedHandler{}
+{{- end }}
+
+{{- range $op := $ops }}
+    {{- template "unimplemented/operation" $op }}
+{{- end }}
+{{- end }}
+
+{{- if $.Error }}
+// NewError creates {{ $.ErrorGoType }} from error returned by handler.
+//
+// Used for common default response.
+func (UnimplementedHandler) NewError(ctx context.Context, err error) (r {{ $.ErrorGoType }}) {
+	{{- if $.ErrorType.DoPassByPointer }}
+	r = new({{ $.ErrorType.Go }})
+	{{- end }}
+	return r
+}
+{{- end }}
+{{- end }}
+
+{{- if $.WebhookServerEnabled }}
+{{- with $ops := $.Webhooks }}
+var _ WebhookHandler = UnimplementedHandler{}
+{{- range $op := $ops }}
+    {{- template "unimplemented/operation" $op }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{ end }}
+
+{{ define "unimplemented/operation" }}
+{{- /*gotype: github.com/ogen-go/ogen/gen/ir.Operation*/ -}}{{ $op := $ }}
+// {{ $op.Name }} implements {{ $op.PrettyOperationID }} operation.
+//
+{{- template "godoc_op" $op }}
+{{- if $op.HasRawResponse }}
+func (UnimplementedHandler) {{ $op.Name }}(ctx context.Context {{ if $op.Request }}, req {{ $op.Request.GoType }}{{ end }}{{ if $op.Params }}, params {{ $op.Name }}Params{{ end }}, w http.ResponseWriter) error {
+	return ht.ErrNotImplemented
+}
+{{- else }}
+func (UnimplementedHandler) {{ $op.Name }}(ctx context.Context {{ if $op.Request }}, req {{ $op.Request.GoType }}{{ end }}{{ if $op.Params }}, params {{ $op.Name }}Params {{ end }}) {{ $op.Responses.ResultTuple "r" "" }} {
+	return {{ if $op.Responses.DoPass }}r,{{ end }} ht.ErrNotImplemented
+}
+{{- end }}
+{{ end }}

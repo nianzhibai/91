@@ -1,0 +1,36 @@
+{{- /*gotype: github.com/ogen-go/ogen/gen/ir.Type*/ -}}
+{{- define "json/encoders_alias" }}
+{{- $a := $.AliasTo }}
+// Encode encodes {{ $.Name }} as json.
+func (s {{ $.ReadOnlyReceiver }}) Encode(e *jx.Encoder) {
+	{{- if $a.DoPassByPointer }}
+		unwrapped := (*{{ $a.Go }})(s)
+	{{- else }}
+		unwrapped := {{ $a.Go }}(s)
+	{{- end }}
+	{{- if and $a.IsArray $a.NilSemantic.Optional }}{{/* Prevents empty value encoding */}}
+		if unwrapped == nil {
+			e.ArrEmpty()
+			return
+		}
+	{{- end }}
+	{{ template "json/enc" elem $a "unwrapped" -}}
+}
+
+// Decode decodes {{ $.Name }} from json.
+func (s *{{ $.Name }}) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New({{ printf "invalid: unable to decode %s to nil" $.Name | quote }})
+	}
+	var unwrapped {{ $a.Go }}
+	if err := func() error {
+		{{- template "json/dec" elem $a "unwrapped" }}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, "alias")
+	}
+	*s = {{ $.Go }}(unwrapped)
+	return nil
+}
+
+{{ end }}

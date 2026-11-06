@@ -7,11 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/video-site/backend/internal/catalog"
 	"github.com/video-site/backend/internal/drives"
+	"github.com/video-site/backend/internal/drives/telegramstorage"
 )
 
 type fakeCloud struct {
@@ -27,22 +29,31 @@ type fakeCloud struct {
 	statErr      error
 	streamErr    error
 	afterUpload  func()
+	directories  map[string]string
 }
 
 func (d *fakeCloud) ID() string                 { return "cloud" }
 func (d *fakeCloud) Kind() string               { return "webdav" }
 func (d *fakeCloud) RootID() string             { return "root" }
 func (d *fakeCloud) Init(context.Context) error { return nil }
-func (d *fakeCloud) EnsureDir(context.Context, string) (string, error) {
+func (d *fakeCloud) EnsureDir(_ context.Context, directory string) (string, error) {
+	if d.directories != nil && d.directoryErr == nil {
+		if d.directories[directory] == "" {
+			d.directories[directory] = "folder-" + strconv.Itoa(len(d.directories)+1)
+		}
+		return d.directories[directory], nil
+	}
 	return "folder", d.directoryErr
 }
-func (d *fakeCloud) List(context.Context, string) ([]drives.Entry, error) {
+func (d *fakeCloud) List(_ context.Context, parent string) ([]drives.Entry, error) {
 	if d.listErr != nil {
 		return nil, d.listErr
 	}
 	var entries []drives.Entry
 	for _, e := range d.files {
-		entries = append(entries, e)
+		if e.ParentID == "" || e.ParentID == parent {
+			entries = append(entries, e)
+		}
 	}
 	return entries, nil
 }
@@ -104,7 +115,7 @@ func fixture(t *testing.T) (Config, *catalog.Video, *fakeCloud) {
 	if err := c.UpsertDrive(ctx, &catalog.Drive{ID: "cloud", Name: "Cloud Drive", Kind: "webdav", Status: "ok", RootID: "root"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := c.TelegramOffset(ctx, 123); err != nil {
+	if _, err := c.TelegramPaused(ctx, 123); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.AcceptTelegramUpdate(ctx, catalog.TelegramReceipt{BotID: 123, UpdateID: 1, MessageID: 1, ChatID: 42, SenderID: 42}, &catalog.TelegramSource{BotID: 123, SenderID: 42, FileID: "tg-file", UniqueID: "unique", Size: 5}, "job", "video", 100); err != nil {
@@ -276,18 +287,20 @@ func TestTransferReadsSharedLibraryAndReleasesOnlyAfterSuccess(t *testing.T) {
 	for _, fail := range []bool{false, true} {
 		t.Run(map[bool]string{false: "success", true: "failure"}[fail], func(t *testing.T) {
 			cfg, v, cloud := fixture(t)
+			cloud.directories = make(map[string]string)
 			ctx := context.Background()
 			root := filepath.Join(t.TempDir(), "library")
-			if err := os.Mkdir(root, 0750); err != nil {
+			directory := "海边旅行-1234"
+			if err := os.MkdirAll(filepath.Join(root, directory), 0750); err != nil {
 				t.Fatal(err)
 			}
 			old := filepath.Join(cfg.LocalDirectory, v.FileID)
 			id := "tg-shared.media"
-			path := filepath.Join(root, id)
+			path := filepath.Join(root, directory, id)
 			if err := os.Rename(old, path); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := cfg.Catalog.ReserveTelegramLocalFile(ctx, catalog.TelegramLocalFile{FileID: id, JobID: "job"}); err != nil {
+			if _, err := cfg.Catalog.ReserveTelegramLocalFile(ctx, catalog.TelegramLocalFile{FileID: id, JobID: "job", Directory: directory, GroupKey: "album"}); err != nil {
 				t.Fatal(err)
 			}
 			v.DriveID = catalog.TelegramLocalDriveID
@@ -300,7 +313,7 @@ func TestTransferReadsSharedLibraryAndReleasesOnlyAfterSuccess(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg.TelegramDirectory = relocated
-			path = filepath.Join(relocated, "library", id)
+			path = filepath.Join(relocated, "library", directory, id)
 			cloud.failStat = fail
 			err := Run(ctx, cfg)
 			if (err != nil) != fail {
@@ -318,7 +331,7 @@ func TestTransferReadsSharedLibraryAndReleasesOnlyAfterSuccess(t *testing.T) {
 					t.Fatal("failed transfer removed source")
 				}
 			} else {
-				if saved.DriveID != "cloud" || !strings.HasSuffix(saved.FileID, ".mp4") {
+				if saved.DriveID != "cloud" || !strings.HasSuffix(saved.FileID, ".mp4") || saved.DirName != directory || saved.ParentID != cloud.directories["Telegram/"+directory] {
 					t.Fatalf("wrong cloud source: %+v", saved)
 				}
 				if _, e := os.Stat(path); !os.IsNotExist(e) {
@@ -326,5 +339,78 @@ func TestTransferReadsSharedLibraryAndReleasesOnlyAfterSuccess(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestTransferPreservesSeparateAlbumDirectoriesAndCollections(t *testing.T) {
+	cfg, first, cloud := fixture(t)
+	ctx := context.Background()
+	cfg.TelegramDirectory = t.TempDir()
+	cloud.directories = make(map[string]string)
+	const albumA, albumB = "海边旅行-a1b2", "海边旅行-c3d4"
+	file, err := cfg.Catalog.ReserveTelegramLocalFile(ctx, catalog.TelegramLocalFile{FileID: "job.media", JobID: "job", Directory: albumA, GroupKey: "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, err := telegramstorage.Prepare(cfg.TelegramDirectory, file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(cfg.LocalDirectory, first.FileID), local); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Catalog.MigrateVideoToDrive(ctx, first.ID, catalog.VideoDriveMigration{DriveID: catalog.TelegramLocalDriveID, FileID: file.FileID, ParentID: albumA, DirName: albumA}); err != nil {
+		t.Fatal(err)
+	}
+	videoIDs := []string{first.ID}
+	for i, directory := range []string{albumA, albumB} {
+		id := "album-video-" + strconv.Itoa(i)
+		if err := cfg.Catalog.AcceptTelegramUpdate(ctx, catalog.TelegramReceipt{BotID: 123, ChatID: 42, SenderID: 42, MessageID: int64(i + 10), UpdateID: int64(i + 10)}, &catalog.TelegramSource{BotID: 123, SenderID: 42, FileID: id, UniqueID: id, Size: 5}, id, id, 100); err != nil {
+			t.Fatal(err)
+		}
+		file, err := cfg.Catalog.ReserveTelegramLocalFile(ctx, catalog.TelegramLocalFile{FileID: id + ".media", JobID: id, Directory: directory, GroupKey: directory})
+		if err != nil {
+			t.Fatal(err)
+		}
+		local, err := telegramstorage.Prepare(cfg.TelegramDirectory, file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(local, []byte("video"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := cfg.Catalog.TransitionRemoteUploadJob(ctx, id, catalog.RemoteUploadQueued, catalog.RemoteUploadSaving); err != nil {
+			t.Fatal(err)
+		}
+		if err := cfg.Catalog.FinalizeRemoteUpload(ctx, id, &catalog.Video{ID: id, DriveID: catalog.TelegramLocalDriveID, FileID: file.FileID, FileName: id + ".mp4", Title: id, Size: 5}, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		videoIDs = append(videoIDs, id)
+	}
+	if err := Run(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if len(cloud.directories) != 2 || cloud.directories["Telegram/"+albumA] == cloud.directories["Telegram/"+albumB] {
+		t.Fatalf("albums were uploaded to the same folder: %v", cloud.directories)
+	}
+	for i, id := range videoIDs {
+		video, err := cfg.Catalog.GetVideo(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		directory := albumA
+		if i == 2 {
+			directory = albumB
+		}
+		if video.ParentID != cloud.directories["Telegram/"+directory] || video.DirName != directory || video.DriveID != "cloud" {
+			t.Fatalf("migration lost the album directory: %+v", video)
+		}
+	}
+	collection, err := cfg.Catalog.ListVisibleVideosByDirectory(ctx, "cloud", cloud.directories["Telegram/"+albumA])
+	if err != nil || len(collection) != 2 {
+		t.Fatalf("migrated album collection has %d videos: %v", len(collection), err)
+	}
+	if err := Run(ctx, cfg); err != nil || cloud.uploads != 3 {
+		t.Fatalf("repeat sweep uploaded the albums again: uploads=%d error=%v", cloud.uploads, err)
 	}
 }

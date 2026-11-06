@@ -1,0 +1,227 @@
+{{ define "request_encoders" }}
+{{- /*gotype: github.com/ogen-go/ogen/gen.TemplateConfig*/ -}}
+{{ template "header" $ }}
+
+{{- if $.PathsClientEnabled }}
+{{- range $op := $.Operations }}{{ if $op.Request }}
+    {{ template "request_encoders/operation" $op }}
+{{ end }}{{ end }}
+{{- end }}
+
+{{- if $.WebhookClientEnabled }}
+{{- range $op := $.Webhooks }}{{ if $op.Request }}
+    {{ template "request_encoders/operation" $op }}
+{{ end }}{{ end }}
+{{- end }}
+
+{{ end }}
+
+{{ define "request_encoders/operation" }}
+{{- /*gotype: github.com/ogen-go/ogen/gen/ir.Operation*/ -}}{{ $op := $ }}
+func encode{{ $op.Name }}Request(
+	req {{ $op.Request.GoType }},
+	r *http.Request,
+) error {
+{{- $contents := $op.Request.Contents }}
+
+{{- if not $op.Request.Type.IsInterface }}
+	{{- range $contentType, $media := $contents }}
+		{{- if not $contentType.Mask }}
+		const contentType = {{ quote $contentType }}
+        {{- template "encode_request" $media }}
+		{{- else }}
+		contentType := req.ContentType
+		if contentType != "" && !ht.MatchContentType({{ quote $contentType }}, contentType) {
+			return errors.Errorf("%q does not match mask %q", contentType, {{ quote $contentType }})
+		}
+		{
+			req := req.Content
+        	{{- $t := ($media.Type.MustField "Content").Type }}
+        	{{- template "encode_request" ir_media $media.Encoding $t }}
+		}
+		{{- end }}
+	{{- end }}
+{{- else }}
+	{{- /* Multiple requests */}}
+	switch req := req.(type) {
+    {{- if $op.Request.EmptyBody }}
+	case *{{ $op.Request.EmptyBody.Go }}:
+		// Empty body case.
+		return nil
+    {{- end }}
+	{{- range $contentType, $media := $contents }}
+	case *{{ $media.Type.Go }}:
+		{{- if not $contentType.Mask }}
+		const contentType = {{ quote $contentType }}
+        {{- template "encode_request" $media }}
+		{{- else }}
+		contentType := req.ContentType
+		if contentType != "" && !ht.MatchContentType({{ quote $contentType }}, contentType) {
+			return errors.Errorf("%q does not match mask %q", contentType, {{ quote $contentType }})
+		}
+		{
+			req := req.Content
+        	{{- $t := ($media.Type.MustField "Content").Type }}
+        	{{- template "encode_request" ir_media $media.Encoding $t }}
+		}
+		{{- end }}
+	{{- end }}
+	default:
+		return errors.Errorf("unexpected request type: %T", req)
+	}
+{{- end }}
+}
+{{ end }}
+
+{{- define "encode_request" }}
+{{- /*gotype: github.com/ogen-go/ogen/gen/ir.Media*/ -}}
+{{- $type := $.Type }}
+{{- $encoding := $.Encoding }}
+{{- $unaliased := $type }}{{- if $type.IsAlias }}{{ $unaliased = $type.AliasTo }}{{- end }}
+
+{{- if $unaliased.GenericVariant.Optional }}
+	if !req.Set {
+		// Keep request with empty body if value is not set.
+		return nil
+	}
+{{- end }}
+
+{{- if $type.IsStream }}
+	{{- if $type.IsBase64Stream }}
+		body := ht.CreateBodyWriter(func(w io.Writer) (rerr error) {
+			writer := base64.NewEncoder(base64.StdEncoding, w)
+			defer func() {
+				if rerr == nil {
+					rerr = writer.Close()
+				}
+			}()
+
+			_, err := io.Copy(writer, req)
+			return err
+		})
+		ht.SetCloserBody(r, body, contentType)
+	{{- else }}
+		body := req
+		ht.SetBody(r, body, contentType)
+	{{- end }}
+	return nil
+{{- else if or $encoding.JSON $encoding.ProblemJSON }}
+	{{- if $.JSONStreaming }}
+		body := ht.CreateBodyWriter(func(w io.Writer) (rerr error) {
+			e := jx.NewStreamingEncoder(w, -1)
+			defer func() {
+				if rerr == nil {
+					rerr = e.Close()
+				}
+			}()
+			{
+				{{- template "json/enc" elem $type "req" }}
+			}
+			return nil
+		})
+		ht.SetCloserBody(r, body, contentType)
+	{{- else }}
+	    e := new(jx.Encoder)
+		{
+		   {{- template "json/enc" elem $type "req" }}
+		}
+		encoded := e.Bytes()
+		ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	{{- end }}
+	return nil
+{{- else if or $encoding.FormURLEncoded $encoding.MultipartForm }}
+	{{- if $unaliased.IsGeneric }}
+		request := req.Value
+		{{ $type = $unaliased.GenericOf }}
+	{{- else if $unaliased.IsStruct }}
+		request := req
+        {{ $type = $unaliased }}
+	{{- else }}
+        {{- errorf "unexpected type: %s" $unaliased }}
+	{{- end }}
+	q := uri.NewFormEncoder(map[string]string{
+		{{- range $param := $type.FormParameters }}{{- if $param.Spec.Content }}
+		{{ quote $param.Spec.Name }}: "application/json; charset=utf-8",
+		{{- end }}{{- end }}
+	})
+	{{- range $param := $type.FormParameters }}
+	{
+		// Encode {{ quote $param.Spec.Name }} form field.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    {{ quote $param.Spec.Name }},
+			Style:   uri.QueryStyle{{ capitalize $param.Spec.Style.String }},
+			Explode: {{ if $param.Spec.Explode }}true{{ else }}false{{ end }},
+		}
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			{{- $el := elem $param.Type (printf "request.%s" $param.Name) }}
+			{{- if $param.Spec.Content }}
+				var enc jx.Encoder
+				func(e *jx.Encoder) {
+					{{- template "json/enc" $el }}
+				}(&enc)
+				return e.EncodeValue(string(enc.Bytes()))
+			{{- else }}
+				{{- template "uri/encode" $el }}
+			{{- end }}
+		}); err != nil {
+			return errors.Wrap(err, "encode query")
+		}
+	}
+	{{- end }}
+	{{- if $encoding.FormURLEncoded }}
+		encoded := q.Values().Encode()
+		ht.SetBody(r, strings.NewReader(encoded), contentType)
+		return nil
+	{{- else if $encoding.MultipartForm }}
+		body, boundary := ht.CreateMultipartBody(func(w *multipart.Writer) error {
+        	{{- range $param := $type.FileParameters }}
+				{{- template "encode_multipart_file_param" $param }}
+			{{- end }}
+			if err := q.WriteMultipart(w); err != nil {
+				return errors.Wrap(err, "write multipart")
+			}
+			return nil
+		})
+		ht.SetCloserBody(r, body, mime.FormatMediaType(contentType, map[string]string{"boundary": boundary}))
+		return nil
+	{{- else }}
+		{{- errorf "%s: %s encoder not implemented" $type $encoding }}
+	{{- end }}
+{{- else }}
+	{{- errorf "%s: %s encoder not implemented" $type $encoding }}
+{{- end }}
+
+{{- end }}
+
+{{- define "encode_multipart_file_param" }}
+{{- /*gotype: github.com/ogen-go/ogen/gen/ir.Parameter*/ -}}
+{{- $name := quote $.Spec.Name }}
+{{- $errWrite := printf "write %s" $name | quote }}
+{{- $recv := printf "request.%s" $.Name }}
+{{- $t := $.Type }}
+
+{{- if $t.IsPrimitive }}
+	if err := {{ $recv }}.WriteMultipart({{ $name }}, w); err != nil {
+		return errors.Wrap(err, {{ $errWrite }})
+	}
+{{- else if $t.IsGeneric }}
+	if val, ok := {{ $recv }}.Get(); ok {
+		if err := val.WriteMultipart({{ $name }}, w); err != nil {
+			return errors.Wrap(err, {{ $errWrite }})
+		}
+	}
+{{- else if $t.IsArray }}
+	if err := func() error {
+		for idx, val := range {{ $recv }} {
+			if err := val.WriteMultipart({{ $name }}, w); err != nil {
+				return errors.Wrapf(err, "file [%d]", idx)
+			}
+		}
+		return nil
+	}(); err != nil {
+		return errors.Wrap(err, {{ $errWrite }})
+	}
+{{- else }}
+    {{ errorf "unexpected kind %s" $t.Kind }}
+{{- end }}
+{{- end }}

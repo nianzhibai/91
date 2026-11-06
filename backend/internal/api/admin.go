@@ -332,7 +332,6 @@ func (a *AdminServer) Register(r chi.Router) {
 			r.Get("/telegram/availability", a.handleTelegramAvailability)
 			r.Get("/telegram/status", a.handleTelegramStatus)
 			r.Post("/telegram/test", a.handleTelegramTest)
-			r.Post("/telegram/prepare-polling", a.handleTelegramPrepare)
 			r.Post("/telegram/resume", a.handleTelegramResume)
 			r.Get("/import-jobs", a.handleImportList)
 			r.Post("/import-jobs/{jobId}/cancel", a.handleImportCancel)

@@ -12,6 +12,45 @@ func stagedAlbumUpdate(id int64) TelegramMediaGroupUpdate {
 	return TelegramMediaGroupUpdate{BotID: 123, ChatID: 42, MessageID: id, UpdateID: id, MediaGroupID: "album", Payload: fmt.Sprintf(`{"update_id":%d}`, id)}
 }
 
+func TestTelegramMediaGroupsUseArrivalOrderWithOpaqueUpdateIDs(t *testing.T) {
+	c := telegramTestCatalog(t)
+	ctx := context.Background()
+	for _, id := range []int64{100, 101, 200, 201, 50, 51} {
+		u := stagedAlbumUpdate(id)
+		u.UpdateID = -id
+		u.MediaGroupID = fmt.Sprint(id / 100)
+		if err := c.StageTelegramMediaGroupUpdate(ctx, u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Two groups arrived in the same millisecond. A delayed older message must
+	// still follow both; IDs are only a deterministic tie-breaker within a time.
+	if _, err := c.db.Exec(`UPDATE telegram_media_group_updates SET received_at=CASE WHEN message_id<100 THEN 20 ELSE 10 END`); err != nil {
+		t.Fatal(err)
+	}
+	groups, err := c.PendingTelegramMediaGroups(ctx, 123, time.UnixMilli(30))
+	if err != nil || len(groups) != 3 {
+		t.Fatalf("groups=%v error=%v", groups, err)
+	}
+	for i, want := range []string{"1", "2", "0"} {
+		if groups[i].ID != want || len(groups[i].Updates) != 2 {
+			t.Fatalf("group %d: %+v, want %s with two members", i, groups[i], want)
+		}
+		if accepted, err := c.AcceptTelegramMediaGroup(ctx, groups[i], albumImports(groups[i]), 2); err != nil || !accepted {
+			t.Fatal("admission failed", err)
+		}
+	}
+	jobs, err := c.ListImportJobs(ctx, "telegram", "", 0, 30)
+	if err != nil || len(jobs) != 2 {
+		t.Fatalf("jobs=%v error=%v", jobs, err)
+	}
+	for _, job := range jobs {
+		if job.ID != "job-100" && job.ID != "job-101" {
+			t.Fatalf("newer group took the oldest group's queue capacity: %s", job.ID)
+		}
+	}
+}
+
 func pendingAlbum(t *testing.T, c *Catalog) TelegramMediaGroup {
 	t.Helper()
 	groups, err := c.PendingTelegramMediaGroups(context.Background(), 123, time.Now().Add(time.Hour))
@@ -45,7 +84,7 @@ func TestTelegramMediaGroupInboxSurvivesDatabaseReopen(t *testing.T) {
 			c.Close()
 		}
 	})
-	if _, _, err := c.TelegramOffset(ctx, 123); err != nil {
+	if _, err := c.TelegramPaused(ctx, 123); err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range []int64{1, 2} {
@@ -63,9 +102,6 @@ func TestTelegramMediaGroupInboxSurvivesDatabaseReopen(t *testing.T) {
 	group := pendingAlbum(t, c)
 	if len(group.Updates) != 2 || group.Updates[0].UpdateID != 1 || group.Updates[1].UpdateID != 2 {
 		t.Fatalf("buffer or ordering lost on reopen: %+v", group)
-	}
-	if offset, _, err := c.TelegramOffset(ctx, 123); err != nil || offset != 3 {
-		t.Fatalf("buffer and offset were not persisted together: %d %v", offset, err)
 	}
 	// Replayed updates neither replace the payload nor postpone a ready group.
 	if _, err := c.db.Exec(`UPDATE telegram_media_group_updates SET received_at=1`); err != nil {
@@ -112,6 +148,19 @@ func TestTelegramMediaGroupAdmissionIsAtomicAndIdempotent(t *testing.T) {
 	if accepted, err := c.AcceptTelegramMediaGroup(ctx, group, albumImports(group), 100); err != nil || !accepted {
 		t.Fatalf("admission failed: %v %v", accepted, err)
 	}
+	receipts, err := c.PendingTelegramReceipts(ctx, 123)
+	if err != nil || len(receipts) != 1 || receipts[0].MessageID != 1 || len(receipts[0].JobIDs) != 2 {
+		t.Fatalf("expected one receipt tracking both videos: %+v %v", receipts, err)
+	}
+	for i, id := range receipts[0].JobIDs {
+		if id != fmt.Sprint("job-", i+1) {
+			t.Fatalf("group receipt lost a video: %+v", receipts[0])
+		}
+	}
+	var silent int
+	if err := c.db.QueryRow(`SELECT COUNT(*) FROM telegram_receipts WHERE response='__ignore__'`).Scan(&silent); err != nil || silent != 2 {
+		t.Fatalf("missing silent deduplication receipt: %d %v", silent, err)
+	}
 	if accepted, err := c.AcceptTelegramMediaGroup(ctx, group, albumImports(group), 100); err != nil || accepted {
 		t.Fatalf("stale snapshot admitted twice: %v %v", accepted, err)
 	}
@@ -122,9 +171,6 @@ func TestTelegramMediaGroupAdmissionIsAtomicAndIdempotent(t *testing.T) {
 	}
 	if groups, err := c.PendingTelegramMediaGroups(ctx, 123, time.Now().Add(time.Hour)); err != nil || len(groups) != 0 {
 		t.Fatalf("completed updates staged again: %v %v", groups, err)
-	}
-	if offset, _, err := c.TelegramOffset(ctx, 123); err != nil || offset != 10 {
-		t.Fatalf("album admission or replay rewound cursor: %d %v", offset, err)
 	}
 }
 
@@ -156,7 +202,7 @@ func TestTelegramMediaGroupWaitsForMembersAddedAfterSnapshot(t *testing.T) {
 func TestTelegramMediaGroupIdentityIncludesBotAndChat(t *testing.T) {
 	c := telegramTestCatalog(t)
 	ctx := context.Background()
-	if _, _, err := c.TelegramOffset(ctx, 456); err != nil {
+	if _, err := c.TelegramPaused(ctx, 456); err != nil {
 		t.Fatal(err)
 	}
 	for _, u := range []TelegramMediaGroupUpdate{

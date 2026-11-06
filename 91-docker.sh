@@ -18,11 +18,6 @@ SELECTED_GPU="keep"
 SELECTED_GPU_DEVICE=""
 SELECTED_GPU_DEVICES="[]"
 SELECTED_GPU_LABEL=""
-TELEGRAM_MODE="keep"
-TELEGRAM_SERVICE="telegram-bot-api"
-OLD_TELEGRAM_IMAGE=""
-TELEGRAM_WAS_RUNNING=false
-TELEGRAM_ADDED=false
 FORCE_RECREATE=false
 RESTORING_DEPLOYMENT=false
 REQUESTED_IMAGE=""
@@ -96,106 +91,6 @@ def merge_deployment($template; $local):
        if ($existing.services[$service] | has($key)) then .
        else del(.services[$service][$key]) end)
   else error("Both deployment files must contain service " + $service) end;
-
-def configure_telegram($template; $effective; $credentials; $compose):
-  "telegram-bot-api" as $bot |
-  "/var/lib/telegram-bot-api" as $root |
-  ($template.services[$bot] | .environment |= environment_map) as $defaults |
-  ((.services[$bot] // $effective.services[$bot] // {}) | .environment |= environment_map) as $existing |
-  .services[$bot] = ($defaults * $existing) |
-  .services[$bot].environment.TELEGRAM_API_ID = $credentials.api_id |
-  .services[$bot].environment.TELEGRAM_API_HASH = $credentials.api_hash |
-  .services[$bot].environment.TELEGRAM_LOCAL = "1" |
-  del(.services[$bot].profiles) |
-  (($effective.services[$bot].volumes // []) | map(select(.target == $root))) as $old_storage |
-  (if ($old_storage | length) > 1 then error("Telegram needs one writable data mount")
-   elif ($old_storage | length) == 1 then $old_storage[0]
-   else
-     ([$effective.services[$service].volumes[]? | select(.target == "/opt/video-site-91/data")][0]) as $data |
-     if $data.type == "bind" then
-       {type: "bind", source: (($data.source | rtrimstr("/")) + "/telegram"), target: $root,
-        bind: {create_host_path: true}}
-     else {type: "volume", source: "91-telegram-data", target: $root} end
-   end) as $storage |
-  if $storage.read_only == true then error("Telegram data must be writable") else . end |
-  # Use the same concrete source in both namespaces. Relative paths in the
-  # mounted metadata file resolve inside the website, not on the Docker host.
-  .services[$bot].volumes =
-    ([.services[$bot].volumes[]? | select(.target != $root)] + [$storage]) |
-  if ($old_storage | length) == 0 then
-    if $storage.type == "volume" then .volumes[$storage.source] //= {} else . end
-  else . end |
-  ([$effective.services[$service].volumes[]? |
-    select(.source == $storage.source and .type == $storage.type)]) as $peers |
-  if ($peers | length) > 1 then error("Website has ambiguous Telegram shared mounts")
-  elif ($peers | length) == 0 then
-    if any(.services[$service].volumes[]?; .target == $root) then
-      error("Website Telegram mount points to different storage; fix it before enabling Telegram")
-    else .services[$service].volumes = ((.services[$service].volumes // []) + [$storage]) end
-  elif $peers[0].read_only == true then error("Website Telegram data must be writable")
-  else
-    .services[$service].volumes =
-      ([.services[$service].volumes[]? | select(.target != $peers[0].target)] + [$peers[0]])
-  end |
-  .services[$service].environment |= environment_map |
-  (.services[$service].environment.VIDEO_TELEGRAM_COMPOSE //
-   ($template.services[$service].environment | environment_map | .VIDEO_TELEGRAM_COMPOSE)) as $config |
-  .services[$service].environment.VIDEO_TELEGRAM_COMPOSE = $config |
-  ([.services[$service].volumes[]? | select(.target == $config)][0] // {}) as $mount |
-  .services[$service].volumes =
-    ([.services[$service].volumes[]? | select(.target != $config)] +
-     [($mount * {type: "bind", source: $compose, target: $config, read_only: true} |
-       del(.volume) | .bind = ((.bind // {}) * {create_host_path: false}))]) |
-  (.services[$service].depends_on // {}) as $dependencies |
-  .services[$service].depends_on =
-    (if ($dependencies | type) == "array" then
-       reduce $dependencies[] as $name ({}; .[$name] = {condition: "service_started", required: true})
-     else $dependencies end) |
-  .services[$service].depends_on[$bot] //= {condition: "service_started", required: true} |
-  (($effective.services[$service].networks // {default: null}) | keys) as $site_networks |
-  (($effective.services[$bot].networks // {default: null}) | keys) as $bot_networks |
-  if (($site_networks - $bot_networks) | length) == ($site_networks | length) then
-    .services[$bot].networks[$site_networks[0]] = null
-  else . end;
-
-def telegram_shape:
-  "telegram-bot-api" as $bot |
-  "/var/lib/telegram-bot-api" as $root |
-  (.services[$bot].volumes | map(select(.target == $root))[0]) as $storage |
-  (.services[$service].environment.VIDEO_TELEGRAM_COMPOSE) as $config |
-  {config: $config,
-   shared: [.services[$service].volumes[]? |
-     select((.source == $storage.source and .type == $storage.type) or .target == $config)],
-   storage: [.services[$bot].volumes[]? | select(.target == $root or (.target | startswith($root + "/")))],
-   port: (.services[$bot].environment.TELEGRAM_HTTP_PORT),
-   local: (.services[$bot].environment.TELEGRAM_LOCAL)};
-
-def validate_telegram:
-  "telegram-bot-api" as $bot |
-  "/var/lib/telegram-bot-api" as $root |
-  ([.services[$bot].volumes[]? | select(.target == $root)][0]) as $storage |
-  ([.services[$service].volumes[]? |
-    select(.source == $storage.source and .type == $storage.type)][0].target) as $shared |
-  if ((.services[$service].network_mode // "") != "" or
-      (.services[$bot].network_mode // "") != "") then
-    error("Telegram needs the Compose service network; remove network_mode first")
-  elif .services[$bot].command != null or .services[$bot].entrypoint != null then
-    error("Telegram Bot API uses TELEGRAM_HTTP_PORT; custom command/entrypoint is unsupported")
-  elif any((.services[$service].volumes + .services[$bot].volumes)[];
-      ((.source // "") | length == 0) or ((.source // "") | contains("$")) or (.target | contains("$"))) then
-    error("Telegram deployment requires explicit mount paths without variables")
-  elif $shared == null then error("Website and Bot API must share the same Telegram storage")
-  elif any(.services[$bot].volumes[]?; .target | startswith($root + "/")) or
-       any(.services[$service].volumes[]?; .target | startswith($shared + "/")) then
-    error("Telegram shared data cannot have independent child mounts")
-  elif ((.services[$service].environment.VIDEO_TELEGRAM_COMPOSE | startswith("/")) | not) then
-    error("VIDEO_TELEGRAM_COMPOSE must be an absolute container path")
-  elif ((.services[$bot].environment | environment_map | .TELEGRAM_HTTP_PORT |
-          tostring | test("^[0-9]+$") | not)) or
-       ((.services[$bot].environment | environment_map | .TELEGRAM_HTTP_PORT |
-          tonumber? // 0) as $port | $port < 1 or $port > 65535) then
-    error("Telegram Bot API needs a valid TELEGRAM_HTTP_PORT")
-  else . end;
 
 def configure_gpu($mode; $device; $devices; $template):
   .services[$service] |= (
@@ -298,13 +193,6 @@ Use CPU if none are usable. Requires a local Linux Docker Engine.
 Rockchip requires install/update --image stable-rockchip first.
 EOF
       ;;
-    telegram)
-      cat <<'EOF'
-Usage: bash 91-docker.sh telegram
-
-Set up the local Telegram Bot API; keep the current 91 image.
-EOF
-      ;;
     reset-password)
       cat <<'EOF'
 Usage: bash 91-docker.sh reset-password
@@ -332,7 +220,6 @@ Manage the 91 Docker deployment.
   uninstall               Remove the deployment, images, configuration and application data (you'd better know what you're doing)
   reset-password          Reset a user's password (91 must be running)
   gpu                     Configure GPU access (select if multiple)
-  telegram                Set up the local Telegram Bot API
 EOF
       ;;
   esac
@@ -343,10 +230,9 @@ parse_args() {
   if (( $# == 0 )); then usage; exit 0; fi
   case "$1" in
     -h|--help) usage; exit 0 ;;
-    install|update|uninstall|reset-password|gpu|telegram) ACTION="$1"; shift ;;
+    install|update|uninstall|reset-password|gpu) ACTION="$1"; shift ;;
     *) die "Unknown command: $1 (see --help)" ;;
   esac
-  if [[ "$ACTION" == telegram ]]; then TELEGRAM_MODE=enable; fi
   while (( $# )); do
     case "$1" in
       -h|--help) usage "$ACTION"; exit 0 ;;
@@ -455,97 +341,10 @@ uninstall_deployment() {
 
 raw_json() { compose_with "$@" -- config --format json "${RAW_OPTIONS[@]}"; }
 start_with() {
-  local -a options=() services=("$SERVICE")
-  if [[ "$ACTION" == gpu || "$ACTION" == telegram ]]; then
-    options+=(--no-deps)
-    if [[ "$TELEGRAM_MODE" == enable && "$RESTORING_DEPLOYMENT" != true ]]; then
-      services=("$TELEGRAM_SERVICE" "$SERVICE")
-    fi
-  fi
-  if [[ "$TELEGRAM_MODE" == enable || "$FORCE_RECREATE" == true ]]; then options+=(--force-recreate); fi
-  if [[ "$RESTORING_DEPLOYMENT" == true && "$TELEGRAM_MODE" == enable && "$TELEGRAM_WAS_RUNNING" != true ]]; then
-    options+=(--no-deps)
-  fi
-  compose_with "$@" -- up -d --no-build --pull never --wait --wait-timeout "$WAIT_TIMEOUT" "${options[@]}" "${services[@]}"
-}
-
-telegram_parameter() {
-  local name="$1" pattern="$2" value="$3" description="$4"
-  while [[ ! "$value" =~ $pattern ]]; do
-    [[ -t 0 ]] || die "$name is missing or invalid; set it in the environment or run interactively"
-    printf '%s (%s): ' "$name" "$description" >&2
-    IFS= read -r value || die "Telegram setup cancelled before deployment changes"
-  done
-  printf '%s' "$value"
-}
-
-telegram_credentials() {
-  local api_id api_hash
-  api_id=$(json -r '.services["telegram-bot-api"].environment.TELEGRAM_API_ID // ""' < "$1")
-  api_hash=$(json -r '.services["telegram-bot-api"].environment.TELEGRAM_API_HASH // ""' < "$1")
-  api_id=$(telegram_parameter TELEGRAM_API_ID '^[1-9][0-9]*$' "${TELEGRAM_API_ID:-$api_id}" 'from my.telegram.org')
-  api_hash=$(telegram_parameter TELEGRAM_API_HASH '^[a-fA-F0-9]{32}$' "${TELEGRAM_API_HASH:-$api_hash}" 'from my.telegram.org')
-  # Keep credentials off command arguments. Both terminal inputs remain visible.
-  printf '%s\000%s' "$api_id" "$api_hash" | json -Rs '
-    split("\u0000") | {api_id: .[0], api_hash: .[1]}
-  ' > "$WORK_DIR/telegram-credentials.json"
-}
-
-prepare_telegram() {
-  load_deployment_templates
-  local -a files=("$WORK_DIR/proposed.json" "${COMPOSE_FILES[@]:1}")
-  if ! docker cp "$TEMPLATE_CONTAINER:$TEMPLATE_DIR/tg-docker-compose.yml" "$WORK_DIR/tg-docker-compose.yml"; then
-    die "The image has no Telegram deployment template; publish an image with the updated Dockerfile first"
-  fi
-  raw_json "$WORK_DIR/tg-docker-compose.yml" > "$WORK_DIR/telegram-template.json"
-  compose_with "${files[@]}" -- config --format json > "$WORK_DIR/telegram-before.json"
-  telegram_credentials "$WORK_DIR/telegram-before.json"
-  json --slurpfile template "$WORK_DIR/telegram-template.json" \
-    --slurpfile effective "$WORK_DIR/telegram-before.json" \
-    --slurpfile credentials "$WORK_DIR/telegram-credentials.json" --arg compose "$TARGET" '
-      configure_telegram($template[0]; $effective[0]; $credentials[0]; $compose) |
-      validate_telegram
-    ' < "$WORK_DIR/proposed.json" > "$WORK_DIR/telegram-proposed.json"
-  mv -- "$WORK_DIR/telegram-proposed.json" "$WORK_DIR/proposed.json"
-}
-
-validate_and_pull_telegram() {
-  local container_ids running_ids container image previous_id
-  local -a files=("$WORK_DIR/candidate.yml" "${COMPOSE_FILES[@]:1}")
-  raw_json "$WORK_DIR/candidate.yml" > "$WORK_DIR/telegram-raw.json"
-  json -e 'validate_telegram | true' < "$WORK_DIR/telegram-raw.json" >/dev/null
-  compose_with "$WORK_DIR/candidate.yml" -- config --no-consistency --format json > "$WORK_DIR/telegram-base.json"
-  json -e --slurpfile base "$WORK_DIR/telegram-base.json" \
-    --slurpfile credentials "$WORK_DIR/telegram-credentials.json" '
-      validate_telegram |
-      (telegram_shape == ($base[0] | telegram_shape)) and
-      (.services["telegram-bot-api"].environment.TELEGRAM_API_ID == $credentials[0].api_id) and
-      (.services["telegram-bot-api"].environment.TELEGRAM_API_HASH == $credentials[0].api_hash) and
-      ((.services["telegram-bot-api"].profiles // []) | length == 0) and
-      (.services[$service].depends_on | has("telegram-bot-api")) and
-      ((.services[$service].networks | keys) - (.services["telegram-bot-api"].networks | keys) | length) <
-        (.services[$service].networks | keys | length)
-    ' < "$WORK_DIR/resolved.json" >/dev/null ||
-    die "An overlay conflicts with the Telegram deployment; put its Telegram connection and storage settings in the main Compose file"
-
-  container_ids=$(compose_with "${files[@]}" -- ps -a -q "$TELEGRAM_SERVICE")
-  if [[ "$ACTION" == install ]] || ! json -e '.services | has("telegram-bot-api")' < "$WORK_DIR/effective.json" >/dev/null; then
-    [[ -z "$container_ids" ]] || die "Existing Telegram containers have no original configuration here; restore their Compose configuration first"
-    TELEGRAM_ADDED=true
-  else
-    running_ids=$(compose_with "${files[@]}" -- ps -q "$TELEGRAM_SERVICE")
-    if [[ -n "$running_ids" ]]; then TELEGRAM_WAS_RUNNING=true; fi
-    while IFS= read -r container; do
-      [[ -n "$container" ]] || continue
-      previous_id=$(docker inspect --format '{{.Image}}' "$container")
-      [[ -z "$OLD_TELEGRAM_IMAGE" || "$OLD_TELEGRAM_IMAGE" == "$previous_id" ]] ||
-        die "Telegram replicas use different images; update them separately"
-      OLD_TELEGRAM_IMAGE="$previous_id"
-    done <<< "$container_ids"
-  fi
-  image=$(json -r '.services["telegram-bot-api"].image' < "$WORK_DIR/resolved.json")
-  log "Pulling Telegram Bot API image $image"
-  docker pull "$image"
+  local -a options=()
+  if [[ "$ACTION" == gpu ]]; then options+=(--no-deps); fi
+  if [[ "$FORCE_RECREATE" == true ]]; then options+=(--force-recreate); fi
+  compose_with "$@" -- up -d --no-build --pull never --wait --wait-timeout "$WAIT_TIMEOUT" "${options[@]}" "$SERVICE"
 }
 
 deployment_files() {
@@ -753,15 +552,6 @@ restore_deployment() {
   fi
   log "Deployment failed; restoring the original Compose configuration"
   RESTORING_DEPLOYMENT=true
-  if [[ "$TELEGRAM_MODE" == enable ]]; then
-    if [[ "$TELEGRAM_ADDED" == true ]]; then
-      compose_with "$WORK_DIR/proposed.json" "${COMPOSE_FILES[@]:1}" -- rm --stop --force "$TELEGRAM_SERVICE" ||
-        log "Could not remove the newly added Telegram container; persistent data has been kept"
-    elif [[ "$TELEGRAM_WAS_RUNNING" != true ]]; then
-      compose_with "$WORK_DIR/proposed.json" "${COMPOSE_FILES[@]:1}" -- stop "$TELEGRAM_SERVICE" ||
-        log "Could not return Telegram Bot API to its previous stopped state"
-    fi
-  fi
   if ! mv -f -- "$WORK_DIR/original.yml" "$TARGET"; then
     log "Configuration restore failed; recover from $BACKUP_FILE"
     return
@@ -770,16 +560,11 @@ restore_deployment() {
     log "No previous local image was available for container rollback"
     return
   fi
-  if ! json -n --arg image "$OLD_IMAGE" --arg bot_image "$OLD_TELEGRAM_IMAGE" '
-      {services: {($service): {image: $image}}} |
-      if $bot_image != "" then .services["telegram-bot-api"] = {image: $bot_image} else . end
+  if ! json -n --arg image "$OLD_IMAGE" '
+      {services: {($service): {image: $image}}}
     ' > "$WORK_DIR/rollback.yml"; then
     log "Could not prepare the previous image rollback"
     return
-  fi
-  if [[ "$TELEGRAM_WAS_RUNNING" == true ]]; then
-    compose_with "${COMPOSE_FILES[@]}" "$WORK_DIR/rollback.yml" -- up -d --no-build --no-deps --pull never \
-      --wait --wait-timeout "$WAIT_TIMEOUT" "$TELEGRAM_SERVICE" || log "Could not restore the previous Telegram image"
   fi
   if start_with "${COMPOSE_FILES[@]}" "$WORK_DIR/rollback.yml"; then
     log "Previous container image restored"
@@ -885,18 +670,12 @@ build_candidate() {
       (if $action == "install" or $requested_image != "" then .services[$service].image = $image else . end) |
       configure_gpu($mode; $device; $devices; $gpu[0])
     ' > "$WORK_DIR/proposed.json"
-  if [[ "$TELEGRAM_MODE" == enable ]]; then prepare_telegram; fi
   compose_with "$WORK_DIR/proposed.json" -- config --format yaml "${RAW_OPTIONS[@]}" > "$WORK_DIR/candidate.yml"
   candidate_files=("$WORK_DIR/candidate.yml" "${COMPOSE_FILES[@]:1}")
   compose_with "${candidate_files[@]}" -- config --format json > "$WORK_DIR/resolved.json"
 }
 
 validate_candidate() {
-  # Atomic replacement changes a file bind mount's inode. Restart the website
-  # when it reads Telegram deployment metadata so it receives the current file.
-  if json -e '(.services[$service].environment.VIDEO_TELEGRAM_COMPOSE // "") != ""' < "$WORK_DIR/resolved.json" >/dev/null; then
-    FORCE_RECREATE=true
-  fi
   json -e --arg image "$TARGET_IMAGE" '.services[$service].image == $image' < "$WORK_DIR/resolved.json" >/dev/null ||
     die "An overlay overrides the target image; update that overlay or its environment variable first"
   json -e --arg mode "$SELECTED_GPU" --slurpfile before "$WORK_DIR/effective.json" '
@@ -940,7 +719,6 @@ validate_candidate() {
     ' < "$WORK_DIR/resolved.json" >/dev/null ||
       die "Compose settings override the selected GPU; remove conflicting GPU mappings, visibility settings or privileged access"
   fi
-  if [[ "$TELEGRAM_MODE" == enable ]]; then validate_and_pull_telegram; fi
 }
 
 apply_candidate() {
@@ -956,7 +734,6 @@ apply_candidate() {
     cp -p -- "$TARGET" "$BACKUP_FILE"
     log "Configuration backup: $BACKUP_FILE"
     chmod --reference="$WORK_DIR/original.yml" "$WORK_DIR/candidate.yml"
-    if [[ "$TELEGRAM_MODE" == enable ]]; then chmod 600 "$WORK_DIR/candidate.yml"; fi
     chown --reference="$WORK_DIR/original.yml" "$WORK_DIR/candidate.yml"
     NEEDS_ROLLBACK=true
     mv -f -- "$WORK_DIR/candidate.yml" "$TARGET"
@@ -966,7 +743,7 @@ apply_candidate() {
     ln -- "$WORK_DIR/candidate.yml" "$TARGET" || die "Compose configuration appeared during installation; it has been left unchanged"
     NEEDS_ROLLBACK=true
   fi
-  if [[ "$ACTION" == gpu || "$ACTION" == telegram ]]; then
+  if [[ "$ACTION" == gpu ]]; then
     # Recreating a container must not follow a tag that has changed locally.
     json -n --arg image "$OLD_IMAGE" '{services: {($service): {image: $image}}}' > "$WORK_DIR/runtime-image.yml"
     start_with "${COMPOSE_FILES[@]}" "$WORK_DIR/runtime-image.yml"
@@ -976,9 +753,6 @@ apply_candidate() {
   NEEDS_ROLLBACK=false
   log "Deployment complete. Compose configuration: $TARGET"
   case "$SELECTED_GPU" in nvidia|vaapi|rockchip) log "Enable hardware acceleration in the administration panel when ready" ;; esac
-  if [[ "$TELEGRAM_MODE" == enable ]]; then
-    log "Telegram Bot API deployed. Configure the Bot Token and allowed user IDs, then enable Telegram in the 91 administration panel."
-  fi
 }
 
 apply_deployment() {

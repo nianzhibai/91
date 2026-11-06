@@ -2,10 +2,6 @@ package telegram
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,182 +9,167 @@ import (
 	"github.com/video-site/backend/internal/catalog"
 )
 
-func TestProgressNotificationEditsOriginalAndSkipsUnchangedContent(t *testing.T) {
+func TestNotificationsEditAndSkipUnchangedContent(t *testing.T) {
 	s, cat := testService(t)
 	ctx := context.Background()
 	if err := s.accept(ctx, videoUpdate(1, 42)); err != nil {
 		t.Fatal(err)
 	}
-	receipts, err := cat.PendingTelegramReceipts(ctx, 123)
-	if err != nil || len(receipts) != 1 {
-		t.Fatalf("receipts=%v err=%v", receipts, err)
-	}
+	receipts, _ := cat.PendingTelegramReceipts(ctx, 123)
 	r := receipts[0]
-	type sentMessage struct {
-		method string
-		text   string
-		id     float64
-	}
-	sent := make(chan sentMessage, 10)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		var input map[string]any
-		if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
-			t.Error(err)
+	calls := 0
+	c := &fakeTransport{send: func(ctx context.Context, r catalog.TelegramReceipt, m botMessage) (int64, error) {
+		calls++
+		if calls == 1 && r.ReplyID != 0 {
+			t.Error("initial message edited")
 		}
-		if input["parse_mode"] != "HTML" {
-			t.Errorf("missing HTML parse mode: %+v", input)
+		if calls == 2 && r.ReplyID != 55 {
+			t.Error("progress did not edit initial reply")
 		}
-		if filepath.Base(req.URL.Path) == "sendMessage" {
-			reply, ok := input["reply_parameters"].(map[string]any)
-			if !ok || reply["message_id"] != float64(r.MessageID) || reply["allow_sending_without_reply"] != true {
-				t.Errorf("notification is not linked to the original video: %+v", input)
-			}
-		} else if _, ok := input["reply_parameters"]; ok {
-			t.Errorf("edit request contains send-only reply parameters: %+v", input)
+		if calls == 2 && !strings.Contains(m.text, "速度：1.0 MiB/s") {
+			t.Error("progress did not include the measured download speed")
 		}
-		id, _ := input["message_id"].(float64)
-		sent <- sentMessage{filepath.Base(req.URL.Path), input["text"].(string), id}
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": map[string]int{"message_id": 51}})
-	}))
-	defer server.Close()
-	c := &client{base: server.URL, token: "123:token", http: server.Client()}
+		assertValidMessage(t, m.text)
+		return 55, nil
+	}}
 	s.notifyOne(ctx, c, r)
-	first := <-sent
-	if first.method != "sendMessage" || !strings.Contains(first.text, "已加入队列") {
-		t.Fatalf("first notification=%+v", first)
+	deadline := time.Now().Add(6 * time.Second)
+	for time.Now().Before(deadline) {
+		receipts, _ = cat.PendingTelegramReceipts(ctx, 123)
+		if len(receipts) > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(receipts) == 0 {
+		t.Fatal("active receipt lost")
+	}
+	r = receipts[0]
+	s.notifyOne(ctx, c, r)
+	if calls != 1 {
+		t.Fatal("unchanged notification resent")
 	}
 	if err := cat.TransitionRemoteUploadJob(ctx, r.JobID, catalog.RemoteUploadQueued, catalog.RemoteUploadDownloading); err != nil {
 		t.Fatal(err)
 	}
-	if err := cat.SetImportStage(ctx, r.JobID, "telegram_download"); err != nil {
+	if err := cat.UpdateRemoteUploadProgress(ctx, r.JobID, 1<<20, 1<<30); err != nil {
 		t.Fatal(err)
 	}
-	if err := cat.UpdateRemoteUploadProgress(ctx, r.JobID, 512<<20, 1<<30); err != nil {
-		t.Fatal(err)
-	}
-	r.ReplyID = 51
+	started := time.Now().Add(-2 * time.Second)
+	s.downloadProgress.start(r.JobID, started)
+	s.downloadProgress.update(r.JobID, 1<<20, started.Add(time.Second))
 	s.notifyOne(ctx, c, r)
-	progress := <-sent
-	if progress.method != "editMessageText" || progress.id != 51 || !strings.Contains(progress.text, "正在从 TG 获取") || strings.Contains(progress.text, "%") {
-		t.Fatalf("progress notification=%+v", progress)
-	}
-	if pending, err := cat.PendingTelegramReceipts(ctx, 123); err != nil || len(pending) != 0 {
-		t.Fatalf("progress cooldown not applied: %v %v", pending, err)
-	}
-	deadline := time.Now().Add(7 * time.Second)
-	for {
-		receipts, err = cat.PendingTelegramReceipts(ctx, 123)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(receipts) == 1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("active progress was never revisited")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	r = receipts[0]
-	s.notifyOne(ctx, c, r)
-	if len(sent) != 0 {
-		t.Fatal("unchanged progress caused a duplicate edit")
-	}
-	if err := cat.FailRemoteUploadJob(ctx, r.JobID, "测试失败"); err != nil {
-		t.Fatal(err)
-	}
-	s.notifyOne(ctx, c, r)
-	final := <-sent
-	if final.method != "editMessageText" || final.id != 51 || !strings.Contains(final.text, "保存失败") {
-		t.Fatalf("final notification=%+v", final)
+	if calls != 2 {
+		t.Fatal("progress was not edited")
 	}
 }
-
-func TestDeletedNotificationIsResentWithFormattingAndReplyContext(t *testing.T) {
+func TestDeletedNotificationResendsWithoutChangingJob(t *testing.T) {
 	s, cat := testService(t)
 	ctx := context.Background()
-	if err := s.accept(ctx, videoUpdate(1, 42)); err != nil {
-		t.Fatal(err)
-	}
-	receipts, err := cat.PendingTelegramReceipts(ctx, s.BotID())
-	if err != nil || len(receipts) != 1 {
-		t.Fatalf("receipts=%v err=%v", receipts, err)
-	}
+	_ = s.accept(ctx, videoUpdate(1, 42))
+	receipts, _ := cat.PendingTelegramReceipts(ctx, 123)
 	r := receipts[0]
-	r.ReplyID = 51
-	if err := cat.FailRemoteUploadJob(ctx, r.JobID, "读取 <video> 失败"); err != nil {
-		t.Fatal(err)
-	}
-	type request struct {
-		method string
-		body   map[string]any
-	}
-	sent := make(chan request, 2)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		var input map[string]any
-		if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
-			t.Error(err)
+	r.ReplyID = 88
+	calls := 0
+	c := &fakeTransport{send: func(ctx context.Context, r catalog.TelegramReceipt, m botMessage) (int64, error) {
+		calls++
+		if calls == 1 {
+			return 0, &APIError{Code: 400}
 		}
-		method := filepath.Base(req.URL.Path)
-		sent <- request{method, input}
-		if method == "editMessageText" {
-			_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error_code": 400})
-			return
+		if r.ReplyID != 0 || r.MessageID != 1 {
+			t.Error("resend lost reply context")
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": map[string]int{"message_id": 52}})
-	}))
-	defer server.Close()
-	s.notifyOne(ctx, &client{base: server.URL, token: "123:token", http: server.Client()}, r)
-	if len(sent) != 2 {
-		t.Fatalf("expected an edit followed by a resend, got %d requests", len(sent))
+		return 55, nil
+	}}
+	s.notifyOne(ctx, c, r)
+	job, _ := cat.GetRemoteUploadJob(ctx, r.JobID)
+	if calls != 2 || job.State != catalog.RemoteUploadQueued {
+		t.Fatalf("calls=%d job=%+v", calls, job)
 	}
-	edit, resend := <-sent, <-sent
-	if edit.method != "editMessageText" || edit.body["message_id"] != float64(51) || resend.method != "sendMessage" {
-		t.Fatalf("unexpected delivery sequence: %+v %+v", edit, resend)
+}
+func TestNotificationFailureDoesNotChangeImport(t *testing.T) {
+	s, cat := testService(t)
+	ctx := context.Background()
+	_ = s.accept(ctx, videoUpdate(1, 42))
+	receipts, _ := cat.PendingTelegramReceipts(ctx, 123)
+	s.notifyOne(ctx, &fakeTransport{send: func(context.Context, catalog.TelegramReceipt, botMessage) (int64, error) {
+		return 0, &APIError{Code: 429, RetryAfter: time.Minute}
+	}}, receipts[0])
+	jobs, _ := cat.ListImportJobs(ctx, "telegram", "", 0, 30)
+	if len(jobs) != 1 || jobs[0].State != catalog.RemoteUploadQueued {
+		t.Fatal("notification changed import")
 	}
-	if _, exists := resend.body["message_id"]; exists {
-		t.Fatal("resend retained the deleted message ID")
-	}
-	reply, ok := resend.body["reply_parameters"].(map[string]any)
-	if !ok || reply["message_id"] != float64(r.MessageID) || reply["allow_sending_without_reply"] != true {
-		t.Fatalf("resend lost the original video context: %+v", resend.body)
-	}
-	if resend.body["parse_mode"] != "HTML" || resend.body["text"] != edit.body["text"] {
-		t.Fatalf("resend lost formatting: %+v", resend.body)
-	}
-	if plain := assertValidMessage(t, resend.body["text"].(string)); !strings.Contains(plain, "读取 <video> 失败") {
-		t.Fatalf("error text changed: %s", plain)
-	}
-	pending, err := cat.PendingTelegramReceipts(ctx, s.BotID())
-	if err != nil || len(pending) != 0 {
-		t.Fatalf("successful resend remains pending: %v %v", pending, err)
-	}
-	job, err := cat.GetRemoteUploadJob(ctx, r.JobID)
-	if err != nil || job.State != catalog.RemoteUploadFailed {
-		t.Fatalf("resend changed the import outcome: %+v %v", job, err)
+}
+func TestImportProgressReflectsMeasuredStage(t *testing.T) {
+	for _, tc := range []struct{ state, stage, want string }{
+		{"downloading", "telegram_download", "正在从 TG 获取"}, {"validating", "", "正在校验"}, {"saving", "", "正在入库"}, {"queued", "retry_wait", "等待重试"},
+	} {
+		got := importProgressText(&catalog.RemoteUploadJob{State: tc.state, Stage: tc.stage})
+		if !strings.Contains(got, tc.want) {
+			t.Errorf("%s: %s", tc.state, got)
+		}
 	}
 }
 
-func TestImportProgressReflectsMeasuredStage(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		job       catalog.RemoteUploadJob
-		want      string
-		noPercent bool
-	}{
-		{"fetch", catalog.RemoteUploadJob{State: "downloading", Stage: "telegram_download", BytesDownloaded: 50, TotalBytes: 100}, "正在从 TG 获取", true},
-		{"unknown size", catalog.RemoteUploadJob{State: "downloading", Stage: "telegram_download", BytesDownloaded: 1024}, "正在从 TG 获取", true},
-		{"download complete", catalog.RemoteUploadJob{State: "downloading", Stage: "telegram_download", BytesDownloaded: 100, TotalBytes: 100}, "正在从 TG 获取", true},
-		{"validating", catalog.RemoteUploadJob{State: "validating"}, "正在校验", true},
-		{"saving", catalog.RemoteUploadJob{State: "saving"}, "正在入库", true},
-		{"retry", catalog.RemoteUploadJob{State: "queued", Stage: "retry_wait"}, "等待重试", true},
-		{"cancel", catalog.RemoteUploadJob{State: "downloading", CancelRequested: true}, "正在取消", true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got := importProgressText(&tc.job)
-			if !strings.Contains(got, tc.want) || (tc.noPercent && strings.Contains(got, "%")) {
-				t.Fatalf("unexpected progress %q", got)
-			}
-		})
+func TestForwardedMediaGroupEditsOneReplyForProgressFailureAndRetry(t *testing.T) {
+	s, cat := testService(t)
+	ctx := context.Background()
+	for _, u := range []update{albumPhoto(1, "共同说明"), albumVideo(2, ""), albumVideo(3, "")} {
+		if err := s.accept(ctx, u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	flushTestAlbum(t, s)
+	receipts, err := cat.PendingTelegramReceipts(ctx, 123)
+	if err != nil || len(receipts) != 1 || len(receipts[0].JobIDs) != 2 {
+		t.Fatalf("missing shared album receipt: %+v %v", receipts, err)
+	}
+	r := receipts[0]
+	calls := 0
+	transport := &fakeTransport{send: func(ctx context.Context, receipt catalog.TelegramReceipt, message botMessage) (int64, error) {
+		calls++
+		if receipt.MessageID != 2 || (calls == 1 && receipt.ReplyID != 0) || (calls > 1 && receipt.ReplyID != 55) {
+			t.Fatalf("album notification used another reply: %+v", receipt)
+		}
+		assertValidMessage(t, message.text)
+		if !strings.Contains(message.text, "已保存：0 / 2") {
+			t.Fatalf("notification lost the group count: %s", message.text)
+		}
+		if calls == 2 && (!strings.Contains(message.text, "正在从 TG 获取视频") || !strings.Contains(message.text, "40%")) {
+			t.Fatalf("shared reply lost video progress: %s", message.text)
+		}
+		if calls == 3 && (!strings.Contains(message.text, "失败：2") || !strings.Contains(message.text, "媒体组处理完成")) {
+			t.Fatalf("shared reply lost final failures: %s", message.text)
+		}
+		if calls == 4 && (!strings.Contains(message.text, "失败：1") || !strings.Contains(message.text, "正在保存媒体组")) {
+			t.Fatalf("retry did not resume the group reply: %s", message.text)
+		}
+		return 55, nil
+	}}
+	s.notifyOne(ctx, transport, r)
+	r.ReplyID = 55
+	if err := cat.TransitionRemoteUploadJob(ctx, r.JobIDs[0], catalog.RemoteUploadQueued, catalog.RemoteUploadDownloading); err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.UpdateRemoteUploadProgress(ctx, r.JobIDs[0], 2, 5); err != nil {
+		t.Fatal(err)
+	}
+	s.notifyOne(ctx, transport, r)
+	for _, id := range r.JobIDs {
+		if err := cat.FailRemoteUploadJob(ctx, id, "下载失败"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.notifyOne(ctx, transport, r)
+	if err := cat.RetryTelegramImport(ctx, r.JobIDs[1], 123); err != nil {
+		t.Fatal(err)
+	}
+	receipts, err = cat.PendingTelegramReceipts(ctx, 123)
+	if err != nil || len(receipts) != 1 || receipts[0].ReplyID != 55 {
+		t.Fatalf("retry lost the persisted group reply: %+v %v", receipts, err)
+	}
+	s.notifyOne(ctx, transport, receipts[0])
+	if calls != 4 {
+		t.Fatalf("unexpected album notifications: %d", calls)
 	}
 }

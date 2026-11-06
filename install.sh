@@ -108,26 +108,13 @@ The native service may be stopped.
   --config PATH  Existing configuration file; defaults to the installation config
 EOF
       ;;
-    telegram)
-      cat <<EOF
-Usage: 91 telegram
-
-Configure and start the local Telegram Bot API, then restart native 91.
-Requires a local Linux Docker Engine, Docker Compose and Python 3.
-Configuration: $INSTALL_PATH/telegram.yml (backed up before changes).
-
-Provide TELEGRAM_API_ID and TELEGRAM_API_HASH through the environment,
-reuse existing credentials, or enter them interactively (from my.telegram.org).
-Set the Bot Token, allowed user IDs and Telegram switch in the website panel.
-EOF
-      ;;
     uninstall)
       cat <<EOF
 Usage: 91 uninstall
 
 Remove the native service, Bot API resources and management commands.
 Permanently delete the installation, configured application data and database,
-including Telegram data in custom locations. Keep shared Docker resources.
+including Telegram videos and sessions stored in the application data directory.
 EOF
       ;;
     *)
@@ -143,7 +130,6 @@ Manage the native (systemd) deployment of 91.
   stop            Stop service
   status          Show service status
   logs            Follow service logs
-  telegram        Set up the local Telegram Bot API
   reset-password  Reset a user's password
   uninstall       Uninstall 91 and related services
 
@@ -264,7 +250,7 @@ backup_install_files() {
   local backup="$1"
   mkdir -p "$backup"
   cp -a "$INSTALL_PATH/server" "$backup/server"
-  for item in dist config.example.yaml config.yaml telegram.example.yml telegram.yml .version; do
+  for item in dist config.example.yaml config.yaml .version; do
     if [[ -e "$INSTALL_PATH/$item" ]]; then
       cp -a "$INSTALL_PATH/$item" "$backup/$item"
     fi
@@ -275,7 +261,7 @@ restore_install_files() {
   local backup="$1"
   mkdir -p "$INSTALL_PATH"
   cp -a "$backup/server" "$INSTALL_PATH/server"
-  for item in dist config.example.yaml config.yaml telegram.example.yml telegram.yml .version; do
+  for item in dist config.example.yaml config.yaml .version; do
     rm -rf "${INSTALL_PATH:?}/$item"
     if [[ -e "$backup/$item" ]]; then
       cp -a "$backup/$item" "$INSTALL_PATH/$item"
@@ -288,12 +274,6 @@ prepare_config() {
   local cfg="$INSTALL_PATH/config.yaml"
   local example="$INSTALL_PATH/config.example.yaml"
   mkdir -p "$INSTALL_PATH/data"
-
-  # Deployment credentials and mounts belong to the user, not the release.
-  if [[ ! -f "$INSTALL_PATH/telegram.yml" ]]; then
-    cp "$INSTALL_PATH/telegram.example.yml" "$INSTALL_PATH/telegram.yml"
-    chmod 600 "$INSTALL_PATH/telegram.yml"
-  fi
 
   if [[ ! -f "$cfg" ]]; then
     cp "$example" "$cfg"
@@ -565,7 +545,7 @@ fetch_and_unpack() {
     return 1
   fi
   root="$tmp/${APP_NAME}-linux-${ARCH}"
-  if [[ ! -f "$root/server" || ! -d "$root/dist" || ! -f "$root/config.example.yaml" || ! -f "$root/telegram.example.yml" ]]; then
+  if [[ ! -f "$root/server" || ! -d "$root/dist" || ! -f "$root/config.example.yaml" ]]; then
     warn "release package layout is invalid"
     rm -rf "$tmp"
     return 1
@@ -576,7 +556,6 @@ fetch_and_unpack() {
   rm -rf "$INSTALL_PATH/dist"
   cp -R "$root/dist" "$INSTALL_PATH/dist"
   cp "$root/config.example.yaml" "$INSTALL_PATH/config.example.yaml"
-  cp "$root/telegram.example.yml" "$INSTALL_PATH/telegram.example.yml"
   chmod +x "$INSTALL_PATH/server"
   rm -rf "$tmp"
 }
@@ -818,9 +797,8 @@ uninstall_app() (
       die "Could not resolve storage paths; check the configuration and server storage-paths support"
   fi
   validate_uninstall_paths "$work_dir/paths.json" "$storage_report"
-  remove_telegram "$work_dir/paths.json"
 
-  # Only this systemd service and the explicitly configured Bot API are owned.
+  # Stop the service before removing its managed data.
   systemctl disable --now "${SERVICE_NAME}.service" || die "could not stop and disable ${SERVICE_NAME}.service; installation has been kept"
   python3 - "$work_dir/paths.json" > "$work_dir/paths" <<'PY'
 import json
@@ -839,268 +817,6 @@ PY
   systemctl daemon-reload
   rm -f "$COMMAND_LINK" "$APP_COMMAND_LINK" "$MANAGER_PATH"
   log "Uninstall complete: 91 and its application data removed"
-)
-
-require_local_docker() {
-  command -v docker >/dev/null 2>&1 || die "docker is required; install it before managing Telegram"
-  docker compose version >/dev/null 2>&1 || die "Docker Compose is unavailable; install the Compose plugin"
-  local operating_system endpoint="${DOCKER_HOST:-}"
-  operating_system=$(docker info --format '{{.OperatingSystem}}') || die "Cannot connect to Docker; check that the Engine is running"
-  if [[ -n "${DOCKER_CONTEXT:-}" || -z "$endpoint" ]]; then
-    endpoint=$(docker context inspect --format '{{.Endpoints.docker.Host}}') || die "Cannot read the Docker context"
-  fi
-  [[ "$(uname -s)" == Linux && "$endpoint" == unix://* && "${operating_system,,}" != *"docker desktop"* ]] ||
-    die "Telegram for native 91 requires a local Linux Docker Engine"
-}
-
-remove_telegram() (
-  local compose_file="$INSTALL_PATH/telegram.yml"
-  local cleanup_plan="$1"
-  [[ -e "$compose_file" || -L "$compose_file" ]] || return 0
-  [[ -f "$compose_file" && ! -L "$compose_file" ]] || die "telegram.yml must be a regular file, not a symlink"
-
-  # An untouched template must not make Docker a requirement for uninstall.
-  if [[ -f "$INSTALL_PATH/telegram.example.yml" ]] && cmp -s -- "$compose_file" "$INSTALL_PATH/telegram.example.yml" &&
-    { ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; }; then
-    log "Telegram template is unconfigured; skipping Bot API cleanup"
-    return 0
-  fi
-  require_local_docker
-  command -v python3 >/dev/null 2>&1 || die "python3 is required to read the Telegram deployment; installation kept"
-  umask 077
-  local work_dir project network network_id attached image consumers volume
-  local -a options containers networks images volumes
-  work_dir=$(mktemp -d "$INSTALL_PATH/.telegram-uninstall.XXXXXX")
-  trap 'rm -rf -- "$work_dir"' EXIT
-  options=(--project-directory "$INSTALL_PATH" -f "$compose_file")
-  docker compose "${options[@]}" config --format json > "$work_dir/deployment.json"
-  # Resolve the project once; later reads must not follow concurrent file edits.
-  options=(--project-directory "$INSTALL_PATH" -f "$work_dir/deployment.json")
-  python3 - "$work_dir/deployment.json" "$work_dir/data-paths.json" "$work_dir/volumes.json" > "$work_dir/networks" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1]) as stream:
-    document = json.load(stream)
-services = document.get("services", {})
-bot = services.get("telegram-bot-api")
-if not bot or "video-site-91" in services:
-    sys.exit("telegram.yml must define a native Bot API deployment; installation kept")
-root = "/var/lib/telegram-bot-api"
-paths = [mount["source"] for mount in bot.get("volumes", [])
-         if mount.get("type") == "bind" and
-         (mount.get("target") == root or mount.get("target", "").startswith(root + "/"))]
-with open(sys.argv[2], "w") as stream:
-    json.dump({"directories": paths, "files": []}, stream)
-definitions = document.get("volumes", {})
-external = {value["name"] for value in definitions.values() if value.get("external")}
-volumes = {definitions[mount["source"]]["name"] for mount in bot.get("volumes", [])
-           if mount.get("type") == "volume" and mount.get("source") in definitions}
-with open(sys.argv[3], "w") as stream:
-    json.dump({"candidates": sorted(volumes - external), "external": sorted(external)}, stream)
-sys.stdout.write(document["name"] + "\0")
-for name in bot.get("networks", {}):
-    if not document.get("networks", {}).get(name, {}).get("external", False):
-        sys.stdout.write(name + "\0")
-PY
-  validate_uninstall_paths "$cleanup_plan" "$work_dir/data-paths.json"
-  mapfile -d '' -t networks < "$work_dir/networks"
-  project="${networks[0]}"
-  docker compose "${options[@]}" ps -a -q telegram-bot-api > "$work_dir/containers"
-  mapfile -t containers < "$work_dir/containers"
-  images=()
-  if (( ${#containers[@]} )); then
-    docker inspect "${containers[@]}" > "$work_dir/containers.json"
-    python3 - "$work_dir/containers.json" "$INSTALL_PATH" "$compose_file" "$project" "$work_dir/actual-data-paths.json" "$work_dir/volumes.json" > "$work_dir/images" <<'PY'
-import json
-import os
-import sys
-
-with open(sys.argv[1]) as stream:
-    containers = json.load(stream)
-directory, filename = map(os.path.realpath, sys.argv[2:4])
-images = set()
-paths = set()
-with open(sys.argv[6]) as stream:
-    volumes = json.load(stream)
-volume_names = set(volumes["candidates"])
-for container in containers:
-    labels = container.get("Config", {}).get("Labels", {})
-    files = labels.get("com.docker.compose.project.config_files", "").split(",")
-    if (labels.get("com.docker.compose.project") != sys.argv[4]
-            or labels.get("com.docker.compose.service") != "telegram-bot-api"
-            or os.path.realpath(labels.get("com.docker.compose.project.working_dir", "")) != directory
-            or filename not in [os.path.realpath(path) for path in files if path]):
-        sys.exit("Bot API container belongs to another deployment; installation kept")
-    images.add(container["Image"])
-    for mount in container.get("Mounts", []):
-        target = mount.get("Destination", "")
-        if mount.get("Type") == "bind" and (target == "/var/lib/telegram-bot-api" or target.startswith("/var/lib/telegram-bot-api/")):
-            paths.add(mount["Source"])
-        if mount.get("Type") == "volume":
-            volume_names.add(mount["Name"])
-with open(sys.argv[5], "w") as stream:
-    json.dump({"directories": sorted(paths), "files": []}, stream)
-volumes["candidates"] = sorted(volume_names - set(volumes["external"]))
-with open(sys.argv[6], "w") as stream:
-    json.dump(volumes, stream)
-for image in sorted(images):
-    print(image)
-PY
-    validate_uninstall_paths "$cleanup_plan" "$work_dir/actual-data-paths.json"
-    mapfile -t images < "$work_dir/images"
-  fi
-
-  log "Removing this installation's Telegram Bot API"
-  if (( ${#containers[@]} )); then
-    docker stop "${containers[@]}" || die "Bot API stop failed; installation kept for retry"
-    docker rm --volumes "${containers[@]}" || die "Bot API removal failed; installation kept for retry"
-  fi
-  docker volume ls --filter "label=com.docker.compose.project=$project" --quiet > "$work_dir/project-volumes"
-  python3 - "$work_dir/volumes.json" "$work_dir/project-volumes" > "$work_dir/owned-volumes" <<'PY'
-import json
-import sys
-with open(sys.argv[1]) as stream:
-    candidates = set(json.load(stream)["candidates"])
-with open(sys.argv[2]) as stream:
-    owned = set(stream.read().splitlines())
-for name in sorted(candidates & owned):
-    print(name)
-PY
-  mapfile -t volumes < "$work_dir/owned-volumes"
-  for volume in "${volumes[@]}"; do
-    consumers=$(docker ps -a --filter "volume=$volume" --quiet)
-    if [[ -n "$consumers" ]]; then
-      log "Keeping shared Bot API volume $volume"
-      continue
-    fi
-    docker volume rm "$volume" || die "Bot API volume removal failed; installation kept for retry"
-  done
-  for network in "${networks[@]:1}"; do
-    docker network ls --filter "label=com.docker.compose.project=$project" \
-      --filter "label=com.docker.compose.network=$network" --quiet > "$work_dir/network-ids"
-    while IFS= read -r network_id; do
-      [[ -n "$network_id" ]] || continue
-      attached=$(docker network inspect "$network_id" --format '{{len .Containers}}')
-      if [[ "$attached" != 0 ]]; then
-        log "Keeping shared Bot API network $network_id"
-        continue
-      fi
-      docker network rm "$network_id" || die "Bot API network removal failed; installation kept for retry"
-    done < "$work_dir/network-ids"
-  done
-  for image in "${images[@]}"; do
-    consumers=$(docker ps -a --filter "ancestor=$image" --quiet)
-    if [[ -n "$consumers" ]]; then
-      log "Keeping shared Bot API image $image"
-      continue
-    fi
-    docker image rm "$image" || warn "Could not remove Bot API image $image; keeping the image cache"
-  done
-)
-
-telegram_parameter() {
-  local name="$1" pattern="$2" value="$3"
-  while [[ ! "$value" =~ $pattern ]]; do
-    [[ -t 0 ]] || die "$name is missing or invalid; set it in the environment or run interactively"
-    read -r -p "$name (from my.telegram.org): " value || die "Telegram setup cancelled before deployment changes"
-  done
-  printf '%s' "$value"
-}
-
-setup_telegram() (
-  # Keep temporary credentials private and cleanup local to this action.
-  umask 077
-  [[ -x "$INSTALL_PATH/server" && -f "$INSTALL_PATH/config.yaml" ]] || die "Native installation is incomplete at $INSTALL_PATH; run install.sh"
-  local command work_dir source compose_file api_id api_hash backup
-  local -a credentials compose_options
-  for command in python3 flock; do
-    command -v "$command" >/dev/null 2>&1 || die "$command is required; install it before running 91 telegram"
-  done
-  require_local_docker
-
-  local telegram_lock
-  exec {telegram_lock}< "$INSTALL_PATH"
-  flock -n "$telegram_lock" || die "Another deployment operation is running; retry later"
-  compose_file="$INSTALL_PATH/telegram.yml"
-  source="$compose_file"
-  work_dir=$(mktemp -d "$INSTALL_PATH/.telegram-setup.XXXXXX")
-  trap 'rm -rf -- "$work_dir"' EXIT
-  if [[ -f "$compose_file" ]]; then
-    [[ ! -L "$compose_file" ]] || die "telegram.yml must be a regular file, not a symlink"
-    cp -p -- "$compose_file" "$work_dir/original.yml"
-    source="$work_dir/original.yml"
-  else
-    [[ ! -e "$compose_file" && ! -L "$compose_file" ]] || die "telegram.yml must be a regular file"
-    source="$INSTALL_PATH/telegram.example.yml"
-    [[ -f "$source" ]] || die "Missing $source; run 91 update"
-  fi
-  compose_options=(--project-directory "$INSTALL_PATH")
-  docker compose "${compose_options[@]}" -f "$source" config --format json > "$work_dir/current.json"
-  python3 - "$work_dir/current.json" > "$work_dir/credentials" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1]) as stream:
-    document = json.load(stream)
-services = document.get("services", {})
-bot = services.get("telegram-bot-api")
-if not bot or "video-site-91" in services:
-    sys.exit("telegram.yml must define a native Bot API deployment; use 91-docker.sh for Docker deployments")
-if bot.get("network_mode") or bot.get("command") is not None or bot.get("entrypoint") is not None:
-    sys.exit("Bot API network_mode, command and entrypoint overrides are unsupported")
-root = "/var/lib/telegram-bot-api"
-mounts = [mount for mount in bot.get("volumes", []) if mount.get("target", "").rstrip("/") == root]
-if (len(mounts) != 1 or mounts[0].get("type") != "bind" or mounts[0].get("read_only")
-        or not mounts[0].get("source", "").startswith("/") or "$" in mounts[0].get("source", "")
-        or any(mount.get("target", "").startswith(root + "/") for mount in bot.get("volumes", []))):
-    sys.exit("Bot API needs one writable host directory at /var/lib/telegram-bot-api. Use an absolute path without variables or child mounts")
-environment = bot.get("environment", {})
-port = str(environment.get("TELEGRAM_HTTP_PORT", ""))
-if not port.isdigit() or not 1 <= int(port) <= 65535:
-    sys.exit("Set TELEGRAM_HTTP_PORT to an integer from 1 to 65535 in telegram.yml")
-ports = [mapping for mapping in bot.get("ports", [])
-         if str(mapping.get("target")) == port and mapping.get("protocol", "tcp") == "tcp"]
-if (len(ports) != 1 or not str(ports[0].get("published", "")).isdigit()
-        or not 1 <= int(ports[0]["published"]) <= 65535):
-    sys.exit("Bot API needs one valid TCP host port mapping for TELEGRAM_HTTP_PORT")
-for key in ("TELEGRAM_API_ID", "TELEGRAM_API_HASH"):
-    value = environment.get(key) or ""
-    sys.stdout.write(str(value) + "\0")
-PY
-  mapfile -d '' -t credentials < "$work_dir/credentials"
-  api_id=$(telegram_parameter TELEGRAM_API_ID '^[1-9][0-9]*$' "${TELEGRAM_API_ID:-${credentials[0]}}")
-  api_hash=$(telegram_parameter TELEGRAM_API_HASH '^[a-fA-F0-9]{32}$' "${TELEGRAM_API_HASH:-${credentials[1]}}")
-  # Pass credentials over stdin, never in process arguments or diagnostic logs.
-  printf '%s\000%s' "$api_id" "$api_hash" | python3 -c '
-import json, sys
-with open(sys.argv[1]) as stream:
-    document = json.load(stream)
-api_id, api_hash = sys.stdin.read().split("\0")
-environment = document["services"]["telegram-bot-api"].setdefault("environment", {})
-environment.update(TELEGRAM_API_ID=api_id, TELEGRAM_API_HASH=api_hash, TELEGRAM_LOCAL="1")
-with open(sys.argv[2], "w") as stream:
-    json.dump(document, stream)
-' "$work_dir/current.json" "$work_dir/proposed.json"
-  docker compose "${compose_options[@]}" -f "$work_dir/proposed.json" config > "$work_dir/candidate.yml"
-
-  if [[ -f "$work_dir/original.yml" ]]; then
-    cmp -s -- "$compose_file" "$work_dir/original.yml" || die "telegram.yml changed during setup; retry with the updated file"
-    if ! cmp -s -- "$compose_file" "$work_dir/candidate.yml"; then
-      backup=$(mktemp "$compose_file.bak-$(date -u +%Y%m%dT%H%M%S).XXXXXX")
-      cp -- "$compose_file" "$backup"
-      log "Configuration backup: $backup"
-    fi
-    mv -f -- "$work_dir/candidate.yml" "$compose_file"
-  else
-    ln -- "$work_dir/candidate.yml" "$compose_file" || die "telegram.yml was created by another process; retry"
-  fi
-  log "Starting Telegram Bot API"
-  docker compose "${compose_options[@]}" -f "$compose_file" up -d --no-deps --no-build --pull missing \
-    --wait --wait-timeout "$SERVICE_READY_TIMEOUT" telegram-bot-api ||
-    die "Bot API failed to start; config kept at $compose_file. Native 91 was not restarted"
-  restart_service_ready || die "Bot API started, but native 91 failed its readiness check. See '91 status' and '91 logs'"
-  log "Bot API is running. Set Bot Token and allowed user IDs in the admin panel, then enable Telegram and test the connection"
 )
 
 reset_password() {
@@ -1134,10 +850,9 @@ show_menu() {
     echo "6) Update 91"
     echo "7) Reset user password"
     echo "8) Uninstall 91 and related services"
-    echo "9) Set up Telegram Bot API"
     echo "0) Exit"
     echo
-    read -r -p "Select an option [0-9]: " choice || return 0
+    read -r -p "Select an option [0-8]: " choice || return 0
 
     case "$choice" in
       1) action=status ;;
@@ -1148,9 +863,8 @@ show_menu() {
       6) action=update ;;
       7) action=reset-password ;;
       8) action=uninstall ;;
-      9) action=telegram ;;
       0) return 0 ;;
-      *) echo "Invalid option. Enter 0-9."; continue ;;
+      *) echo "Invalid option. Enter 0-8."; continue ;;
     esac
 
     # A separate shell keeps action failures from exiting the menu, while each
@@ -1184,7 +898,7 @@ main() {
   fi
 
   case "$action" in
-    install|start|stop|restart|status|logs|update|telegram|uninstall|reset-password|-h|--help|help) ;;
+    install|start|stop|restart|status|logs|update|uninstall|reset-password|-h|--help|help) ;;
     *)
       warn "unknown command: $action"
       usage >&2
@@ -1265,10 +979,6 @@ main() {
     reset-password)
       need_root "$action" "$@"
       reset_password "$@"
-      ;;
-    telegram)
-      need_root "$action" "$@"
-      setup_telegram
       ;;
     uninstall)
       need_root "$action" "$@"

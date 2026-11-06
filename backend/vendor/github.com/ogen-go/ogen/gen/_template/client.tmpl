@@ -1,0 +1,750 @@
+{{ define "client" }}
+{{- /*gotype: github.com/ogen-go/ogen/gen.TemplateConfig*/ -}}
+{{ template "header" $ }}
+
+{{- if $.RequestOptionsEnabled }}
+type requestConfig struct {
+	Client       ht.Client
+	ServerURL    *url.URL
+	EditRequest  func(req *http.Request) error
+	EditResponse func(resp *http.Response) error
+	{{- if $.AnyClientSSEEnabled }}
+	sseCfg       sseClientConfig
+	{{- end }}
+}
+
+func (cfg *requestConfig) setDefaults(c baseClient) {
+	if cfg.Client == nil {
+		cfg.Client = c.cfg.Client
+	}
+	{{- if $.AnyClientSSEEnabled }}
+	cfg.sseCfg = c.cfg.sseCfg
+	{{- end }}
+}
+
+func (cfg *requestConfig) onRequest(req *http.Request) error {
+	if fn := cfg.EditRequest; fn != nil {
+		return fn(req)
+	}
+	return nil
+}
+
+func (cfg *requestConfig) onResponse(resp *http.Response) error {
+	if fn := cfg.EditResponse; fn != nil {
+		return fn(resp)
+	}
+	return nil
+}
+
+// RequestOption defines options for request.
+type RequestOption func(cfg *requestConfig)
+
+// WithRequestClient sets client for request.
+func WithRequestClient(client ht.Client) RequestOption {
+	return func(cfg *requestConfig) {
+		cfg.Client = client
+	}
+}
+
+// WithServerURL sets client for request.
+func WithServerURL(u *url.URL) RequestOption {
+	return func(cfg *requestConfig) {
+		cfg.ServerURL = u
+	}
+}
+
+// WithEditRequest sets function to edit request.
+func WithEditRequest(fn func(req *http.Request) error) RequestOption {
+	return func(cfg *requestConfig) {
+		cfg.EditRequest = fn
+	}
+}
+
+// WithEditResponse sets function to edit response.
+func WithEditResponse(fn func(resp *http.Response) error) RequestOption {
+	return func(cfg *requestConfig) {
+		cfg.EditResponse = fn
+	}
+}
+
+{{- if $.AnyClientSSEEnabled }}
+// WithRequestSSEOptions configures SSE behavior for request.
+func WithRequestSSEOptions(opts ...SSEClientOption) RequestOption {
+	return func(cfg *requestConfig) {
+		cfg.sseCfg.apply(opts...)
+	}
+}
+{{- end }}
+{{- end }}
+
+{{- if $.AnyClientSSEEnabled }}
+type sseClientConfig struct {
+	LastEventID       string
+	Retry             *time.Duration
+	MaxRetries        int
+	InitialBufferCap  int
+	MaxEventSize      int
+	RetryErrorHandler sse.RetryErrorHandler
+}
+
+type SSEClientOption func(*sseClientConfig)
+
+func newSSEClientConfig(opts ...SSEClientOption) sseClientConfig {
+	var cfg sseClientConfig
+	cfg.apply(opts...)
+	return cfg
+}
+
+func (c *sseClientConfig) apply(opts ...SSEClientOption) {
+	for _, opt := range opts {
+		if opt != nil {
+			opt(c)
+		}
+	}
+}
+
+// WithSSELastEventID sets the initial lastEventID value for the stream.
+func WithSSELastEventID(lastEventID string) SSEClientOption {
+	return func(o *sseClientConfig) {
+		o.LastEventID = lastEventID
+	}
+}
+
+// WithSSERetry sets the initial SSE reconnect delay.
+func WithSSERetry(delay time.Duration) SSEClientOption {
+	return func(o *sseClientConfig) {
+		o.Retry = &delay
+	}
+}
+
+// WithSSEMaxRetries sets the maximum number of reconnect attempts.
+//
+// Zero sets unlimited reconnect attempts.
+func WithSSEMaxRetries(n int) SSEClientOption {
+	return func(o *sseClientConfig) {
+		o.MaxRetries = n
+	}
+}
+
+// WithSSEInitialBufferCap sets the initial decoder line buffer capacity.
+func WithSSEInitialBufferCap(n int) SSEClientOption {
+	return func(o *sseClientConfig) {
+		o.InitialBufferCap = n
+	}
+}
+
+// WithSSEMaxEventSize sets the maximum parsable SSE event size in bytes.
+//
+// Zero disables the limit.
+func WithSSEMaxEventSize(n int) SSEClientOption {
+	return func(o *sseClientConfig) {
+		o.MaxEventSize = n
+	}
+}
+
+// WithSSERetryErrorHandler sets the callback invoked after a reconnect attempt fails.
+func WithSSERetryErrorHandler(h sse.RetryErrorHandler) SSEClientOption {
+	return func(o *sseClientConfig) {
+		o.RetryErrorHandler = h
+	}
+}
+
+// sseConnectFunc reconnects an SSE stream using the lastEventID value.
+type sseConnectFunc func(ctx context.Context, lastEventID string) (*http.Response, error)
+
+func newSSEResponseDecoder(resp *http.Response, options sseClientConfig) *sse.Decoder {
+	if resp == nil || resp.Body == nil {
+		return nil
+	}
+	return sse.NewDecoder(resp.Body,
+		options.InitialBufferCap,
+		options.MaxEventSize,
+		options.LastEventID,
+		options.Retry,
+	)
+}
+
+func reconnectSSE(ctx context.Context,
+	resp *http.Response,
+	decoder *sse.Decoder,
+	connect sseConnectFunc,
+	options sseClientConfig,
+	stateUpdater interface { setState(sse.State, error) },
+) (*http.Response, *sse.Decoder, error) {
+	if resp != nil && resp.Body != nil {
+		if err := resp.Body.Close(); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	retry := sse.DefaultRetry
+	if decoder != nil {
+		retry = decoder.Retry()
+	} else if options.Retry != nil {
+		retry = *options.Retry
+	}
+
+	lastEventID := options.LastEventID
+	if decoder != nil {
+		lastEventID = decoder.LastEventID()
+	}
+
+	if err := waitSSERetry(ctx, retry); err != nil {
+		if stateUpdater != nil {
+			stateUpdater.setState(sse.StateConnecting, err)
+		}
+		return nil, nil, err
+	}
+
+	var attempts int
+	for {
+		nextResp, err := connect(ctx, lastEventID)
+		if err == nil {
+			options.LastEventID = lastEventID
+			options.Retry = &retry
+			return nextResp, newSSEResponseDecoder(nextResp, options), nil
+		}
+
+		attempts++
+		stateUpdater.setState(sse.StateConnecting, err)
+		if options.RetryErrorHandler != nil {
+			options.RetryErrorHandler(ctx, err)
+		}
+		if options.MaxRetries > 0 && attempts >= options.MaxRetries {
+			return nil, nil, errors.Wrap(sse.ErrMaxRetriesExceeded, err.Error())
+		}
+		if err := waitSSERetry(ctx, retry); err != nil {
+			if stateUpdater != nil {
+				stateUpdater.setState(sse.StateConnecting, err)
+			}
+			return nil, nil, err
+		}
+	}
+}
+
+func waitSSERetry(ctx context.Context, retry time.Duration) error {
+	timer := time.NewTimer(retry)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+{{- end }}
+
+func trimTrailingSlashes(u *url.URL) {
+	u.Path = strings.TrimRight(u.Path, "/")
+	u.RawPath = strings.TrimRight(u.RawPath, "/")
+}
+
+{{- if $.PathsClientEnabled }}
+
+// Invoker invokes operations described by OpenAPI v3 specification.
+type Invoker interface {
+{{- range $group := $.OperationGroups }}
+	{{ $group.Name }}Invoker
+{{- end }}
+{{- range $op := $.DefaultOperations }}
+	// {{ $op.Name }} invokes {{ $op.PrettyOperationID }} operation.
+	//
+	{{- template "godoc_op" $op }}
+	{{ $op.Name }}(ctx context.Context
+	{{- if $op.WebhookInfo }}, targetURL string{{ end }}
+	{{- if $op.Request }}, request {{ $op.Request.GoType }}{{ end }}
+	{{- if $op.Params }}, params {{ $op.Name }}Params {{ end }}
+	{{- if $.RequestOptionsEnabled }}, options ...RequestOption{{ end }}) {{ $op.Responses.ResultTuple "" "" }}
+{{- end }}
+}
+
+{{- range $group := $.OperationGroups }}
+// {{ $group.Name }}Invoker invokes operations described by OpenAPI v3 specification.
+//
+// x-gen-operation-group: {{ $group.Name }}
+type {{ $group.Name }}Invoker interface {
+{{- range $op := $group.Operations }}
+	// {{ $op.Name }} invokes {{ $op.PrettyOperationID }} operation.
+	//
+	{{- template "godoc_op" $op }}
+	{{ $op.Name }}(ctx context.Context
+	{{- if $op.WebhookInfo }}, targetURL string{{ end }}
+	{{- if $op.Request }}, request {{ $op.Request.GoType }}{{ end }}
+	{{- if $op.Params }}, params {{ $op.Name }}Params {{ end }}
+	{{- if $.RequestOptionsEnabled }}, options ...RequestOption {{ end }}) {{ $op.Responses.ResultTuple "" "" }}
+{{- end }}
+}
+{{- end }}
+
+// Client implements OAS client.
+type Client struct {
+	serverURL *url.URL
+	{{- if $.Securities }}
+	sec       SecuritySource
+	{{- end }}
+	baseClient
+}
+
+// NewClient initializes new Client defined by OAS.
+func NewClient(serverURL string, {{- if $.Securities }}sec SecuritySource,{{- end }} opts ...ClientOption) (*Client, error) {
+	u, err := url.Parse(serverURL)
+	if err != nil {
+		return nil, err
+	}
+	trimTrailingSlashes(u)
+
+	c, err := newClientConfig(opts...).baseClient()
+	if err != nil {
+		return nil, err
+	}
+	return &Client{
+		serverURL: u,
+		{{- if $.Securities }}
+		sec: sec,
+		{{- end }}
+		baseClient: c,
+	}, nil
+}
+
+{{- if not $.RequestOptionsEnabled }}
+type serverURLKey struct{}
+
+// WithServerURL sets context key to override server URL.
+func WithServerURL(ctx context.Context, u *url.URL) context.Context {
+	return context.WithValue(ctx, serverURLKey{}, u)
+}
+
+func (c *Client) requestURL(ctx context.Context) *url.URL {
+	u, ok := ctx.Value(serverURLKey{}).(*url.URL)
+	if !ok {
+		return c.serverURL
+	}
+	return u
+}
+{{- end }}
+
+{{- if $.EditorsEnabled }}
+func (c *Client) onRequest(ctx context.Context, req *http.Request) error {
+	for _, fn := range c.cfg.RequestEditors {
+		if err := fn(ctx, req); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Client) onResponse(ctx context.Context, resp *http.Response) error {
+	for _, fn := range c.cfg.ResponseEditors {
+		if err := fn(ctx, resp); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+{{- end }}
+
+{{- range $op := $.Operations }}
+	{{ template "client/operation" op_elem $op $ }}
+{{- end }}
+
+{{- end }}
+
+{{- if $.WebhookClientEnabled }}
+{{- with $ops := $.Webhooks }}
+// WebhookClient implements webhook client.
+type WebhookClient struct {
+	baseClient
+}
+
+// NewWebhookClient initializes new WebhookClient.
+func NewWebhookClient(opts ...ClientOption) (*WebhookClient, error) {
+	c, err := newClientConfig(opts...).baseClient()
+	if err != nil {
+		return nil, err
+	}
+	return &WebhookClient{
+		baseClient: c,
+	}, nil
+}
+
+{{- range $op := $ops }}
+	{{ template "client/operation" op_elem $op $ }}
+{{- end }}
+
+{{- end }}
+{{- end }}
+
+{{ end }}
+
+{{ define "client/operation" }}
+{{- /*gotype: github.com/ogen-go/ogen/gen.OperationElem*/ -}}{{ $op := $.Operation }}
+{{- /*gotype: github.com/ogen-go/ogen/gen.TemplateConfig*/ -}}{{ $cfg := $.Config }}
+{{- $otel := $cfg.OpenTelemetryEnabled }}
+// {{ $op.Name }} invokes {{ $op.PrettyOperationID }} operation.
+//
+{{- template "godoc_op" $op }}
+func (c *{{ if $op.WebhookInfo }}Webhook{{ end }}Client) {{ $op.Name }}(ctx context.Context
+	{{- if $op.WebhookInfo }}, targetURL string{{ end }}
+	{{- if $op.Request }}, request {{ $op.Request.GoType }}{{ end }}
+	{{- if $op.Params }}, params {{ $op.Name }}Params {{ end }}
+	{{- if $cfg.RequestOptionsEnabled }}, options ...RequestOption {{ end }}) {{ $op.Responses.ResultTuple "" "" }} {
+	{{ if $op.Responses.DoPass }}res{{ else }}_{{ end }}, err := c.send{{ $op.Name }}(ctx
+		{{- if $op.WebhookInfo }},targetURL{{ end -}}
+		{{- if $op.Request }},request{{ end -}}
+		{{- if $op.Params }},params{{ end -}}
+		{{- if $cfg.RequestOptionsEnabled }},options...{{ end -}}
+	)
+	return {{ if $op.Responses.DoPass }}res,{{ end }} err
+}
+
+func (c *{{ if $op.WebhookInfo }}Webhook{{ end }}Client) send{{ $op.Name }}(ctx context.Context
+	{{- if $op.WebhookInfo }}, targetURL string{{ end }}
+	{{- if $op.Request }}, request {{ $op.Request.GoType }}{{ end }}
+	{{- if $op.Params }}, params {{ $op.Name }}Params {{ end }}
+	{{- if $cfg.RequestOptionsEnabled }}, requestOptions ...RequestOption {{ end }}) (res {{ $op.Responses.GoType }}, err error) {
+
+	{{- if and $op.Request $cfg.RequestValidationEnabled }}{{/* Request validation */}}
+		{{- if $op.Request.Type.IsInterface }}
+			// Validate request before sending.
+			switch request := request.(type) {
+			{{- if $op.Request.EmptyBody }}
+			case *{{ $op.Request.EmptyBody.Go }}:
+				// Validation is not needed for the empty body type.
+			{{- end }}
+			{{- range $_, $media := $op.Request.Contents }}
+			{{- $type := $media.Type }}
+			case *{{ $type.Go }}:
+				{{- if $type.NeedValidation }}
+					if err := func() error {
+						{{- template "validate" elem $type "request" }}
+					}(); err != nil {
+						return res, errors.Wrap(err, "validate")
+					}
+				{{- else }}
+				// Validation is not required for this type.
+				{{- end }}
+			{{- end }}
+			default:
+				return res, errors.Errorf("unexpected request type: %T", request)
+			}
+		{{- else if $op.Request.Type.NeedValidation }}
+			// Validate request before sending.
+			if err := func() error {
+				{{- template "validate" elem $op.Request.Type "request" }}
+			}(); err != nil {
+				return res, errors.Wrap(err, "validate")
+			}
+		{{- end }}
+	{{- end }}{{/* Request validation */}}
+
+	{{- if $otel }}
+		{{- $hasOTELAttrs := false }}
+		{{- $ogenAttrs := $op.OTELAttributes }}
+		{{- if or $ogenAttrs (not $op.WebhookInfo) }}
+		{{- $hasOTELAttrs = true }}
+		otelAttrs := []attribute.KeyValue{
+			{{- range $attr := $ogenAttrs }}
+			{{ $attr.String }},
+			{{- end }}
+			{{- if not $op.WebhookInfo }}
+			semconv.HTTPRequestMethodKey.String({{ upper $op.Spec.HTTPMethod | quote }}),
+			semconv.URLTemplateKey.String({{ quote $op.Spec.Path }}),
+			{{- end }}
+		}
+		{{- else }}
+		var otelAttrs []attribute.KeyValue
+		{{- end }}
+		otelAttrs = append(otelAttrs, c.cfg.Attributes...)
+
+		// Run stopwatch.
+		startTime := time.Now()
+		defer func() {
+			// Use floating point division here for higher precision (instead of Millisecond method).
+			elapsedDuration := time.Since(startTime)
+			c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+		}()
+
+		// Increment request counter.
+		c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+		// Start a span for this request.
+		ctx, span := c.cfg.Tracer.Start(ctx, {{ $op.Name }}Operation,
+			{{- if $hasOTELAttrs }}
+			trace.WithAttributes(otelAttrs...),
+			{{- end }}
+			clientSpanKind,
+		)
+		// Track stage for error reporting.
+		var stage string
+		defer func() {
+			if err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, stage)
+				c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+			}
+			span.End()
+		}()
+	{{- end }}
+
+	{{ if $cfg.RequestOptionsEnabled -}}
+	var reqCfg requestConfig
+	reqCfg.setDefaults(c.baseClient)
+	for _, o := range requestOptions {
+		o(&reqCfg)
+	}
+	{{- end }}
+
+	{{ if $otel }}stage = "BuildURL"{{ end }}
+	{{- if $op.WebhookInfo }}
+		u, err := url.Parse(targetURL)
+		if err != nil {
+			return res, errors.Wrap(err, "parse target URL")
+		}
+		{{- if $cfg.RequestOptionsEnabled }}
+		if override := reqCfg.ServerURL; override != nil {
+			u = uri.Clone(override)
+		}
+		{{- end }}
+		trimTrailingSlashes(u)
+	{{- else }}
+		{{- if $cfg.RequestOptionsEnabled }}
+		u := c.serverURL
+		if override := reqCfg.ServerURL; override != nil {
+			u = override
+		}
+		u = uri.Clone(u)
+		{{- else }}
+		u := uri.Clone(c.requestURL(ctx))
+		{{- end }}
+		{{- template "encode_path_parameters" $op }}
+	{{- end }}
+
+	{{ if $op.HasQueryParams }}
+		{{ if $otel }}stage = "EncodeQueryParams"{{ end }}
+		{{- template "encode_query_parameters" $op }}
+	{{- end }}
+
+	{{ if $otel }}stage = "EncodeRequest"{{ end }}
+	r, err := ht.NewRequest(ctx, {{ $op.Spec.HTTPMethod | upper | quote }}, u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	{{- if $op.Request }}
+		if err := encode{{ $op.Name }}Request(request, r); err != nil {
+			return res, errors.Wrap(err, "encode request")
+		}
+	{{- end }}
+
+	{{ if $op.HasHeaderParams }}
+		{{ if $otel }}stage = "EncodeHeaderParams"{{ end }}
+		{{- template "encode_header_parameters" $op }}
+	{{- end }}
+
+	{{ if $op.HasCookieParams }}
+		{{ if $otel }}stage = "EncodeCookieParams"{{ end }}
+		{{- template "encode_cookie_parameters" $op }}
+	{{- end }}
+
+	{{- if $op.HasSSEStreamResponse }}
+		{{- if $cfg.RequestOptionsEnabled }}
+		sseOptions := reqCfg.sseCfg
+		{{- else }}
+		sseOptions := c.cfg.sseCfg
+		{{- end }}
+		r.Header.Set("Cache-Control", "no-cache")
+		lastEventID := r.Header.Get("Last-Event-ID")
+		if lastEventID == "" {
+			lastEventID = sseOptions.LastEventID
+		}
+		if lastEventID != "" {
+			r.Header.Set("Last-Event-ID", lastEventID)
+			sseOptions.LastEventID = lastEventID
+		}
+	{{- end }}
+
+	{{- with $securities := $op.Security.Securities }}
+	{
+		type bitset = [{{ $op.Security.BitArrayLen }}]uint8
+		var satisfied bitset
+		{{- range $idx, $s := $op.Security.Securities }}
+		{
+			{{- $securityName := $s.Type.Name }}
+			{{ if $otel }}stage = {{ printf "Security:%s" $securityName | quote }}{{ end }}
+			switch err := c.security{{ $securityName }}(ctx, {{ $op.Name }}Operation, r); {
+			case err == nil: // if NO error
+				satisfied[{{ div $idx 8 }}] |= 1 << {{ mod $idx 8 }}
+			case errors.Is(err, ogenerrors.ErrSkipClientSecurity):
+				// Skip this security.
+			default:
+				return res, errors.Wrap(err, {{ printf "security %q" $securityName | quote }})
+			}
+		}
+		{{- end }}
+
+		if ok := func() bool {
+			nextRequirement:
+			for _, requirement := range []bitset{
+				{{- range $req := $op.Security.Requirements }}
+				{
+					{{- range $mask := $req }}{{ printf "%#08b" $mask }},{{ end -}}
+				},
+				{{- end }}
+			} {
+				for i, mask := range requirement {
+					if satisfied[i] & mask != mask {
+						continue nextRequirement
+					}
+				}
+				return true
+			}
+			return false
+		}(); !ok {
+			return res, ogenerrors.ErrSecurityRequirementIsNotSatisfied
+		}
+	}
+	{{- end }}
+
+	{{ if $cfg.EditorsEnabled -}}
+	if err := c.onRequest(ctx, r); err != nil {
+		return res, errors.Wrap(err, "client edit request")
+	}
+	{{- end }}
+
+	{{ if $cfg.RequestOptionsEnabled -}}
+	if err := reqCfg.onRequest(r); err != nil {
+		return res, errors.Wrap(err, "edit request")
+	}
+	{{- end }}
+
+	{{ if $otel }}stage = "SendRequest"{{ end }}
+	{{- if $cfg.RequestOptionsEnabled }}
+	resp, err := reqCfg.Client.Do(r)
+	{{- else }}
+	resp, err := c.cfg.Client.Do(r)
+	{{- end }}
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	{{- if and (not $op.HasRawResponse) (not $op.HasSSEStreamResponse) }}
+	body := resp.Body
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
+	{{- end }}
+
+	{{ if $cfg.EditorsEnabled -}}
+	if err := c.onResponse(ctx, resp); err != nil {
+		return res, errors.Wrap(err, "client edit response")
+	}
+	{{- end }}
+
+	{{ if $cfg.RequestOptionsEnabled -}}
+	if err := reqCfg.onResponse(resp); err != nil {
+		return res, errors.Wrap(err, "edit response")
+	}
+	{{- end }}
+
+	{{ if $otel }}stage = "DecodeResponse"{{ end }}
+	result, err := decode{{ $op.Name }}Response(resp)
+	if err != nil {
+		{{- if and (not $op.HasRawResponse) $op.HasSSEStreamResponse }}
+		_ = resp.Body.Close()
+		{{- end }}
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	{{- if $op.HasSSEStreamResponse }}
+	ct, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if err != nil {
+		_ = resp.Body.Close()
+		return res, errors.Wrap(err, "parse media type")
+	}
+	// For SSE response keep the body open for streaming.
+	if ht.MatchContentType("text/event-stream", ct) {
+		result.initSSEStream(func(reconnectCtx context.Context, lastEventID string) (*http.Response, error) {
+			reconnectReq := r.Clone(reconnectCtx)
+			if r.GetBody != nil {
+				body, err := r.GetBody()
+				if err != nil {
+					return nil, errors.Wrap(err, "clone reconnect body")
+				}
+				reconnectReq.Body = body
+			} else if r.Body != nil && r.Body != http.NoBody {
+				return nil, errors.New("reconnect request body is not readable")
+			}
+			reconnectReq.Header.Set("Cache-Control", "no-cache")
+			reconnectReq.Header.Set("Accept", "text/event-stream")
+			if lastEventID != "" {
+				reconnectReq.Header.Set("Last-Event-ID", lastEventID)
+			} else {
+				reconnectReq.Header.Del("Last-Event-ID")
+			}
+
+			{{ if $cfg.EditorsEnabled -}}
+			if err := c.onRequest(reconnectCtx, reconnectReq); err != nil {
+				return nil, errors.Wrap(err, "client edit reconnect request")
+			}
+			{{- end }}
+
+			{{ if $cfg.RequestOptionsEnabled -}}
+			if err := reqCfg.onRequest(reconnectReq); err != nil {
+				return nil, errors.Wrap(err, "edit reconnect request")
+			}
+			{{- end }}
+			{{- if $cfg.RequestOptionsEnabled }}
+			reconnectResp, err := reqCfg.Client.Do(reconnectReq)
+			{{- else }}
+			reconnectResp, err := c.cfg.Client.Do(reconnectReq)
+			{{- end }}
+			if err != nil {
+				return nil, errors.Wrap(err, "do reconnect request")
+			}
+
+			{{ if $cfg.EditorsEnabled -}}
+			if err := c.onResponse(reconnectCtx, reconnectResp); err != nil {
+				_ = reconnectResp.Body.Close()
+				return nil, errors.Wrap(err, "client edit reconnect response")
+			}
+			{{- end }}
+
+			{{ if $cfg.RequestOptionsEnabled -}}
+			if err := reqCfg.onResponse(reconnectResp); err != nil {
+				_ = reconnectResp.Body.Close()
+				return nil, errors.Wrap(err, "edit reconnect response")
+			}
+			{{- end }}
+
+			// SSE standard treats 204 No Content as an explicit instruction to stop reconnecting.
+			if reconnectResp.StatusCode == http.StatusNoContent {
+				_ = reconnectResp.Body.Close()
+				return nil, sse.ErrNoReconnect
+			}
+			if reconnectResp.StatusCode != resp.StatusCode {
+				_ = reconnectResp.Body.Close()
+				return nil, validate.UnexpectedStatusCodeWithResponse(reconnectResp)
+			}
+			ct, _, err := mime.ParseMediaType(reconnectResp.Header.Get("Content-Type"))
+			if err != nil {
+				_ = reconnectResp.Body.Close()
+				return nil, errors.Wrap(err, "parse reconnect media type")
+			}
+			if !ht.MatchContentType("text/event-stream", ct) {
+				_ = reconnectResp.Body.Close()
+				return nil, validate.InvalidContentType(ct)
+			}
+
+			return reconnectResp, nil
+		}, sseOptions)
+	} else {
+		_ = resp.Body.Close()
+	}
+	{{- end }}
+
+	return result, nil
+}
+{{ end }}
