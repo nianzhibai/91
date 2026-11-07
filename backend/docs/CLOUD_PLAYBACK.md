@@ -276,7 +276,7 @@ flowchart TD
 
 1. 浏览器请求 `GET /p/stream/{driveID}/{fileID}`，这里 fileID 是 WebDAV 逻辑文件路径。
 2. 驱动把该路径与 `base_url` 的路径前缀组合，检查位于配置根目录内，生成实际 WebDAV 文件 URL。
-3. 返回链接包含 `Authorization: Basic ...`、`User-Agent: video-site-webdav`、`Accept-Encoding: identity`，并设置 `PassThroughRedirects=true`。
+3. 返回链接包含 `Authorization: Basic ...`、`User-Agent: 91-webdav`、`Accept-Encoding: identity`，并设置 `PassThroughRedirects=true`。
 4. 本站先携带后台用户名密码对 WebDAV 文件 URL 发请求，透传浏览器 `Range`。不会直接将这个需要 Basic 凭证的入口 302 给浏览器。
 5. 上游返回 200/206 时，本站流式转发媒体以及 `Content-Length`、`Content-Range`、`Accept-Ranges` 等响应头，视频字节经过本站。
 6. 上游返回 3xx 时，本站解析并验证 `Location`，把原跳转状态码及目标地址交给浏览器。浏览器直接读取目标媒体，不接收后端 Basic 凭证，因此目标地址须能独立授权读取。

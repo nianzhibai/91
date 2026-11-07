@@ -79,7 +79,7 @@ Increment `EvidenceVersion` when changing the meaning of these rules or scores.
 From the project root, for example:
 
 ```sh
-sqlite3 -readonly backend/data/video-site.db
+sqlite3 -readonly backend/data/91.db
 ```
 
 ```sql

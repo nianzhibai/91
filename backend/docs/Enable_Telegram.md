@@ -35,7 +35,7 @@ telegram:
 
 1. 停止网站服务，避免下载或转存期间移动文件。
 2. 将旧目录的全部内容复制到新目录，保留子目录结构和文件权限，包括 `library/`、`sessions/`。
-3. 修改 `config.yaml` 中的 `telegram.storage_directory` 为新目录的绝对路径。一键安装的配置文件默认为 `/opt/video-site-91/config.yaml`，源码部署为 `backend/config.yaml`。
+3. 修改 `config.yaml` 中的 `telegram.storage_directory` 为新目录的绝对路径。一键安装的配置文件默认为 `/opt/91/config.yaml`，源码部署为 `backend/config.yaml`。
 4. 启动网站，测试连接，确认旧视频可播放、新视频写入新目录后，再清理旧目录。
 
 尚无旧数据时，可直接在配置面板修改并保存。`sessions/` 包含会话密钥，不要公开或供多个实例同时使用。
@@ -46,10 +46,10 @@ telegram:
 
 ```yaml
 services:
-  video-site-91:
+  "91":
     volumes:
-      - ./data:/opt/video-site-91/data
+      - ./data:/opt/91/data
       - /mnt/telegram:/telegram
 ```
 
-将 `telegram.storage_directory` 设为 `/telegram`，运行 `docker compose up -d video-site-91` 应用挂载。已有数据时，先停止容器、将旧目录内容复制到宿主机 `/mnt/telegram/`，再修改配置并启动；默认部署的配置文件位于宿主机 `./data/config.yaml`，旧存储目录为 `./data/telegram/`。
+将 `telegram.storage_directory` 设为 `/telegram`，运行 `docker compose up -d 91` 应用挂载。已有数据时，先停止容器、将旧目录内容复制到宿主机 `/mnt/telegram/`，再修改配置并启动；默认部署的配置文件位于宿主机 `./data/config.yaml`，旧存储目录为 `./data/telegram/`。

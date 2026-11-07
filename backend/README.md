@@ -2,6 +2,8 @@
 
 Go 服务提供 API、媒体代理和前端静态资源，使用纯 Go SQLite 驱动；依赖已放入 `vendor/`，支持离线构建。
 
+> 本文以当前仓库代码为准；部署时请使用配套的管理脚本、发布包或镜像。
+
 ## 本地开发
 
 依赖 **Go 1.27.3+**、**Node.js 24.22.1**、**npm 12.2.1**、**ffmpeg / ffprobe**；运行爬虫还需 `python3`。前端版本见根目录 `.nvmrc` 和 `package.json`。
@@ -28,6 +30,18 @@ go build -o server ./cmd/server
 
 直接运行时使用 `VIDEO_CONFIG` 指定的配置，未设置则读取当前目录的 `config.yaml`，缺失时自动生成。需要同时手动运行 Vite 时，先将后端配置的 `server.listen` 改为 `127.0.0.1:9192`，再在根目录执行 `npm run dev`。
 
+## 源码部署
+
+在 Linux 仓库根目录执行，脚本会构建前端和后端，并注册 `91.service`：
+
+```bash
+sudo bash deploy.sh
+sudo bash deploy.sh update
+sudo bash deploy.sh status
+```
+
+Go 服务同时提供前端、API 和媒体入口，新配置默认监听 9191；已有配置和数据保留。配置位于 `backend/config.yaml`，数据默认位于 `backend/data/`。依赖安装主要支持 Debian / Ubuntu；已有完整依赖时可设 `INSTALL_DEPS=0`。
+
 ## 配置与数据
 
 配置项、默认值和热更新范围见 [config.example.yaml](config.example.yaml)。启动时迁移旧设置并按内置模板更新配置：保留同名字段的已有值，补齐缺失字段，清理模板外字段及自定义注释；无变化时不重复写入。升级无需手动复制模板。
@@ -36,42 +50,80 @@ go build -o server ./cmd/server
 | --- | --- | --- |
 | `start.sh` 开发 | `backend/config.dev.yaml` | `backend/data-dev/` |
 | 在 `backend/` 直接运行 | `backend/config.yaml` | `backend/data/` |
-| 一键安装脚本 | `/opt/video-site-91/config.yaml` | `/opt/video-site-91/data/` |
+| 一键安装脚本 | `/opt/91/config.yaml` | `/opt/91/data/` |
 | 默认 Docker Compose | `<部署目录>/data/config.yaml` | `<部署目录>/data/` |
 
-数据库默认位于数据目录的 `video-site.db`，可用 `storage.db_dir` 单独指定数据库目录。数据目录还包含 `previews/`（封面、预览和帧签名）、`uploads/`、`scriptcrawlers/`、`crawler-scripts/`、`telegram/`、日志和备份。原生运行的相对路径基于进程工作目录解析。
+数据库默认为数据目录下的 `91.db`，可用 `storage.db_dir` 单独指定数据库目录。数据目录还包含 `previews/`（封面、预览和帧签名）、`uploads/`、`scriptcrawlers/`、`crawler-scripts/`、`telegram/`、日志和备份。
+
+原生运行的相对路径基于进程工作目录解析。容器默认配置和版本文件随所选数据目录确定，可用 `VIDEO_CONFIG`、`VIDEO_VERSION_FILE` 覆盖。旧安装的目录与服务名处理见 [旧部署升级](#旧部署升级)。
 
 ## Docker 部署与更新
 
 根目录的 `91-docker.sh` 使用已安装的 Docker / Compose。宿主机需有 Bash、`flock`、`timeout` 和 GNU coreutils；Compose 需支持 `config --no-env-resolution`、`--no-normalize`。脚本需要 jq 时会尝试通过系统包管理器安装，非 root 用户可能需要 sudo。
 
-首次部署可在空目录执行：
+首次部署可在空目录执行，镜像应包含与脚本配套的部署模板：
 
 ```bash
-mkdir -p video-site-91
-cd video-site-91
+mkdir -p 91
+cd 91
 curl -fsSL https://raw.githubusercontent.com/nianzhibai/91/main/91-docker.sh -o 91-docker.sh
 bash 91-docker.sh install
 ```
 
-默认使用 `ghcr.io/nianzhibai/91:stable`，对外端口为 9191，数据挂载到 `./data`。首次安装可增加 `--port 8080 --data-dir /srv/video-site-91/data`；后续修改端口或目录应编辑原 Compose 文件。
+默认使用 `ghcr.io/nianzhibai/91:stable`，对外端口为 9191，数据挂载到 `./data`。端口和存储挂载通过 Compose 文件配置。移动已有数据前先停服并保留原数据，再同步修改挂载与相关路径配置。
 
-在原部署目录下载同一脚本后更新：
+在原部署目录更新：
 
 ```bash
 bash 91-docker.sh update
-# 指定目标镜像，或沿用自定义 Compose 文件及项目名
+# 指定目标镜像，将 vX.Y.Z 替换为实际发布标签
 bash 91-docker.sh update --image ghcr.io/nianzhibai/91:vX.Y.Z
-bash 91-docker.sh update -p my-project -f docker-compose.yml -f custom.yml
-# 重置已有用户密码，省略 --user-id 时交互选择
-bash 91-docker.sh reset-password --user-id 1
+# 通过环境变量沿用自定义文件组合和项目名
+COMPOSE_FILE=docker-compose.yml:custom.yml COMPOSE_PROJECT_NAME=my-project bash 91-docker.sh update
+# 交互选择用户并重置密码
+bash 91-docker.sh reset-password
 ```
 
-更新默认跟随原镜像引用，固定版本需用 `--image` 指定目标。脚本从目标镜像读取模板，保留现有端口、挂载、环境变量和其他服务，补充缺失默认项；镜像缺少模板时退出。自定义覆盖文件需按原顺序传入，配置冲突时退出。Compose 会重新序列化 YAML，注释、锚点和排版不保留。
+`update` 默认先从仓库 `main` 分支更新管理脚本，更新脚本失败时继续使用本地版本。设置 `SELF_UPDATE=0` 可跳过，`DOCKER_SCRIPT_URL` 可指定脚本下载地址；其他命令不触发自更新。
 
-写入前校验配置，更新时保留 `.bak-*` 原文件并原子替换。启动失败会恢复原配置，并尝试用更新前的镜像 ID 恢复容器；**不会回滚数据库或应用数据**。首次部署失败会保留配置和数据，修复后执行 `update`。`up --wait` 在没有健康检查时只确认容器运行。
+更新沿用当前镜像引用，可用 `--image` 指定目标。脚本从目标镜像读取模板，保留现有端口、挂载、环境变量和其他服务，补充缺失默认项；镜像缺少模板时退出。自定义文件组合和项目名可通过 `COMPOSE_FILE`、`COMPOSE_PROJECT_NAME` 保存到 `.env`。
+
+配置通过校验后才会写入，原文件保留为 `.bak-*`。主配置会重新序列化，旧名称迁移还会重写相关附加配置，注释、锚点和排版不保证保留。`up --wait` 在没有健康检查时只确认容器运行；失败处理见下节。
 
 Telegram 部署和后台配置见 [接入 Telegram](docs/Enable_Telegram.md)。脚本不修改应用配置，也不自动启用 GPU。
+
+## 旧部署升级
+
+使用新版管理脚本和包含 `91` 发布包或部署模板的版本。旧部署保留原安装目录及数据；更新命令如下：
+
+| 部署方式 | 更新命令 | 迁移行为 |
+| --- | --- | --- |
+| 一键安装 | `91 update` | 切换默认服务名并记住实际安装路径，保留自定义服务名 |
+| 源码部署 | `sudo bash deploy.sh update` | 停用旧源码服务，启用 `91.service` |
+| Docker | `bash 91-docker.sh update` | 迁移旧服务名、默认容器名及参与部署的附加配置，保留端口、挂载、自定义容器名和 GPU 设置 |
+
+旧 Docker 脚本若尚不支持自更新，先在原部署目录重新下载脚本：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nianzhibai/91/main/91-docker.sh -o 91-docker.sh
+bash 91-docker.sh update
+```
+
+Docker 继续使用旧数据挂载。匿名数据卷需先改为显式挂载；存在新旧两套数据时，用 `VIDEO_DATA_DIR` 指定所用目录。外部 `extends.file` 配置及其服务引用保持原样，不会随部署文件自动更名。
+
+停用旧服务后首次启动新版，会将 `video-site.db` 迁移为 `91.db`；新旧两个独立数据库同时存在时拒绝启动。已有待恢复备份会先按原文件名完成恢复，再迁移数据库名。
+
+### 更新失败时
+
+管理脚本按以下规则处理失败，**不会回滚数据库或应用数据**：
+
+| 更新场景 | 处理方式 |
+| --- | --- |
+| 原生更新 | 新版启动前失败时恢复旧文件和服务；新版开始启动后失败时保留新版程序、配置和数据并停服 |
+| Docker 更新，数据库文件名未变化 | 恢复 Compose 配置，并尝试用更新前的本地镜像恢复容器 |
+| Docker 更新，跨数据库文件名 | 尝试启动新版前失败时可回退；尝试启动后失败时保留新版配置并停服 |
+
+修复启动问题后重试更新，原生更新可重试同一版本。Docker 首次部署失败会保留配置和数据，修复后执行 `update`。运行只识别旧数据库文件名的版本前，必须先停服并处理文件名，不能直接启动旧程序。
 
 ## GPU 媒体生成
 
@@ -89,11 +141,9 @@ Telegram 部署和后台配置见 [接入 Telegram](docs/Enable_Telegram.md)。�
 
 ```bash
 bash 91-docker.sh gpu
-# 更新时也可显式选择 keep、cpu、vaapi 或 nvidia
-bash 91-docker.sh update --gpu vaapi
 ```
 
-普通安装和更新保留设备配置，不探测硬件；远程 Docker / Docker Desktop 需手动配置。手动 Compose 示例，在仓库根目录执行：
+`gpu` 独立检测并选择设备；普通安装和更新保留设备配置，不接收 `--gpu` 参数。远程 Docker / Docker Desktop 需手动配置。手动 Compose 示例，在仓库根目录执行：
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.gpu-vaapi.yml up -d
@@ -109,12 +159,12 @@ bash 91-docker.sh install --image stable-rockchip
 bash 91-docker.sh gpu
 ```
 
-脚本识别 `/dev/mpp_service` 或 `/dev/mpp-service`，按实际设备映射 `/dev/dri`、`/dev/dma_heap`、`/dev/rga`，无需特权容器。手动使用 Rockchip Compose 附加文件前需调整设备路径。切回普通镜像前移除 Rockchip 映射；脚本会检查镜像的 `io.video-site-91.media-variant=rockchip` 标签。
+脚本识别 `/dev/mpp_service` 或 `/dev/mpp-service`，按实际设备映射 `/dev/dri`、`/dev/dma_heap`、`/dev/rga`，无需特权容器。手动使用 Rockchip Compose 附加文件前需调整设备路径。切回普通镜像前移除 Rockchip 映射；脚本会检查镜像的 `io.91.media-variant=rockchip` 标签。
 
 独立镜像使用同一 Dockerfile 的 `rockchip` target，固定媒体工具来源及校验见 [Dockerfile](../Dockerfile)。可自行构建：
 
 ```bash
-docker buildx build --platform linux/arm64 --target rockchip -t video-site-91:rockchip --load .
+docker buildx build --platform linux/arm64 --target rockchip -t 91:rockchip --load .
 ```
 
 GPU 主机可运行 `cd backend && VIDEO_TEST_GPU=1 go test ./internal/preview -run TestHardwareRealFFmpeg -v` 验证实际滤镜链。
@@ -237,14 +287,20 @@ go test ./integration -run '^TestGoogleDrivePlaybackLive$' -count=1 -v
 
 用户分 `admin` / `user`，首次部署引导创建管理员，后续账号由后台创建，无开放注册。浏览、播放、上传及互动需登录，管理接口另校验管理员。密码以 bcrypt 哈希存入 SQLite；首次初始化完成后，删除或封禁管理员不会重新开放设置。
 
-忘记密码可在原服务工作目录执行 `./server reset-password --user-id 1`，省略 ID 时交互选择。一键安装用 `sudo 91 reset-password`，Docker 用上文脚本或 `docker exec -it video-site-91 /opt/video-site-91/server reset-password`。命令生成并显示 12 位随机密码，同时撤销该用户旧会话，不重启服务。配置选择顺序为 `--config`、`VIDEO_CONFIG`、当前目录 `config.yaml`；不会创建缺失配置或数据库。
+忘记密码可在原服务工作目录执行 `./server reset-password --user-id 1`，省略 ID 时交互选择。一键安装用 `sudo 91 reset-password`，Docker 用上文脚本或 `docker exec -it 91 docker-entrypoint.sh ./server reset-password`。命令生成并显示 12 位随机密码，同时撤销该用户旧会话，不重启服务。配置选择顺序为 `--config`、`VIDEO_CONFIG`、当前目录 `config.yaml`；不会创建缺失配置或数据库。
 
 同 IP 在 30 分钟内登录失败 3 次会被封禁；成功登录清除失败计数，后台解封同时清除计数。服务启动清空登录 IP 封禁及失败计数，不影响账号封禁或已有会话；仅信任本机代理的转发 IP 头。
 
-一次性分享通过 `POST /api/share/consume` 将 token 换成 HttpOnly 分享会话，链接首次消费后失效。随后 `/p/share/{shareID}/*` 每次验证会话且只能访问绑定视频。
+一次性分享通过 `POST /api/share/consume` 将 token 换成最长有效 6 小时的 HttpOnly 分享会话，链接首次消费后失效。随后 `/p/share/{shareID}/*` 每次验证会话且只能访问绑定视频。
+
+## 备份与恢复
+
+后台「备份恢复」（`/admin/backup`）可选择云盘、爬虫、上传存储、本地存储和用户信息创建备份。备份位于 `storage.data_dir` 下的 `backups/`，可下载，也可上传或通过接收码传送到另一台服务器。
+
+恢复前展示校验结果和恢复范围；确认后暂存数据，通过重启应用完成切换，恢复后需重新登录。受支持的 systemd / Docker 部署会自动重启，手动运行需自行重启后端。当前只接受格式版本 3 的备份，旧文件名前缀仍可识别。跨服务器迁移后应核对本机配置及外部存储路径。
 
 ## 日志与排查
 
-- 一键安装：`journalctl -u video-site-backend`；Docker：`docker compose logs -f`；开发脚本：`$LOG_DIR`，默认 `/tmp/video-site-91-dev/`。
+- 一键安装：`journalctl -u 91`；Docker：`docker compose logs -f`；开发脚本：`$LOG_DIR`，默认 `/tmp/91-dev/`。
 - 网盘异常看后台健康状态和 `lastError`；扫描查 `[scan]` / `[scanner]`，策略清理查 `[skip-cleanup]`，缺失清理查 `[cleanup]`。
 - 去重查 `[dedupe-maintenance]` 的 `duplicate merged` / `content duplicate matched`；生成停滞查看限流冷却及 `[nightly]` 队列等待日志。
