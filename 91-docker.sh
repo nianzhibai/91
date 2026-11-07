@@ -136,6 +136,49 @@ JQ
 log() { printf '[docker-update] %s\n' "$*"; }
 die() { printf '[docker-update] %s\n' "$*" >&2; exit 1; }
 
+self_update_script() {
+  [[ "${SELF_UPDATE:-1}" == 1 && "${VIDEO_SKIP_SELF_UPDATE:-0}" != 1 ]] || return 0
+  if ! command -v curl >/dev/null 2>&1; then
+    log "Script self-update skipped: curl is unavailable; continuing with the current script"
+    return 0
+  fi
+
+  local script candidate header
+  local url="${DOCKER_SCRIPT_URL:-https://raw.githubusercontent.com/nianzhibai/91/main/91-docker.sh}"
+  if ! script=$(readlink -f -- "${BASH_SOURCE[0]}") || [[ ! -f "$script" ]]; then
+    log "Script self-update skipped: run a local copy of 91-docker.sh to enable it"
+    return 0
+  fi
+  if ! candidate=$(mktemp "$script.tmp.XXXXXX"); then
+    log "Script self-update skipped: cannot write beside $script; continuing with the current script"
+    return 0
+  fi
+  log "Checking for an updated Docker management script"
+  if ! curl -fsSL --connect-timeout 10 --max-time 30 "$url" -o "$candidate"; then
+    rm -f -- "$candidate"
+    log "Script self-update skipped: download failed; continuing with the current script"
+    return 0
+  fi
+  IFS= read -r header < "$candidate" || header=""
+  if [[ "$header" != '#!/usr/bin/env bash' && "$header" != '#!/bin/bash' ]] || ! bash -n "$candidate"; then
+    rm -f -- "$candidate"
+    log "Script self-update skipped: downloaded file is not a valid Bash script"
+    return 0
+  fi
+  if cmp -s -- "$candidate" "$script"; then
+    rm -f -- "$candidate"
+    return 0
+  fi
+  if ! chmod --reference="$script" "$candidate" ||
+      ! chown --reference="$script" "$candidate" || ! mv -f -- "$candidate" "$script"; then
+    rm -f -- "$candidate"
+    log "Script self-update skipped: could not replace $script; continuing with the current script"
+    return 0
+  fi
+  log "Management script updated; restarting the requested update"
+  exec env VIDEO_SKIP_SELF_UPDATE=1 bash "$script" "$@"
+}
+
 ensure_jq() {
   if command -v jq >/dev/null 2>&1; then return; fi
 
@@ -189,6 +232,10 @@ usage() {
         printf 'Update 91 using its configured image; keep config and data.\n\n'
       fi
       printf '  --image IMAGE          Image reference, stable, main, stable-rockchip or main-rockchip\n'
+      if [[ "$action" == update ]]; then
+        printf '\n  SELF_UPDATE=0          Skip management script self-update\n'
+        printf '  DOCKER_SCRIPT_URL      Override the script download URL (default: repository main branch)\n'
+      fi
       ;;
     gpu)
       cat <<'EOF'
@@ -881,6 +928,8 @@ apply_deployment() {
 
 main() {
   parse_args "$@"
+  # Restart before acquiring deployment locks or creating rollback state.
+  if [[ "$ACTION" == update ]]; then self_update_script "$@"; fi
   if [[ "$ACTION" == reset-password ]]; then
     command -v docker >/dev/null 2>&1 || die "docker is required; install it before running this script"
     deployment_files

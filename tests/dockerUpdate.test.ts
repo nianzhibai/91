@@ -172,6 +172,7 @@ fi
   ));
   const env = {
     ...environment,
+    SELF_UPDATE: "0",
     PATH: `${bin}:${process.env.PATH ?? ""}`,
     TEST_DEPLOYMENT: root,
     TEST_COMPOSE_MIGRATOR: join(repository, "scripts/migrate-compose.py"),
@@ -215,6 +216,113 @@ function succeeded(result: ReturnType<typeof spawnSync>) {
   assert.ifError(result.error);
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
 }
+
+function selfUpdatingManager(t: TestContext, f = fixture(t)) {
+  const manager = join(f.root, "91-docker.sh");
+  const download = join(f.root, "downloaded-script.sh");
+  const original = readFileSync(script, "utf8");
+  const updated = original + "\n# Updated management script fixture\n";
+  writeFileSync(manager, original, { mode: 0o640 });
+  writeFileSync(download, updated);
+  writeFileSync(join(f.root, "bin/curl"), `#!${process.execPath}
+const { readFileSync, writeFileSync, copyFileSync } = require("node:fs");
+const { join } = require("node:path");
+const root = process.env.TEST_DEPLOYMENT;
+const args = process.argv.slice(2);
+const path = join(root, "engine.json");
+const state = JSON.parse(readFileSync(path, "utf8"));
+state.calls.push(["script-download", ...args]);
+writeFileSync(path, JSON.stringify(state));
+const output = args[args.indexOf("-o") + 1];
+if (process.env.TEST_DOWNLOAD_FAIL === "1") {
+  writeFileSync(output, "partial download");
+  process.exit(22);
+}
+copyFileSync(join(root, "downloaded-script.sh"), output);
+`, { mode: 0o755 });
+  return {
+    ...f, manager, download, original, updated,
+    runManager(args: string[], overrides: Record<string, string> = {}, path = manager) {
+      return spawnSync("bash", [path, ...args], {
+        cwd: f.root, encoding: "utf8", timeout: 15_000, input: "7\n",
+        env: { ...f.env, SELF_UPDATE: "1", VIDEO_SKIP_SELF_UPDATE: "0", DOCKER_SCRIPT_URL: "", ...overrides },
+      });
+    },
+  };
+}
+
+test("update replaces its script once and preserves arguments, environment, directory and permissions", requiresCompose, (t) => {
+  const f = selfUpdatingManager(t);
+  const composeFile = join(f.root, "production config.yml");
+  renameSync(f.target, composeFile);
+  const config = parse(readFileSync(composeFile, "utf8"));
+  config.services[service].environment.LOCAL_VALUE = "${LOCAL_VALUE}";
+  writeFileSync(composeFile, JSON.stringify(config));
+  const before = statSync(f.manager);
+  const image = "ghcr.io/example/91:v-next";
+  succeeded(f.runManager(["update", "--image", image], {
+    COMPOSE_FILE: "production config.yml", COMPOSE_PROJECT_NAME: "self-update-project", LOCAL_VALUE: "kept value",
+  }));
+  assert.equal(readFileSync(f.manager, "utf8"), f.updated);
+  const after = statSync(f.manager);
+  for (const key of ["mode", "uid", "gid"] as const) assert.equal(after[key], before[key]);
+  const state = f.state();
+  const downloads = state.calls.filter(args => args[0] === "script-download");
+  assert.equal(downloads.length, 1);
+  assert.ok(downloads[0].includes("https://raw.githubusercontent.com/nianzhibai/91/main/91-docker.sh"));
+  assert.equal(state.calls[0][0], "script-download");
+  assert.equal(state.starts.length, 1);
+  assert.equal(state.starts[0].name, "self-update-project");
+  assert.equal(state.starts[0].services[service].image, image);
+  assert.equal(state.starts[0].services[service].environment.LOCAL_VALUE, "kept value");
+  assert.equal(readdirSync(f.root).some(name => name.startsWith("91-docker.sh.tmp.")), false);
+});
+
+test("script self-update preserves symlink entry points and accepts a custom download URL", requiresCompose, (t) => {
+  const f = selfUpdatingManager(t);
+  const link = join(f.root, "manager link.sh");
+  symlinkSync(f.manager, link);
+  const url = "https://mirror.example/91-docker.sh";
+  succeeded(f.runManager(["update"], { DOCKER_SCRIPT_URL: url }, link));
+  assert.equal(lstatSync(link).isSymbolicLink(), true);
+  assert.equal(readFileSync(f.manager, "utf8"), f.updated);
+  assert.ok(f.state().calls.find(args => args[0] === "script-download")!.includes(url));
+});
+
+for (const scenario of ["unchanged", "download failure", "empty", "invalid syntax", "not a script", "replace failure"] as const) {
+  test(`script self-update ${scenario} keeps the current script and continues deployment`, requiresCompose, (t) => {
+    const f = selfUpdatingManager(t);
+    const candidates = {
+      unchanged: f.original, empty: "", "invalid syntax": "#!/bin/bash\nif then\n", "not a script": "Not Found\n",
+    };
+    if (scenario in candidates) writeFileSync(f.download, candidates[scenario as keyof typeof candidates]);
+    if (scenario === "replace failure") {
+      writeFileSync(join(f.root, "bin/mv"), `#!/bin/bash
+if [[ "\${@: -1}" == "$TEST_DEPLOYMENT/91-docker.sh" ]]; then exit 1; fi
+exec /bin/mv "$@"
+`, { mode: 0o755 });
+    }
+    const result = f.runManager(["update"], { TEST_DOWNLOAD_FAIL: scenario === "download failure" ? "1" : "0" });
+    succeeded(result);
+    assert.equal(readFileSync(f.manager, "utf8"), f.original);
+    assert.equal(f.state().calls.filter(args => args[0] === "script-download").length, 1);
+    assert.equal(f.state().starts.length, 1);
+    assert.equal(readdirSync(f.root).some(name => name.startsWith("91-docker.sh.tmp.")), false);
+    assert.doesNotMatch(result.stdout, /restarting the requested update/);
+    if (scenario !== "unchanged") assert.match(result.stdout, /self-update skipped/);
+  });
+}
+
+test("script self-update can be disabled and does not run for other commands or rejected arguments", requiresCompose, (t) => {
+  const f = selfUpdatingManager(t);
+  succeeded(f.runManager(["update"], { SELF_UPDATE: "0" }));
+  succeeded(f.runManager(["update"], { VIDEO_SKIP_SELF_UPDATE: "1" }));
+  succeeded(f.runManager(["reset-password"]));
+  succeeded(f.runManager(["update", "--help"]));
+  assert.notEqual(f.runManager(["update", "--unknown"]).status, 0);
+  assert.equal(f.state().calls.some(args => args[0] === "script-download"), false);
+  assert.equal(readFileSync(f.manager, "utf8"), f.original);
+});
 
 function freshDeployment(t: TestContext) {
   const f = fixture(t);
@@ -1309,6 +1417,26 @@ function legacyDeployment(t: TestContext, container = "video-site-91") {
   writeFileSync(join(f.root, "private data/video-site.db"), "original database");
   writeFileSync(join(f.root, "private data/config.yaml"), "storage: {data_dir: /opt/video-site-91/data}\n");
   return f;
+}
+
+for (const failStart of [false, true]) {
+  test(`script self-update continues into legacy migration (startup failure: ${failStart})`, requiresMigration, (t) => {
+    const f = selfUpdatingManager(t, legacyDeployment(t));
+    const before = readFileSync(f.target, "utf8");
+    f.changeState({ failStart });
+    const result = f.runManager(["update"]);
+    assert.equal(readFileSync(f.manager, "utf8"), f.updated);
+    assert.equal(f.state().calls.filter(args => args[0] === "script-download").length, 1);
+    assert.equal(readFileSync(join(f.root, "private data/video-site.db"), "utf8"), "original database");
+    if (failStart) {
+      assert.notEqual(result.status, 0);
+      assert.equal(readFileSync(f.target, "utf8"), before);
+      assert.equal(f.state().starts[1].services["video-site-91"].image, oldImage);
+    } else {
+      succeeded(result);
+      assert.equal(f.state().starts[0].services[service].volumes[0].target, "/opt/video-site-91/data");
+    }
+  });
 }
 
 for (const container of ["video-site-91", "custom-container"]) {
