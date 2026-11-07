@@ -143,7 +143,6 @@ python3 crawler.py --job /absolute/path/to/job.json
 | `thumbnail` | 否 | 封面媒体对象，格式与 `media` 相同 |
 | `detail_url` | 否 | 绝对 HTTP(S) 详情页地址，最多 8192 字节，不含用户名和密码 |
 | `author` | 否 | 字符串，最多 1024 字节 |
-| `description` | 否 | 字符串，最多 64 KiB |
 | `duration_seconds` | 否 | 整数秒数，0–604800 |
 | `tags` | 否 | 最多 100 个非空白字符串，每个最多 256 字节；只关联项目中已有的标签 |
 
