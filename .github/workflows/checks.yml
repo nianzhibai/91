@@ -1,0 +1,112 @@
+name: Checks
+
+on:
+  workflow_call:
+    inputs:
+      force-all:
+        type: boolean
+        default: false
+    outputs:
+      images:
+        description: Whether application images need rebuilding
+        value: ${{ jobs.changes.outputs.images }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      frontend: ${{ steps.detect.outputs.frontend }}
+      backend: ${{ steps.detect.outputs.backend }}
+      images: ${{ steps.detect.outputs.images }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Detect affected checks
+        id: detect
+        env:
+          FORCE_ALL: ${{ inputs.force-all }}
+        run: node .github/scripts/ci-changes.mjs
+
+  frontend:
+    name: Frontend and deployment tests
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-yaml
+          npm install --global "$(node -p "require('./package.json').packageManager")"
+          npm ci 2>&1 | tee "$RUNNER_TEMP/frontend-install.log"
+      - name: Check frontend dependencies and source
+        run: npm run check 2>&1 | tee "$RUNNER_TEMP/frontend-check.log"
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: frontend-failure-logs
+          path: ${{ runner.temp }}/frontend-*.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  backend:
+    name: Backend Linux
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Install media and crawler test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg python3-yaml python3-requests python3-bs4 python3-lxml python3-socks
+      - name: Test Linux backend
+        working-directory: backend
+        run: go test -count=1 -timeout=15m ./... 2>&1 | tee "$RUNNER_TEMP/backend-test.log"
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: backend-failure-logs
+          path: ${{ runner.temp }}/backend-test.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  check:
+    name: Check test results
+    if: always()
+    needs: [changes, frontend, backend]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require all affected checks to pass
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"' | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "$RESULTS" | jq -e '
+            . as $results | .changes.result == "success" and
+            (["frontend", "backend"] | all(.[]; . as $job |
+              $results[$job].result == "success" or
+              ($results[$job].result == "skipped" and $results.changes.outputs[$job] == "false")))' > /dev/null

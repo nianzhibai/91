@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test, { type TestContext } from "node:test";
 import { parse } from "yaml";
 
@@ -10,10 +11,7 @@ const workflow = parse(readFileSync(
   new URL("../.github/workflows/docker-build.yml", import.meta.url),
   "utf8"
 ));
-const publishStep = workflow.jobs.publish.steps.find(
-  (step: { run?: string }) => step.run?.includes("docker buildx imagetools create")
-);
-assert.ok(publishStep, "Expected a manifest publication step");
+const publishScript = fileURLToPath(new URL("../.github/scripts/publish-images.sh", import.meta.url));
 
 const image = "ghcr.io/example/91";
 const digests = {
@@ -45,13 +43,15 @@ printf '\\n' >> "$DOCKER_ARGS_FILE"
 
   return {
     digestPath,
-    run(tags: string) {
-      const result = spawnSync("bash", ["-e", "-o", "pipefail", "-c", publishStep.run], {
+    run(tags: string, sourceTag = "") {
+      const result = spawnSync("bash", [publishScript], {
         encoding: "utf8",
         env: {
           ...process.env,
           PATH: `${bin}:${process.env.PATH ?? ""}`,
           RUNNER_TEMP: directory,
+          DIGEST_DIR: join(directory, "digests"),
+          SOURCE_TAG: sourceTag,
           DOCKER_ARGS_FILE: argsFile,
           IMAGE: image,
           TAGS: tags,
@@ -113,6 +113,17 @@ test("manifest publication requires at least one image tag", (t) => {
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /No image tags to publish/);
   assert.equal(result.args, null);
+});
+
+test("channel promotion reuses published version images instead of rebuilt digests", (t) => {
+  const fixture = publication(t);
+  for (const arch of Object.keys(digests)) rmSync(fixture.digestPath(arch));
+  const result = fixture.run(`${image}:stable`, "v1.2.3");
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.calls, [
+    ["buildx", "imagetools", "create", "--tag", `${image}:stable`, `${image}:v1.2.3`],
+    ["buildx", "imagetools", "create", "--tag", `${image}:stable-rockchip`, `${image}:v1.2.3-rockchip`],
+  ]);
 });
 
 test("Docker builds isolate the Rockchip ARM64 runtime from standard images", () => {

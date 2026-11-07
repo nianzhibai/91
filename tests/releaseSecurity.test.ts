@@ -27,6 +27,8 @@ const releaseWorkflow = readFileSync(
   new URL("../.github/workflows/release.yml", import.meta.url),
   "utf8"
 );
+const checksWorkflow = readFileSync(new URL("../.github/workflows/checks.yml", import.meta.url), "utf8");
+const ciWorkflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
 const releaseScript = readFileSync(
   new URL("../scripts/build-release.sh", import.meta.url),
   "utf8"
@@ -57,10 +59,19 @@ test("container and release builds use supported Node and run checks", () => {
   const frontendStage = dockerfile.match(/^FROM(?:\s+--platform=\S+)?\s+(\S+)\s+AS\s+frontend\s*$/im);
   assert.equal(frontendStage?.[1], `node:${nodeVersion}-slim`, "Frontend image must use the pinned Node version");
   assert.match(dockerfile, /^COPY package\.json package-lock\.json \.npmrc \.\/$/m);
-  assert.match(dockerWorkflow, /node-version-file: \.nvmrc/);
+  assert.match(checksWorkflow, /node-version-file: \.nvmrc/);
   assert.match(releaseWorkflow, /node-version-file: \.nvmrc/);
-  const jobs = parse(dockerWorkflow).jobs;
-  assert.ok(jobs.prepare.steps.some((step: { run?: string }) => step.run === "npm run check"));
-  assert.equal(jobs.build.needs, "prepare", "Image builds must wait for frontend checks");
-  assert.deepEqual(jobs.publish.needs, ["prepare", "build"], "Publishing must wait for all image builds");
+  const checks = parse(checksWorkflow).jobs;
+  assert.ok(checks.frontend.steps.some((step: { run?: string }) => step.run?.includes("npm run check")));
+  assert.ok(checks.backend.steps.some((step: { run?: string }) => step.run?.includes("go test -count=1 -timeout=15m ./...")));
+  assert.deepEqual(checks.check.needs, ["changes", "frontend", "backend"]);
+  const ci = parse(ciWorkflow).jobs;
+  assert.equal(ci.images.needs, "checks");
+  assert.deepEqual(ci.publish.needs, ["checks", "images"]);
+  const release = parse(releaseWorkflow).jobs;
+  assert.equal(release.checks.with["force-all"], true);
+  assert.deepEqual(release.images.needs, ["preflight", "checks"]);
+  assert.deepEqual(release.packages.needs, ["preflight", "checks"]);
+  assert.deepEqual(release.publish.needs, ["preflight", "checks", "images", "packages"]);
+  assert.deepEqual(Object.keys(parse(dockerWorkflow).on), ["workflow_call"], "Image builds must run through a checked caller");
 });
