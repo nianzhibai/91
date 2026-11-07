@@ -8,7 +8,7 @@ import (
 
 	sdk "github.com/SheltonZhu/115driver/pkg/driver"
 	"github.com/go-resty/resty/v2"
-	"github.com/video-site/backend/internal/readretry"
+	"github.com/nianzhibai/91/backend/internal/readretry"
 )
 
 const p115ReadTimeout = 15 * time.Second

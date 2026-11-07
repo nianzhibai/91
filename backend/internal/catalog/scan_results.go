@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/video-site/backend/internal/driveevents"
-	"github.com/video-site/backend/internal/scanjob"
+	"github.com/nianzhibai/91/backend/internal/driveevents"
+	"github.com/nianzhibai/91/backend/internal/scanjob"
 )
 
 func (c *Catalog) SaveScanResult(ctx context.Context, result scanjob.Result) (resultErr error) {

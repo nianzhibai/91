@@ -210,6 +210,7 @@ func (m *Manager) resolveBackup(id string) (string, string, error) {
 
 func hasKnownBackupNamePrefix(name string) bool {
 	return strings.HasPrefix(name, backupNamePrefix) ||
+		strings.HasPrefix(name, previousBackupNamePrefix) ||
 		strings.HasPrefix(name, legacyBackupNamePrefix)
 }
 

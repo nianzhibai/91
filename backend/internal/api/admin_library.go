@@ -13,7 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/video-site/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/catalog"
 )
 
 func (a *AdminServer) handleAdminListVideos(w http.ResponseWriter, r *http.Request) {

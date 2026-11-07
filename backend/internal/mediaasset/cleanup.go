@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/video-site/backend/internal/localpath"
+	"github.com/nianzhibai/91/backend/internal/localpath"
 )
 
 var ErrGeneratedAssetRootRequired = errors.New("mediaasset: generated asset root is required")

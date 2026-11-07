@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/video-site/backend/internal/applog"
-	"github.com/video-site/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/applog"
+	"github.com/nianzhibai/91/backend/internal/catalog"
 )
 
 // Telegram sends album members as separate updates without an end marker.

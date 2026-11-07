@@ -6,14 +6,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/video-site/backend/internal/api"
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/drives"
-	"github.com/video-site/backend/internal/drives/localupload"
-	"github.com/video-site/backend/internal/drives/scriptcrawler"
-	"github.com/video-site/backend/internal/fingerprint"
-	"github.com/video-site/backend/internal/persistence"
-	"github.com/video-site/backend/internal/preview"
+	"github.com/nianzhibai/91/backend/internal/api"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/drives/localupload"
+	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
+	"github.com/nianzhibai/91/backend/internal/fingerprint"
+	"github.com/nianzhibai/91/backend/internal/persistence"
+	"github.com/nianzhibai/91/backend/internal/preview"
 )
 
 func (a *App) enqueueUploadedVideo(ctx context.Context, v *catalog.Video) {

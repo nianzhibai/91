@@ -17,12 +17,14 @@ const (
 	// fresh process after a pending restore has been staged.
 	RestartExitCode = 75
 
-	manifestName           = "manifest.json"
-	backupNamePrefix       = "video-site-91-backup-"
-	legacyBackupNamePrefix = "video-site-91-full-"
-	restoreStageDirName    = ".restore-staging"
-	maxRestoreOperations   = 1024
-	maxJSONSidecarBytes    = int64(64 << 20)
+	manifestName     = "manifest.json"
+	backupNamePrefix = "91-backup-"
+	// Existing archives keep their names when the application is renamed.
+	previousBackupNamePrefix = "video-site-91-backup-"
+	legacyBackupNamePrefix   = "video-site-91-full-"
+	restoreStageDirName      = ".restore-staging"
+	maxRestoreOperations     = 1024
+	maxJSONSidecarBytes      = int64(64 << 20)
 )
 
 var (

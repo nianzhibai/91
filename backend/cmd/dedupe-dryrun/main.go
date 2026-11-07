@@ -6,7 +6,7 @@
 //
 // 用法：在 backend 目录下运行
 //
-//	go run ./cmd/dedupe-dryrun -db data/video-site.db -local-dir data/previews [-apply]
+//	go run ./cmd/dedupe-dryrun -db data/91.db -local-dir data/previews [-apply]
 package main
 
 import (
@@ -22,17 +22,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/dedupe"
-	"github.com/video-site/backend/internal/localpath"
-	"github.com/video-site/backend/internal/mediaasset"
-	"github.com/video-site/backend/internal/mediasim"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/dedupe"
+	"github.com/nianzhibai/91/backend/internal/localpath"
+	"github.com/nianzhibai/91/backend/internal/mediaasset"
+	"github.com/nianzhibai/91/backend/internal/mediasim"
 )
 
 const durationToleranceSeconds = mediasim.NearDuplicateDurationToleranceSeconds
 
 func main() {
-	dbPath := flag.String("db", "data/video-site.db", "sqlite path")
+	dbPath := flag.String("db", "data/91.db", "sqlite path")
 	localDir := flag.String("local-dir", "data/previews", "本地预览目录(storage.data_dir 下的 previews)")
 	ffmpegPath := flag.String("ffmpeg", "ffmpeg", "ffmpeg 路径")
 	workers := flag.Int("workers", 8, "签名提取并发数")

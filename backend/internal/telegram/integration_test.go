@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/video-site/backend/internal/config"
-	"github.com/video-site/backend/internal/mediaimport"
+	"github.com/nianzhibai/91/backend/internal/config"
+	"github.com/nianzhibai/91/backend/internal/mediaimport"
 	"gopkg.in/yaml.v3"
 )
 

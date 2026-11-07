@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/mediaimport"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/mediaimport"
 )
 
 const maxRemoteUploadRequestBytes = 64 << 10

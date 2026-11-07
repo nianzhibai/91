@@ -8,7 +8,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/video-site/backend/internal/config"
+	"github.com/nianzhibai/91/backend/internal/config"
 )
 
 // Management commands use the same path resolver as startup. This command only

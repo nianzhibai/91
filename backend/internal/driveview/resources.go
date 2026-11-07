@@ -1,7 +1,7 @@
 // Package driveview owns the read-side synchronization of drive details.
 package driveview
 
-import "github.com/video-site/backend/internal/driveevents"
+import "github.com/nianzhibai/91/backend/internal/driveevents"
 
 type Resource string
 

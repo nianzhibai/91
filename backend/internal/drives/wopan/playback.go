@@ -9,7 +9,7 @@ import (
 
 	sdk "github.com/OpenListTeam/wopan-sdk-go"
 	"github.com/go-resty/resty/v2"
-	"github.com/video-site/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/drives"
 )
 
 func (d *Driver) PlaybackSources(ctx context.Context, fileID string) ([]drives.PlaybackSource, error) {

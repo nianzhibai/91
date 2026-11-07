@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/video-site/backend/internal/drives"
-	"github.com/video-site/backend/internal/proxy"
+	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/proxy"
 )
 
 func TestPlaybackUsesOfficialHLSWithoutFetchingMediaOrDownloadLinks(t *testing.T) {

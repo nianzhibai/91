@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/video-site/backend/internal/scanjob"
+	"github.com/nianzhibai/91/backend/internal/scanjob"
 )
 
 func TestScanAllRetainsEachOutcomeAndContinuesAfterFailure(t *testing.T) {

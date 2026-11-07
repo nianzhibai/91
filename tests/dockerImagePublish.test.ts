@@ -15,7 +15,7 @@ const publishStep = workflow.jobs.publish.steps.find(
 );
 assert.ok(publishStep, "Expected a manifest publication step");
 
-const image = "ghcr.io/example/video-site";
+const image = "ghcr.io/example/91";
 const digests = {
   amd64: `sha256:${"a".repeat(64)}`,
   arm64: `sha256:${"b".repeat(64)}`,

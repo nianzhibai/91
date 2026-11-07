@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/drives"
-	"github.com/video-site/backend/internal/preview"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/preview"
 )
 
 // Observe the waiter's first blocking queue wait without relying on a sleep to

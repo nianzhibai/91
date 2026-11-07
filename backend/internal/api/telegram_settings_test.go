@@ -10,10 +10,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/video-site/backend/internal/auth"
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/config"
-	"github.com/video-site/backend/internal/telegram"
+	"github.com/nianzhibai/91/backend/internal/auth"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/config"
+	"github.com/nianzhibai/91/backend/internal/telegram"
 )
 
 func TestAuthenticationInitializesTelegramAvailabilityForAdmins(t *testing.T) {

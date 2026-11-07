@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/video-site/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/catalog"
 )
 
 func TestGetSettingsReturnsDatabasePreferencesOnly(t *testing.T) {

@@ -1,6 +1,6 @@
 package catalog
 
-import "github.com/video-site/backend/internal/driveevents"
+import "github.com/nianzhibai/91/backend/internal/driveevents"
 
 func (c *Catalog) DriveEvents() *driveevents.Hub { return &c.driveEvents }
 

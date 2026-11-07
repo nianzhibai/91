@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/video-site/backend/internal/uploadjob"
+	"github.com/nianzhibai/91/backend/internal/uploadjob"
 )
 
 // CrawlerUploadScope fixes the insertion boundary for one sweep. Updating a

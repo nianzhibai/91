@@ -13,8 +13,8 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/requestmeta"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/requestmeta"
 )
 
 const (

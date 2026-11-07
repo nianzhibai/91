@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/storageusage"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/storageusage"
 )
 
 func (a *AdminServer) handleDriveStorage(w http.ResponseWriter, r *http.Request) {

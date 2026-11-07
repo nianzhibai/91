@@ -15,8 +15,8 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/video-site/backend/internal/driveevents"
-	"github.com/video-site/backend/internal/tagging"
+	"github.com/nianzhibai/91/backend/internal/driveevents"
+	"github.com/nianzhibai/91/backend/internal/tagging"
 )
 
 //go:embed schema.sql

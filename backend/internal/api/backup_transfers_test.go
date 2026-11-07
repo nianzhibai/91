@@ -18,11 +18,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"gopkg.in/yaml.v3"
 
-	"github.com/video-site/backend/internal/auth"
-	"github.com/video-site/backend/internal/backup"
-	"github.com/video-site/backend/internal/backuptransfer"
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/config"
+	"github.com/nianzhibai/91/backend/internal/auth"
+	"github.com/nianzhibai/91/backend/internal/backup"
+	"github.com/nianzhibai/91/backend/internal/backuptransfer"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/config"
 )
 
 type transferTestBackupEnv struct {
@@ -84,7 +84,7 @@ func newTransferTestBackupEnv(t *testing.T) *transferTestBackupEnv {
 		},
 		Storage: config.Storage{
 			DataDir:         root,
-			DBPath:          filepath.Join(root, "video-site.db"),
+			DBPath:          filepath.Join(root, "91.db"),
 			LocalPreviewDir: filepath.Join(root, "previews"),
 		},
 	}

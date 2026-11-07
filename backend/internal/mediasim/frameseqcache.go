@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/video-site/backend/internal/persistence"
+	"github.com/nianzhibai/91/backend/internal/persistence"
 )
 
 // teaser 帧签名的磁盘缓存：签名只依赖 teaser 文件内容，用 (size, mtime)

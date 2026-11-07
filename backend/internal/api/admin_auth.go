@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/video-site/backend/internal/auth"
-	"github.com/video-site/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/auth"
+	"github.com/nianzhibai/91/backend/internal/catalog"
 )
 
 type updateCheckDTO struct {
@@ -255,7 +255,7 @@ func (a *AdminServer) latestRelease(ctx context.Context) (githubReleaseDTO, erro
 		return githubReleaseDTO{}, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "video-site-91")
+	req.Header.Set("User-Agent", "91")
 	res, err := client.Do(req)
 	if err != nil {
 		return githubReleaseDTO{}, err

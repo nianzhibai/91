@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/mediaasset"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/mediaasset"
 )
 
 func TestDeleteDuplicateWithAssetsRemovesThumbnailDerivedAssets(t *testing.T) {

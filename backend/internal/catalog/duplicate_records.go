@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/video-site/backend/internal/dedupe"
+	"github.com/nianzhibai/91/backend/internal/dedupe"
 )
 
 const (

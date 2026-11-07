@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/crawljob"
-	"github.com/video-site/backend/internal/uploadjob"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/crawljob"
+	"github.com/nianzhibai/91/backend/internal/uploadjob"
 )
 
 func TestCrawlerIdentityAndTasksRespectBackupSelection(t *testing.T) {

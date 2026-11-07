@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/video-site/backend/internal/api"
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/fingerprint"
-	"github.com/video-site/backend/internal/preview"
+	"github.com/nianzhibai/91/backend/internal/api"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/fingerprint"
+	"github.com/nianzhibai/91/backend/internal/preview"
 )
 
 var generationTestKinds = []api.DriveGenerationKind{api.DriveGenerationThumbnails, api.DriveGenerationPreviews, api.DriveGenerationFingerprints}

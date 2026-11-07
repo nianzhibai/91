@@ -2,7 +2,7 @@
 # docker compose -f docker-compose.yml -f docker-compose.gpu-nvidia.yml up -d
 # 然后在配置面板 → 媒体生成中开启 GPU 硬件加速
 services:
-  video-site-91:
+  "91":
     environment:
       NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
     deploy:

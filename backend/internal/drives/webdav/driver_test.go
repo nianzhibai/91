@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/video-site/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/drives"
 )
 
 func TestDriverListsStatsAndStreamsWithRange(t *testing.T) {
@@ -231,7 +231,7 @@ func TestDriverReportsAuthenticationAndRateLimitErrors(t *testing.T) {
 }
 
 const (
-	testDAVUsername = "video-site"
+	testDAVUsername = "91"
 	testDAVPassword = "secret"
 )
 

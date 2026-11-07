@@ -14,11 +14,11 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/config"
-	"github.com/video-site/backend/internal/drives/telegramstorage"
-	"github.com/video-site/backend/internal/mediaimport"
-	"github.com/video-site/backend/internal/videoname"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/config"
+	"github.com/nianzhibai/91/backend/internal/drives/telegramstorage"
+	"github.com/nianzhibai/91/backend/internal/mediaimport"
+	"github.com/nianzhibai/91/backend/internal/videoname"
 )
 
 type Status struct {

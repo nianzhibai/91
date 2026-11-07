@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/video-site/backend/internal/mediaasset"
-	"github.com/video-site/backend/internal/mediasim"
+	"github.com/nianzhibai/91/backend/internal/mediaasset"
+	"github.com/nianzhibai/91/backend/internal/mediasim"
 )
 
 func TestLoadCandidateTeaserSignatureUsesDiskCache(t *testing.T) {

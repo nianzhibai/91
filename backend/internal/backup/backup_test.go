@@ -18,10 +18,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/config"
-	"github.com/video-site/backend/internal/mediaasset"
-	"github.com/video-site/backend/internal/videoid"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/config"
+	"github.com/nianzhibai/91/backend/internal/mediaasset"
+	"github.com/nianzhibai/91/backend/internal/videoid"
 	"gopkg.in/yaml.v3"
 )
 
@@ -43,7 +43,7 @@ func newTestBackupEnv(t *testing.T) *testBackupEnv {
 		},
 		Storage: config.Storage{
 			DataDir:         root,
-			DBPath:          filepath.Join(root, "video-site.db"),
+			DBPath:          filepath.Join(root, "91.db"),
 			LocalPreviewDir: filepath.Join(root, "previews"),
 		},
 		Preview: config.Preview{
@@ -241,6 +241,38 @@ func TestSelectedFileSnapshotDoesNotFollowEscapingParentSymlink(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(destination, "escaped", "secret.mp4")); !os.IsNotExist(err) {
 		t.Fatalf("escaping symlink content was copied into snapshot: %v", err)
+	}
+}
+
+func TestRenamedBackupsRemainListableAndDownloadable(t *testing.T) {
+	env := newTestBackupEnv(t)
+	record := createAndWaitForBackup(t, env.manager)
+	if !strings.HasPrefix(record.Name, "91-backup-") {
+		t.Fatalf("new backup name = %q, want 91 prefix", record.Name)
+	}
+	archivePath := filepath.Join(env.manager.backupDir, record.Name)
+	for _, prefix := range []string{"video-site-91-backup-", "video-site-91-full-", "91-backup-"} {
+		name := prefix + "renamed.zip"
+		renamedPath := filepath.Join(env.manager.backupDir, name)
+		if err := os.Rename(archivePath, renamedPath); err != nil {
+			t.Fatal(err)
+		}
+		archivePath = renamedPath
+		listed, err := env.manager.List(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(listed.Backups) != 1 || listed.Backups[0].Name != name || listed.Backups[0].VerificationStatus == "invalid" {
+			t.Fatalf("backups for prefix %q = %+v", prefix, listed.Backups)
+		}
+		file, _, downloadedName, err := env.manager.OpenBackup(strings.TrimSuffix(name, ".zip"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		file.Close()
+		if downloadedName != name {
+			t.Fatalf("downloaded backup = %q, want %q", downloadedName, name)
+		}
 	}
 }
 
@@ -2683,7 +2715,7 @@ func TestArchiveEntryLimitsCountFilesAndDirectoriesSeparately(t *testing.T) {
 func TestRestoreMarkerLimitsAndStagingRootAreValidated(t *testing.T) {
 	dataRoot := t.TempDir()
 	stageRoot := filepath.Join(dataRoot, restoreStageDirName, "stage-id")
-	target := filepath.Join(dataRoot, "video-site.db")
+	target := filepath.Join(dataRoot, "91.db")
 	marker := restoreMarker{
 		MarkerVersion: 1,
 		BackupID:      backupNamePrefix + "marker-test",
@@ -2694,8 +2726,8 @@ func TestRestoreMarkerLimitsAndStagingRootAreValidated(t *testing.T) {
 			Name:     "database",
 			Kind:     "file",
 			Target:   target,
-			Staged:   filepath.Join(dataRoot, ".video-site.db.restore-stage-stage-id"),
-			Rollback: filepath.Join(dataRoot, ".video-site.db.restore-rollback-stage-id"),
+			Staged:   filepath.Join(dataRoot, ".91.db.restore-stage-stage-id"),
+			Rollback: filepath.Join(dataRoot, ".91.db.restore-rollback-stage-id"),
 			State:    "pending",
 		}},
 	}

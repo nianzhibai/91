@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/video-site/backend/internal/applog"
-	"github.com/video-site/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/applog"
+	"github.com/nianzhibai/91/backend/internal/drives"
 )
 
 func capturePreviewLogs(t *testing.T) (*applog.Store, *strings.Builder) {

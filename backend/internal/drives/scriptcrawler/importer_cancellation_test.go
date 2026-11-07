@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/crawljob"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/crawljob"
 )
 
 type importRoundTripper func(*http.Request) (*http.Response, error)

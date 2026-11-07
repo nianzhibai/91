@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/video-site/backend/internal/tagging"
+	"github.com/nianzhibai/91/backend/internal/tagging"
 )
 
 func (c *Catalog) CreateTagAndClassify(ctx context.Context, label string, source string) (int, error) {

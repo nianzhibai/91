@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/config"
-	"github.com/video-site/backend/internal/nightly"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/config"
+	"github.com/nianzhibai/91/backend/internal/nightly"
 )
 
 func TestConfigSavePersistsAndHotUpdatesRuntimeSettings(t *testing.T) {

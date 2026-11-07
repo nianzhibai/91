@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/video-site/backend/internal/auth"
-	"github.com/video-site/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/auth"
+	"github.com/nianzhibai/91/backend/internal/catalog"
 )
 
 func TestAdminTelegramVideoFilterSurvivesCloudMigrationAndIgnoresTags(t *testing.T) {

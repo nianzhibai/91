@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 
-	"github.com/video-site/backend/internal/applog"
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/applog"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/drives"
 )
 
 var errDurationUnavailable = errors.New("source duration is unavailable")

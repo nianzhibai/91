@@ -10,9 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/video-site/backend/internal/driveevents"
-	"github.com/video-site/backend/internal/localpath"
-	"github.com/video-site/backend/internal/mediaasset"
+	"github.com/nianzhibai/91/backend/internal/driveevents"
+	"github.com/nianzhibai/91/backend/internal/localpath"
+	"github.com/nianzhibai/91/backend/internal/mediaasset"
 )
 
 // MigrateManagedPaths converts legacy deployment paths into portable file

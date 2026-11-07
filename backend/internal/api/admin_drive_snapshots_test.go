@@ -15,10 +15,10 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/video-site/backend/internal/auth"
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/driveevents"
-	"github.com/video-site/backend/internal/driveview"
+	"github.com/nianzhibai/91/backend/internal/auth"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/driveevents"
+	"github.com/nianzhibai/91/backend/internal/driveview"
 )
 
 func newDriveSnapshotServer(t *testing.T) (*AdminServer, http.Handler) {

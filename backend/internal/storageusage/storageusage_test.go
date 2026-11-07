@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/video-site/backend/internal/mediaasset"
+	"github.com/nianzhibai/91/backend/internal/mediaasset"
 )
 
 func TestComputeCountsLocalThumbnailAssetsAndTeasersByDrive(t *testing.T) {

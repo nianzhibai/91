@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/video-site/backend/internal/atomicfile"
-	"github.com/video-site/backend/internal/localpath"
-	"github.com/video-site/backend/internal/schedule"
+	"github.com/nianzhibai/91/backend/internal/atomicfile"
+	"github.com/nianzhibai/91/backend/internal/localpath"
+	"github.com/nianzhibai/91/backend/internal/schedule"
 	"gopkg.in/yaml.v3"
 )
 
@@ -149,7 +149,7 @@ func ResolveStoragePaths(storage Storage, baseDir string) (Storage, error) {
 	return Storage{
 		DataDir:         dataDir,
 		DBDir:           dbDir,
-		DBPath:          filepath.Join(dbDir, "video-site.db"),
+		DBPath:          filepath.Join(dbDir, "91.db"),
 		LocalPreviewDir: filepath.Join(dataDir, "previews"),
 	}, nil
 }
@@ -298,7 +298,7 @@ func (c *Config) applyDefaults() error {
 	if dbDir == "" {
 		dbDir = c.Storage.DataDir
 	}
-	c.Storage.DBPath = filepath.Join(dbDir, "video-site.db")
+	c.Storage.DBPath = filepath.Join(dbDir, "91.db")
 	c.Storage.LocalPreviewDir = filepath.Join(c.Storage.DataDir, "previews")
 	if c.Logging.FileEnabled == nil {
 		enabled := true

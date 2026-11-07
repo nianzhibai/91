@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/video-site/backend/internal/crawljob"
-	"github.com/video-site/backend/internal/persistence"
+	"github.com/nianzhibai/91/backend/internal/crawljob"
+	"github.com/nianzhibai/91/backend/internal/persistence"
 )
 
 func TestCrawlerTerminalSaveRetriesBeforeReleasingTask(t *testing.T) {

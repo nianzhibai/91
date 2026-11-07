@@ -27,10 +27,10 @@ import (
 	"github.com/gotd/td/tgerr"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/config"
-	"github.com/video-site/backend/internal/filelock"
-	"github.com/video-site/backend/internal/tcpproxy"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/config"
+	"github.com/nianzhibai/91/backend/internal/filelock"
+	"github.com/nianzhibai/91/backend/internal/tcpproxy"
 )
 
 // transport keeps MTProto details out of import admission and notifications.

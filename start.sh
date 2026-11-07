@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 export HOME="${HOME:-/root}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
-export GOCACHE="${GOCACHE:-/tmp/video-site-91/go-build}"
+export GOCACHE="${GOCACHE:-/tmp/91/go-build}"
 
 FRONTEND_HOST="${FRONTEND_HOST:-0.0.0.0}"
 FRONTEND_PORT="${FRONTEND_PORT:-9191}"
@@ -13,7 +13,7 @@ FRONTEND_MODE="${FRONTEND_MODE:-preview}"
 BACKEND_PORT="${BACKEND_PORT:-9192}"
 export BACKEND_PORT
 DEV_CONFIG="$ROOT_DIR/backend/config.dev.yaml"
-LOG_DIR="${LOG_DIR:-/tmp/video-site-91-dev}"
+LOG_DIR="${LOG_DIR:-/tmp/91-dev}"
 
 FRONTEND_LOG="$LOG_DIR/frontend.log"
 BACKEND_LOG="$LOG_DIR/backend.log"
@@ -57,7 +57,7 @@ pids_on_port() {
 owns_dev_process() {
   local pid="$1"
   [[ -r "/proc/$pid/environ" ]] &&
-    tr '\0' '\n' <"/proc/$pid/environ" | grep -Fx "VIDEO_SITE_DEV_ROOT=$ROOT_DIR" >/dev/null
+    tr '\0' '\n' <"/proc/$pid/environ" | grep -Fx "VIDEO_DEV_ROOT=$ROOT_DIR" >/dev/null
 }
 
 check_port_owner() {
@@ -152,7 +152,7 @@ start_backend() {
   echo "starting backend on 127.0.0.1:$BACKEND_PORT"
   (
     cd "$ROOT_DIR/backend"
-    export VIDEO_CONFIG="$DEV_CONFIG" VIDEO_SITE_DEV_ROOT="$ROOT_DIR"
+    export VIDEO_CONFIG="$DEV_CONFIG" VIDEO_DEV_ROOT="$ROOT_DIR"
     setsid nohup go run ./cmd/server >>"$BACKEND_LOG" 2>&1 </dev/null &
   )
   wait_for_port "backend" "$BACKEND_PORT"
@@ -171,7 +171,7 @@ start_frontend() {
     echo "starting frontend dev server on $FRONTEND_HOST:$FRONTEND_PORT"
     (
       cd "$ROOT_DIR"
-      export VIDEO_SITE_DEV_ROOT="$ROOT_DIR"
+      export VIDEO_DEV_ROOT="$ROOT_DIR"
       setsid nohup npm run dev -- --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" >>"$FRONTEND_LOG" 2>&1 </dev/null &
     )
   else
@@ -183,7 +183,7 @@ start_frontend() {
     echo "starting frontend preview server on $FRONTEND_HOST:$FRONTEND_PORT"
     (
       cd "$ROOT_DIR"
-      export VIDEO_SITE_DEV_ROOT="$ROOT_DIR"
+      export VIDEO_DEV_ROOT="$ROOT_DIR"
       setsid nohup npm run preview -- --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" >>"$FRONTEND_LOG" 2>&1 </dev/null &
     )
   fi

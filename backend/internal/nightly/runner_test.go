@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/video-site/backend/internal/scanjob"
-	"github.com/video-site/backend/internal/schedule"
+	"github.com/nianzhibai/91/backend/internal/scanjob"
+	"github.com/nianzhibai/91/backend/internal/schedule"
 )
 
 // stubSettings is an in-memory SettingStore for tests.

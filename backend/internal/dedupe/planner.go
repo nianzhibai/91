@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/video-site/backend/internal/mediasim"
+	"github.com/nianzhibai/91/backend/internal/mediasim"
 )
 
 type ImageComparator func(leftPath, rightPath string) (float64, error)

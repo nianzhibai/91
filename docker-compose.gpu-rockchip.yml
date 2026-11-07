@@ -3,7 +3,7 @@
 # Adjust device paths for the host; 91-docker.sh gpu maps only existing nodes.
 # Then enable hardware acceleration in the administration panel.
 services:
-  video-site-91:
+  "91":
     image: ghcr.io/nianzhibai/91:stable-rockchip
     devices:
       - /dev/dri:/dev/dri

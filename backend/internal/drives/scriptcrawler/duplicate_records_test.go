@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/video-site/backend/internal/dedupe"
+	"github.com/nianzhibai/91/backend/internal/dedupe"
 )
 
 // Verify actual crawler ingress persists the decision, including its pair

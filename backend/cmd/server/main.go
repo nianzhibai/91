@@ -17,23 +17,23 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
-	"github.com/video-site/backend/internal/api"
-	"github.com/video-site/backend/internal/applog"
-	"github.com/video-site/backend/internal/auth"
-	"github.com/video-site/backend/internal/backup"
-	"github.com/video-site/backend/internal/backuptransfer"
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/config"
-	"github.com/video-site/backend/internal/crawlerupload"
-	"github.com/video-site/backend/internal/driveevents"
-	"github.com/video-site/backend/internal/drives/scriptcrawler"
-	"github.com/video-site/backend/internal/fingerprint"
-	"github.com/video-site/backend/internal/mediaimport"
-	"github.com/video-site/backend/internal/nightly"
-	"github.com/video-site/backend/internal/preview"
-	"github.com/video-site/backend/internal/proxy"
-	"github.com/video-site/backend/internal/subtitles"
-	"github.com/video-site/backend/internal/telegram"
+	"github.com/nianzhibai/91/backend/internal/api"
+	"github.com/nianzhibai/91/backend/internal/applog"
+	"github.com/nianzhibai/91/backend/internal/auth"
+	"github.com/nianzhibai/91/backend/internal/backup"
+	"github.com/nianzhibai/91/backend/internal/backuptransfer"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/config"
+	"github.com/nianzhibai/91/backend/internal/crawlerupload"
+	"github.com/nianzhibai/91/backend/internal/driveevents"
+	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
+	"github.com/nianzhibai/91/backend/internal/fingerprint"
+	"github.com/nianzhibai/91/backend/internal/mediaimport"
+	"github.com/nianzhibai/91/backend/internal/nightly"
+	"github.com/nianzhibai/91/backend/internal/preview"
+	"github.com/nianzhibai/91/backend/internal/proxy"
+	"github.com/nianzhibai/91/backend/internal/subtitles"
+	"github.com/nianzhibai/91/backend/internal/telegram"
 )
 
 const (
@@ -120,30 +120,11 @@ func main() {
 		}
 	}()
 
-	cat, err := openApplicationCatalog(cfg.Storage)
+	cat, err := openStartupCatalog(context.Background(), cfg.Storage, appliedRestore)
 	if err != nil {
-		if appliedRestore != nil {
-			if rollbackErr := backup.RollbackAppliedRestore(appliedRestore, err); rollbackErr != nil {
-				log.Fatalf("open restored catalog: %v (rollback failed: %v)", err, rollbackErr)
-			}
-			log.Fatalf("open restored catalog: %v; old data restored and will be used after restart", err)
-		}
-		log.Fatalf("open catalog: %v", err)
+		log.Fatalf("open startup catalog: %v", err)
 	}
 	defer cat.Close()
-	if err := cat.InterruptCrawlerTasks(context.Background()); err != nil {
-		log.Fatalf("recover crawler tasks: %v", err)
-	}
-	if err := cat.ResetLoginProtection(context.Background()); err != nil {
-		log.Fatalf("reset login protection at startup: %v", err)
-	}
-	if appliedRestore != nil {
-		if err := backup.CommitAppliedRestore(appliedRestore); err != nil {
-			log.Printf("[restore] restored catalog opened, but rollback cleanup/report write failed: %v", err)
-		} else {
-			log.Printf("[restore] backup restored successfully; previous sessions were cleared")
-		}
-	}
 	configManager, err := config.NewManager(cfgPath)
 	if err != nil {
 		log.Fatalf("configure config manager: %v", err)
@@ -481,7 +462,7 @@ func main() {
 		log.Fatalf("listen %s: %v", cfg.Server.Listen, err)
 	}
 	go func() {
-		log.Printf("video-site backend listening on %s", cfg.Server.Listen)
+		log.Printf("91 backend listening on %s", cfg.Server.Listen)
 		if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("server error: %v", err)
 		}

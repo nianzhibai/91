@@ -6,12 +6,12 @@ import (
 	"os"
 	"strings"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/dedupe"
-	"github.com/video-site/backend/internal/localpath"
-	"github.com/video-site/backend/internal/mediaasset"
-	"github.com/video-site/backend/internal/mediasim"
-	"github.com/video-site/backend/internal/preview"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/dedupe"
+	"github.com/nianzhibai/91/backend/internal/localpath"
+	"github.com/nianzhibai/91/backend/internal/mediaasset"
+	"github.com/nianzhibai/91/backend/internal/mediasim"
+	"github.com/nianzhibai/91/backend/internal/preview"
 )
 
 // 阈值统一定义在 mediasim（NearDuplicate* / ContentDuplicate*），与夜间维护共用。

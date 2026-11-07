@@ -15,11 +15,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/video-site/backend/internal/applog"
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/drives"
-	"github.com/video-site/backend/internal/streamhttp"
-	"github.com/video-site/backend/internal/tasklimit"
+	"github.com/nianzhibai/91/backend/internal/applog"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/streamhttp"
+	"github.com/nianzhibai/91/backend/internal/tasklimit"
 )
 
 const (
@@ -409,6 +409,7 @@ func sampleRanges(size, sampleSize, fullHashMax int64) []byteRange {
 }
 
 func writeHashHeader(w io.Writer, size int64, ranges []byteRange) {
+	// This hash domain is persisted in fingerprints; application renames must not change it.
 	_, _ = fmt.Fprintf(w, "video-site-sampled-sha256-v1\nsize=%d\nsamples=%d\n", size, len(ranges))
 }
 

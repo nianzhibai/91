@@ -131,8 +131,8 @@ jobs:
             VERSION=${{ needs.prepare.outputs.version }}
           # Only the publish job updates shared tags after all builds succeed.
           outputs: type=image,name=${{ needs.prepare.outputs.image }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
-          cache-from: type=gha,scope=video-site-91-${{ matrix.id }}
-          cache-to: type=gha,mode=max,scope=video-site-91-${{ matrix.id }}
+          cache-from: type=gha,scope=91-${{ matrix.id }}
+          cache-to: type=gha,mode=max,scope=91-${{ matrix.id }}
 
       - name: Export image digest
         if: github.event_name != 'pull_request'

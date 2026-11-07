@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { JSDOM } from "jsdom";
 
 import {
   normalizeVideoReturnPath,
+  readVideoReturnPath,
   routeToPath,
 } from "../src/lib/videoReturnPath.ts";
 
@@ -32,3 +34,22 @@ test("rejects unsafe video delete return paths", () => {
     null
   );
 });
+
+for (const failedOperation of ["setItem", "removeItem"] as const) {
+  test(`saved return paths are readable without storage ${failedOperation}`, (t) => {
+    const dom = new JSDOM("", { url: ORIGIN });
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+    Object.defineProperty(globalThis, "window", { configurable: true, value: dom.window });
+    t.after(() => {
+      if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow);
+      else Reflect.deleteProperty(globalThis, "window");
+      dom.window.close();
+    });
+    dom.window.sessionStorage.setItem("video-site:video-return-path", "/list?q=saved");
+    t.mock.method(dom.window.Storage.prototype, failedOperation, () => {
+      throw new Error("Storage is not writable");
+    });
+    assert.equal(readVideoReturnPath(), "/list?q=saved");
+    assert.equal(dom.window.sessionStorage.getItem("video-site:video-return-path"), "/list?q=saved");
+  });
+}

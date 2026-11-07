@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/video-site/backend/internal/schedule"
+	"github.com/nianzhibai/91/backend/internal/schedule"
 )
 
 func TestCountTelegramImportsAcrossSendersAndHistoryCompaction(t *testing.T) {

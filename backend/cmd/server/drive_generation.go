@@ -6,8 +6,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/video-site/backend/internal/api"
-	"github.com/video-site/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/api"
+	"github.com/nianzhibai/91/backend/internal/catalog"
 )
 
 type driveGenerationWork struct {

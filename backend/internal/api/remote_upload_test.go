@@ -13,9 +13,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/video-site/backend/internal/auth"
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/mediaimport"
+	"github.com/nianzhibai/91/backend/internal/auth"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/mediaimport"
 )
 
 type fakeRemoteUploadService struct {

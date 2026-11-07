@@ -11,12 +11,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/video-site/backend/internal/api"
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/drives"
-	"github.com/video-site/backend/internal/drives/scriptcrawler"
-	"github.com/video-site/backend/internal/mediaasset"
-	"github.com/video-site/backend/internal/persistence"
+	"github.com/nianzhibai/91/backend/internal/api"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
+	"github.com/nianzhibai/91/backend/internal/mediaasset"
+	"github.com/nianzhibai/91/backend/internal/persistence"
 )
 
 // migrateHiddenVideosToTombstone 把历史「隐藏」视频一次性迁移为黑名单墓碑。

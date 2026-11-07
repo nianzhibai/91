@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/drives"
 )
 
 // Source is the read-only subset of a drive needed by a scan. Keeping this

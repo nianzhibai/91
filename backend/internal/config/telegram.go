@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/video-site/backend/internal/scopedproxy"
-	"github.com/video-site/backend/internal/tcpproxy"
+	"github.com/nianzhibai/91/backend/internal/scopedproxy"
+	"github.com/nianzhibai/91/backend/internal/tcpproxy"
 	"gopkg.in/yaml.v3"
 )
 

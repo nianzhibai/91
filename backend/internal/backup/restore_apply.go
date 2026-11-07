@@ -17,6 +17,19 @@ type AppliedRestore struct {
 	marker     restoreMarker
 }
 
+// DatabasePath is the actual restore target, including pending restores
+// prepared by versions that used a different database filename.
+func (applied *AppliedRestore) DatabasePath() string {
+	if applied != nil {
+		for _, operation := range applied.marker.Operations {
+			if operation.Name == "database" && operation.Kind == "file" {
+				return operation.Target
+			}
+		}
+	}
+	return ""
+}
+
 func PendingMarkerPath(dataRoot string) string {
 	return filepath.Join(dataRoot, "backups", ".restore-pending.json")
 }

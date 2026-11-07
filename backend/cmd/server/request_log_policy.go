@@ -6,7 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/video-site/backend/internal/applog"
+	"github.com/nianzhibai/91/backend/internal/applog"
 )
 
 const slowQueryLogThreshold = time.Second

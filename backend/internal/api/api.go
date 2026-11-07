@@ -22,17 +22,17 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/video-site/backend/internal/applog"
-	"github.com/video-site/backend/internal/auth"
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/drives/localstorage"
-	"github.com/video-site/backend/internal/drives/localupload"
-	"github.com/video-site/backend/internal/localpath"
-	"github.com/video-site/backend/internal/persistence"
-	"github.com/video-site/backend/internal/proxy"
-	"github.com/video-site/backend/internal/subtitles"
-	"github.com/video-site/backend/internal/tagging"
-	"github.com/video-site/backend/internal/videoname"
+	"github.com/nianzhibai/91/backend/internal/applog"
+	"github.com/nianzhibai/91/backend/internal/auth"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/drives/localstorage"
+	"github.com/nianzhibai/91/backend/internal/drives/localupload"
+	"github.com/nianzhibai/91/backend/internal/localpath"
+	"github.com/nianzhibai/91/backend/internal/persistence"
+	"github.com/nianzhibai/91/backend/internal/proxy"
+	"github.com/nianzhibai/91/backend/internal/subtitles"
+	"github.com/nianzhibai/91/backend/internal/tagging"
+	"github.com/nianzhibai/91/backend/internal/videoname"
 )
 
 const localUploadDriveID = localupload.DriveID

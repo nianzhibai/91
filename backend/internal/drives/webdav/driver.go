@@ -19,8 +19,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/video-site/backend/internal/drives"
-	"github.com/video-site/backend/internal/scopedproxy"
+	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/scopedproxy"
 )
 
 const (
@@ -471,7 +471,7 @@ func (d *Driver) newRequest(ctx context.Context, method, remotePath string, dire
 
 func (d *Driver) addRequestHeaders(header http.Header) {
 	header.Set("Accept", "*/*")
-	header.Set("User-Agent", "video-site-webdav")
+	header.Set("User-Agent", "91-webdav")
 	if d.username != "" || d.password != "" {
 		token := base64.StdEncoding.EncodeToString([]byte(d.username + ":" + d.password))
 		header.Set("Authorization", "Basic "+token)

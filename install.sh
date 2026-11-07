@@ -1,10 +1,25 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-APP_NAME="${APP_NAME:-video-site-91}"
+APP_NAME="${APP_NAME:-91}"
+[[ "$APP_NAME" != video-site-91 ]] || APP_NAME=91
 GITHUB_REPO="${GITHUB_REPO:-nianzhibai/91}"
-INSTALL_PATH="${INSTALL_PATH:-/opt/video-site-91}"
-SERVICE_NAME="${SERVICE_NAME:-video-site-91}"
+MANAGER_PATH="${MANAGER_PATH:-/usr/local/sbin/${APP_NAME}-manager}"
+SYSTEMD_UNIT_DIR="${SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
+LEGACY_INSTALL_PATH="${LEGACY_INSTALL_PATH:-/opt/video-site-91}"
+INSTALL_PATH_WAS_SET="${INSTALL_PATH+x}"
+SERVICE_NAME_WAS_SET="${SERVICE_NAME+x}"
+if [[ -r "${MANAGER_PATH}.conf" ]]; then
+  mapfile -t installed_settings < "${MANAGER_PATH}.conf"
+  [[ ${#installed_settings[@]} == 2 && "${installed_settings[0]}" == /* && -n "${installed_settings[1]}" ]] || {
+    printf 'Invalid installation settings: %s.conf\n' "$MANAGER_PATH" >&2
+    exit 1
+  }
+  INSTALL_PATH="${INSTALL_PATH:-${installed_settings[0]}}"
+  SERVICE_NAME="${SERVICE_NAME:-${installed_settings[1]}}"
+fi
+INSTALL_PATH="${INSTALL_PATH:-/opt/91}"
+SERVICE_NAME="${SERVICE_NAME:-91}"
 FRONTEND_PORT_WAS_SET="${FRONTEND_PORT+x}"
 FRONTEND_PORT="${FRONTEND_PORT:-9191}"
 VERSION="${VERSION:-latest}"
@@ -17,10 +32,9 @@ SELF_UPDATE="${SELF_UPDATE:-1}"
 FORCE_UPDATE="${FORCE_UPDATE:-0}"
 INSTALL_SCRIPT_REF="${INSTALL_SCRIPT_REF:-main}"
 INSTALL_SCRIPT_URL="${INSTALL_SCRIPT_URL:-${GH_PROXY}https://raw.githubusercontent.com/${GITHUB_REPO}/${INSTALL_SCRIPT_REF}/install.sh}"
-VIDEO_SITE_SKIP_SELF_UPDATE="${VIDEO_SITE_SKIP_SELF_UPDATE:-0}"
+VIDEO_SKIP_SELF_UPDATE="${VIDEO_SKIP_SELF_UPDATE:-${VIDEO_SITE_SKIP_SELF_UPDATE:-0}}"
 SERVICE_READY_TIMEOUT="${SERVICE_READY_TIMEOUT:-90}"
 VERSION_FILE="$INSTALL_PATH/.version"
-MANAGER_PATH="/usr/local/sbin/${APP_NAME}-manager"
 COMMAND_LINK="/usr/local/bin/91"
 APP_COMMAND_LINK="/usr/local/bin/${APP_NAME}"
 
@@ -143,7 +157,20 @@ EOF
 is_manager_invocation() {
   local name
   name="$(basename "$0")"
-  [[ "$name" == "91" || "$name" == "$APP_NAME" || "$name" == "$(basename "$MANAGER_PATH")" ]]
+  [[ "$name" == "91" || "$name" == video-site-91 || "$name" == video-site-91-manager || "$name" == "$APP_NAME" || "$name" == "$(basename "$MANAGER_PATH")" ]]
+}
+
+resolve_installation() {
+  if [[ -z "$INSTALL_PATH_WAS_SET" && ! -r "${MANAGER_PATH}.conf" && -f "$LEGACY_INSTALL_PATH/server" ]]; then
+    [[ ! -f "$INSTALL_PATH/server" ]] || die "Both current and legacy installations exist; set INSTALL_PATH explicitly"
+    INSTALL_PATH="$LEGACY_INSTALL_PATH"
+  fi
+  if [[ -z "$SERVICE_NAME_WAS_SET" && ! -r "${MANAGER_PATH}.conf" &&
+        -f "$SYSTEMD_UNIT_DIR/video-site-91.service" ]] &&
+      grep -Fxq "WorkingDirectory=$INSTALL_PATH" "$SYSTEMD_UNIT_DIR/video-site-91.service"; then
+    SERVICE_NAME=video-site-91
+  fi
+  VERSION_FILE="$INSTALL_PATH/.version"
 }
 
 need_root() {
@@ -291,9 +318,9 @@ prepare_config() {
 }
 
 write_service() {
-  cat >"/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
+  cat >"${SYSTEMD_UNIT_DIR}/${SERVICE_NAME}.service" <<EOF
 [Unit]
-Description=Video Site 91
+Description=91
 After=network-online.target
 Wants=network-online.target
 
@@ -334,18 +361,24 @@ install_cli_from_file() {
   local src="$1"
   local tmp
   [[ -f "$src" ]] || return 0
-  mkdir -p "$(dirname "$MANAGER_PATH")" "$(dirname "$COMMAND_LINK")" "$(dirname "$APP_COMMAND_LINK")"
+  mkdir -p "$(dirname "$MANAGER_PATH")" "$(dirname "$COMMAND_LINK")" "$(dirname "$APP_COMMAND_LINK")" || return
   tmp="${MANAGER_PATH}.tmp.$$"
-  cp "$src" "$tmp"
-  chmod 755 "$tmp"
-  mv "$tmp" "$MANAGER_PATH"
-  ln -sfn "$MANAGER_PATH" "$COMMAND_LINK"
-  ln -sfn "$MANAGER_PATH" "$APP_COMMAND_LINK"
+  cp "$src" "$tmp" || return
+  chmod 755 "$tmp" || return
+  mv "$tmp" "$MANAGER_PATH" || return
+  ln -sfn "$MANAGER_PATH" "$COMMAND_LINK" || return
+  if [[ "$APP_COMMAND_LINK" != "$COMMAND_LINK" ]]; then
+    ln -sfn "$MANAGER_PATH" "$APP_COMMAND_LINK" || return
+  fi
+  # Publish the installation settings only after the manager is usable.
+  printf '%s\n%s\n' "$INSTALL_PATH" "$SERVICE_NAME" > "${MANAGER_PATH}.conf.tmp.$$" || return
+  chmod 644 "${MANAGER_PATH}.conf.tmp.$$" || return
+  mv "${MANAGER_PATH}.conf.tmp.$$" "${MANAGER_PATH}.conf"
 }
 
 self_update_manager() {
   [[ "$SELF_UPDATE" == "1" ]] || return 1
-  [[ "$VIDEO_SITE_SKIP_SELF_UPDATE" != "1" ]] || return 1
+  [[ "$VIDEO_SKIP_SELF_UPDATE" != "1" ]] || return 1
   [[ -n "$INSTALL_SCRIPT_URL" ]] || return 1
 
   local tmp
@@ -366,7 +399,7 @@ self_update_manager() {
     return 1
   fi
 
-  install_cli_from_file "$tmp"
+  install_cli_from_file "$tmp" || { rm -f "$tmp"; return 1; }
   rm -f "$tmp"
   log "manager script updated"
   return 0
@@ -374,7 +407,7 @@ self_update_manager() {
 
 exec_latest_manager_update() {
   local env_args=(
-    "VIDEO_SITE_SKIP_SELF_UPDATE=1"
+    "VIDEO_SKIP_SELF_UPDATE=1"
     "APP_NAME=$APP_NAME"
     "GITHUB_REPO=$GITHUB_REPO"
     "INSTALL_PATH=$INSTALL_PATH"
@@ -579,7 +612,7 @@ target_version() {
   local body version effective_url
   body="$(curl -fsSL \
     -H "Accept: application/vnd.github+json" \
-    -H "User-Agent: video-site-91-installer" \
+    -H "User-Agent: 91-installer" \
     "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null || true)"
   version="$(printf '%s\n' "$body" \
     | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' \
@@ -670,9 +703,18 @@ update_app() {
     exec_latest_manager_update
   fi
 
+  local deployment_lock
+  exec {deployment_lock}< "$INSTALL_PATH"
+  flock -n "$deployment_lock" || die "Another deployment operation is running"
+
+  if [[ "$SERVICE_NAME" == video-site-91 && -e "$SYSTEMD_UNIT_DIR/91.service" ]]; then
+    die "91.service already exists; resolve the service conflict before updating"
+  fi
+
   install_deps
 
-  if should_skip_update; then
+  if should_skip_update && [[ "$SERVICE_NAME" != video-site-91 ]]; then
+    install_cli
     log "already up to date; skipped app update"
     return 0
   fi
@@ -682,25 +724,51 @@ update_app() {
   local backup
   backup="$(mktemp -d)"
   backup_install_files "$backup"
+  if [[ -f "${MANAGER_PATH}.conf" ]]; then cp -p "${MANAGER_PATH}.conf" "$backup/manager.conf"; fi
 
-  systemctl stop "${SERVICE_NAME}.service" 2>/dev/null || true
-  if ! (fetch_and_unpack && prepare_config && write_service && install_cli); then
-    warn "update failed; restoring previous files"
+  local previous_service="$SERVICE_NAME" previous_enabled=false
+  if [[ "$previous_service" == video-site-91 ]]; then
+    cp -a "$SYSTEMD_UNIT_DIR/${previous_service}.service" "$backup/legacy.service"
+    if systemctl is-enabled --quiet "${previous_service}.service"; then previous_enabled=true; fi
+  fi
+
+  systemctl stop "${previous_service}.service" || { rm -rf "$backup"; die "could not stop ${previous_service}.service"; }
+  if [[ "$previous_service" == video-site-91 ]]; then SERVICE_NAME=91; fi
+  if ! (fetch_and_unpack && prepare_config && write_service && install_cli && {
+      if [[ "$SERVICE_NAME" != "$previous_service" ]]; then
+        systemctl disable "${previous_service}.service" &&
+          rm -f "$SYSTEMD_UNIT_DIR/${previous_service}.service" && systemctl daemon-reload
+      fi
+    } && rm -f -- "$VERSION_FILE"); then
+    warn "update preparation failed; restoring previous files and service"
+    systemctl stop "${SERVICE_NAME}.service" 2>/dev/null || true
+    if [[ "$SERVICE_NAME" != "$previous_service" ]]; then
+      systemctl disable --now "${SERVICE_NAME}.service" 2>/dev/null || true
+      rm -f "$SYSTEMD_UNIT_DIR/${SERVICE_NAME}.service"
+      cp -a "$backup/legacy.service" "$SYSTEMD_UNIT_DIR/${previous_service}.service"
+      systemctl daemon-reload
+      if [[ "$previous_enabled" == true ]]; then systemctl enable "${previous_service}.service" >/dev/null; fi
+    fi
     restore_install_files "$backup"
+    if [[ -f "$backup/manager.conf" ]]; then
+      cp -p "$backup/manager.conf" "${MANAGER_PATH}.conf.tmp.$$"
+      mv "${MANAGER_PATH}.conf.tmp.$$" "${MANAGER_PATH}.conf"
+    else
+      rm -f "${MANAGER_PATH}.conf"
+    fi
+    SERVICE_NAME="$previous_service"
     systemctl start "${SERVICE_NAME}.service" 2>/dev/null || true
     rm -rf "$backup"
     exit 1
   fi
-
+  rm -rf "$backup"
+  # Once the new server runs, data migrations may have committed. Keep the
+  # matching binary/configuration on failure; only a healthy start gets a version.
   if ! restart_service_ready; then
-    warn "new version failed its readiness check; restoring previous files"
-    restore_install_files "$backup"
-    restart_service_ready 2>/dev/null || true
-    rm -rf "$backup"
-    exit 1
+    systemctl stop "${SERVICE_NAME}.service" 2>/dev/null || true
+    die "new version failed its readiness check; new files and data kept, service stopped. Fix the startup error and retry update"
   fi
   record_version
-  rm -rf "$backup"
   log "updated"
 }
 
@@ -813,9 +881,9 @@ PY
     log "Deleting $path"
     rm -rf --one-file-system -- "$path" || die "Data cleanup failed at $path; management commands kept for retry"
   done
-  rm -f "/etc/systemd/system/${SERVICE_NAME}.service"
+  rm -f "$SYSTEMD_UNIT_DIR/${SERVICE_NAME}.service"
   systemctl daemon-reload
-  rm -f "$COMMAND_LINK" "$APP_COMMAND_LINK" "$MANAGER_PATH"
+  rm -f "$COMMAND_LINK" "$APP_COMMAND_LINK" "$MANAGER_PATH" "${MANAGER_PATH}.conf"
   log "Uninstall complete: 91 and its application data removed"
 )
 
@@ -946,9 +1014,17 @@ main() {
   fi
 
   case "$action" in
+    install|update|start|restart|stop|status|logs|reset-password|uninstall) resolve_installation ;;
+  esac
+
+  case "$action" in
     install)
       need_root "$action" "${action_args[@]}"
-      install_app
+      if [[ "$SERVICE_NAME" == video-site-91 && -f "$INSTALL_PATH/server" ]]; then
+        update_app
+      else
+        install_app
+      fi
       ;;
     update)
       need_root "$action" "${action_args[@]}"

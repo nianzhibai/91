@@ -13,8 +13,8 @@ import (
 	"time"
 
 	sdk "github.com/SheltonZhu/115driver/pkg/driver"
-	"github.com/video-site/backend/internal/drives"
-	"github.com/video-site/backend/internal/scopedproxy"
+	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/scopedproxy"
 )
 
 func playbackJSONResponse(r *http.Request, body string) *http.Response {

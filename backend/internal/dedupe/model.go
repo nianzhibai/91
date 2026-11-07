@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/video-site/backend/internal/mediasim"
+	"github.com/nianzhibai/91/backend/internal/mediasim"
 )
 
 // Stage identifies the maintenance channel that connected a duplicate group.

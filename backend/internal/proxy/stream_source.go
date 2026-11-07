@@ -4,7 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/video-site/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/drives"
 )
 
 const streamObservationTTL = 30 * time.Minute

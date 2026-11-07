@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/video-site/backend/internal/backup"
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/config"
+	"github.com/nianzhibai/91/backend/internal/backup"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/config"
 )
 
 func newReceiverTestBackupManager(
@@ -24,7 +24,7 @@ func newReceiverTestBackupManager(
 	cfg := &config.Config{
 		Storage: config.Storage{
 			DataDir:         root,
-			DBPath:          filepath.Join(root, "video-site.db"),
+			DBPath:          filepath.Join(root, "91.db"),
 			LocalPreviewDir: filepath.Join(root, "previews"),
 		},
 	}

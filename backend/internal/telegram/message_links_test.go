@@ -16,9 +16,9 @@ import (
 	mt "github.com/gotd/td/telegram"
 	"github.com/gotd/td/tg"
 	"github.com/gotd/td/tgerr"
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/drives/telegramstorage"
-	"github.com/video-site/backend/internal/mediaimport"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/drives/telegramstorage"
+	"github.com/nianzhibai/91/backend/internal/mediaimport"
 )
 
 func TestParseMessageLinks(t *testing.T) {

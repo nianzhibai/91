@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/video-site/backend/internal/scopedproxy"
+	"github.com/nianzhibai/91/backend/internal/scopedproxy"
 )
 
 const (

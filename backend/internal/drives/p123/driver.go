@@ -23,8 +23,8 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
-	"github.com/video-site/backend/internal/drives"
-	"github.com/video-site/backend/internal/scopedproxy"
+	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/scopedproxy"
 )
 
 const (
@@ -35,7 +35,7 @@ const (
 	defaultReferer      = "https://www.123pan.com/"
 	defaultPlatform     = "web"
 	defaultAppVersion   = "3"
-	defaultUserAgent    = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) video-site-123pan"
+	defaultUserAgent    = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) 91-123pan"
 
 	endpointSignIn       = "/user/sign_in"
 	endpointUserInfo     = "/user/info"
@@ -868,7 +868,7 @@ func (d *Driver) login(ctx context.Context, rejectedToken ...string) error {
 		SetHeaders(map[string]string{
 			"origin":      "https://www.123pan.com",
 			"referer":     d.referer,
-			"user-agent":  "Dart/2.19(dart:io)-video-site",
+			"user-agent":  "Dart/2.19(dart:io)-91",
 			"platform":    d.platform,
 			"app-version": defaultAppVersion,
 		}).

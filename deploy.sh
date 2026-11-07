@@ -4,8 +4,8 @@ set -Eeuo pipefail
 SELF_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-APP_NAME="${APP_NAME:-video-site-91}"
-BACKEND_SERVICE="${BACKEND_SERVICE:-video-site-backend}"
+APP_NAME="${APP_NAME:-91}"
+SERVICE_NAME="${SERVICE_NAME:-91}"
 # Kept only to retire installations created by the old two-service topology.
 FRONTEND_SERVICE="${FRONTEND_SERVICE:-video-site-frontend}"
 FRONTEND_PORT="${FRONTEND_PORT:-9191}"
@@ -331,15 +331,26 @@ retire_legacy_frontend_service() {
   rm -f "$frontend_unit"
 }
 
+retire_legacy_backend_service() {
+  local legacy_service="video-site-backend"
+  local legacy_unit="/etc/systemd/system/${legacy_service}.service"
+  [[ "$SERVICE_NAME" != "$legacy_service" ]] || return 0
+  if [[ -e "$legacy_unit" ]] || systemctl is-active --quiet "${legacy_service}.service" 2>/dev/null; then
+    log "retiring legacy backend service; service is now ${SERVICE_NAME}.service"
+    systemctl disable --now "${legacy_service}.service"
+    rm -f "$legacy_unit"
+  fi
+}
+
 write_systemd_units() {
   local backend_unit env_lines
-  backend_unit="/etc/systemd/system/${BACKEND_SERVICE}.service"
+  backend_unit="/etc/systemd/system/${SERVICE_NAME}.service"
   env_lines="$(systemd_env_lines)"
 
   log "writing systemd unit: $backend_unit"
   cat >"$backend_unit" <<EOF
 [Unit]
-Description=Video Site Backend
+Description=91
 After=network-online.target
 Wants=network-online.target
 
@@ -360,15 +371,16 @@ ${env_lines}
 LimitNOFILE=65536
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=${BACKEND_SERVICE}
+SyslogIdentifier=${SERVICE_NAME}
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
   retire_legacy_frontend_service
+  retire_legacy_backend_service
   systemctl daemon-reload
-  systemctl enable "${BACKEND_SERVICE}.service" >/dev/null
+  systemctl enable "${SERVICE_NAME}.service" >/dev/null
 }
 
 open_firewall_port() {
@@ -382,7 +394,7 @@ open_firewall_port() {
 
 restart_services() {
   log "starting backend service (frontend and API share one listener)"
-  systemctl restart "${BACKEND_SERVICE}.service"
+  systemctl restart "${SERVICE_NAME}.service"
 }
 
 show_summary() {
@@ -400,7 +412,7 @@ show_summary() {
 }
 
 show_status() {
-  systemctl --no-pager --full status "${BACKEND_SERVICE}.service" || true
+  systemctl --no-pager --full status "${SERVICE_NAME}.service" || true
 }
 
 install_or_update() {
@@ -424,9 +436,9 @@ install_or_update() {
 }
 
 uninstall_services() {
-  systemctl disable --now "${BACKEND_SERVICE}.service" 2>/dev/null || true
+  systemctl disable --now "${SERVICE_NAME}.service" 2>/dev/null || true
   systemctl disable --now "${FRONTEND_SERVICE}.service" 2>/dev/null || true
-  rm -f "/etc/systemd/system/${FRONTEND_SERVICE}.service" "/etc/systemd/system/${BACKEND_SERVICE}.service"
+  rm -f "/etc/systemd/system/${FRONTEND_SERVICE}.service" "/etc/systemd/system/${SERVICE_NAME}.service"
   systemctl daemon-reload
   log "removed systemd services; repo, config, and data were kept"
 }
@@ -454,14 +466,14 @@ main() {
       ;;
     stop)
       need_root "$@"
-      systemctl stop "${BACKEND_SERVICE}.service"
+      systemctl stop "${SERVICE_NAME}.service"
       systemctl stop "${FRONTEND_SERVICE}.service" 2>/dev/null || true
       ;;
     status)
       show_status
       ;;
     logs)
-      journalctl -u "${BACKEND_SERVICE}.service" -f
+      journalctl -u "${SERVICE_NAME}.service" -f
       ;;
     uninstall)
       need_root "$@"

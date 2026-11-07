@@ -10,8 +10,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/video-site/backend/internal/localpath"
-	"github.com/video-site/backend/internal/mediaasset"
+	"github.com/nianzhibai/91/backend/internal/localpath"
+	"github.com/nianzhibai/91/backend/internal/mediaasset"
 )
 
 // prepareMergedPreview creates one replacement preview root. Target assets are

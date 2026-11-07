@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/config"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/config"
 )
 
 // Import legacy values before applying the template, while no runtime consumer

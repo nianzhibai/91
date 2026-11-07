@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/video-site/backend/internal/auth"
-	"github.com/video-site/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/auth"
+	"github.com/nianzhibai/91/backend/internal/catalog"
 )
 
 func TestUnbanEndpointResetsLoginFailureCount(t *testing.T) {

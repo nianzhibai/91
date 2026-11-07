@@ -4,7 +4,7 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/video-site/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/catalog"
 )
 
 func TestSupportedExtensionUsesProbeAndSourceHints(t *testing.T) {

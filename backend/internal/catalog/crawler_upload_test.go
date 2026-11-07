@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/video-site/backend/internal/uploadjob"
+	"github.com/nianzhibai/91/backend/internal/uploadjob"
 )
 
 func TestCrawlerUploadResultsSurviveRestartAndDriveDeletion(t *testing.T) {

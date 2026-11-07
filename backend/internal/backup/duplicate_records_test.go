@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/video-site/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/catalog"
 )
 
 func seedBackupDuplicateRecord(t *testing.T, cat *catalog.Catalog, id string, occurrences int) {

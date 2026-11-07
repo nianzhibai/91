@@ -35,7 +35,7 @@ test("build precompression uses the finalized files written by Vite", async (t) 
       : plugin.writeBundle?.handler;
   assert.ok(hook, "precompress-build-assets has a writeBundle hook");
 
-  const outputDir = mkdtempSync(join(tmpdir(), "video-site-precompression-"));
+  const outputDir = mkdtempSync(join(tmpdir(), "91-precompression-"));
   t.after(() => rmSync(outputDir, { recursive: true, force: true }));
   mkdirSync(join(outputDir, "assets"));
 

@@ -26,13 +26,13 @@ ${name === "curl" ? "exit 93" : "exit 0"}
     root, installation, bin,
     package(contents: string, label: string) {
       const source = join(root, `source-${label}`);
-      const packageRoot = join(source, "video-site-91-linux-amd64");
+      const packageRoot = join(source, "91-linux-amd64");
       mkdirSync(join(packageRoot, "dist"), { recursive: true });
       writeFileSync(join(packageRoot, "server"), contents, { mode: 0o755 });
       writeFileSync(join(packageRoot, "dist", "index.html"), contents);
       writeFileSync(join(packageRoot, "config.example.yaml"), 'server:\n  listen: "0.0.0.0:9191"\n');
       const path = join(root, `${label} release.tar.gz`);
-      const result = spawnSync("tar", ["-C", source, "-czf", path, "video-site-91-linux-amd64"], { encoding: "utf8" });
+      const result = spawnSync("tar", ["-C", source, "-czf", path, "91-linux-amd64"], { encoding: "utf8" });
       assert.equal(result.status, 0, result.stderr);
       return { path, version: `local-${createHash("sha256").update(readFileSync(path)).digest("hex").slice(0, 12)}` };
     },
@@ -49,7 +49,7 @@ ${name === "curl" ? "exit 93" : "exit 0"}
         }
         check_system() { ARCH=amd64; }
         install_deps() { printf 'dependencies\\n' >> "$CLI_CALLS"; }
-        write_service() { printf 'service\\n' >> "$CLI_CALLS"; }
+        write_service() { printf 'service\\n' >> "$CLI_CALLS"; [[ "\${CLI_FAIL_PREPARE:-}" != 1 ]]; }
         open_firewall_port() { :; }
         restart_service_ready() { printf 'restart\\n' >> "$CLI_CALLS"; [[ "\${CLI_FAIL_READY:-}" != 1 ]]; }
         show_success() { :; }
@@ -57,7 +57,7 @@ ${name === "curl" ? "exit 93" : "exit 0"}
         download_file() { printf 'download\\n' >> "$CLI_CALLS"; return 1; }
         MANAGER_PATH="$CLI_BIN/manager"
         COMMAND_LINK="$CLI_BIN/91"
-        APP_COMMAND_LINK="$CLI_BIN/video-site-91"
+        APP_COMMAND_LINK="$CLI_BIN/91"
         main "$@"
       `, "bash", installer, ...args], {
         encoding: "utf8", timeout: 10_000,
@@ -120,17 +120,33 @@ test("updating from the same local package skips service changes unless forced",
   assert.equal(f.calls().filter(call => call === "restart").length, 2);
 });
 
-test("failed local updates restore the previous binary, frontend and version", (t) => {
+test("failed local startup keeps the new binary and allows the same package to be retried", (t) => {
   const f = fixture(t);
   const first = f.package("working binary", "working");
   const second = f.package("broken binary", "broken");
   assert.equal(f.run(["install", "--package", first.path]).status, 0);
   const result = f.run(["update", "--package", second.path], { CLI_FAIL_READY: "1" });
   assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /new files and data kept, service stopped/);
+  assert.equal(readFileSync(join(f.installation, "server"), "utf8"), "broken binary");
+  assert.equal(readFileSync(join(f.installation, "dist", "index.html"), "utf8"), "broken binary");
+  assert.equal(existsSync(join(f.installation, ".version")), false);
+  assert.equal(f.run(["update", "--package", second.path]).status, 0);
+  assert.equal(readFileSync(join(f.installation, ".version"), "utf8").split("\n")[0], second.version);
+});
+
+test("failed update preparation restores the previous files before any new startup", (t) => {
+  const f = fixture(t);
+  const first = f.package("working binary", "working");
+  const second = f.package("replacement binary", "replacement");
+  assert.equal(f.run(["install", "--package", first.path]).status, 0);
+  const result = f.run(["update", "--package", second.path], { CLI_FAIL_PREPARE: "1" });
+  assert.notEqual(result.status, 0);
   assert.match(result.stderr, /restoring previous files/);
   assert.equal(readFileSync(join(f.installation, "server"), "utf8"), "working binary");
   assert.equal(readFileSync(join(f.installation, "dist", "index.html"), "utf8"), "working binary");
   assert.equal(readFileSync(join(f.installation, ".version"), "utf8").split("\n")[0], first.version);
+  assert.equal(f.calls().filter(call => call === "restart").length, 1);
 });
 
 test("invalid local package options are rejected before elevation or service changes", (t) => {

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/video-site/backend/internal/drives"
-	"github.com/video-site/backend/internal/scopedproxy"
+	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/scopedproxy"
 )
 
 func TestUploadTrafficUsesScopedProxyWithoutSessionAuthorization(t *testing.T) {

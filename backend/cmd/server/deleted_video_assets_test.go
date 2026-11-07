@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/config"
-	"github.com/video-site/backend/internal/mediaasset"
-	"github.com/video-site/backend/internal/preview"
-	"github.com/video-site/backend/internal/proxy"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/config"
+	"github.com/nianzhibai/91/backend/internal/mediaasset"
+	"github.com/nianzhibai/91/backend/internal/preview"
+	"github.com/nianzhibai/91/backend/internal/proxy"
 )
 
 func seedDeferredVideoAssets(t *testing.T) (*App, *catalog.Video, []string) {

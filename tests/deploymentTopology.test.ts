@@ -118,10 +118,10 @@ test("systemd deployment serves built frontend assets from the backend", () => {
     deploy,
     /systemctl disable --now "\$\{FRONTEND_SERVICE\}\.service"[\s\S]*?rm -f "\$frontend_unit"/
   );
-  assert.match(deploy, /systemctl enable "\$\{BACKEND_SERVICE\}\.service"/);
+  assert.match(deploy, /systemctl enable "\$\{SERVICE_NAME\}\.service"/);
   assert.doesNotMatch(
     deploy,
-    /systemctl enable "\$\{BACKEND_SERVICE\}\.service" "\$\{FRONTEND_SERVICE\}\.service"/
+    /systemctl enable "\$\{SERVICE_NAME\}\.service" "\$\{FRONTEND_SERVICE\}\.service"/
   );
 });
 
@@ -139,4 +139,37 @@ test("systemd deployment migrates only the legacy default listen address", () =>
 test("source deployment needs no separate Telegram deployment", () => {
   const source = readFileSync(new URL("../deploy.sh", import.meta.url), "utf8");
   assert.doesNotMatch(source, /telegram\.example\.yml|telegram-bot-api/);
+});
+
+test("source deployment retires the previous backend before enabling 91", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "91-service-rename-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const units = join(directory, "units");
+  mkdirSync(units);
+  const script = join(directory, "deploy.sh");
+  writeFileSync(script, deploy.replaceAll("/etc/systemd/system/", "$TEST_UNIT_DIR/"));
+  writeFileSync(join(directory, ".nvmrc"), "24.22.1\n");
+  const oldUnit = join(units, "video-site-backend.service");
+  writeFileSync(oldUnit, "previous service");
+  const result = spawnSync("bash", ["-c", `
+    source "$1" help >/dev/null
+    systemctl() {
+      printf '%s\\n' "$*" >> "$TEST_CALLS"
+      [[ "$1" != is-active ]]
+    }
+    DEPLOY_USER=root DEPLOY_GROUP=root DEPLOY_HOME=/root
+    write_systemd_units
+  `, "bash", script], {
+    encoding: "utf8",
+    env: { ...process.env, SERVICE_NAME: "91", TEST_UNIT_DIR: units, TEST_CALLS: join(directory, "calls") },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(join(units, "91.service"), "utf8").includes("Description=91\n"), true);
+  assert.equal(statSync(join(units, "91.service")).isFile(), true);
+  assert.throws(() => statSync(oldUnit), { code: "ENOENT" });
+  const calls = readFileSync(join(directory, "calls"), "utf8").trim().split("\n");
+  const disable = calls.indexOf("disable --now video-site-backend.service");
+  assert.ok(disable >= 0, calls.join("\n"));
+  assert.ok(calls.indexOf("daemon-reload") > disable);
+  assert.ok(calls.indexOf("enable 91.service") > disable);
 });

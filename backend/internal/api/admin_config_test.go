@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/video-site/backend/internal/config"
-	"github.com/video-site/backend/internal/preview"
+	"github.com/nianzhibai/91/backend/internal/config"
+	"github.com/nianzhibai/91/backend/internal/preview"
 )
 
 func newConfigAPIForTest(t *testing.T, source string) (*AdminServer, string) {

@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/video-site/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/drives"
 )
 
 // Hardware is shared by every drive. Detection is explicit and cached; asset

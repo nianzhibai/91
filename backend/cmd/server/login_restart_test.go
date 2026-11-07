@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/video-site/backend/internal/auth"
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/config"
+	"github.com/nianzhibai/91/backend/internal/auth"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/config"
 	"gopkg.in/yaml.v3"
 )
 
@@ -34,7 +34,7 @@ func TestServerRestartClearsLoginProtection(t *testing.T) {
 		Server: config.Server{Listen: "127.0.0.1:0"},
 		Storage: config.Storage{
 			DataDir:         filepath.Join(root, "data"),
-			DBPath:          filepath.Join(root, "data", "video-site.db"),
+			DBPath:          filepath.Join(root, "data", "91.db"),
 			LocalPreviewDir: filepath.Join(root, "data", "previews"),
 		},
 		Logging: config.Logging{FileEnabled: &fileLogging},
@@ -143,7 +143,7 @@ func startLoginRestartServer(t *testing.T, configPath string) func() {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(string(logs), "video-site backend listening on") {
+		if strings.Contains(string(logs), "91 backend listening on") {
 			return stop
 		}
 		select {

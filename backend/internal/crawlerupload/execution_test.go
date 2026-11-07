@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/drives"
-	"github.com/video-site/backend/internal/drives/scriptcrawler"
-	"github.com/video-site/backend/internal/uploadjob"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
+	"github.com/nianzhibai/91/backend/internal/uploadjob"
 )
 
 func uploadTestSetup(t *testing.T) (*catalog.Catalog, *scriptcrawler.Driver, *fakeUploadDrive, *Migrator) {

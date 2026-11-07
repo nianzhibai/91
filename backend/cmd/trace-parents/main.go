@@ -11,12 +11,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/drives/p115"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/drives/p115"
 )
 
 func main() {
-	dbPath := flag.String("db", "data/video-site.db", "sqlite path")
+	dbPath := flag.String("db", "data/91.db", "sqlite path")
 	flag.Parse()
 
 	cat, err := catalog.Open(*dbPath)

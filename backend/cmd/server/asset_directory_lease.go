@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/video-site/backend/internal/filelock"
+	"github.com/nianzhibai/91/backend/internal/filelock"
 )
 
 // assetDirectoryLease gives one server process exclusive write ownership of a

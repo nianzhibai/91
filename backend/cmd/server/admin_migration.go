@@ -5,9 +5,9 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/video-site/backend/internal/auth"
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/config"
+	"github.com/nianzhibai/91/backend/internal/auth"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/config"
 )
 
 func migrateLegacyAdmin(ctx context.Context, cat *catalog.Catalog, manager *config.Manager) (bool, error) {

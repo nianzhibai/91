@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/scanner"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/scanner"
 )
 
 func TestListEncodesRelativePathsAndStreamURLResolvesFile(t *testing.T) {

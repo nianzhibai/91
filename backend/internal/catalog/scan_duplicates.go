@@ -5,8 +5,8 @@ import (
 	"database/sql"
 	"errors"
 
-	"github.com/video-site/backend/internal/dedupe"
-	"github.com/video-site/backend/internal/driveevents"
+	"github.com/nianzhibai/91/backend/internal/dedupe"
+	"github.com/nianzhibai/91/backend/internal/driveevents"
 )
 
 // InsertScannedVideo admits a new scan row only if neither its source identity

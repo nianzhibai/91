@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/video-site/backend/internal/auth"
-	"github.com/video-site/backend/internal/backup"
-	"github.com/video-site/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/auth"
+	"github.com/nianzhibai/91/backend/internal/backup"
+	"github.com/nianzhibai/91/backend/internal/catalog"
 	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
 )
@@ -34,7 +34,7 @@ type resetPasswordFixture struct {
 func newResetPasswordFixture(t *testing.T) resetPasswordFixture {
 	t.Helper()
 	root := t.TempDir()
-	dbPath := filepath.Join(root, "video-site.db")
+	dbPath := filepath.Join(root, "91.db")
 	cat, err := catalog.Open(dbPath)
 	if err != nil {
 		t.Fatal(err)
@@ -76,6 +76,32 @@ func newResetPasswordFixture(t *testing.T) resetPasswordFixture {
 		t.Fatal(err)
 	}
 	return resetPasswordFixture{root, configPath, dbPath, cat, id, otherID, hash}
+}
+
+func TestResetPasswordExplainsLegacyDatabaseWithoutMigratingIt(t *testing.T) {
+	f := newResetPasswordFixture(t)
+	if err := f.cat.Close(); err != nil {
+		t.Fatal(err)
+	}
+	legacy := filepath.Join(f.root, "video-site.db")
+	if err := os.Rename(f.dbPath, legacy); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = runResetPasswordCommand([]string{"--config", f.configPath, "--user-id", strconv.FormatInt(f.id, 10)}, strings.NewReader(""), io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "start the new server once") {
+		t.Fatalf("missing migration guidance: %v", err)
+	}
+	after, err := os.ReadFile(legacy)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("maintenance changed legacy database: %v", err)
+	}
+	if _, err := os.Stat(f.dbPath); !os.IsNotExist(err) {
+		t.Fatalf("maintenance created a new database: %v", err)
+	}
 }
 
 func resetCommandSQL(t *testing.T, path, statement string) {
@@ -231,7 +257,7 @@ func TestResetPasswordCommandDoesNotCreateConfigOrDatabase(t *testing.T) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatal("created missing config")
 	}
-	dbPath := filepath.Join(root, "video-site.db")
+	dbPath := filepath.Join(root, "91.db")
 	data, err := yaml.Marshal(map[string]any{"storage": map[string]string{"data_dir": root}})
 	if err != nil {
 		t.Fatal(err)

@@ -3,7 +3,7 @@ package crawlerupload
 import (
 	"testing"
 
-	"github.com/video-site/backend/internal/drives/yun139"
+	"github.com/nianzhibai/91/backend/internal/drives/yun139"
 )
 
 func TestMobilePersonalCloudIsACrawlerUploadTarget(t *testing.T) {

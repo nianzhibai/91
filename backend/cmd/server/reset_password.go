@@ -9,14 +9,15 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/video-site/backend/internal/auth"
-	"github.com/video-site/backend/internal/backup"
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/config"
+	"github.com/nianzhibai/91/backend/internal/auth"
+	"github.com/nianzhibai/91/backend/internal/backup"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/config"
 )
 
 func runServerCommand(args []string, in io.Reader, out, errorOut io.Writer) (bool, error) {
@@ -93,6 +94,12 @@ func runResetPasswordCommand(args []string, in io.Reader, out, errorOut io.Write
 	}
 	info, err := os.Stat(storage.DBPath)
 	if err != nil {
+		if os.IsNotExist(err) {
+			legacy := filepath.Join(filepath.Dir(storage.DBPath), "video-site.db")
+			if _, legacyErr := os.Stat(legacy); legacyErr == nil {
+				return errors.New("legacy database needs migration; start the new server once before resetting passwords")
+			}
+		}
 		return fmt.Errorf("locate existing database: %w", err)
 	}
 	check := func() error {

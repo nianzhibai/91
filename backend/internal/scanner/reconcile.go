@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/video-site/backend/internal/applog"
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/videoid"
-	"github.com/video-site/backend/internal/videoname"
+	"github.com/nianzhibai/91/backend/internal/applog"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/videoid"
+	"github.com/nianzhibai/91/backend/internal/videoname"
 )
 
 func (s *Scanner) reconcile(ctx context.Context, result *Result, progress progressFunc) error {

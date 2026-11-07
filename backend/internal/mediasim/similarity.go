@@ -6,7 +6,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/video-site/backend/internal/mediaasset"
+	"github.com/nianzhibai/91/backend/internal/mediaasset"
 )
 
 const (

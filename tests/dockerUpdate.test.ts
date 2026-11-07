@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -9,7 +9,7 @@ import { parse } from "yaml";
 
 const repository = fileURLToPath(new URL("../", import.meta.url));
 const script = join(repository, "91-docker.sh");
-const service = "video-site-91";
+const service = "91";
 const oldImage = `sha256:${"a".repeat(64)}`;
 const newImage = `sha256:${"b".repeat(64)}`;
 const oldTelegramImage = `sha256:${"c".repeat(64)}`;
@@ -45,6 +45,9 @@ type EngineState = {
   resetInput?: string;
   uninstalls?: any[];
   uninstallExit?: number;
+  missingCurrentTemplates?: boolean;
+  oldDatabaseFilename?: string;
+  newDatabaseFilename?: string;
   info: { Runtimes: Record<string, unknown>; OperatingSystem: string; SecurityOptions?: string[] };
 };
 
@@ -72,9 +75,9 @@ if (args[0] === "compose") {
     process.exit(result.status ?? 1);
   }
   if (command === "exec") {
-    if (state.existingContainer === false) { process.stderr.write("service video-site-91 is not running\\n"); exit(1); }
+    if (state.existingContainer === false) { process.stderr.write("service 91 is not running\\n"); exit(1); }
     const values = args.slice(commandIndex + 1).filter((value) => value !== "-T");
-    if (values.length !== 3 || values[0] !== "video-site-91" || values[1] !== "/opt/video-site-91/server" || values[2] !== "reset-password") exit(2);
+    if (values.length !== 4 || !["91", "video-site-91"].includes(values[0]) || values[1] !== "docker-entrypoint.sh" || values[2] !== "./server" || values[3] !== "reset-password") exit(2);
     output("ID | Username | Role | Account banned\\n7 | test-user | admin | false");
     process.stdout.write("User ID to reset: ");
     const buffer = Buffer.alloc(1);
@@ -113,13 +116,21 @@ if (args[0] === "compose") {
   if (state.changeDuringPull) writeFileSync(join(root, "docker-compose.yml"), "# concurrent edit\\n" + readFileSync(join(root, "docker-compose.yml"), "utf8"));
   if (state.createConfigDuringPull) writeFileSync(join(root, "docker-compose.yml"), "# created by another process\\nservices: {}\\n");
   exit(state.failPull || (state.failTelegramPull && args[1].includes("telegram")) ? 1 : 0);
-} else if (args[0] === "image" && args.includes('{{ index .Config.Labels "io.video-site-91.media-variant" }}')) { output(process.env.TEST_MEDIA_VARIANT ?? "standard"); exit();
+} else if (args[0] === "image" && args.includes('{{ index .Config.Labels "io.91.database-filename" }}')) {
+  output((args.at(-1) === process.env.TEST_OLD_IMAGE ? state.oldDatabaseFilename : state.newDatabaseFilename) ?? "91.db"); exit();
+} else if (args[0] === "image" && args.includes('{{ index .Config.Labels "io.91.media-variant" }}')) { output(process.env.TEST_MEDIA_VARIANT ?? "standard"); exit();
 } else if (args[0] === "image") { output(state.pulled || state.localImageChanged ? process.env.TEST_NEW_IMAGE : process.env.TEST_OLD_IMAGE); exit();
 } else if (args[0] === "create") { output("template-container"); exit();
 } else if (args[0] === "cp") {
+  if (state.missingCurrentTemplates && args[1].includes("/usr/local/share/91/deploy/")) exit(1);
   try { copyFileSync(join(root, "templates", basename(args[1])), args[2]); exit(); }
   catch { exit(1); }
 } else if (args[0] === "rm") { output("template-container"); exit(); }
+else if (args[0] === "run" && args.includes("/usr/local/share/91/migrate-compose.py")) {
+  save();
+  const result = spawnSync("python3", [process.env.TEST_COMPOSE_MIGRATOR, ...args.slice(args.indexOf("/usr/local/share/91/migrate-compose.py") + 1)], {stdio: "inherit"});
+  process.exit(result.status ?? 1);
+}
 process.stderr.write("Unexpected Docker command: " + JSON.stringify(args));
 exit(1);
 `;
@@ -163,6 +174,7 @@ fi
     ...environment,
     PATH: `${bin}:${process.env.PATH ?? ""}`,
     TEST_DEPLOYMENT: root,
+    TEST_COMPOSE_MIGRATOR: join(repository, "scripts/migrate-compose.py"),
     TEST_REAL_DOCKER: dockerPath!,
     TEST_OLD_IMAGE: oldImage,
     TEST_NEW_IMAGE: newImage,
@@ -222,7 +234,7 @@ test("uninstall deletes deployment resources, application data and configuration
   config.services[service].volumes.push("./library:/videos:ro");
   writeFileSync(f.target, JSON.stringify(config));
   for (const directory of ["data", "data/uploads", "data/previews", "library"]) mkdirSync(join(f.root, directory), { recursive: true });
-  writeFileSync(join(f.root, "data/config.yaml"), "storage: {data_dir: /opt/video-site-91/data}\n");
+  writeFileSync(join(f.root, "data/config.yaml"), "storage: {data_dir: /opt/91/data}\n");
   writeFileSync(join(f.root, "data/uploads/clip.mp4"), "uploaded video");
   writeFileSync(join(f.root, "library/original.mp4"), "external original");
   writeFileSync(join(f.root, ".env"), "WEB_PORT=9191\n");
@@ -252,7 +264,7 @@ test("uninstall honors custom Compose files, overlays and the dotenv project nam
   const alternative = join(f.root, "production.yml");
   const overlay = join(f.root, "storage.yml");
   renameSync(f.target, alternative);
-  writeFileSync(overlay, JSON.stringify({ services: { [service]: { volumes: ["./private data:/opt/video-site-91/data"] } } }));
+  writeFileSync(overlay, JSON.stringify({ services: { [service]: { volumes: ["./private data:/opt/91/data"] } } }));
   writeFileSync(join(f.root, ".env"), "COMPOSE_FILE=production.yml:storage.yml\nCOMPOSE_PROJECT_NAME=existing-project\n");
   mkdirSync(join(f.root, "private data"));
   writeFileSync(join(f.root, "private data/video-site.db"), "database");
@@ -288,7 +300,7 @@ test("uninstall removes separate Telegram storage and custom 91 data/config moun
 test("uninstall removes named volumes without requiring local host bind cleanup", requiresCompose, (t) => {
   const f = fixture(t);
   const config = parse(readFileSync(f.target, "utf8"));
-  config.services[service].volumes = ["app-data:/opt/video-site-91/data"];
+  config.services[service].volumes = ["app-data:/opt/91/data"];
   config.volumes = { "app-data": {} };
   writeFileSync(f.target, JSON.stringify(config));
 
@@ -313,7 +325,7 @@ for (const storage of ["/", ".", "./unsafe-link"]) {
   test(`uninstall refuses unsafe data path ${storage} before Docker cleanup`, requiresCompose, (t) => {
     const f = fixture(t);
     const config = parse(readFileSync(f.target, "utf8"));
-    config.services[service].volumes = [`${storage}:/opt/video-site-91/data`];
+    config.services[service].volumes = [`${storage}:/opt/91/data`];
     writeFileSync(f.target, JSON.stringify(config));
     if (storage === "./unsafe-link") symlinkSync(f.root, join(f.root, "unsafe-link"), "dir");
     const original = readFileSync(f.target, "utf8");
@@ -411,7 +423,7 @@ test("password reset invokes the running server and leaves deployment files unto
   const result = f.run(["reset-password"], {}, "7\n");
   succeeded(result);
   const exec = f.state().calls.find((args) => args.includes("exec"));
-  assert.deepEqual(exec?.slice(exec.indexOf("exec")), ["exec", "-T", service, "/opt/video-site-91/server", "reset-password"]);
+  assert.deepEqual(exec?.slice(exec.indexOf("exec")), ["exec", "-T", service, "docker-entrypoint.sh", "./server", "reset-password"]);
   assert.equal(f.state().resetInput, "7");
   assert.equal(result.stdout.match(/New password:/g)?.length, 1);
   assert.equal(readFileSync(f.target, "utf8"), original);
@@ -430,7 +442,7 @@ test("password reset preserves custom Compose files", requiresCompose, (t) => {
   succeeded(result);
   const exec = f.state().calls.find((args) => args.includes("exec"))!;
   assert.equal(exec[exec.indexOf("-f") + 1], renamed);
-  assert.deepEqual(exec.slice(-3), [service, "/opt/video-site-91/server", "reset-password"]);
+  assert.deepEqual(exec.slice(-4), [service, "docker-entrypoint.sh", "./server", "reset-password"]);
   assert.equal(existsSync(f.target), false);
 });
 
@@ -546,7 +558,7 @@ test("Shell updater has valid Bash syntax and working help", () => {
   const help = spawnSync("bash", [script, "--help"], { encoding: "utf8" });
   succeeded(help);
   assert.match(help.stdout, /^Usage: bash 91-docker\.sh /);
-  assert.doesNotMatch(readFileSync(script, "utf8"), /python|docker run/);
+  assert.doesNotMatch(readFileSync(script, "utf8"), /command -v python|python3 -/);
 });
 
 test("no arguments show help without installing or updating", requiresCompose, (t) => {
@@ -670,7 +682,7 @@ test("install deploys an empty directory with the image defaults", requiresCompo
   assert.equal(s.image, "ghcr.io/nianzhibai/91:stable");
   assert.equal(s.ports[0].published, "9191");
   assert.equal(s.volumes[0].source, "./data");
-  assert.equal(s.volumes[0].target, "/opt/video-site-91/data");
+  assert.equal(s.volumes[0].target, "/opt/91/data");
   assert.equal(s.environment.VIDEO_RESTART_MANAGED, "true");
   assert.equal(s.deploy, undefined);
   assert.deepEqual(f.backups(), []);
@@ -712,7 +724,7 @@ test("GPU configuration and updates preserve Compose port and storage settings",
   const f = fixture(t);
   const config = parse(readFileSync(f.target, "utf8"));
   config.services[service].ports = ["8182:9191"];
-  config.services[service].volumes = ["./private data:/opt/video-site-91/data"];
+  config.services[service].volumes = ["./private data:/opt/91/data"];
   writeFileSync(f.target, JSON.stringify(config));
   succeeded(f.run(["gpu"], { TEST_READY_GPU: "vaapi" }));
   const before = f.raw().services[service];
@@ -759,7 +771,7 @@ test("first deployment supports a custom filename and preserves existing overlay
   const f = freshDeployment(t);
   const target = join(f.root, "application.yml");
   const overlay = join(f.root, "custom.yml");
-  const original = "name: new-project\nservices:\n  video-site-91:\n    ports: !override [\"8183:9191\"]\n";
+  const original = "name: new-project\nservices:\n  \"91\":\n    ports: !override [\"8183:9191\"]\n";
   writeFileSync(overlay, original);
   writeFileSync(join(f.root, ".env"), "COMPOSE_FILE=application.yml:custom.yml\n");
   succeeded(f.run(["install"]));
@@ -974,11 +986,11 @@ test("upgrade preserves custom settings, variable references, env files and othe
   const f = fixture(t);
   writeFileSync(f.target, `name: \${STACK_NAME:-private-stack}
 services:
-  video-site-91:
+  "91":
     image: \${VIDEO_IMAGE:-ghcr.io/nianzhibai/91:stable}
     container_name: customized-name
     ports: ["127.0.0.1:\${WEB_PORT:-8181}:9191"]
-    volumes: ["./private data:/opt/video-site-91/data", "cache:/cache"]
+    volumes: ["./private data:/opt/91/data", "cache:/cache"]
     env_file: ./service.env
     environment: {CUSTOM: "\${LOCAL_VALUE:-keep}", ESCAPED: "$$TOKEN"}
     labels: {custom: keep}
@@ -1205,7 +1217,7 @@ test("NVIDIA selection preserves explicitly enabled driver capabilities", requir
 
 test("host networking does not gain deliberately omitted ports or mounts", requiresCompose, (t) => {
   const f = fixture(t);
-  writeFileSync(f.target, "services:\n  video-site-91:\n    image: ghcr.io/nianzhibai/91:stable\n    network_mode: host\n");
+  writeFileSync(f.target, "services:\n  \"91\":\n    image: ghcr.io/nianzhibai/91:stable\n    network_mode: host\n");
   succeeded(f.run(["update"]));
   const s = f.raw().services[service];
   assert.equal(s.network_mode, "host");
@@ -1216,7 +1228,7 @@ test("host networking does not gain deliberately omitted ports or mounts", requi
 test("null deployment and environment lists retain their meaning during GPU preparation", requiresCompose, (t) => {
   const f = fixture(t);
   writeFileSync(f.target, `services:
-  video-site-91:
+  "91":
     image: ghcr.io/nianzhibai/91:stable
     deploy: null
     environment:
@@ -1272,13 +1284,229 @@ for (const failRollback of [false, true]) {
 test("default overlay discovery preserves the existing overlay", requiresCompose, (t) => {
   const f = fixture(t);
   const overlay = join(f.root, "docker-compose.override.yml");
-  writeFileSync(overlay, "services:\n  video-site-91:\n    ports: !override [\"8181:9191\"]\n    environment:\n      CUSTOM_FROM_OVERLAY: keep\n");
+  writeFileSync(overlay, "services:\n  \"91\":\n    ports: !override [\"8181:9191\"]\n    environment:\n      CUSTOM_FROM_OVERLAY: keep\n");
   const before = readFileSync(overlay, "utf8");
   succeeded(f.run(["update"]));
   assert.equal(f.state().starts[0].services[service].ports[0].published, "8181");
   assert.equal(f.state().starts[0].services[service].environment.CUSTOM_FROM_OVERLAY, "keep");
   assert.equal(readFileSync(overlay, "utf8"), before);
 });
+
+const requiresMigration = { skip: requiresCompose.skip || (spawnSync("python3", ["-c", "import yaml"]).status !== 0 && "Python PyYAML is required") };
+
+function legacyDeployment(t: TestContext, container = "video-site-91") {
+  const f = fixture(t);
+  const config = parse(readFileSync(f.target, "utf8"));
+  const app = config.services[service];
+  delete config.services[service];
+  app.container_name = container;
+  app.ports = ["8181:9191"];
+  app.volumes = ["./private data:/opt/video-site-91/data"];
+  config.services["video-site-91"] = app;
+  config.services.sidecar = { image: "busybox", depends_on: { "video-site-91": { condition: "service_started" } } };
+  writeFileSync(f.target, JSON.stringify(config));
+  mkdirSync(join(f.root, "private data"));
+  writeFileSync(join(f.root, "private data/video-site.db"), "original database");
+  writeFileSync(join(f.root, "private data/config.yaml"), "storage: {data_dir: /opt/video-site-91/data}\n");
+  return f;
+}
+
+for (const container of ["video-site-91", "custom-container"]) {
+  test(`legacy update renames the service and keeps data mounts (container: ${container})`, requiresMigration, (t) => {
+    const f = legacyDeployment(t, container);
+    succeeded(f.run(["update"]));
+    const state = f.state();
+    const app = state.starts[0].services[service];
+    assert.equal(app.container_name, container === "video-site-91" ? "91" : container);
+    assert.equal(state.starts[0].services["video-site-91"], undefined);
+    assert.equal(app.volumes[0].target, "/opt/video-site-91/data");
+    assert.equal(app.volumes[0].source, join(f.root, "private data"));
+    assert.equal(app.ports[0].published, "8181");
+    assert.ok(app.networks.default.aliases.includes("video-site-91"));
+    assert.equal(state.starts[0].services.sidecar.depends_on[service].condition, "service_started");
+    assert.equal(readFileSync(join(f.root, "private data/video-site.db"), "utf8"), "original database");
+    const stop = state.calls.findIndex(args => args.includes("stop") && args.at(-1) === "video-site-91");
+    const remove = state.calls.findIndex(args => args.includes("rm") && args.at(-1) === "video-site-91");
+    const start = state.calls.findIndex(args => args.includes("up"));
+    assert.ok(stop >= 0 && remove > stop && start > remove);
+    assert.ok(!state.calls[remove].includes("-v"));
+    succeeded(f.run(["update"]));
+    assert.equal(f.state().starts.at(-1).services[service].volumes[0].target, "/opt/video-site-91/data");
+  });
+}
+
+test("legacy migration updates overlays without losing override tags or variable references", requiresMigration, (t) => {
+  const f = legacyDeployment(t);
+  const overlay = join(f.root, "docker-compose.override.yml");
+  writeFileSync(overlay, 'services:\n  video-site-91:\n    ports: !override ["8282:9191"]\n    environment: {CUSTOM: "${LOCAL_VALUE:-keep}"}\n');
+  succeeded(f.run(["update"]));
+  const text = readFileSync(overlay, "utf8");
+  assert.match(text, /!override/);
+  assert.match(text, /\$\{LOCAL_VALUE:-keep\}/);
+  assert.doesNotMatch(text, /video-site-91:/);
+  assert.equal(f.state().starts[0].services[service].ports[0].published, "8282");
+  assert.equal(f.state().starts[0].services[service].environment.CUSTOM, "keep");
+  assert.equal(f.backups().length, 2);
+});
+
+test("failed legacy migration restores every Compose file and the previous service image", requiresMigration, (t) => {
+  const f = legacyDeployment(t);
+  const overlay = join(f.root, "docker-compose.override.yml");
+  writeFileSync(overlay, 'services:\n  video-site-91:\n    ports: !override ["8282:9191"]\n');
+  const before = [readFileSync(f.target, "utf8"), readFileSync(overlay, "utf8")];
+  f.changeState({ failStart: true });
+  const result = f.run(["update"]);
+  assert.notEqual(result.status, 0);
+  assert.equal(readFileSync(f.target, "utf8"), before[0]);
+  assert.equal(readFileSync(overlay, "utf8"), before[1]);
+  const starts = f.state().starts;
+  assert.equal(starts.length, 2, result.stdout + result.stderr);
+  assert.equal(starts[0].services[service].container_name, "91");
+  assert.equal(starts[1].services["video-site-91"].image, oldImage);
+  assert.equal(starts[1].services["video-site-91"].volumes[0].target, "/opt/video-site-91/data");
+});
+
+test("a failed database filename upgrade keeps the new deployment stopped instead of starting an incompatible image", requiresMigration, (t) => {
+  const f = legacyDeployment(t);
+  f.changeState({ failStart: true, oldDatabaseFilename: "<no value>", newDatabaseFilename: "91.db" });
+  const result = f.run(["update"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /Automatic image rollback skipped/);
+  assert.equal(f.state().starts.length, 1);
+  assert.ok(f.raw().services[service]);
+  assert.equal(f.raw().services["video-site-91"], undefined);
+  assert.ok(f.state().calls.some(args => args.includes("stop") && args.at(-1) === service));
+  assert.equal(readFileSync(join(f.root, "private data/video-site.db"), "utf8"), "original database");
+  f.changeState({ failStart: false, oldDatabaseFilename: "91.db" });
+  succeeded(f.run(["update"]));
+});
+
+test("legacy migration rejects anonymous data before stopping the old container", requiresCompose, (t) => {
+  const f = legacyDeployment(t);
+  const config = parse(readFileSync(f.target, "utf8"));
+  config.services["video-site-91"].volumes = ["/opt/video-site-91/data"];
+  writeFileSync(f.target, JSON.stringify(config));
+  const result = f.run(["update"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /explicit application data mount/);
+  assert.deepEqual(f.state().starts, []);
+  assert.equal(f.state().calls.some(args => args.includes("stop")), false);
+});
+
+test("legacy migration rejects simultaneous old and new services", requiresCompose, (t) => {
+  const f = legacyDeployment(t);
+  const config = parse(readFileSync(f.target, "utf8"));
+  config.services[service] = { image: "busybox" };
+  writeFileSync(f.target, JSON.stringify(config));
+  const result = f.run(["update"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Both legacy and current services exist/);
+  assert.equal(f.state().pulled, false);
+  assert.deepEqual(f.backups(), []);
+});
+
+test("legacy migration rejects old target images before changing the deployment", requiresCompose, (t) => {
+  const f = legacyDeployment(t);
+  const before = readFileSync(f.target, "utf8");
+  f.changeState({ missingCurrentTemplates: true });
+  const result = f.run(["update"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /no 91 deployment templates/);
+  assert.equal(readFileSync(f.target, "utf8"), before);
+  assert.deepEqual(f.backups(), []);
+  assert.deepEqual(f.state().starts, []);
+  assert.equal(f.state().calls.some(args => args.includes("stop")), false);
+});
+
+test("legacy network migration retains private networks and their existing aliases", requiresMigration, (t) => {
+  const f = legacyDeployment(t);
+  const config = parse(readFileSync(f.target, "utf8"));
+  config.services["video-site-91"].networks = { private: { aliases: ["custom-api"] } };
+  config.services.sidecar.networks = ["private"];
+  config.networks = { private: {} };
+  writeFileSync(f.target, JSON.stringify(config));
+  writeFileSync(join(f.root, "docker-compose.override.yml"), "services:\n  video-site-91:\n    environment: {CUSTOM: keep}\n");
+  succeeded(f.run(["update"]));
+  const networks = f.state().starts[0].services[service].networks;
+  assert.deepEqual(Object.keys(networks), ["private"]);
+  assert.deepEqual(networks.private.aliases, ["custom-api", "video-site-91"]);
+});
+
+test("legacy migration isolates shared YAML anchors when retaining the old DNS name", requiresMigration, (t) => {
+  const f = legacyDeployment(t);
+  writeFileSync(f.target, `x-common: &common
+  networks: {private: {}}
+services:
+  video-site-91:
+    <<: *common
+    image: ghcr.io/nianzhibai/91:stable
+    container_name: video-site-91
+    volumes: ["./private data:/opt/video-site-91/data"]
+    environment: {service: video-site-91}
+  sidecar:
+    <<: *common
+    image: busybox
+networks:
+  private: {}
+`);
+  succeeded(f.run(["update"]));
+  const services = f.state().starts[0].services;
+  assert.ok(services[service].networks.private.aliases.includes("video-site-91"));
+  assert.equal(services.sidecar.networks.private.aliases?.includes("video-site-91") ?? false, false);
+  assert.equal(services[service].environment.service, "video-site-91");
+});
+
+test("legacy migration preserves inherited network aliases and dependency mappings", requiresMigration, (t) => {
+  const f = legacyDeployment(t);
+  writeFileSync(f.target, `x-aliases: &aliases
+  aliases: [custom-api]
+x-networks: &networks
+  private:
+    <<: *aliases
+x-dependencies: &dependencies
+  video-site-91: {condition: service_started}
+services:
+  video-site-91:
+    image: ghcr.io/nianzhibai/91:stable
+    volumes: ["./private data:/opt/video-site-91/data"]
+    networks:
+      <<: *networks
+  sidecar:
+    image: busybox
+    networks: *networks
+    depends_on:
+      <<: *dependencies
+networks:
+  private: {}
+`);
+  succeeded(f.run(["update"]));
+  const services = f.state().starts[0].services;
+  assert.deepEqual(services[service].networks.private.aliases, ["custom-api", "video-site-91"]);
+  assert.deepEqual(services.sidecar.networks.private.aliases, ["custom-api"]);
+  assert.equal(services.sidecar.depends_on[service].condition, "service_started");
+  assert.equal(services.sidecar.depends_on["video-site-91"], undefined);
+});
+
+for (const external of [false, true]) {
+  test(`legacy migration resolves extends in its own file namespace (external: ${external})`, requiresMigration, (t) => {
+    const f = legacyDeployment(t);
+    const shared = join(f.root, "shared.yml");
+    const sharedSource = "services:\n  video-site-91:\n    image: busybox\n    environment: {SOURCE: external}\n";
+    writeFileSync(shared, sharedSource);
+    const config = parse(readFileSync(f.target, "utf8"));
+    config.services.sidecar = {
+      extends: { ...(external ? { file: "shared.yml" } : {}), service: "video-site-91" },
+      container_name: "sidecar",
+    };
+    writeFileSync(f.target, JSON.stringify(config));
+    succeeded(f.run(["update"]));
+    assert.equal(readFileSync(shared, "utf8"), sharedSource);
+    const sidecar = f.state().starts[0].services.sidecar;
+    assert.equal(sidecar.image, external ? "busybox" : "ghcr.io/nianzhibai/91:stable");
+    if (external) assert.equal(sidecar.environment.SOURCE, "external");
+    assert.ok(f.state().starts[0].services[service]);
+  });
+}
 
 test("COMPOSE_FILE from dotenv selects the original files and project name", requiresCompose, (t) => {
   const f = fixture(t);

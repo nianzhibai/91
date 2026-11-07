@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/video-site/backend/internal/drives/yun139"
+	"github.com/nianzhibai/91/backend/internal/drives/yun139"
 )
 
 func (a *AdminServer) getYun139QRClient() *yun139.QRClient {

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/video-site/backend"
+	"github.com/nianzhibai/91/backend"
 	"gopkg.in/yaml.v3"
 )
 
@@ -22,7 +22,7 @@ func TestDataDirectoryControlsStorageAndLogging(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if cfg.Storage.DataDir != root || cfg.Storage.DBPath != filepath.Join(root, "video-site.db") ||
+			if cfg.Storage.DataDir != root || cfg.Storage.DBPath != filepath.Join(root, "91.db") ||
 				cfg.Storage.LocalPreviewDir != filepath.Join(root, "previews") || cfg.Logging.Directory != filepath.Join(root, "logs") {
 				t.Fatalf("paths do not follow data directory: %+v, %+v", cfg.Storage, cfg.Logging)
 			}
@@ -35,7 +35,7 @@ func TestDataDirectoryControlsStorageAndLogging(t *testing.T) {
 			if !filepath.IsAbs(wantRoot) {
 				wantRoot = filepath.Join(baseDir, root)
 			}
-			if runtime.DataDir != wantRoot || runtime.DBPath != filepath.Join(wantRoot, "video-site.db") || runtime.LocalPreviewDir != filepath.Join(wantRoot, "previews") {
+			if runtime.DataDir != wantRoot || runtime.DBPath != filepath.Join(wantRoot, "91.db") || runtime.LocalPreviewDir != filepath.Join(wantRoot, "previews") {
 				t.Fatalf("runtime paths = %+v", runtime)
 			}
 			logging, err := ResolveLoggingPaths(cfg.Logging, baseDir)
@@ -162,7 +162,7 @@ func TestDatabaseDirectoryOverridesOnlyDatabaseLocation(t *testing.T) {
 			if wantDBDir == "" {
 				wantDBDir = "./media"
 			}
-			if cfg.Storage.DBPath != filepath.Join(wantDBDir, "video-site.db") ||
+			if cfg.Storage.DBPath != filepath.Join(wantDBDir, "91.db") ||
 				cfg.Storage.LocalPreviewDir != filepath.Join("media", "previews") || cfg.Logging.Directory != filepath.Join("media", "logs") {
 				t.Fatalf("database override changed unrelated paths: storage=%+v logging=%+v", cfg.Storage, cfg.Logging)
 			}
@@ -173,7 +173,7 @@ func TestDatabaseDirectoryOverridesOnlyDatabaseLocation(t *testing.T) {
 			if !filepath.IsAbs(wantDBDir) {
 				wantDBDir = filepath.Join(baseDir, wantDBDir)
 			}
-			if runtime.DBDir != wantDBDir || runtime.DBPath != filepath.Join(wantDBDir, "video-site.db") ||
+			if runtime.DBDir != wantDBDir || runtime.DBPath != filepath.Join(wantDBDir, "91.db") ||
 				runtime.DataDir != filepath.Join(baseDir, "media") || runtime.LocalPreviewDir != filepath.Join(baseDir, "media", "previews") {
 				t.Fatalf("runtime database override = %+v", runtime)
 			}

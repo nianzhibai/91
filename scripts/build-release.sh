@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="${OUT_DIR:-$ROOT_DIR/release}"
-APP_NAME="${APP_NAME:-video-site-91}"
+APP_NAME="${APP_NAME:-91}"
 VERSION="${VERSION:-$(git -C "$ROOT_DIR" describe --tags --always --dirty 2>/dev/null || date +%Y%m%d%H%M%S)}"
 
 log() {
@@ -15,8 +15,8 @@ usage() {
 Usage: scripts/build-release.sh
 
 Builds precompiled release packages:
-  release/video-site-91-linux-amd64.tar.gz
-  release/video-site-91-linux-arm64.tar.gz
+  release/91-linux-amd64.tar.gz
+  release/91-linux-arm64.tar.gz
 
 Environment overrides:
   OUT_DIR=$OUT_DIR

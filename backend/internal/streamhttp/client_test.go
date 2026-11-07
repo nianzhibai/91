@@ -77,8 +77,8 @@ func TestClientCrossOriginRedirectDropsImplicitRefererAndCredentials(t *testing.
 		if got := r.Header.Get("Range"); got != "bytes=2-5" {
 			t.Errorf("Range = %q, want bytes=2-5", got)
 		}
-		if got := r.Header.Get("User-Agent"); got != "video-site-webdav" {
-			t.Errorf("User-Agent = %q, want video-site-webdav", got)
+		if got := r.Header.Get("User-Agent"); got != "91-webdav" {
+			t.Errorf("User-Agent = %q, want 91-webdav", got)
 		}
 		w.Header().Set("Content-Range", "bytes 2-5/10")
 		w.WriteHeader(http.StatusPartialContent)
@@ -101,7 +101,7 @@ func TestClientCrossOriginRedirectDropsImplicitRefererAndCredentials(t *testing.
 	req.Header.Set("Authorization", "Basic secret")
 	req.Header.Set("Cookie", "session=secret")
 	req.Header.Set("Range", "bytes=2-5")
-	req.Header.Set("User-Agent", "video-site-webdav")
+	req.Header.Set("User-Agent", "91-webdav")
 	resp, err := NewClient(0).Do(req)
 	if err != nil {
 		t.Fatalf("redirected request: %v", err)

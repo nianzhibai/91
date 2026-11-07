@@ -1,11 +1,11 @@
 services:
-  video-site-91:
+  "91":
     image: ghcr.io/nianzhibai/91:stable
-    container_name: video-site-91
+    container_name: "91"
     ports:
       - "9191:9191"
     environment:
       VIDEO_RESTART_MANAGED: "true"
     volumes:
-      - ./data:/opt/video-site-91/data
+      - ./data:/opt/91/data
     restart: unless-stopped

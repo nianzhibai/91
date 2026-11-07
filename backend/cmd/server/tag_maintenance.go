@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/video-site/backend/internal/api"
-	"github.com/video-site/backend/internal/drives/scriptcrawler"
+	"github.com/nianzhibai/91/backend/internal/api"
+	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
 )
 
 func (a *App) beginTagJob(kind string) bool {

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/video-site/backend/internal/applog"
-	"github.com/video-site/backend/internal/drives"
-	"github.com/video-site/backend/internal/readretry"
+	"github.com/nianzhibai/91/backend/internal/applog"
+	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/readretry"
 )
 
 // Traversal state belongs to one discovery, including its single final retry

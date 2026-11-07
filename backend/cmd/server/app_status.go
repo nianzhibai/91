@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/video-site/backend/internal/api"
-	"github.com/video-site/backend/internal/crawlerupload"
-	"github.com/video-site/backend/internal/driveevents"
-	"github.com/video-site/backend/internal/fingerprint"
-	"github.com/video-site/backend/internal/preview"
+	"github.com/nianzhibai/91/backend/internal/api"
+	"github.com/nianzhibai/91/backend/internal/crawlerupload"
+	"github.com/nianzhibai/91/backend/internal/driveevents"
+	"github.com/nianzhibai/91/backend/internal/fingerprint"
+	"github.com/nianzhibai/91/backend/internal/preview"
 )
 
 // Theme 线程安全读当前主题。

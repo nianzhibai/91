@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/video-site/backend/internal/tagging"
+	"github.com/nianzhibai/91/backend/internal/tagging"
 )
 
 func openTagMaintenanceTestCatalog(t *testing.T) (*Catalog, context.Context) {

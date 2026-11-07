@@ -23,7 +23,7 @@ type seedResult struct {
 }
 
 func main() {
-	dbPath := flag.String("db", "./data/video-site.db", "sqlite path")
+	dbPath := flag.String("db", "./data/91.db", "sqlite path")
 	count := flag.Int("count", 0, "how many synthetic rows to insert")
 	prefix := flag.String("prefix", "seed", "generated-row namespace")
 	purge := flag.Bool("purge", false, "delete generated rows registered under this namespace")

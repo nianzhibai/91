@@ -11,15 +11,15 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/video-site/backend/internal/applog"
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/drives"
-	"github.com/video-site/backend/internal/drives/pikpak"
-	"github.com/video-site/backend/internal/drives/scriptcrawler"
-	"github.com/video-site/backend/internal/persistence"
-	"github.com/video-site/backend/internal/readretry"
-	"github.com/video-site/backend/internal/scopedproxy"
-	"github.com/video-site/backend/internal/uploadjob"
+	"github.com/nianzhibai/91/backend/internal/applog"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/drives/pikpak"
+	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
+	"github.com/nianzhibai/91/backend/internal/persistence"
+	"github.com/nianzhibai/91/backend/internal/readretry"
+	"github.com/nianzhibai/91/backend/internal/scopedproxy"
+	"github.com/nianzhibai/91/backend/internal/uploadjob"
 )
 
 func (m *Migrator) run(ctx context.Context, driveIDs []string) error {

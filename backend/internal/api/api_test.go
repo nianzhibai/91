@@ -24,12 +24,12 @@ import (
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/text/encoding/simplifiedchinese"
 
-	"github.com/video-site/backend/internal/auth"
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/drives"
-	"github.com/video-site/backend/internal/mediaasset"
-	"github.com/video-site/backend/internal/proxy"
-	"github.com/video-site/backend/internal/subtitles"
+	"github.com/nianzhibai/91/backend/internal/auth"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/mediaasset"
+	"github.com/nianzhibai/91/backend/internal/proxy"
+	"github.com/nianzhibai/91/backend/internal/subtitles"
 )
 
 func TestVideoSourceUsesDirectStreamForAvi(t *testing.T) {

@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/config"
-	"github.com/video-site/backend/internal/mediaasset"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/config"
+	"github.com/nianzhibai/91/backend/internal/mediaasset"
 	"gopkg.in/yaml.v3"
 )
 
@@ -74,7 +74,7 @@ func TestManualDataMigrationKeepsMediaAndCrawlersAvailable(t *testing.T) {
 				ID: videoID, DriveID: "local-upload", FileID: "video.mp4", Title: "Migrated video",
 				PreviewLocal: previewPath, PreviewStatus: "ready", PreviewUpdatedAt: now,
 				ThumbnailURL: "/p/thumb/" + videoID, DurationSeconds: 30,
-				FingerprintStatus: "ready", SampledSHA256: "already-generated", Views: 17,
+				FingerprintStatus: "ready", SampledSHA256: "already-generated", Views: 17, Likes: 5,
 				PublishedAt: now, CreatedAt: now, UpdatedAt: now,
 			}); err != nil {
 				t.Fatal(err)
@@ -142,7 +142,7 @@ func TestManualDataMigrationKeepsMediaAndCrawlersAvailable(t *testing.T) {
 					}
 				}
 				if scenario.separateDatabase {
-					if _, err := os.Stat(filepath.Join(dataDir, "video-site.db")); !os.IsNotExist(err) {
+					if _, err := os.Stat(filepath.Join(dataDir, "91.db")); !os.IsNotExist(err) {
 						t.Fatalf("database created in data_dir despite db_dir override: %v", err)
 					}
 				}
@@ -152,6 +152,9 @@ func TestManualDataMigrationKeepsMediaAndCrawlersAvailable(t *testing.T) {
 				stop := startLoginRestartServer(t, configPath)
 				stop()
 				assertDataLayout()
+				if _, err := os.Stat(filepath.Join(databaseDir, "video-site.db")); !os.IsNotExist(err) {
+					t.Fatalf("legacy database name remains after startup: %v", err)
+				}
 			}
 			client := &http.Client{Timeout: 5 * time.Second}
 			for cycle := 0; cycle < 2; cycle++ {
@@ -210,12 +213,12 @@ func TestManualDataMigrationKeepsMediaAndCrawlersAvailable(t *testing.T) {
 				if _, err := os.Stat(oldDir); !os.IsNotExist(err) {
 					t.Fatalf("server recreated the old data directory: %v", err)
 				}
-				cat, err := catalog.Open(filepath.Join(databaseDir, "video-site.db"))
+				cat, err := catalog.Open(filepath.Join(databaseDir, "91.db"))
 				if err != nil {
 					t.Fatal(err)
 				}
 				video, err := cat.GetVideo(ctx, videoID)
-				if err != nil || video.PreviewLocal != mediaasset.PreviewFilename(videoID) || video.PreviewStatus != "ready" || video.Views != 17 {
+				if err != nil || video.PreviewLocal != mediaasset.PreviewFilename(videoID) || video.PreviewStatus != "ready" || video.Views != 17 || video.Likes != 5 {
 					t.Fatalf("video after restart = %+v, err=%v", video, err)
 				}
 				if err := cat.Close(); err != nil {

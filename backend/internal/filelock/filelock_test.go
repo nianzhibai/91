@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/video-site/backend/internal/filelock"
+	"github.com/nianzhibai/91/backend/internal/filelock"
 )
 
 func openLockFile(t *testing.T, path string) *os.File {

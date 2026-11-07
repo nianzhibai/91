@@ -13,10 +13,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/drives/telegramstorage"
-	"github.com/video-site/backend/internal/mediaimport"
-	"github.com/video-site/backend/internal/persistence"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/drives/telegramstorage"
+	"github.com/nianzhibai/91/backend/internal/mediaimport"
+	"github.com/nianzhibai/91/backend/internal/persistence"
 )
 
 // Check both new messages and persisted jobs before starting a download.

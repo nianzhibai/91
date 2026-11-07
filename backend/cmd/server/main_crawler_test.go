@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/video-site/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/catalog"
 )
 
 func TestCrawlerIntCredFallbacks(t *testing.T) {

@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/video-site/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/catalog"
 )
 
 // Receipts store outcomes, not Telegram markup. Rendering stays here so changes

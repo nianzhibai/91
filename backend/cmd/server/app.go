@@ -6,15 +6,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/video-site/backend/internal/api"
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/config"
-	"github.com/video-site/backend/internal/drives/scriptcrawler"
-	"github.com/video-site/backend/internal/fingerprint"
-	"github.com/video-site/backend/internal/nightly"
-	"github.com/video-site/backend/internal/preview"
-	"github.com/video-site/backend/internal/proxy"
-	"github.com/video-site/backend/internal/tasklimit"
+	"github.com/nianzhibai/91/backend/internal/api"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/config"
+	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
+	"github.com/nianzhibai/91/backend/internal/fingerprint"
+	"github.com/nianzhibai/91/backend/internal/nightly"
+	"github.com/nianzhibai/91/backend/internal/preview"
+	"github.com/nianzhibai/91/backend/internal/proxy"
+	"github.com/nianzhibai/91/backend/internal/tasklimit"
 )
 
 type App struct {

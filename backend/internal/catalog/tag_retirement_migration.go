@@ -7,7 +7,7 @@ import (
 	"log"
 	"strings"
 
-	"github.com/video-site/backend/internal/tagging"
+	"github.com/nianzhibai/91/backend/internal/tagging"
 )
 
 const retiredGeneratedTagIDsSQL = `

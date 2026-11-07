@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/video-site/backend/internal/scanjob"
+	"github.com/nianzhibai/91/backend/internal/scanjob"
 )
 
 func TestScanResultsSurviveReopenAndBelongToTheirDrive(t *testing.T) {

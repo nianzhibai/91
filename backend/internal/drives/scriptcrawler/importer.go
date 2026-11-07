@@ -7,12 +7,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/dedupe"
-	"github.com/video-site/backend/internal/fingerprint"
-	"github.com/video-site/backend/internal/mediaasset"
-	"github.com/video-site/backend/internal/persistence"
-	"github.com/video-site/backend/internal/tasklimit"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/dedupe"
+	"github.com/nianzhibai/91/backend/internal/fingerprint"
+	"github.com/nianzhibai/91/backend/internal/mediaasset"
+	"github.com/nianzhibai/91/backend/internal/persistence"
+	"github.com/nianzhibai/91/backend/internal/tasklimit"
 	"golang.org/x/net/proxy"
 	"io"
 	"log"
@@ -28,7 +28,7 @@ import (
 	"time"
 )
 
-const defaultUserAgent = "Mozilla/5.0 (compatible; video-site-scriptcrawler/3.0)"
+const defaultUserAgent = "Mozilla/5.0 (compatible; 91-scriptcrawler/3.0)"
 
 type ImportOutcome string
 

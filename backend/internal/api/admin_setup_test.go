@@ -11,8 +11,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/video-site/backend/internal/auth"
-	"github.com/video-site/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/auth"
+	"github.com/nianzhibai/91/backend/internal/catalog"
 )
 
 func TestSetupPersistsOnlyInDatabaseAndSurvivesRestart(t *testing.T) {

@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/video-site/backend/internal/applog"
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/crawljob"
-	"github.com/video-site/backend/internal/drives/scriptcrawler"
+	"github.com/nianzhibai/91/backend/internal/applog"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/crawljob"
+	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
 )
 
 func (a *App) scheduleScriptCrawlerCrawl(ctx context.Context, driveID string) bool {

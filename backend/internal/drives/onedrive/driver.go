@@ -19,9 +19,9 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
-	"github.com/video-site/backend/internal/drives"
-	"github.com/video-site/backend/internal/readretry"
-	"github.com/video-site/backend/internal/scopedproxy"
+	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/readretry"
+	"github.com/nianzhibai/91/backend/internal/scopedproxy"
 )
 
 const (

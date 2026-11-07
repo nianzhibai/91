@@ -7,9 +7,9 @@ import (
 	"log"
 	"time"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/mediaasset"
-	"github.com/video-site/backend/internal/persistence"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/mediaasset"
+	"github.com/nianzhibai/91/backend/internal/persistence"
 )
 
 const videoDeletionGracePeriod = 3 * time.Minute

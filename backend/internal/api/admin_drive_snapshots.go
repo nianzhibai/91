@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/driveview"
-	"github.com/video-site/backend/internal/storageusage"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/driveview"
+	"github.com/nianzhibai/91/backend/internal/storageusage"
 )
 
 func (a *AdminServer) snapshots() *driveview.Service {

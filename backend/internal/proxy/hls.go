@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/video-site/backend/internal/drives"
-	"github.com/video-site/backend/internal/hlsplaylist"
-	"github.com/video-site/backend/internal/streamhttp"
+	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/hlsplaylist"
+	"github.com/nianzhibai/91/backend/internal/streamhttp"
 )
 
 const (

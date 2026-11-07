@@ -12,8 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/mediaimport"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/mediaimport"
 )
 
 func TestAcceptRequiresKnownVideoSizeWithinLimit(t *testing.T) {

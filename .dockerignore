@@ -19,6 +19,6 @@ config.yaml
 *.tmp
 
 tests
-video-site-implementation-plan.md
+91-implementation-plan.md
 
 .env.telegram

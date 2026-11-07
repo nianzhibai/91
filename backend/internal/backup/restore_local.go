@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/video-site/backend/internal/localpath"
-	"github.com/video-site/backend/internal/mediaasset"
-	"github.com/video-site/backend/internal/videoid"
+	"github.com/nianzhibai/91/backend/internal/localpath"
+	"github.com/nianzhibai/91/backend/internal/mediaasset"
+	"github.com/nianzhibai/91/backend/internal/videoid"
 )
 
 type isolatedLocalStorageRestore struct {

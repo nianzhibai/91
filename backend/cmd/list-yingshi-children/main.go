@@ -7,12 +7,12 @@ import (
 	"log"
 	"time"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/drives/p115"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/drives/p115"
 )
 
 func main() {
-	cat, err := catalog.Open("data/video-site.db")
+	cat, err := catalog.Open("data/91.db")
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -3,7 +3,7 @@ package catalog
 import (
 	"errors"
 
-	"github.com/video-site/backend/internal/tagging"
+	"github.com/nianzhibai/91/backend/internal/tagging"
 )
 
 var ErrUnknownTag = errors.New("unknown tag")

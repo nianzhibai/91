@@ -4,15 +4,15 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/config"
-	"github.com/video-site/backend/internal/preview"
-	"github.com/video-site/backend/internal/tasklimit"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/config"
+	"github.com/nianzhibai/91/backend/internal/preview"
+	"github.com/nianzhibai/91/backend/internal/tasklimit"
 )
 
 const (
 	legacyNightlyStartTimeSetting = "automation.nightly_start_time"
-	legacySettingMissing          = "\x00video-site-config-setting-missing\x00"
+	legacySettingMissing          = "\x0091-config-setting-missing\x00"
 )
 
 func (a *App) liveConfigSettings() config.LiveSettings {

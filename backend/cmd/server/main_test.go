@@ -20,17 +20,17 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/video-site/backend/internal/api"
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/config"
-	"github.com/video-site/backend/internal/drives"
-	"github.com/video-site/backend/internal/drives/scriptcrawler"
-	"github.com/video-site/backend/internal/fingerprint"
-	"github.com/video-site/backend/internal/mediaasset"
-	"github.com/video-site/backend/internal/preview"
-	"github.com/video-site/backend/internal/proxy"
-	"github.com/video-site/backend/internal/scanjob"
-	"github.com/video-site/backend/internal/scanner"
+	"github.com/nianzhibai/91/backend/internal/api"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/config"
+	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
+	"github.com/nianzhibai/91/backend/internal/fingerprint"
+	"github.com/nianzhibai/91/backend/internal/mediaasset"
+	"github.com/nianzhibai/91/backend/internal/preview"
+	"github.com/nianzhibai/91/backend/internal/proxy"
+	"github.com/nianzhibai/91/backend/internal/scanjob"
+	"github.com/nianzhibai/91/backend/internal/scanner"
 )
 
 func TestHashPasswordCommandProducesBcryptHash(t *testing.T) {
@@ -59,14 +59,14 @@ storage:
 		t.Fatal(err)
 	}
 	if fileConfig.Storage.DataDir != "./data" ||
-		fileConfig.Storage.DBPath != filepath.Join("data", "video-site.db") ||
+		fileConfig.Storage.DBPath != filepath.Join("data", "91.db") ||
 		fileConfig.Storage.LocalPreviewDir != filepath.Join("data", "previews") {
 		t.Fatalf("file storage paths changed: %+v", fileConfig.Storage)
 	}
 	if fileConfig.Logging.Directory != filepath.Join("data", "logs") {
 		t.Fatalf("file logging path changed: %+v", fileConfig.Logging)
 	}
-	if runtimeConfig.Storage.DBPath != filepath.Join(workingDir, "data", "video-site.db") ||
+	if runtimeConfig.Storage.DBPath != filepath.Join(workingDir, "data", "91.db") ||
 		runtimeConfig.Storage.LocalPreviewDir != filepath.Join(workingDir, "data", "previews") {
 		t.Fatalf("runtime storage paths = %+v", runtimeConfig.Storage)
 	}

@@ -15,15 +15,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/config"
-	"github.com/video-site/backend/internal/crawlerupload"
-	"github.com/video-site/backend/internal/crawljob"
-	"github.com/video-site/backend/internal/drives"
-	"github.com/video-site/backend/internal/drives/scriptcrawler"
-	"github.com/video-site/backend/internal/fingerprint"
-	"github.com/video-site/backend/internal/preview"
-	"github.com/video-site/backend/internal/proxy"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/config"
+	"github.com/nianzhibai/91/backend/internal/crawlerupload"
+	"github.com/nianzhibai/91/backend/internal/crawljob"
+	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
+	"github.com/nianzhibai/91/backend/internal/fingerprint"
+	"github.com/nianzhibai/91/backend/internal/preview"
+	"github.com/nianzhibai/91/backend/internal/proxy"
 )
 
 type finishingRoundTripper func(*http.Request) (*http.Response, error)

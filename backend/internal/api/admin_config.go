@@ -5,7 +5,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/video-site/backend/internal/config"
+	"github.com/nianzhibai/91/backend/internal/config"
 )
 
 const maxConfigYAMLBytes = 2 << 20

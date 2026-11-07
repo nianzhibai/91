@@ -61,7 +61,7 @@ function fixture(t: TestContext) {
         shift
         need_root() { :; }
         COMMAND_LINK="$INSTALL_PATH/91"
-        APP_COMMAND_LINK="$INSTALL_PATH/video-site-91"
+        APP_COMMAND_LINK="$INSTALL_PATH/91-test"
         MANAGER_PATH="$INSTALL_PATH/manager"
         if [[ "\${CLI_HOLD_LOCK:-}" == 1 ]]; then
           exec {test_lock}< "$INSTALL_PATH"
@@ -83,7 +83,7 @@ test("native uninstall deletes installed files and data before removing manageme
     { command: "rm", args: ["-rf", "--one-file-system", "--", f.root] },
     { command: "rm", args: ["-f", "/etc/systemd/system/91-native-test.service"] },
     { command: "systemctl", args: ["daemon-reload"] },
-    { command: "rm", args: ["-f", join(f.root, "91"), join(f.root, "video-site-91"), join(f.root, "manager")] },
+    { command: "rm", args: ["-f", join(f.root, "91"), join(f.root, "91-test"), join(f.root, "manager"), join(f.root, "manager.conf")] },
   ]);
   assert.ok(calls.at(-1)?.args.at(-1)?.startsWith(join(f.root, "tmp.")));
 });

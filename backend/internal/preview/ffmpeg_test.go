@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/video-site/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/drives"
 )
 
 func TestReplaceFilePreservesHardLinkedBackupSnapshot(t *testing.T) {
@@ -417,7 +417,7 @@ func TestPrepareFFmpegLinkDoesNotLeakWebDAVCredentialsToRedirectTarget(t *testin
 			"Authorization":       {"Basic webdav-secret"},
 			"Cookie":              {"session=webdav-secret"},
 			"Proxy-Authorization": {"Basic proxy-secret"},
-			"User-Agent":          {"video-site-webdav"},
+			"User-Agent":          {"91-webdav"},
 		},
 		PassThroughRedirects: true,
 	}
@@ -476,8 +476,8 @@ func TestPrepareFFmpegLinkDoesNotLeakWebDAVCredentialsToRedirectTarget(t *testin
 	if got := targetHeaders.Get("Range"); got != "bytes=2-5" {
 		t.Fatalf("target Range = %q, want bytes=2-5", got)
 	}
-	if got := targetHeaders.Get("User-Agent"); got != "video-site-webdav" {
-		t.Fatalf("target User-Agent = %q, want video-site-webdav", got)
+	if got := targetHeaders.Get("User-Agent"); got != "91-webdav" {
+		t.Fatalf("target User-Agent = %q, want 91-webdav", got)
 	}
 }
 

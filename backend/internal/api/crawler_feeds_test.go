@@ -13,8 +13,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/drives/scriptcrawler"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
 )
 
 const feedScriptHeader = `CRAWLER_NAME = "Feed crawler"

@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/config"
-	"github.com/video-site/backend/internal/drives"
-	"github.com/video-site/backend/internal/proxy"
-	"github.com/video-site/backend/internal/scanjob"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/config"
+	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/proxy"
+	"github.com/nianzhibai/91/backend/internal/scanjob"
 )
 
 func scanResultTestApp(t *testing.T) (*App, *serverTreeScanDrive) {

@@ -62,6 +62,7 @@ RUN if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
     python3-lxml \
     python3-requests \
     python3-socks \
+    python3-yaml \
     tar \
     tzdata \
     && if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
@@ -71,26 +72,27 @@ RUN if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
 
 RUN python3 -c "import requests, bs4, lxml, socks"
 
-WORKDIR /opt/video-site-91
+WORKDIR /opt/91
 
 COPY --from=backend /out/server ./server
 COPY --from=frontend /app/dist ./dist
 COPY backend/config.example.yaml ./config.example.yaml
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-COPY docker-compose.yml docker-compose.gpu-nvidia.yml docker-compose.gpu-vaapi.yml docker-compose.gpu-rockchip.yml /usr/local/share/video-site-91/deploy/
+COPY docker-compose.yml docker-compose.gpu-nvidia.yml docker-compose.gpu-vaapi.yml docker-compose.gpu-rockchip.yml /usr/local/share/91/deploy/
+COPY scripts/migrate-compose.py /usr/local/share/91/migrate-compose.py
 
 ARG VERSION=dev
 
-ENV VIDEO_CONFIG=/opt/video-site-91/data/config.yaml \
-    VIDEO_FRONTEND_DIR=/opt/video-site-91/dist \
+LABEL io.91.database-filename="91.db"
+
+ENV VIDEO_FRONTEND_DIR=/opt/91/dist \
     VIDEO_GITHUB_REPO=nianzhibai/91 \
     VIDEO_IMAGE_VERSION=${VERSION} \
-    VIDEO_LISTEN_PORT=9191 \
-    VIDEO_VERSION_FILE=/opt/video-site-91/data/.version
+    VIDEO_LISTEN_PORT=9191
 
 RUN chmod +x ./server /usr/local/bin/docker-entrypoint.sh
 
-VOLUME ["/opt/video-site-91/data"]
+VOLUME ["/opt/91/data"]
 EXPOSE 9191
 
 ENTRYPOINT ["docker-entrypoint.sh"]
@@ -98,7 +100,7 @@ CMD ["./server"]
 
 # ---- Rockchip runtime (linux/arm64 only) ----
 FROM application AS rockchip
-LABEL io.video-site-91.media-variant="rockchip"
+LABEL io.91.media-variant="rockchip"
 COPY --from=rockchip-media /media/ffmpeg /media/ffprobe /usr/local/bin/
 # Verify the bundled tools without requiring media hardware during the build.
 RUN python3 - <<'PY'
@@ -112,4 +114,4 @@ PY
 
 # Keep ordinary builds on the standard runtime, including generic ARM64 hosts.
 FROM application AS runtime
-LABEL io.video-site-91.media-variant="standard"
+LABEL io.91.media-variant="standard"

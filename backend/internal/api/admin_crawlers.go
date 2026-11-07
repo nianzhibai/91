@@ -19,13 +19,13 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/video-site/backend/internal/applog"
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/crawljob"
-	"github.com/video-site/backend/internal/drives"
-	"github.com/video-site/backend/internal/drives/scriptcrawler"
-	"github.com/video-site/backend/internal/persistence"
-	"github.com/video-site/backend/internal/uploadjob"
+	"github.com/nianzhibai/91/backend/internal/applog"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/crawljob"
+	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
+	"github.com/nianzhibai/91/backend/internal/persistence"
+	"github.com/nianzhibai/91/backend/internal/uploadjob"
 )
 
 type crawlerDTO struct {
@@ -566,7 +566,7 @@ func (a *AdminServer) handleImportCrawlerScriptURL(w http.ResponseWriter, r *htt
 		writeErr(w, r, http.StatusBadRequest, err)
 		return
 	}
-	req.Header.Set("User-Agent", "video-site-crawler-import/1.0")
+	req.Header.Set("User-Agent", "91-crawler-import/1.0")
 	resp, err := client.Do(req)
 	if err != nil {
 		writeErr(w, r, http.StatusBadGateway, err)

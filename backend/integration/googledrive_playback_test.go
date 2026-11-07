@@ -15,11 +15,11 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/video-site/backend/internal/api"
-	"github.com/video-site/backend/internal/auth"
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/drives/googledrive"
-	"github.com/video-site/backend/internal/proxy"
+	"github.com/nianzhibai/91/backend/internal/api"
+	"github.com/nianzhibai/91/backend/internal/auth"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/drives/googledrive"
+	"github.com/nianzhibai/91/backend/internal/proxy"
 )
 
 // This test contacts Google's real playback API and CDN. Credentials stay in a

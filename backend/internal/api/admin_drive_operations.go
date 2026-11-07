@@ -14,17 +14,17 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/driveevents"
-	"github.com/video-site/backend/internal/drives/googledrive"
-	"github.com/video-site/backend/internal/drives/guangyapan"
-	"github.com/video-site/backend/internal/drives/p115"
-	"github.com/video-site/backend/internal/drives/p123"
-	"github.com/video-site/backend/internal/drives/quark"
-	"github.com/video-site/backend/internal/drives/scriptcrawler"
-	"github.com/video-site/backend/internal/drives/wopan"
-	"github.com/video-site/backend/internal/driveview"
-	"github.com/video-site/backend/internal/scopedproxy"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/driveevents"
+	"github.com/nianzhibai/91/backend/internal/drives/googledrive"
+	"github.com/nianzhibai/91/backend/internal/drives/guangyapan"
+	"github.com/nianzhibai/91/backend/internal/drives/p115"
+	"github.com/nianzhibai/91/backend/internal/drives/p123"
+	"github.com/nianzhibai/91/backend/internal/drives/quark"
+	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
+	"github.com/nianzhibai/91/backend/internal/drives/wopan"
+	"github.com/nianzhibai/91/backend/internal/driveview"
+	"github.com/nianzhibai/91/backend/internal/scopedproxy"
 )
 
 func isCrawlerDriveKind(kind string) bool {

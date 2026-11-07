@@ -3,10 +3,15 @@
 # shellcheck disable=SC2016
 set -Eeuo pipefail
 
-SERVICE="video-site-91"
+SERVICE="91"
+SOURCE_SERVICE="91"
+LEGACY_SERVICE="video-site-91"
+MIGRATION_FILES_WRITTEN=false
+MIGRATION_ORIGINALS=()
+MIGRATION_CANDIDATES=()
 IMAGE_REPOSITORY="ghcr.io/nianzhibai/91"
 DEFAULT_IMAGE="$IMAGE_REPOSITORY:stable"
-TEMPLATE_DIR="/usr/local/share/video-site-91/deploy"
+TEMPLATE_DIR="/usr/local/share/91/deploy"
 # Individual files can reference services/resources supplied by overlays. The
 # complete candidate is checked for consistency after the files are combined.
 RAW_OPTIONS=(--no-interpolate --no-path-resolution --no-normalize --no-env-resolution --no-consistency)
@@ -19,7 +24,6 @@ SELECTED_GPU_DEVICE=""
 SELECTED_GPU_DEVICES="[]"
 SELECTED_GPU_LABEL=""
 FORCE_RECREATE=false
-RESTORING_DEPLOYMENT=false
 REQUESTED_IMAGE=""
 TARGET_IMAGE=""
 TARGET_IMAGE_ID=""
@@ -29,6 +33,8 @@ TARGET=""
 OLD_IMAGE=""
 TEMPLATE_CONTAINER=""
 NEEDS_ROLLBACK=false
+DATABASE_LAYOUT_CHANGED=false
+TARGET_START_ATTEMPTED=false
 UPDATE_LOCK_FILE=""
 
 # Keep JSON manipulation in one jq library. Shell values are passed with --arg;
@@ -262,11 +268,23 @@ compose_with() {
 
 compose() { compose_with "${COMPOSE_FILES[@]}" -- "$@"; }
 
+select_existing_service() {
+  local names has_current=false has_legacy=false
+  names=$(compose config --services)
+  if [[ $'\n'"$names"$'\n' == *$'\n91\n'* ]]; then has_current=true; fi
+  if [[ $'\n'"$names"$'\n' == *$'\nvideo-site-91\n'* ]]; then has_legacy=true; fi
+  [[ "$has_current" != true || "$has_legacy" != true ]] || die "Both legacy and current services exist; resolve the deployment conflict first"
+  if [[ "$has_legacy" == true ]]; then SERVICE="$LEGACY_SERVICE"
+  elif [[ "$has_current" == true ]]; then SERVICE=91
+  else die "Deployment must contain service 91 or video-site-91"
+  fi
+}
+
 reset_password() {
   local -a options=()
   # Compose allocates a TTY by default. Preserve piped input and automation too.
   if [[ ! -t 0 || ! -t 1 ]]; then options+=(-T); fi
-  compose exec "${options[@]}" "$SERVICE" /opt/video-site-91/server reset-password
+  compose exec "${options[@]}" "$SERVICE" docker-entrypoint.sh ./server reset-password
 }
 
 uninstall_deployment() {
@@ -280,7 +298,9 @@ uninstall_deployment() {
   # ownership from a host directory name or delete every mounted video library.
   json -r '
     .services[$service] as $site |
-    ($site.environment.VIDEO_DATA_DIR // "/opt/video-site-91/data" | rtrimstr("/")) as $data |
+    ($site.environment.VIDEO_DATA_DIR //
+      (if any($site.volumes[]?; .target == "/opt/video-site-91/data" or .target == "/opt/video-site-91")
+       then "/opt/video-site-91/data" else "/opt/91/data" end) | rtrimstr("/")) as $data |
     ($site.environment.VIDEO_CONFIG // ($data + "/config.yaml")) as $config |
     [.services | to_entries[] |
       select(.key == $service or .key == "telegram-bot-api") |
@@ -550,11 +570,31 @@ restore_deployment() {
     log "Installation failed; generated Compose configuration and application data have been kept. Fix the issue and run the script again"
     return
   fi
-  log "Deployment failed; restoring the original Compose configuration"
-  RESTORING_DEPLOYMENT=true
-  if ! mv -f -- "$WORK_DIR/original.yml" "$TARGET"; then
-    log "Configuration restore failed; recover from $BACKUP_FILE"
+  if [[ "$DATABASE_LAYOUT_CHANGED" == true && "$TARGET_START_ATTEMPTED" == true ]]; then
+    compose stop "$SERVICE" || true
+    log "Automatic image rollback skipped: the new version may have renamed the database. Configuration and data kept; fix the startup error and retry update"
     return
+  fi
+  log "Deployment failed; restoring the original Compose configuration"
+  if [[ "$SOURCE_SERVICE" != "$SERVICE" ]]; then
+    if [[ "$MIGRATION_FILES_WRITTEN" == true ]]; then
+      compose stop "$SERVICE" >/dev/null 2>&1 || true
+      compose rm -f "$SERVICE" >/dev/null 2>&1 || true
+    fi
+    local index
+    for index in "${!COMPOSE_FILES[@]}"; do
+      if ! cp -p -- "${MIGRATION_ORIGINALS[index]}" "$WORK_DIR/restore-$index.yml" ||
+          ! mv -f -- "$WORK_DIR/restore-$index.yml" "${COMPOSE_FILES[index]}"; then
+        log "Configuration restore failed; recover Compose files from their .bak backups"
+        return
+      fi
+    done
+    SERVICE="$SOURCE_SERVICE"
+  else
+    if ! mv -f -- "$WORK_DIR/original.yml" "$TARGET"; then
+      log "Configuration restore failed; recover from $BACKUP_FILE"
+      return
+    fi
   fi
   if [[ -z "$OLD_IMAGE" ]]; then
     log "No previous local image was available for container rollback"
@@ -588,7 +628,7 @@ load_deployment_templates() {
   [[ -z "$TEMPLATE_CONTAINER" ]] || return 0
   TEMPLATE_CONTAINER=$(docker create --pull never --entrypoint /bin/true "$TARGET_IMAGE_ID")
   if ! docker cp "$TEMPLATE_CONTAINER:$TEMPLATE_DIR/docker-compose.yml" "$WORK_DIR/docker-compose.yml"; then
-    die "The image has no deployment templates; publish an image built with the updated Dockerfile first"
+    die "The image has no 91 deployment templates; select an image built with the updated Dockerfile"
   fi
   raw_json "$WORK_DIR/docker-compose.yml" > "$WORK_DIR/template.json"
 }
@@ -601,11 +641,21 @@ prepare_deployment() {
     cp -p -- "$TARGET" "$WORK_DIR/original.yml"
     raw_json "$TARGET" > "$WORK_DIR/local.json"
     compose config --format json > "$WORK_DIR/effective.json"
-    json -e '.services | has($service)' < "$WORK_DIR/effective.json" >/dev/null || die "Deployment must contain service $SERVICE"
-    old_reference=$(json -r '.services[$service].image // ""' < "$WORK_DIR/effective.json")
+    if json -e --arg legacy "$LEGACY_SERVICE" '.services | has($legacy)' < "$WORK_DIR/effective.json" >/dev/null; then
+      json -e '.services | has($service) | not' < "$WORK_DIR/effective.json" >/dev/null || die "Both legacy and current services exist; resolve the deployment conflict first"
+      SOURCE_SERVICE="$LEGACY_SERVICE"
+      local index
+      for index in "${!COMPOSE_FILES[@]}"; do
+        MIGRATION_ORIGINALS+=("$WORK_DIR/original-$index.yml")
+        cp -p -- "${COMPOSE_FILES[index]}" "${MIGRATION_ORIGINALS[index]}"
+      done
+    else
+      json -e '.services | has($service)' < "$WORK_DIR/effective.json" >/dev/null || die "Deployment must contain service $SERVICE"
+    fi
+    old_reference=$(json -r --arg source "$SOURCE_SERVICE" '.services[$source].image // ""' < "$WORK_DIR/effective.json")
     if [[ -z "$TARGET_IMAGE" ]]; then TARGET_IMAGE="$old_reference"; fi
     # Preserve the actual container image even if its local tag has moved.
-    container_ids=$(compose ps -a -q "$SERVICE")
+    container_ids=$(compose ps -a -q "$SOURCE_SERVICE")
     while IFS= read -r container; do
       [[ -n "$container" ]] || continue
       previous_id=$(docker inspect --format '{{.Image}}' "$container")
@@ -623,12 +673,22 @@ prepare_deployment() {
     log "Pulling $TARGET_IMAGE"
     docker pull "$TARGET_IMAGE"
     TARGET_IMAGE_ID=$(docker image inspect --format '{{.Id}}' "$TARGET_IMAGE")
+    if [[ -n "$OLD_IMAGE" ]]; then
+      local old_database new_database
+      old_database=$(docker image inspect --format '{{ index .Config.Labels "io.91.database-filename" }}' "$OLD_IMAGE")
+      new_database=$(docker image inspect --format '{{ index .Config.Labels "io.91.database-filename" }}' "$TARGET_IMAGE_ID")
+      # Images predating the filename label use video-site.db.
+      case "$old_database" in ""|"<no value>") old_database=video-site.db ;; esac
+      case "$new_database" in ""|"<no value>") new_database=video-site.db ;; esac
+      if [[ "$old_database" != "$new_database" ]]; then DATABASE_LAYOUT_CHANGED=true; fi
+    fi
   else
     [[ -n "$OLD_IMAGE" ]] || die "No local 91 image is available; run install or update explicitly"
     TARGET_IMAGE_ID="$OLD_IMAGE"
   fi
   printf '{}\n' > "$WORK_DIR/template.json"
   if [[ "$ACTION" == install || "$ACTION" == update ]]; then load_deployment_templates; fi
+  if [[ "$SOURCE_SERVICE" != "$SERVICE" ]]; then prepare_legacy_migration; fi
   if [[ "$ACTION" == install ]]; then
     cp -- "$WORK_DIR/template.json" "$WORK_DIR/local.json"
     candidate_files=("$WORK_DIR/docker-compose.yml" "${COMPOSE_FILES[@]:1}")
@@ -636,6 +696,32 @@ prepare_deployment() {
     container_ids=$(compose_with "${candidate_files[@]}" -- ps -a -q "$SERVICE")
     [[ -z "$container_ids" ]] || die "Existing service containers were found; restore their original Compose configuration and use update"
   fi
+}
+
+prepare_legacy_migration() {
+  [[ "$ACTION" == update ]] || die "Update the legacy deployment before changing GPU settings"
+  local index data_path
+  data_path=$(json -r --arg source "$SOURCE_SERVICE" '.services[$source].environment | environment_map | .VIDEO_DATA_DIR // "/opt/video-site-91/data"' < "$WORK_DIR/effective.json")
+  # Removing the old container must not detach anonymous or unmounted data.
+  json -e --arg source "$SOURCE_SERVICE" --arg data "$data_path" '
+    any(.services[$source].volumes[]?; .target as $target |
+      .source != null and ($target == $data or ($data | startswith($target + "/"))))
+  ' < "$WORK_DIR/effective.json" >/dev/null ||
+    die "Legacy migration needs an explicit application data mount; map the existing data volume before retrying"
+  for index in "${!COMPOSE_FILES[@]}"; do
+    MIGRATION_CANDIDATES+=("$WORK_DIR/migrated-$index.yml")
+    local -a migration_options=()
+    if (( index == 0 )) && json -e --arg source "$SOURCE_SERVICE" '(.services[$source].networks // {} | keys) == ["default"]' < "$WORK_DIR/effective.json" >/dev/null; then
+      migration_options+=(--default-network-alias)
+    fi
+    docker run --rm -i --network none --entrypoint python3 "$TARGET_IMAGE_ID" /usr/local/share/91/migrate-compose.py \
+      "${migration_options[@]}" \
+      < "${MIGRATION_ORIGINALS[index]}" > "${MIGRATION_CANDIDATES[index]}"
+  done
+  raw_json "${MIGRATION_CANDIDATES[0]}" > "$WORK_DIR/local.json"
+  compose_with "${MIGRATION_CANDIDATES[@]}" -- config --format json > "$WORK_DIR/effective.json"
+  json -e --arg legacy "$LEGACY_SERVICE" '.services | has($service) and (has($legacy) | not)' < "$WORK_DIR/effective.json" >/dev/null ||
+    die "Included Compose files still define the legacy service; migrate those files before retrying"
 }
 
 prepare_gpu() {
@@ -671,7 +757,11 @@ build_candidate() {
       configure_gpu($mode; $device; $devices; $gpu[0])
     ' > "$WORK_DIR/proposed.json"
   compose_with "$WORK_DIR/proposed.json" -- config --format yaml "${RAW_OPTIONS[@]}" > "$WORK_DIR/candidate.yml"
-  candidate_files=("$WORK_DIR/candidate.yml" "${COMPOSE_FILES[@]:1}")
+  if [[ "$SOURCE_SERVICE" != "$SERVICE" ]]; then
+    candidate_files=("$WORK_DIR/candidate.yml" "${MIGRATION_CANDIDATES[@]:1}")
+  else
+    candidate_files=("$WORK_DIR/candidate.yml" "${COMPOSE_FILES[@]:1}")
+  fi
   compose_with "${candidate_files[@]}" -- config --format json > "$WORK_DIR/resolved.json"
 }
 
@@ -685,9 +775,9 @@ validate_candidate() {
   ' < "$WORK_DIR/resolved.json" >/dev/null || die "An overlay conflicts with the GPU configuration; update that overlay first"
   if json -e '.services[$service] | gpu_modes | index("rockchip") != null' < "$WORK_DIR/resolved.json" >/dev/null; then
     local variant
-    variant=$(docker image inspect --format '{{ index .Config.Labels "io.video-site-91.media-variant" }}' "$TARGET_IMAGE_ID")
+    variant=$(docker image inspect --format '{{ index .Config.Labels "io.91.media-variant" }}' "$TARGET_IMAGE_ID")
     [[ "$variant" == rockchip ]] ||
-      die "Rockchip devices require a Rockchip image; run update --image stable-rockchip before gpu (custom images need the io.video-site-91.media-variant=rockchip label)"
+      die "Rockchip devices require a Rockchip image; run update --image stable-rockchip before gpu (custom images need the io.91.media-variant=rockchip label)"
   fi
   if [[ "$ACTION" == gpu && "$SELECTED_GPU" != cpu ]]; then
     # Matching the backend type is insufficient: overlays must not expose other
@@ -730,13 +820,38 @@ apply_candidate() {
     json -e --slurpfile before "$WORK_DIR/effective.json" '.name == $before[0].name' < "$WORK_DIR/resolved.json" >/dev/null ||
       die "The operation would change the Compose project name"
     cmp -s -- "$TARGET" "$WORK_DIR/original.yml" || die "Compose file changed during the operation; retry with the latest local configuration"
+    if [[ "$SOURCE_SERVICE" != "$SERVICE" ]]; then
+      local index overlay_backup
+      for index in "${!COMPOSE_FILES[@]}"; do
+        cmp -s -- "${COMPOSE_FILES[index]}" "${MIGRATION_ORIGINALS[index]}" || die "Compose file changed during migration: ${COMPOSE_FILES[index]}"
+      done
+    fi
     BACKUP_FILE=$(mktemp "$TARGET.bak-$(date -u +%Y%m%dT%H%M%S).XXXXXX")
     cp -p -- "$TARGET" "$BACKUP_FILE"
     log "Configuration backup: $BACKUP_FILE"
+    if [[ "$SOURCE_SERVICE" != "$SERVICE" ]]; then
+      for index in "${!COMPOSE_FILES[@]}"; do
+        if (( index > 0 )); then
+          overlay_backup=$(mktemp "${COMPOSE_FILES[index]}.bak-$(date -u +%Y%m%dT%H%M%S).XXXXXX")
+          cp -p -- "${COMPOSE_FILES[index]}" "$overlay_backup"
+        fi
+      done
+      NEEDS_ROLLBACK=true
+      compose stop "$SOURCE_SERVICE"
+      compose rm -f "$SOURCE_SERVICE"
+      for index in "${!COMPOSE_FILES[@]}"; do
+        if (( index > 0 )); then
+          chmod --reference="${COMPOSE_FILES[index]}" "${MIGRATION_CANDIDATES[index]}"
+          chown --reference="${COMPOSE_FILES[index]}" "${MIGRATION_CANDIDATES[index]}"
+          mv -f -- "${MIGRATION_CANDIDATES[index]}" "${COMPOSE_FILES[index]}"
+        fi
+      done
+    fi
     chmod --reference="$WORK_DIR/original.yml" "$WORK_DIR/candidate.yml"
     chown --reference="$WORK_DIR/original.yml" "$WORK_DIR/candidate.yml"
     NEEDS_ROLLBACK=true
     mv -f -- "$WORK_DIR/candidate.yml" "$TARGET"
+    if [[ "$SOURCE_SERVICE" != "$SERVICE" ]]; then MIGRATION_FILES_WRITTEN=true; fi
   else
     # Publishing with a hard link is atomic and cannot overwrite a file created
     # by another process after discovery. Both paths are on the same filesystem.
@@ -748,6 +863,7 @@ apply_candidate() {
     json -n --arg image "$OLD_IMAGE" '{services: {($service): {image: $image}}}' > "$WORK_DIR/runtime-image.yml"
     start_with "${COMPOSE_FILES[@]}" "$WORK_DIR/runtime-image.yml"
   else
+    TARGET_START_ATTEMPTED=true
     start_with "${COMPOSE_FILES[@]}"
   fi
   NEEDS_ROLLBACK=false
@@ -768,6 +884,7 @@ main() {
   if [[ "$ACTION" == reset-password ]]; then
     command -v docker >/dev/null 2>&1 || die "docker is required; install it before running this script"
     deployment_files
+    select_existing_service
     reset_password
     return
   fi
@@ -786,6 +903,7 @@ main() {
   umask 077
   deployment_files
   ensure_jq
+  if [[ "$ACTION" == uninstall ]]; then select_existing_service; fi
   # The directory lock remains stable even when uninstall removes the lock file.
   exec {DEPLOYMENT_DIRECTORY_LOCK}< "$(dirname -- "$TARGET")"
   flock -n "$DEPLOYMENT_DIRECTORY_LOCK" || die "Another deployment operation is running"

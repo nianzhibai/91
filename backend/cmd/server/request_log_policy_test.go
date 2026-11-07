@@ -12,7 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
-	"github.com/video-site/backend/internal/applog"
+	"github.com/nianzhibai/91/backend/internal/applog"
 )
 
 func TestRequestLogPolicyFiltersBothOutputs(t *testing.T) {

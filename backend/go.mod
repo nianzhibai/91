@@ -1,4 +1,4 @@
-module github.com/video-site/backend
+module github.com/nianzhibai/91/backend
 
 go 1.27.3
 

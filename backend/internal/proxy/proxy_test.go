@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/video-site/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/drives"
 )
 
 func TestServeStreamLinkFailureReturnsStructuredErrorAndReportsStatus(t *testing.T) {
@@ -943,7 +943,7 @@ func TestServeStreamRelaysWebDAV302ToBrowser(t *testing.T) {
 		headers: http.Header{
 			"Authorization": {"Basic dmlkZW86c2VjcmV0"},
 			"Cookie":        {"dav_session=secret"},
-			"User-Agent":    {"video-site-webdav"},
+			"User-Agent":    {"91-webdav"},
 		},
 	})
 

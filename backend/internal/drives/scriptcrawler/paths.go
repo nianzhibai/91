@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/video-site/backend/internal/localpath"
+	"github.com/nianzhibai/91/backend/internal/localpath"
 )
 
 // ScriptPath resolves an imported script_file relative to the import directory.

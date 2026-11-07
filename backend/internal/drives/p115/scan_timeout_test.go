@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/video-site/backend/internal/scanner"
+	"github.com/nianzhibai/91/backend/internal/scanner"
 )
 
 func TestScannerRetries115DirectoryTimeouts(t *testing.T) {

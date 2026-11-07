@@ -13,14 +13,14 @@ import (
 	"github.com/go-chi/chi/v5"
 	"gopkg.in/yaml.v3"
 
-	"github.com/video-site/backend/internal/api"
-	"github.com/video-site/backend/internal/auth"
-	"github.com/video-site/backend/internal/backup"
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/config"
-	"github.com/video-site/backend/internal/drives/scriptcrawler"
-	"github.com/video-site/backend/internal/mediaasset"
-	"github.com/video-site/backend/internal/proxy"
+	"github.com/nianzhibai/91/backend/internal/api"
+	"github.com/nianzhibai/91/backend/internal/auth"
+	"github.com/nianzhibai/91/backend/internal/backup"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/config"
+	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
+	"github.com/nianzhibai/91/backend/internal/mediaasset"
+	"github.com/nianzhibai/91/backend/internal/proxy"
 )
 
 func TestRestoredPreviewServesWithRelativeTargetStorageConfig(t *testing.T) {
@@ -44,6 +44,9 @@ func testRestoredPreviewWithDatabaseDirectories(t *testing.T, sourceDBDir, targe
 	sourceRoot := filepath.Join(root, "source")
 	sourceFileConfig := relativeStorageConfig(sourceDBDir)
 	sourceRuntimeStorage := mustResolveStorage(t, sourceFileConfig.Storage, sourceRoot)
+	// Archived payloads are filename-independent: simulate a backup created by
+	// the old server and restore it into the current 91.db layout.
+	sourceRuntimeStorage.DBPath = filepath.Join(sourceRuntimeStorage.DBDir, "video-site.db")
 	mustWriteConfig(t, filepath.Join(sourceRoot, "config.yaml"), sourceFileConfig)
 	if err := os.MkdirAll(sourceRuntimeStorage.LocalPreviewDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -260,7 +263,7 @@ func testRestoredPreviewWithDatabaseDirectories(t *testing.T, sourceDBDir, targe
 				t.Fatalf("restore placed non-database data in db_dir: %s, err=%v", name, err)
 			}
 		}
-		if _, err := os.Stat(filepath.Join(targetRuntimeStorage.DataDir, "video-site.db")); !os.IsNotExist(err) {
+		if _, err := os.Stat(filepath.Join(targetRuntimeStorage.DataDir, "91.db")); !os.IsNotExist(err) {
 			t.Fatalf("restore created database outside db_dir: %v", err)
 		}
 	}
@@ -278,7 +281,7 @@ func relativeStorageConfig(dbDir string) *config.Config {
 		Storage: config.Storage{
 			DataDir:         "./data",
 			DBDir:           dbDir,
-			DBPath:          filepath.Join(dbRoot, "video-site.db"),
+			DBPath:          filepath.Join(dbRoot, "91.db"),
 			LocalPreviewDir: filepath.Join("data", "previews"),
 		},
 	}

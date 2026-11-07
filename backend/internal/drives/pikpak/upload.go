@@ -17,7 +17,7 @@ import (
 	"github.com/aliyun/aliyun-oss-go-sdk/oss"
 	"github.com/go-resty/resty/v2"
 
-	"github.com/video-site/backend/internal/scopedproxy"
+	"github.com/nianzhibai/91/backend/internal/scopedproxy"
 )
 
 // PikPak 上传协议（参考 OpenList drivers/pikpak）：

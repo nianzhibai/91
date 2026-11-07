@@ -10,7 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/video-site/backend/internal/applog"
+	"github.com/nianzhibai/91/backend/internal/applog"
 )
 
 const (
@@ -150,7 +150,7 @@ func parseLogQuery(r *http.Request) (applog.Query, error) {
 }
 
 func (a *AdminServer) downloadLogs(w http.ResponseWriter, r *http.Request, query applog.Query) {
-	file, err := os.CreateTemp("", "video-site-logs-*.log")
+	file, err := os.CreateTemp("", "91-logs-*.log")
 	if err != nil {
 		writeErr(w, r, http.StatusInternalServerError, err)
 		return

@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/video-site/backend/internal/hlsplaylist"
+	"github.com/nianzhibai/91/backend/internal/hlsplaylist"
 )
 
 const maxHLSPlaylistBytes = 4 * 1024 * 1024

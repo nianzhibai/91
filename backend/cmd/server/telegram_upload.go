@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/drives"
-	"github.com/video-site/backend/internal/telegramupload"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/telegramupload"
 )
 
 func (a *App) runTelegramUploadMigration(ctx context.Context) error {

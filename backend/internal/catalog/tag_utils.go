@@ -3,7 +3,7 @@ package catalog
 import (
 	"strings"
 
-	"github.com/video-site/backend/internal/tagging"
+	"github.com/nianzhibai/91/backend/internal/tagging"
 )
 
 // IsAVCode / ContainsAVCode 委托给 tagging 包（历史实现已迁移）。

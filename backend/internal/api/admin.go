@@ -7,19 +7,19 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/video-site/backend/internal/applog"
-	"github.com/video-site/backend/internal/auth"
-	"github.com/video-site/backend/internal/backup"
-	"github.com/video-site/backend/internal/backuptransfer"
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/config"
-	"github.com/video-site/backend/internal/drives/quark"
-	"github.com/video-site/backend/internal/drives/yun139"
-	"github.com/video-site/backend/internal/driveview"
-	"github.com/video-site/backend/internal/mediaimport"
-	"github.com/video-site/backend/internal/preview"
-	"github.com/video-site/backend/internal/scanjob"
-	"github.com/video-site/backend/internal/telegram"
+	"github.com/nianzhibai/91/backend/internal/applog"
+	"github.com/nianzhibai/91/backend/internal/auth"
+	"github.com/nianzhibai/91/backend/internal/backup"
+	"github.com/nianzhibai/91/backend/internal/backuptransfer"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/config"
+	"github.com/nianzhibai/91/backend/internal/drives/quark"
+	"github.com/nianzhibai/91/backend/internal/drives/yun139"
+	"github.com/nianzhibai/91/backend/internal/driveview"
+	"github.com/nianzhibai/91/backend/internal/mediaimport"
+	"github.com/nianzhibai/91/backend/internal/preview"
+	"github.com/nianzhibai/91/backend/internal/scanjob"
+	"github.com/nianzhibai/91/backend/internal/telegram"
 )
 
 type DriveConfigUpdateScope uint8

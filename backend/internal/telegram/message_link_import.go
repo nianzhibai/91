@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/video-site/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/catalog"
 )
 
 func (s *Service) acceptMessageLink(ctx context.Context, u update, link messageLink) error {

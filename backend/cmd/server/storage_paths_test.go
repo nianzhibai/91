@@ -38,10 +38,10 @@ func TestStoragePathsCommandUsesRuntimePathsWithoutCreatingData(t *testing.T) {
 				t.Fatal(err)
 			}
 			wantData := filepath.Join(workingDir, "data")
-			wantDB := filepath.Join(wantData, "video-site.db")
+			wantDB := filepath.Join(wantData, "91.db")
 			if strings.Contains(data, "data store") {
 				wantData = filepath.Join(workingDir, "data store")
-				wantDB = filepath.Join(workingDir, "databases", "video-site.db")
+				wantDB = filepath.Join(workingDir, "databases", "91.db")
 			}
 			if paths["data_dir"] != wantData || paths["db_path"] != wantDB {
 				t.Fatalf("paths=%v, want data=%q database=%q", paths, wantData, wantDB)
@@ -104,7 +104,7 @@ func TestStoragePathsSubprocessDoesNotStartServer(t *testing.T) {
 	if err := json.Unmarshal(output.Bytes(), &paths); err != nil {
 		t.Fatal(err)
 	}
-	if paths["data_dir"] != filepath.Join(root, "app data") || paths["db_path"] != filepath.Join(root, "databases", "video-site.db") {
+	if paths["data_dir"] != filepath.Join(root, "app data") || paths["db_path"] != filepath.Join(root, "databases", "91.db") {
 		t.Fatalf("paths=%v", paths)
 	}
 	entries, err := os.ReadDir(root)

@@ -11,7 +11,7 @@ import (
 )
 
 func main() {
-	dbPath := "data/video-site.db"
+	dbPath := "data/91.db"
 	if len(os.Args) > 1 {
 		dbPath = os.Args[1]
 	}

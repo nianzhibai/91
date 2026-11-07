@@ -7,7 +7,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/video-site/backend/internal/crawljob"
+	"github.com/nianzhibai/91/backend/internal/crawljob"
 )
 
 func (c *Catalog) CreateCrawlerTask(ctx context.Context, r crawljob.Result) error {

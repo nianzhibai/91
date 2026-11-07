@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/video-site/backend/internal/drives/googledrive"
+	"github.com/nianzhibai/91/backend/internal/drives/googledrive"
 )
 
 func TestGoogleDriveCachedMediaRefreshesExpiredToken(t *testing.T) {

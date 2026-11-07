@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/video-site/backend/internal/dedupe"
-	"github.com/video-site/backend/internal/driveevents"
+	"github.com/nianzhibai/91/backend/internal/dedupe"
+	"github.com/nianzhibai/91/backend/internal/driveevents"
 )
 
 var ErrDuplicatePlanStale = errors.New("catalog: duplicate plan is stale")

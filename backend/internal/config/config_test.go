@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/video-site/backend"
+	"github.com/nianzhibai/91/backend"
 )
 
 func TestServerListenDefaultsMatchDeploymentTemplate(t *testing.T) {
@@ -68,7 +68,7 @@ func TestResolveStoragePathsUsesStartupDirectoryWithoutMutatingConfig(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.DBPath != filepath.Join(baseDir, "data", "video-site.db") {
+	if resolved.DBPath != filepath.Join(baseDir, "data", "91.db") {
 		t.Fatalf("resolved db path = %q", resolved.DBPath)
 	}
 	if resolved.LocalPreviewDir != filepath.Join(baseDir, "data", "previews") {

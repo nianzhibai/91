@@ -7,12 +7,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/video-site/backend/internal/catalog"
-	"github.com/video-site/backend/internal/drives"
-	"github.com/video-site/backend/internal/fingerprint"
-	"github.com/video-site/backend/internal/nightly"
-	"github.com/video-site/backend/internal/preview"
-	"github.com/video-site/backend/internal/scanjob"
+	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/fingerprint"
+	"github.com/nianzhibai/91/backend/internal/nightly"
+	"github.com/nianzhibai/91/backend/internal/preview"
+	"github.com/nianzhibai/91/backend/internal/scanjob"
 )
 
 func failedGenerationScanApp(t *testing.T, enabled bool) (*App, *serverTreeScanDrive) {
