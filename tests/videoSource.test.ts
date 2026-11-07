@@ -8,6 +8,8 @@ import {
   playbackSourceState,
   playbackSourceURL,
   retryVideoSource,
+  reloadVideoSource,
+  reportVideoSourceTimeout,
   selectPlaybackMode,
   selectPlaybackSource,
   playbackStateLabel,
@@ -69,7 +71,7 @@ class FakeHls {
   static instances: FakeHls[] = [];
   static isSupported() { return true; }
   static Events = { ERROR: "error" };
-  handler!: (_event: string, data: { fatal: boolean; type?: string; response?: { code: number } }) => void;
+  handler!: (_event: string, data: { fatal: boolean; type?: string; response?: { code: number; url?: string } }) => void;
   destroyed = false;
   url = "";
   constructor(public config: Record<string, unknown>) { FakeHls.instances.push(this); }
@@ -77,7 +79,7 @@ class FakeHls {
   loadSource(url: string) { this.url = url; }
   attachMedia() {}
   destroy() { this.destroyed = true; }
-  fail(type = "networkError", code?: number) { this.handler("error", { fatal: true, type, response: code ? { code } : undefined }); }
+  fail(type = "networkError", code?: number, url?: string) { this.handler("error", { fatal: true, type, response: code ? { code, url } : undefined }); }
 }
 const loadHls = async () => FakeHls as never;
 
@@ -250,7 +252,8 @@ function setup(options: { original?: PlaybackSource; cloud?: PlaybackSource; mod
   attachVideoSource(video, original.url!, "/api/video/one/playback", { fetch: fetcher, loadHls, mode: options.mode, active: options.active });
   return { video, urls };
 }
-function mediaError(video: HTMLVideoElement, code = 4) {
+// Default to a confirmed decode failure; code 4 is ambiguous and tested separately.
+function mediaError(video: HTMLVideoElement, code = 3) {
   Object.defineProperty(video, "error", { value: { code }, configurable: true, writable: true });
   video.dispatchEvent(new Event("error"));
 }
@@ -1341,4 +1344,215 @@ test("source information never sends credentials to a foreign origin", async () 
   await settle(); video.dispatchEvent(new Event("loadedmetadata")); await settle();
   assert.equal(calls, 1);
   assert.equal(playbackStateLabel(playbackSourceState(video)), "原画播放");
+});
+
+test("a diagnostic timeout resumes bounded refresh and fallback instead of hanging playback", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const video = media();
+  const requests: URL[] = [];
+  const signals: AbortSignal[] = [];
+  const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+  attachVideoSource(video, original.url!, "/api/video/one/playback", {
+    loadHls,
+    fetch: (async (path, init) => {
+      const url = new URL(String(path)); requests.push(url);
+      if (url.pathname.startsWith("/p/")) {
+        signals.push(init!.signal!);
+        return new Promise<Response>((_resolve, reject) => {
+          init!.signal!.addEventListener("abort", () => reject(new DOMException("Canceled", "AbortError")), { once: true });
+        });
+      }
+      return manifest(original, url.searchParams.get("source") === "cloud" ? readyCloud : cloud);
+    }) as typeof fetch,
+  });
+  await flush();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    mediaError(video, 2);
+    await flush();
+    assert.equal(playbackSourceState(video)?.loading, true);
+    t.mock.timers.tick(5_000);
+    await flush();
+    assert.equal(signals[attempt].aborted, true);
+    assert.equal(playbackSourceState(video)?.loading, false);
+    assert.equal(playbackSourceState(video)?.error, null);
+  }
+  assert.equal(requests.filter((url) => url.searchParams.has("refresh")).length, 1);
+  assert.equal(playbackSourceState(video)?.activeSource?.id, "cloud");
+});
+
+test("a canceled diagnostic cannot fail a newly selected playback source", async () => {
+  const video = media();
+  let finish!: (response: Response) => void;
+  let signal: AbortSignal | null | undefined;
+  attachVideoSource(video, original.url!, "/api/video/one/playback", {
+    loadHls,
+    fetch: (async (path, init) => {
+      const url = new URL(String(path));
+      if (url.pathname.startsWith("/p/")) {
+        signal = init?.signal;
+        return new Promise<Response>((resolve) => { finish = resolve; });
+      }
+      return manifest(original, url.searchParams.get("source") === "cloud" ? readyCloud : cloud);
+    }) as typeof fetch,
+  });
+  await settle();
+  mediaError(video, 2);
+  await settle();
+  selectPlaybackMode(video, "compatible");
+  await settle();
+  assert.equal(signal?.aborted, true);
+  finish(json({}, 403));
+  await settle();
+  assert.equal(playbackSourceState(video)?.activeSource?.id, "cloud");
+  assert.equal(playbackSourceState(video)?.error, null);
+});
+
+for (const native of [false, true]) {
+  for (const failure of [
+    { name: "expired media signature", status: 410, code: "playback_source_expired", reason: null },
+    { name: "expired site login", status: 401, reason: "access" },
+    { name: "site permission denied", status: 403, reason: "access" },
+    { name: "expired share", status: 404, reason: "access" },
+    { name: "rate limit", status: 429, reason: "throttled" },
+    { name: "provider rate limit", status: 502, code: "drive_rate_limited", reason: "throttled" },
+  ]) {
+    test(`${native ? "native HLS" : "hls.js"} applies the shared policy to ${failure.name}`, async (t) => {
+      const video = media();
+      if (native) {
+        t.mock.method(FakeHls, "isSupported", () => false);
+        video.canPlayType = () => "probably";
+      }
+      const requests: URL[] = [];
+      const localCloud = { ...readyCloud, url: "/p/hls/video/session/index.m3u8" };
+      const segment = "/p/hls/video/session/segment";
+      attachVideoSource(video, original.url!, "/api/video/one/playback", {
+        mode: "compatible", loadHls,
+        fetch: (async (path) => {
+          const url = new URL(String(path)); requests.push(url);
+          if (url.pathname.startsWith("/p/")) {
+            // Native playback diagnoses the master; hls.js can identify the
+            // actual failed segment even while the master is still readable.
+            if (!native && url.pathname !== segment) return new Response(null, { status: 200 });
+            return json({ code: failure.code }, failure.status);
+          }
+          return manifest(original, url.searchParams.has("source") ? localCloud : cloud);
+        }) as typeof fetch,
+      });
+      await settle();
+      if (native) mediaError(video, 4);
+      else FakeHls.instances[0].fail("networkError", failure.status, segment);
+      await settle();
+      assert.equal(playbackSourceState(video)?.error?.reason ?? null, failure.reason);
+      assert.equal(requests.filter((url) => url.searchParams.has("refresh")).length, failure.reason ? 0 : 1);
+      if (!failure.reason) {
+        if (native) mediaError(video, 4);
+        else FakeHls.instances[1].fail("networkError", failure.status, segment);
+        await settle();
+        assert.equal(playbackSourceState(video)?.error?.reason, "network");
+        assert.equal(requests.filter((url) => url.searchParams.has("refresh")).length, 1);
+      } else {
+        assert.deepEqual(playbackSourceState(video)?.error?.recoveryModes, []);
+      }
+    });
+  }
+}
+
+test("opaque original MP4 failures refresh once before falling back to compatibility", async () => {
+  const video = media();
+  const requests: URL[] = [];
+  attachVideoSource(video, original.url!, "/api/video/one/playback", {
+    loadHls,
+    fetch: (async (path) => {
+      const url = new URL(String(path)); requests.push(url);
+      if (url.pathname.startsWith("/p/")) return new Response(null, { status: 302 });
+      return manifest(original, url.searchParams.get("source") === "cloud" ? readyCloud : cloud);
+    }) as typeof fetch,
+  });
+  await settle();
+  mediaError(video, 4);
+  await settle();
+  assert.equal(playbackSourceState(video)?.activeSource?.id, "original");
+  assert.equal(playbackSourceState(video)?.error, null);
+  mediaError(video, 4);
+  await settle();
+  assert.equal(playbackSourceState(video)?.activeSource?.id, "cloud");
+  assert.equal(requests.filter((url) => url.searchParams.has("refresh")).length, 1);
+});
+
+test("reloading the media pipeline preserves playback state and the consumed refresh budget", async () => {
+  const { video, urls } = setup({ mode: "original" });
+  await settle();
+  mediaError(video, 2);
+  await settle();
+  video.dispatchEvent(new Event("loadedmetadata"));
+  video.currentTime = 42;
+  video.playbackRate = 1.5;
+  video.volume = 0.3;
+  video.muted = true;
+  await video.play();
+  const requestCount = urls.length;
+  assert.equal(reloadVideoSource(video), true);
+  await settle();
+  video.dispatchEvent(new Event("loadedmetadata"));
+  assert.equal(urls.length, requestCount);
+  assert.equal(video.currentTime, 42);
+  assert.equal(video.playbackRate, 1.5);
+  assert.equal(video.volume, 0.3);
+  assert.equal(video.muted, true);
+  assert.equal(video.paused, false);
+  mediaError(video, 2);
+  await settle();
+  assert.equal(playbackSourceState(video)?.error?.reason, "network");
+  assert.equal(urls.filter((url) => url.searchParams.has("refresh")).length, 1);
+});
+
+test("reloading HLS reuses its current address even after the metadata expiry", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
+  const { video, urls } = setup({ mode: "compatible", cloud: { ...readyCloud, expiresAt: new Date(1_000).toISOString() } });
+  const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+  await flush();
+  t.mock.timers.tick(2_000);
+  const count = urls.length;
+  reloadVideoSource(video);
+  await flush();
+  assert.equal(urls.length, count);
+  assert.equal(FakeHls.instances[0].destroyed, true);
+  assert.equal(FakeHls.instances[1].url, readyCloud.url);
+});
+
+test("frame recovery cannot interrupt pending source resolution or clear failed sources", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const video = media();
+  const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+  let finish!: (response: Response) => void;
+  let requests = 0;
+  attachVideoSource(video, original.url!, "/api/video/one/playback", {
+    loadHls,
+    fetch: (async (path) => {
+      requests++;
+      if (new URL(String(path)).searchParams.get("source") === "cloud") {
+        return new Promise<Response>((resolve) => { finish = resolve; });
+      }
+      return manifest(original, cloud);
+    }) as typeof fetch,
+  });
+  await flush();
+  reportVideoSourceTimeout(video);
+  await flush();
+  assert.equal(playbackSourceState(video)?.loading, true);
+  reloadVideoSource(video);
+  reportVideoSourceTimeout(video);
+  t.mock.timers.tick(6_000);
+  await flush();
+  assert.equal(requests, 2);
+  assert.equal(playbackSourceState(video)?.error, null);
+  finish(manifest(original, readyCloud));
+  await flush();
+  reloadVideoSource(video);
+  await flush();
+  reportVideoSourceTimeout(video);
+  await flush();
+  assert.equal(playbackSourceState(video)?.error?.reason, "timeout");
+  assert.equal(playbackSourceState(video)?.error?.sourceID, "cloud");
+  assert.equal(requests, 2);
 });

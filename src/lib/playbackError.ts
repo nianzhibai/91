@@ -15,6 +15,15 @@ export type PlaybackFailure = {
 };
 
 const MAX_SERVER_MESSAGE_LENGTH = 500;
+const DIAGNOSTIC_TIMEOUT_MS = 5_000;
+
+export function playbackFailureKind(status: number, code?: string): PlaybackFailure["kind"] {
+  if (code === "playback_source_expired") return "network";
+  if (status === 429 || code === "drive_rate_limited") return "throttled";
+  if ([401, 403, 404, 410].includes(status) ||
+      code === "drive_auth_failed" || code === "drive_source_not_found") return "access";
+  return "network";
+}
 
 /**
  * Ask the same-origin playback endpoint why a media element failed.
@@ -38,8 +47,15 @@ export async function diagnosePlaybackFailure(
   const pageURL = new URL(baseHref);
   const sourceURL = new URL(src, pageURL);
   if (!isSameOriginPlaybackURL(sourceURL, pageURL)) return null;
+  if (options.signal?.aborted) return null;
 
   const fetcher = options.fetch ?? window.fetch.bind(window);
+  // Diagnostics share cancellation with playback, but have their own deadline:
+  // timing out this optional request must not cancel the subsequent recovery.
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  options.signal?.addEventListener("abort", cancel, { once: true });
+  const timeout = setTimeout(cancel, DIAGNOSTIC_TIMEOUT_MS);
   try {
     const response = await fetcher(sourceURL.href, {
       method: "GET",
@@ -50,7 +66,7 @@ export async function diagnosePlaybackFailure(
       credentials: "same-origin",
       cache: "no-store",
       redirect: "manual",
-      signal: options.signal,
+      signal: controller.signal,
     });
 
     // A 200/206 means the backend source is reachable; status 0 is the opaque
@@ -59,14 +75,9 @@ export async function diagnosePlaybackFailure(
     if (response.status === 0 || response.status < 400) return null;
 
     const serverError = await readServerError(response);
+    if (controller.signal.aborted) return null;
     // Provider failures use a structured code inside HTTP 502 responses.
-    const kind = serverError.code === "playback_source_expired" ? "network"
-      : response.status === 429 || serverError.code === "drive_rate_limited"
-      ? "throttled"
-      : [401, 403, 404, 410].includes(response.status) ||
-          ["drive_auth_failed", "drive_source_not_found"].includes(serverError.code)
-        ? "access"
-        : "network";
+    const kind = playbackFailureKind(response.status, serverError.code);
     if (serverError.message) return { message: serverError.message, kind };
 
     let message: string;
@@ -97,8 +108,10 @@ export async function diagnosePlaybackFailure(
     }
     return { message, kind };
   } catch {
-    if (options.signal?.aborted) return null;
     return null;
+  } finally {
+    clearTimeout(timeout);
+    options.signal?.removeEventListener("abort", cancel);
   }
 }
 

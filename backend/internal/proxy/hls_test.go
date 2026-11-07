@@ -292,3 +292,75 @@ func TestHLSUsesRotatedServerCredentialsWithoutRetiringActiveSessions(t *testing
 		t.Fatalf("remount retained session: %d", rr.Code)
 	}
 }
+
+func TestHLSFailuresDistinguishSignedSourcesFromViewerAccess(t *testing.T) {
+	for _, status := range []int{401, 403, 404, 410, 429, 502} {
+		for _, segment := range []bool{false, true} {
+			t.Run(fmt.Sprintf("status=%d/segment=%t", status, segment), func(t *testing.T) {
+				var requests atomic.Int32
+				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					requests.Add(1)
+					w.Header().Set("Retry-After", "60")
+					w.WriteHeader(status)
+					io.WriteString(w, "upstream-secret")
+				}))
+				defer upstream.Close()
+				p := New(NewRegistry())
+				playlist := ""
+				if segment {
+					playlist = "#EXTM3U\n#EXTINF:5,\nsegment\n#EXT-X-ENDLIST\n"
+				}
+				id, _, err := p.StartHLSPlayback("drive", "file", testHLSSource(upstream.URL+"/master", playlist))
+				if err != nil {
+					t.Fatal(err)
+				}
+				resource := "index.m3u8"
+				if segment {
+					serveTestHLS(p, id, resource, nil)
+					for key := range p.hlsSessions[id].resources {
+						if key != resource {
+							resource = key
+							break
+						}
+					}
+				}
+				failed := serveTestHLS(p, id, resource, nil)
+				wantStatus := status
+				if status == 401 || status == 403 || status == 404 || status == 410 {
+					wantStatus = http.StatusGone
+					if !strings.Contains(failed.Body.String(), `"code":"playback_source_expired"`) {
+						t.Fatalf("signed source became a viewer access error: %s", failed.Body.String())
+					}
+				}
+				if failed.Code != wantStatus || strings.Contains(failed.Body.String(), "upstream-secret") {
+					t.Fatalf("failure=%d %s", failed.Code, failed.Body.String())
+				}
+				// Native HLS diagnoses the master because the failed segment URL
+				// is hidden. Terminal failures must survive even a cached master.
+				master := serveTestHLS(p, id, "index.m3u8", http.Header{"Accept": {"application/json"}, "Range": {"bytes=0-0"}})
+				if status == 502 {
+					if segment && master.Code != http.StatusOK {
+						t.Fatalf("transient failure poisoned the session: %d", master.Code)
+					}
+				} else {
+					if master.Code != failed.Code || master.Body.String() != failed.Body.String() || requests.Load() != 1 {
+						t.Fatalf("master lost terminal failure: %d %s requests=%d", master.Code, master.Body.String(), requests.Load())
+					}
+					if status == 429 && master.Header().Get("Retry-After") != "60" {
+						t.Fatal("rate-limit cooldown was lost")
+					}
+				}
+				if segment && status != 429 {
+					if master := serveTestHLS(p, id, "index.m3u8", nil); master.Code != http.StatusOK {
+						t.Fatalf("segment rejection blocked normal playlist loading: %d", master.Code)
+					}
+				}
+				wrongScope := httptest.NewRecorder()
+				p.ServeHLS(wrongScope, httptest.NewRequest(http.MethodGet, "/hls", nil), "other-drive", "file", id, "index.m3u8")
+				if wrongScope.Code != http.StatusNotFound {
+					t.Fatalf("failed session bypassed scope check: %d", wrongScope.Code)
+				}
+			})
+		}
+	}
+}

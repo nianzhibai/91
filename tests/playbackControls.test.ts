@@ -798,6 +798,11 @@ test("a failed automatic fallback does not offer the last attached original or t
   Object.defineProperty(video, "error", { configurable: true, value: { code: 4 } });
   await act(async () => { video.dispatchEvent(new Event("error")); });
   await settle();
+  assert.equal(view.queryByRole("alert"), null);
+  assert.equal(playbackSourceState(video)?.error, null);
+  assert.equal(urls.filter((url) => url.searchParams.get("source") === "original" && url.searchParams.has("refresh")).length, 1);
+  await act(async () => { video.dispatchEvent(new Event("error")); });
+  await settle();
   assert.equal(playbackSourceState(video)?.activeSource?.id, "original");
   assert.equal(playbackSourceState(video)?.error?.sourceID, "cloud");
   assert.equal(view.queryByRole("button", { name: "切换兼容播放" }), null);

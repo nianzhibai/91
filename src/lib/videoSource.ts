@@ -1,5 +1,10 @@
 import type Hls from "hls.js";
-import { diagnosePlaybackFailure } from "./playbackError";
+import {
+  diagnosePlaybackFailure,
+  isSameOriginPlaybackURL,
+  playbackFailureKind,
+  type PlaybackFailure,
+} from "./playbackError";
 
 export type PlaybackMode = "auto" | "original" | "compatible";
 export type PlaybackSource = {
@@ -60,6 +65,8 @@ type SourceController = {
   url: string;
   state: PlaybackState;
   retry(): void;
+  reload(): void;
+  reportTimeout(): void;
   selectMode(mode: PlaybackMode): void;
   selectSource(id: string): void;
   setRelay(enabled: boolean): void;
@@ -144,6 +151,20 @@ export function retryVideoSource(video: HTMLVideoElement) {
   controller.retry();
   return true;
 }
+/** Rebuild the current media pipeline without reacquiring URLs or resetting recovery budgets. */
+export function reloadVideoSource(video: HTMLVideoElement) {
+  const controller = controllers.get(video);
+  if (!controller) return false;
+  controller.reload();
+  return true;
+}
+/** Let frame observers use the same bounded fallback policy as startup detection. */
+export function reportVideoSourceTimeout(video: HTMLVideoElement) {
+  const controller = controllers.get(video);
+  if (!controller) return false;
+  controller.reportTimeout();
+  return true;
+}
 
 class SourceRequestError extends Error {
   constructor(message: string, readonly reason: PlaybackFailureReason) { super(message); }
@@ -200,7 +221,7 @@ export function attachVideoSource(
           abort?.abort();
         }
       } else if (controller.state.processing && !controller.state.error && controller.state.activeSource) {
-        void start(controller.state.activeSource, false);
+        void start(controller.state.activeSource, "select");
       }
       watchStartup();
     },
@@ -210,13 +231,21 @@ export function attachVideoSource(
       if (initialized && source && (controller.state.mode !== "auto" || !nativeUnsupported(source))) {
         failed.delete(source.id);
         refreshed.delete(source.id);
-        void start(source, true);
+        void start(source, "refresh");
         return;
       }
       failed.clear();
       refreshed.clear();
       if (!initialized || playbackUrl) void initialize(true);
       else void choose(true);
+    },
+    reload() {
+      const source = controller.state.activeSource;
+      if (controller.state.loading || controller.state.error || source?.status !== "ready") return;
+      void start(source, "reload");
+    },
+    reportTimeout() {
+      void recover("timeout", "视频画面加载超时，请重试或切换播放方式");
     },
     selectMode(mode) {
       if (controller.state.mode === mode && !controller.state.selectedSourceID) return;
@@ -236,7 +265,7 @@ export function attachVideoSource(
       failed.clear();
       refreshed.clear();
       changed();
-      if (initialized) void start(source, false);
+      if (initialized) void start(source, "select");
     },
     setRelay(enabled) {
       if (forceRelay === enabled) return;
@@ -244,7 +273,7 @@ export function attachVideoSource(
       const activeSource = controller.state.activeSource;
       if (initialized && !controller.state.loading && !controller.state.error && activeSource?.protocol === "file") {
         const source = controller.state.sources.find((item) => item.id === activeSource.id);
-        if (source) void start(source, false);
+        if (source) void start(source, "select");
       }
     },
     destroy() {
@@ -461,12 +490,13 @@ export function attachVideoSource(
     const code = video.error?.code;
     if (code === 1) return; // User/navigation aborts are not source failures.
     const source = controller.state.activeSource;
-    // A redirected MP4's HTTP failure can surface as SRC_NOT_SUPPORTED. Its
-    // response is opaque to diagnostics, so refresh a supported file once.
-    const refreshableFile = source?.kind === "transcoded" && source.protocol === "file" && !nativeUnsupported(source);
-    void recover(code === 3 || (code === 4 && !refreshableFile) ? "unsupported" : "network", "视频源加载失败", true);
+    // SRC_NOT_SUPPORTED can hide an HTTP failure, including native HLS segment
+    // failures. Refresh any potentially playable source once; only confirmed
+    // decode/container failures skip directly to another source.
+    const unsupported = code === 3 || (code === 4 && !!source && nativeUnsupported(source));
+    void recover(unsupported ? "unsupported" : "network", "视频源加载失败", controller.url);
   }
-  async function recover(kind: "unsupported" | "network" | "throttled" | "timeout", message: string, diagnose = false) {
+  async function recover(kind: "unsupported" | "timeout" | PlaybackFailure["kind"], message: string, diagnosticURL?: string) {
     if (disposed || controller.state.loading || controller.state.error) return;
     const source = controller.state.activeSource;
     if (!source) return;
@@ -475,29 +505,28 @@ export function attachVideoSource(
     controller.state.loading = true;
     changed();
     const epoch = generation;
-    if (diagnose) {
-      const diagnostic = await diagnosePlaybackFailure(controller.url, { fetch: options.fetch, signal: abort?.signal });
+    if (diagnosticURL) {
+      const diagnostic = await diagnosePlaybackFailure(diagnosticURL, { fetch: options.fetch, signal: abort?.signal });
       if (disposed || epoch !== generation) return;
       if (diagnostic) {
         message = diagnostic.message;
-        if (diagnostic.kind === "access" || diagnostic.kind === "throttled") {
-          fail(message, source, diagnostic.kind);
-          return;
-        }
-        kind = "network";
+        kind = diagnostic.kind;
       }
     }
-    if (kind === "throttled") { fail("视频源当前正在限流，请稍后重试", source, kind); return; }
+    if (stopsRecovery(kind)) { fail(message, source, kind); return; }
     if (kind === "network" && !refreshed.has(source.id)) {
       refreshed.add(source.id);
-      await start(source, true);
+      await start(source, "refresh");
       return;
     }
+    await rejectSource(source, kind, message);
+  }
+  async function rejectSource(source: PlaybackSource, kind: PlaybackFailureReason, message: string) {
     failed.add(source.id);
-    if (controller.state.mode === "auto" || (controller.state.mode === "compatible" && !controller.state.selectedSourceID)) {
+    if (!stopsRecovery(kind) && (controller.state.mode === "auto" || (controller.state.mode === "compatible" && !controller.state.selectedSourceID))) {
       const next = candidate();
       if (next) {
-        await start(next, false);
+        await start(next, "select");
         return;
       }
     }
@@ -528,7 +557,7 @@ export function attachVideoSource(
       return;
     }
     if (!refresh && source.id === controller.state.activeSource?.id && !controller.state.error && !controller.state.loading) { changed(); return; }
-    await start(source, refresh);
+    await start(source, refresh ? "refresh" : "select");
   }
   async function requestManifest(path: string, epoch: number, refresh: boolean, sourceID?: string, method = "GET") {
     const url = new URL(path, window.location.href);
@@ -549,9 +578,7 @@ export function attachVideoSource(
           404: "视频文件或分享凭证不存在、已失效", 410: "视频文件或分享凭证已失效",
           429: "网盘当前正在限流，请稍后重试",
         };
-        const reason = response.status === 429 || data?.code === "drive_rate_limited" ? "throttled"
-          : [401, 403, 404, 410].includes(response.status) ||
-              ["drive_auth_failed", "drive_source_not_found"].includes(data?.code ?? "") ? "access" : "network";
+        const reason = playbackFailureKind(response.status, data?.code);
         throw new SourceRequestError(data?.message || messages[response.status] || "获取播放源失败，请稍后重试", reason);
       }
       if (!data || !Array.isArray(data.sources) || !data.sources.length || data.sources.some((item) =>
@@ -614,7 +641,7 @@ export function attachVideoSource(
           (item.status === "ready" || item.status === "unknown") && !failed.has(item.id));
         if (alternative) {
           if (alternative.status === "ready") return alternative;
-          await start(alternative, false);
+          await start(alternative, "select");
           return null;
         }
       }
@@ -636,13 +663,14 @@ export function attachVideoSource(
       if (!disposed && epoch === generation) fail(errorMessage(error), null, failureReason(error));
     }
   }
-  async function start(selected: PlaybackSource, refresh: boolean) {
+  async function start(selected: PlaybackSource, action: "select" | "refresh" | "reload") {
     const epoch = begin();
     const previous = controller.state.activeSource;
     try {
+      const refresh = action === "refresh";
       const expired = !!selected.expiresAt && Date.parse(selected.expiresAt) <= Date.now();
       const resolver = selected.resolveUrl || (refresh ? playbackUrl : undefined);
-      if (resolver && (refresh || expired || selected.status === "unknown" || selected.status === "processing")) {
+      if (action !== "reload" && resolver && (refresh || expired || selected.status === "unknown" || selected.status === "processing")) {
         if (!await requestManifest(resolver, epoch, refresh || expired, selected.kind === "original" ? "original" : undefined)) return;
         const resolved = controller.state.sources.find((item) => item.id === selected.id);
         const unavailable = controller.state.sources.find((item) => item.kind === selected.kind && item.status === "unavailable");
@@ -691,8 +719,16 @@ export function attachVideoSource(
           });
           hls.on(HlsCtor.Events.ERROR, (_event, data) => {
             if (!data.fatal || disposed || epoch !== generation) return;
-            const status = data.response?.code;
-            void recover(status === 429 ? "throttled" : data.type === "mediaError" ? "unsupported" : "network", "兼容播放失败");
+            const status = data.response?.code ?? 0;
+            const failedURL = new URL(data.response?.url || data.url || selected.url!, window.location.href);
+            const local = isSameOriginPlaybackURL(failedURL, new URL(window.location.href));
+            const kind = status === 429 ? "throttled" : data.type === "mediaError" ? "unsupported"
+              : local ? playbackFailureKind(status) : "network";
+            // Inspect the failed local resource, including segments, to distinguish
+            // signed-source expiry from site access failures. CDN rejections only
+            // describe that source, never the viewer's site credentials.
+            void recover(kind, kind === "throttled" ? "视频源当前正在限流，请稍后重试" : "兼容播放失败",
+              local && data.type !== "mediaError" && status !== 429 ? failedURL.href : undefined);
           });
           hls.loadSource(selected.url);
           hls.attachMedia(video);
@@ -715,13 +751,9 @@ export function attachVideoSource(
       watchStartup();
     } catch (error) {
       if (disposed || epoch !== generation) return;
-      failed.add(selected.id);
-      const reason = failureReason(error);
-      if (!stopsRecovery(reason) && (controller.state.mode === "auto" || (controller.state.mode === "compatible" && !controller.state.selectedSourceID))) {
-        const next = candidate();
-        if (next) { await start(next, false); return; }
-      }
-      fail(errorMessage(error), selected, reason);
+      // Resolution has already been attempted. Do not recursively refresh a
+      // failing resolver; use the same source rotation/stop policy as delivery.
+      await rejectSource(selected, failureReason(error), errorMessage(error));
     }
   }
   function failureReason(error: unknown): PlaybackFailureReason {

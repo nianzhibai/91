@@ -33,6 +33,8 @@ type hlsSession struct {
 	policy          drives.HLSRelay
 	expires, used   time.Time
 	resources       map[string]*url.URL // protected by Proxy.hlsMu
+	failureStatus   int                 // last source rejection, protected by Proxy.hlsMu
+	retryAfter      string
 }
 
 // StartHLSPlayback creates a bounded, opaque resource namespace. The API must
@@ -114,11 +116,16 @@ func (p *Proxy) ServeHLS(w http.ResponseWriter, r *http.Request, driveID, fileID
 	}
 	target := session.resources[resourceID]
 	root := session.resources["index.m3u8"]
+	failureStatus, retryAfter := session.failureStatus, session.retryAfter
 	session.used = now
 	session.expires = now.Add(hlsSessionTTL)
 	p.hlsMu.Unlock()
 	if target == nil {
 		http.NotFound(w, r)
+		return
+	}
+	if failureStatus != 0 && (failureStatus == http.StatusTooManyRequests || strings.Contains(r.Header.Get("Accept"), "application/json")) {
+		writeHLSUpstreamFailure(w, failureStatus, retryAfter)
 		return
 	}
 	if resourceID == "index.m3u8" && session.policy.Playlist != "" {
@@ -132,13 +139,21 @@ func (p *Proxy) ServeHLS(w http.ResponseWriter, r *http.Request, driveID, fileID
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-		// Preserve failures for the player's bounded refresh/fallback path,
-		// without leaking signed upstream URLs or error bodies to the browser.
 		status := resp.StatusCode
-		if status < 400 || status > 599 {
-			status = http.StatusBadGateway
+		retryAfter := resp.Header.Get("Retry-After")
+		switch status {
+		case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusGone, http.StatusTooManyRequests:
+			// Native HLS hides the failed segment URL. Retain source rejections
+			// for master diagnostics without blocking normal rendition switching.
+			// Rate limits stop all requests within this session.
+			p.hlsMu.Lock()
+			if session.failureStatus == 0 || status == http.StatusTooManyRequests {
+				session.failureStatus, session.retryAfter = status, retryAfter
+			}
+			status, retryAfter = session.failureStatus, session.retryAfter
+			p.hlsMu.Unlock()
 		}
-		w.WriteHeader(status)
+		writeHLSUpstreamFailure(w, status, retryAfter)
 		return
 	}
 	if r.Method == http.MethodHead {
@@ -161,6 +176,23 @@ func (p *Proxy) ServeHLS(w http.ResponseWriter, r *http.Request, driveID, fileID
 	copyHLSMediaHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, body)
+}
+
+func writeHLSUpstreamFailure(w http.ResponseWriter, status int, retryAfter string) {
+	switch status {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusGone:
+		// Site access was checked before ServeHLS. An upstream rejection only
+		// invalidates this signed source, just like progressive playback.
+		writePlaybackSourceExpired(w)
+	default:
+		if retryAfter != "" {
+			w.Header().Set("Retry-After", retryAfter)
+		}
+		if status < 400 || status > 599 {
+			status = http.StatusBadGateway
+		}
+		w.WriteHeader(status)
+	}
 }
 
 func (p *Proxy) serveHLSPlaylist(w http.ResponseWriter, r *http.Request, id string, session *hlsSession, base *url.URL, playlist string) {

@@ -33,6 +33,8 @@ import {
   selectPlaybackMode,
   type PlaybackState,
   retryVideoSource,
+  reloadVideoSource,
+  reportVideoSourceTimeout,
   videoSourceLoading,
 } from "@/lib/videoSource";
 import {
@@ -2168,6 +2170,7 @@ function ShortsSlideImpl({
 
     const attemptRestart = (attempt: number) => {
       if (!canContinueRestart(attempt)) return;
+      if (videoSourceLoading(video) || playbackSourceError(video)) return;
       normalizeVideoPlaybackRate(video);
       applyVideoMutedState(video, mutedRef.current);
 
@@ -2189,6 +2192,7 @@ function ShortsSlideImpl({
 
     const startFrameWatchdog = (attempt: number) => {
       clearLoopRestartWatchdog();
+      if (videoSourceLoading(video) || playbackSourceError(video)) return;
       const timeoutMs = loopRestartReloadedRef.current
         ? IOS_LOOP_RELOAD_TIMEOUT_MS
         : IOS_LOOP_FRAME_WATCHDOG_MS;
@@ -2198,10 +2202,9 @@ function ShortsSlideImpl({
           return;
         }
 
-        // 同一节点已经重建过一次播放管线仍没有任何呈现帧，就退出永久
-        // buffering，展示明确的失败态，让用户可以主动重试。
+        // 重载后仍无呈现帧，由共享控制器决定换源或结束恢复。
         if (loopRestartReloadedRef.current) {
-          failRestart(attempt);
+          if (!reportVideoSourceTimeout(video)) failRestart(attempt);
           return;
         }
 
@@ -2210,7 +2213,7 @@ function ShortsSlideImpl({
         try {
           video.pause();
           // 保留 src 和同一个 DOM 节点，只重建 WebKit 内部播放管线。
-          if (!retryVideoSource(video)) video.load();
+          if (!reloadVideoSource(video)) video.load();
         } catch {
           failRestart(attempt);
           return;
@@ -2268,7 +2271,7 @@ function ShortsSlideImpl({
         // 的内部播放管线，避免再次走容易卡住的 backward seek。
         loopRestartReloadedRef.current = true;
         try {
-          video.load();
+          if (!reloadVideoSource(video)) video.load();
         } catch {
           failRestart(attempt);
           return;
@@ -2281,6 +2284,18 @@ function ShortsSlideImpl({
     const retryRestartWhenReady = () => {
       if (!loopRestartPendingRef.current) return;
       attemptRestart(loopRestartAttemptRef.current);
+    };
+
+    const handleSourceRecoveryChange = () => {
+      if (!loopRestartPendingRef.current) return;
+      clearLoopRestartWatchdog();
+      if (playbackSourceError(video)) {
+        resetLoopRestartState();
+        return;
+      }
+      if (canContinueRestart(loopRestartAttemptRef.current)) {
+        startFrameWatchdog(loopRestartAttemptRef.current);
+      }
     };
 
     const handleRestartSeeked = () => {
@@ -2330,6 +2345,8 @@ function ShortsSlideImpl({
     video.addEventListener("loadeddata", handleRestartCanPlay);
     video.addEventListener("canplay", handleRestartCanPlay);
     video.addEventListener("play", handleIOSLoopPlay);
+    video.addEventListener(PLAYBACK_SOURCE_CHANGE, handleSourceRecoveryChange);
+    video.addEventListener(PLAYBACK_SOURCE_READY, retryRestartWhenReady);
 
     return () => {
       disposed = true;
@@ -2338,6 +2355,8 @@ function ShortsSlideImpl({
       video.removeEventListener("loadeddata", handleRestartCanPlay);
       video.removeEventListener("canplay", handleRestartCanPlay);
       video.removeEventListener("play", handleIOSLoopPlay);
+      video.removeEventListener(PLAYBACK_SOURCE_CHANGE, handleSourceRecoveryChange);
+      video.removeEventListener(PLAYBACK_SOURCE_READY, retryRestartWhenReady);
       resetLoopRestartState();
     };
   }, [

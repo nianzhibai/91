@@ -151,3 +151,48 @@ test("playback diagnostics skip external sources without fetching", async () => 
   assert.equal(message, null);
   assert.equal(called, false);
 });
+
+for (const stage of ["headers", "body"] as const) {
+  test(`playback diagnostics time out while waiting for ${stage} without canceling playback`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const playback = new AbortController();
+    let requestSignal: AbortSignal | null | undefined;
+    const result = diagnosePlaybackFailure("/p/stream/drive/file", {
+      baseHref: "https://video.example/", signal: playback.signal,
+      fetch: (async (_url, init) => {
+        requestSignal = init?.signal;
+        const pending = new Promise<never>((_resolve, reject) => {
+          requestSignal?.addEventListener("abort", () => reject(new DOMException("Canceled", "AbortError")), { once: true });
+        });
+        if (stage === "headers") return pending;
+        return {
+          status: 403, headers: new Headers({ "Content-Type": "application/json" }), json: () => pending,
+        } as Response;
+      }) as typeof fetch,
+    });
+    await Promise.resolve();
+    t.mock.timers.tick(4_999);
+    assert.equal(requestSignal?.aborted, false);
+    t.mock.timers.tick(1);
+    assert.equal(await result, null);
+    assert.equal(requestSignal?.aborted, true);
+    assert.equal(playback.signal.aborted, false);
+  });
+}
+
+test("disposing playback cancels a pending diagnostic immediately", async () => {
+  const playback = new AbortController();
+  let requestSignal: AbortSignal | null | undefined;
+  const result = diagnosePlaybackFailure("/p/hls/video/session/index.m3u8", {
+    baseHref: "https://video.example/", signal: playback.signal,
+    fetch: (async (_url, init) => {
+      requestSignal = init?.signal;
+      return new Promise<Response>((_resolve, reject) => {
+        requestSignal?.addEventListener("abort", () => reject(new DOMException("Canceled", "AbortError")), { once: true });
+      });
+    }) as typeof fetch,
+  });
+  playback.abort();
+  assert.equal(await result, null);
+  assert.equal(requestSignal?.aborted, true);
+});
