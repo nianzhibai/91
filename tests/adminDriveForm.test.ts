@@ -222,9 +222,7 @@ test("onedrive drive form supports default and custom OAuth applications", () =>
   assert.match(fields, /key: "client_secret"/);
   assert.match(fields, /label: "客户端密钥"/);
   assert.match(fields, /visibleWhen:[\s\S]*?ONEDRIVE_AUTH_MODE_CUSTOM_APP/);
-  assert.match(fields, /请填写客户端密钥值，不是密钥 ID/);
   assert.match(fields, /key: "refresh_token"/);
-  assert.match(fields, /与所用应用匹配的 OneDrive refresh_token/);
   assert.doesNotMatch(fields, /key: "access_token"/);
   assert.doesNotMatch(fields, /key: "api_url_address"/);
   assert.doesNotMatch(fields, /key: "region"/);
@@ -364,7 +362,6 @@ test("p115 drive form supports qr login and manual cookie fallback", () => {
     );
   assert.ok(match, "p115 credential field block should be present");
   assert.match(match[1], /key: "cookie"/);
-  assert.match(match[1], /UID=xxx; CID=xxx; SEID=xxx; KID=xxx/);
   assert.match(match[1], /methodLabel: "或手动填写"/);
 });
 
@@ -387,7 +384,6 @@ test("quark drive form supports qr login and manual cookie fallback", () => {
   assert.ok(match, "quark credential field block should be present");
   assert.match(match[1], /key: "cookie"/);
   assert.match(match[1], /methodLabel: "或手动填写"/);
-  assert.match(match[1], /__pus=\.\.\.; __puus=\.\.\.; \.\.\./);
   assert.doesNotMatch(match[1], /use_transcoding_address|客户端 302/);
 });
 

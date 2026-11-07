@@ -184,7 +184,7 @@ export function rootDirectoryLabel(kind: Kind): string {
 export type CredentialField = {
   key: string;
   label: string;
-  placeholder: string;
+  placeholder?: string;
   methodLabel?: string;
   type?: "text" | "select";
   options?: Array<{ value: string; label: string }>;
@@ -201,7 +201,6 @@ export function credentialFields(kind: Kind): CredentialField[] {
         {
           key: "authorization",
           label: "Authorization",
-          placeholder: "登录 yun.139.com，在网络请求头中复制 Authorization（可包含 Basic 前缀）",
           methodLabel: "或手动填写",
           multiline: true,
           required: true,
@@ -212,7 +211,6 @@ export function credentialFields(kind: Kind): CredentialField[] {
         {
           key: "cookie",
           label: "Cookie",
-          placeholder: "__pus=...; __puus=...; ...",
           methodLabel: "或手动填写",
           multiline: true,
           required: true,
@@ -223,7 +221,6 @@ export function credentialFields(kind: Kind): CredentialField[] {
         {
           key: "cookie",
           label: "Cookie",
-          placeholder: "UID=xxx; CID=xxx; SEID=xxx; KID=xxx",
           methodLabel: "或手动填写",
           multiline: true,
           required: true,
@@ -234,13 +231,11 @@ export function credentialFields(kind: Kind): CredentialField[] {
         {
           key: "username",
           label: "手机号/邮箱",
-          placeholder: "手机号或邮箱",
           methodLabel: "或使用账号密码",
         },
         {
           key: "password",
           label: "密码",
-          placeholder: "123网盘密码",
         },
       ];
     case "pikpak":
@@ -254,12 +249,10 @@ export function credentialFields(kind: Kind): CredentialField[] {
         {
           key: "password",
           label: "密码",
-          placeholder: "PikPak 密码",
         },
         {
           key: "refresh_token",
           label: "refresh_token",
-          placeholder: "邮箱密码登录不可用时填写",
           methodLabel: "或使用刷新令牌",
         },
       ];
@@ -268,14 +261,12 @@ export function credentialFields(kind: Kind): CredentialField[] {
         {
           key: "access_token",
           label: "access_token",
-          placeholder: "",
           methodLabel: "或手动填写",
           required: true,
         },
         {
           key: "refresh_token",
           label: "refresh_token",
-          placeholder: "",
           required: true,
         },
       ];
@@ -284,14 +275,12 @@ export function credentialFields(kind: Kind): CredentialField[] {
         {
           key: "refresh_token",
           label: "refresh_token",
-          placeholder: "推荐填写，服务端会自动刷新 access_token",
           methodLabel: "或手动填写",
           multiline: true,
         },
         {
           key: "access_token",
           label: "access_token",
-          placeholder: "Bearer eyJ... 或直接粘贴 token",
           multiline: true,
         },
       ];
@@ -300,7 +289,6 @@ export function credentialFields(kind: Kind): CredentialField[] {
         {
           key: "auth_mode",
           label: "认证方式",
-          placeholder: "",
           type: "select",
           defaultValue: ONEDRIVE_AUTH_MODE_OPENLIST_API,
           options: [
@@ -317,7 +305,6 @@ export function credentialFields(kind: Kind): CredentialField[] {
         {
           key: "client_id",
           label: "客户端 ID",
-          placeholder: "Microsoft Entra 应用程序（客户端）ID",
           visibleWhen: {
             key: "auth_mode",
             value: ONEDRIVE_AUTH_MODE_CUSTOM_APP,
@@ -326,7 +313,6 @@ export function credentialFields(kind: Kind): CredentialField[] {
         {
           key: "client_secret",
           label: "客户端密钥",
-          placeholder: "请填写客户端密钥值，不是密钥 ID",
           visibleWhen: {
             key: "auth_mode",
             value: ONEDRIVE_AUTH_MODE_CUSTOM_APP,
@@ -335,7 +321,6 @@ export function credentialFields(kind: Kind): CredentialField[] {
         {
           key: "refresh_token",
           label: "refresh_token",
-          placeholder: "与所用应用匹配的 OneDrive refresh_token",
           multiline: true,
           required: true,
         },
@@ -345,32 +330,28 @@ export function credentialFields(kind: Kind): CredentialField[] {
         {
           key: "client_id",
           label: "客户端 ID",
-          placeholder: "xxxxxxxxxxxx-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.apps.googleusercontent.com",
           required: true,
         },
         {
           key: "client_secret",
           label: "客户端密钥",
-          placeholder: "Google OAuth client secret",
           required: true,
         },
         {
           key: "refresh_token",
           label: "refresh_token",
-          placeholder: "Google OAuth refresh_token",
           multiline: true,
           required: true,
         },
         {
           key: "playback_cookie",
           label: "网页登录 Cookie（兼容播放，可选）",
-          placeholder: "从已登录 drive.google.com 的请求头中复制完整 Cookie；清空可关闭网页兼容播放",
           multiline: true,
         },
         {
           key: "playback_auth_user",
           label: "网页账号索引（可选）",
-          placeholder: "默认 0；多账号登录时填写视频页面 /u/ 后的数字，例如 /u/3/ 填 3",
+          placeholder: "0",
         },
       ];
     case "webdav":
@@ -384,13 +365,11 @@ export function credentialFields(kind: Kind): CredentialField[] {
         {
           key: "username",
           label: "用户名",
-          placeholder: "WebDAV 用户名",
           required: true,
         },
         {
           key: "password",
           label: "密码",
-          placeholder: "WebDAV 密码",
           required: true,
         },
       ];

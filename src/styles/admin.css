@@ -2745,6 +2745,8 @@ body.admin-mobile-nav-open {
 }
 
 .admin-modal--drive-form .admin-drive-selected-bar__text {
+  display: grid;
+  gap: 4px;
   flex: 1;
   min-width: 0;
 }
@@ -2753,6 +2755,25 @@ body.admin-mobile-nav-open {
   font-size: var(--font-md);
   font-weight: var(--weight-medium);
   color: var(--text-strong);
+}
+
+.admin-drive-docs-link {
+  justify-self: start;
+  border-radius: 3px;
+  color: var(--text-muted);
+  font-size: var(--font-xs);
+  line-height: var(--line-normal);
+  text-decoration: underline;
+  text-decoration-color: var(--border-strong);
+  text-underline-offset: 3px;
+  transition: color var(--transition-fast), text-decoration-color var(--transition-fast);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .admin-drive-docs-link:hover {
+    color: var(--accent);
+    text-decoration-color: currentColor;
+  }
 }
 
 .admin-modal--drive-form .admin-drive-change-type {

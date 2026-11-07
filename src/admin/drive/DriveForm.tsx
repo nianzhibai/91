@@ -167,6 +167,14 @@ export function DriveForm({
           </span>
           <div className="admin-drive-selected-bar__text">
             <span className="admin-drive-selected-bar__name">{selectedOption.label}</span>
+            <a
+              className="admin-drive-docs-link"
+              href="https://github.com/nianzhibai/91/blob/main/backend/docs/DRIVE_CREDENTIALS.md"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              说明文档
+            </a>
           </div>
           {!isEdit && (
             <button
