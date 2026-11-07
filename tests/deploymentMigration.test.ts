@@ -47,6 +47,7 @@ exit 0
     run(overrides: Record<string, string> = {}) {
       return spawnSync("bash", ["-c", `
         source "$1" help >/dev/null
+        need_root() { :; }
         COMMAND_LINK="$TEST_BIN/91"
         APP_COMMAND_LINK="$COMMAND_LINK"
         main update --package "$2"
@@ -70,7 +71,7 @@ test("native migration switches the default service and remembers the existing d
   assert.equal(f.calls().at(-1), "systemctl --no-pager --full status 91.service");
   assert.ok(f.calls().indexOf("systemctl stop video-site-91.service") < f.calls().indexOf("systemctl restart 91.service"));
   // A later update starts directly from the persisted installation settings.
-  const second = spawnSync(join(f.bin, "91"), ["update", "--package", f.archive], { encoding: "utf8", env: f.environment });
+  const second = f.run();
   assert.equal(second.status, 0, second.stdout + second.stderr);
   assert.match(second.stdout, /already up to date/);
 });

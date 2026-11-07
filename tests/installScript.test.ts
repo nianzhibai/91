@@ -96,20 +96,27 @@ test("Docker password reset bypasses configuration and version writes", (t) => {
   t.after(() => rmSync(root, { recursive: true, force: true }));
   writeFileSync(join(root, "server"), serverProbe, { mode: 0o700 });
   const config = join(root, "data", "config.yaml");
-  const entrypoint = fileURLToPath(new URL("../docker-entrypoint.sh", import.meta.url));
-  const result = spawnSync("sh", [entrypoint, "./server", "reset-password", "--user-id", "4"], {
-    cwd: root,
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      VIDEO_CONFIG: config,
-      VIDEO_DATA_DIR: join(root, "data"),
-      VIDEO_VERSION_FILE: join(root, "version"),
-      VIDEO_IMAGE_VERSION: "test-version",
-    },
-  });
-  assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout), { args: ["reset-password", "--user-id", "4"], cwd: root, config });
-  assert.equal(existsSync(join(root, "data")), false);
-  assert.equal(existsSync(join(root, "version")), false);
+  const entrypoint = join(root, "entrypoint.sh");
+  writeFileSync(entrypoint, readFileSync(new URL("../docker-entrypoint.sh", import.meta.url), "utf8")
+    .replace('APP_DIR="/opt/91"', `APP_DIR="${root}"`));
+  for (const server of ["./server", join(root, "server")]) {
+    for (const exitCode of [0, 23]) {
+      const result = spawnSync("sh", [entrypoint, server, "reset-password", "--user-id", "4"], {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          VIDEO_CONFIG: config,
+          VIDEO_DATA_DIR: join(root, "data"),
+          VIDEO_VERSION_FILE: join(root, "version"),
+          VIDEO_IMAGE_VERSION: "test-version",
+          RESET_PROBE_EXIT: String(exitCode),
+        },
+      });
+      assert.equal(result.status, exitCode, result.stderr);
+      assert.deepEqual(JSON.parse(result.stdout), { args: ["reset-password", "--user-id", "4"], cwd: root, config });
+      assert.equal(existsSync(join(root, "data")), false);
+      assert.equal(existsSync(join(root, "version")), false);
+    }
+  }
 });
