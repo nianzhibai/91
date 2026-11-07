@@ -1391,7 +1391,7 @@ type generationPreviewDrive struct {
 	generationRefreshes []bool
 }
 
-func (d *generationPreviewDrive) GenerationStreamURL(_ context.Context, _ string, forceRefresh bool) (*drives.StreamLink, error) {
+func (d *generationPreviewDrive) GenerationSource(_ context.Context, _ string, forceRefresh bool) (*drives.GenerationSource, error) {
 	d.generationRefreshes = append(d.generationRefreshes, forceRefresh)
 	if len(d.generationErrs) > 0 {
 		err := d.generationErrs[0]
@@ -1404,7 +1404,7 @@ func (d *generationPreviewDrive) GenerationStreamURL(_ context.Context, _ string
 	if forceRefresh {
 		name = "refreshed"
 	}
-	return &drives.StreamLink{URL: "https://hls.example/" + name + ".m3u8"}, nil
+	return &drives.GenerationSource{Protocol: "file", Link: &drives.StreamLink{URL: "https://hls.example/" + name + ".m3u8"}, RefreshStatuses: []int{403}}, nil
 }
 
 func (d *previewFakeDrive) Kind() string {

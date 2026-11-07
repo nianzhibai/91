@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-resty/resty/v2"
 	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/generationsource"
 	"github.com/nianzhibai/91/backend/internal/scopedproxy"
 )
 
@@ -27,6 +28,7 @@ const (
 )
 
 type Driver struct {
+	generation     generationsource.Cache
 	id             string
 	cookie         string
 	rootID         string

@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/hlsrelay"
 )
 
 type cachedPlayback struct {
@@ -220,25 +220,7 @@ func (p *Proxy) HasPlaybackPreparer(driveID string) bool {
 }
 
 func allowedPlaybackURL(root, target *url.URL, hosts []string) bool {
-	if root == nil || target == nil || target.Host == "" || target.User != nil || target.Fragment != "" ||
-		(target.Scheme != "https" && !(root.Scheme == "http" && target.Scheme == "http")) {
-		return false
-	}
-	for _, host := range hosts {
-		host = strings.ToLower(host)
-		if strings.HasPrefix(host, ".") {
-			if target.Port() != "" && target.Port() != "443" {
-				continue
-			}
-			name := strings.ToLower(target.Hostname())
-			if name == host[1:] || strings.HasSuffix(name, host) {
-				return true
-			}
-		} else if strings.EqualFold(target.Host, host) {
-			return true
-		}
-	}
-	return false
+	return len(hosts) > 0 && hlsrelay.AllowedURL(root, target, hosts)
 }
 
 func writePlaybackSourceExpired(w http.ResponseWriter) {

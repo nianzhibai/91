@@ -60,4 +60,19 @@ func TestPlaybackSourcesUsesPreviewAPIWithoutChangingOriginalDownload(t *testing
 	if len(links) != 1 || links[0].ID != "cloud" || links[0].Kind != "transcoded" || links[0].Status != "ready" || links[0].Link.URL != "https://hls.example/index.m3u8" || !links[0].Link.ClientRedirectSafe || len(links[0].Link.Headers) != 0 {
 		t.Fatalf("links = %+v", links)
 	}
+	first, err := d.GenerationSource(context.Background(), "fid/one", false)
+	if err != nil || first.Protocol != "hls" || first.Link.URL != links[0].Link.URL || first.Relay == nil || len(first.Link.Headers) != 0 {
+		t.Fatalf("generation source = %+v, %v", first, err)
+	}
+	// The cached generation descriptor must not mutate the online source.
+	first.Link.URL = "changed"
+	cached, err := d.GenerationSource(context.Background(), "fid/one", false)
+	if err != nil || cached.Link.URL != links[0].Link.URL {
+		t.Fatalf("cached generation = %+v, %v", cached, err)
+	}
+	fresh, err := d.GenerationSource(context.Background(), "fid/one", true)
+	if err != nil || fresh.Link.URL != links[0].Link.URL {
+		t.Fatalf("refreshed generation = %+v, %v", fresh, err)
+	}
+
 }

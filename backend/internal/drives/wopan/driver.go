@@ -16,11 +16,13 @@ import (
 	sdk "github.com/OpenListTeam/wopan-sdk-go"
 	"github.com/go-resty/resty/v2"
 	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/generationsource"
 	"github.com/nianzhibai/91/backend/internal/scopedproxy"
 )
 
 // Driver 封装联通网盘
 type Driver struct {
+	generation    generationsource.Cache
 	id            string
 	rootID        string
 	familyID      string

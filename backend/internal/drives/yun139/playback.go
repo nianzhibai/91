@@ -10,9 +10,13 @@ import (
 )
 
 // PlaybackSources uses Mobile Cloud's browser-ready HLS independently of the
-// original bytes used by downloads, fingerprints and background generation.
+// original bytes used by downloads and fingerprints.
 // The shared playback resolver owns caching and explicit link refreshes.
 func (d *Driver) PlaybackSources(ctx context.Context, fileID string) ([]drives.PlaybackSource, error) {
+	return d.playbackSources(ctx, fileID)
+}
+
+func (d *Driver) playbackSources(ctx context.Context, fileID string) ([]drives.PlaybackSource, error) {
 	fileID = strings.TrimSpace(fileID)
 	if fileID == "" {
 		return nil, errors.New("yun139 playback: empty file ID")

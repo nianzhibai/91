@@ -67,10 +67,13 @@ func (w *ThumbWorker) processDuration(ctx context.Context, video *catalog.Video)
 		return
 	}
 	if err == nil {
-		var link *drives.StreamLink
-		link, _, err = w.streamLink(ctx, current)
+		var input *generationInput
+		input, err = resolveGenerationInput(ctx, w.Drive, current.FileID)
 		if err == nil {
-			_, err = probeSourceDuration(ctx, w.Catalog, current, w.Gen, link)
+			defer input.Close()
+			_, err = input.probe(ctx, func(ctx context.Context, link *drives.StreamLink) (float64, error) {
+				return probeSourceDuration(ctx, w.Catalog, current, w.Gen, link)
+			})
 		}
 	}
 	if err != nil && ctx.Err() == nil {
@@ -82,8 +85,10 @@ func (w *ThumbWorker) processDuration(ctx context.Context, video *catalog.Video)
 
 // A probe needed for cover generation keeps the cover worker's existing
 // provider-error handling; it does not introduce a metadata retry policy.
-func (w *ThumbWorker) probeDuration(ctx context.Context, video *catalog.Video, link *drives.StreamLink) bool {
-	_, err := probeSourceDuration(ctx, w.Catalog, video, w.Gen, link)
+func (w *ThumbWorker) probeDuration(ctx context.Context, video *catalog.Video, input *generationInput) bool {
+	_, err := input.probe(ctx, func(ctx context.Context, link *drives.StreamLink) (float64, error) {
+		return probeSourceDuration(ctx, w.Catalog, video, w.Gen, link)
+	})
 	if err == nil {
 		return false
 	}

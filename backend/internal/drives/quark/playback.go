@@ -75,11 +75,15 @@ func (d *Driver) OriginalPlaybackURL(ctx context.Context, fileID string) (*drive
 	return d.StreamURL(ctx, fileID)
 }
 
-// PlaybackSources is resolved lazily for an active viewer. Listing the catalog
-// never calls this provider endpoint. A provider's right label describes a tier,
+// PlaybackSources is resolved lazily for an active viewer. Generation shares
+// the provider lookup; listing the catalog never calls it. A right label is a tier,
 // not whether the current account may play it; availability comes from its URL
 // and transcode status.
 func (d *Driver) PlaybackSources(ctx context.Context, fileID string) ([]drives.PlaybackSource, error) {
+	return d.playbackSources(ctx, fileID)
+}
+
+func (d *Driver) playbackSources(ctx context.Context, fileID string) ([]drives.PlaybackSource, error) {
 	out, err := d.playback(ctx, fileID)
 	if err != nil {
 		return nil, err

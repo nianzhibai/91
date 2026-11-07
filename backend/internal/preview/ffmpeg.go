@@ -300,9 +300,9 @@ func (g *Generator) GenerateThumbnail(ctx context.Context, link *drives.StreamLi
 	task := g.forTask()
 	path, err := task.generateThumbnail(ctx, link, videoID, duration)
 	if task.fallbackToCPU(ctx, err) {
-		return task.generateThumbnail(ctx, link, videoID, duration)
+		path, err = task.generateThumbnail(ctx, link, videoID, duration)
 	}
-	return path, err
+	return path, mediaInputError(ctx, err)
 }
 
 func (g *Generator) generateThumbnail(ctx context.Context, link *drives.StreamLink, videoID string, duration float64) (string, error) {
@@ -511,20 +511,18 @@ func (g *Generator) Probe(ctx context.Context, link *drives.StreamLink) (float64
 		"-show_entries", "stream=codec_type,duration:format=duration",
 		"-of", "json",
 	}
-	args = append(args, ffmpegHTTPInputOptions(ffmpegLink)...)
+	args = append(args, mediaInputOptions(ctx2, g.cfg.FFprobePath, ffmpegLink)...)
 	args = append(args, ffmpegLink.URL)
 
-	cmd := exec.CommandContext(ctx2, g.cfg.FFprobePath, args...)
+	cmd := mediaInputCommand(ctx2, g.cfg.FFprobePath, ffmpegLink, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
+	err = mediaInputError(ctx2, err)
 	if err != nil {
 		errOut := stderr.Bytes()
 		if len(errOut) == 0 {
 			errOut = out
-		}
-		if ctx2.Err() != nil {
-			err = ctx2.Err()
 		}
 		return 0, ffmpegCommandError("ffprobe", err, errOut)
 	}
@@ -575,9 +573,9 @@ func (g *Generator) GenerateWithLinkRefresh(ctx context.Context, first *drives.S
 	task := g.forTask()
 	path, err := task.generateSerialWithRefresh(ctx, duration, first, refreshAfterFailure)
 	if task.fallbackToCPU(ctx, err) {
-		return task.generateSerialWithRefresh(ctx, duration, first, refreshAfterFailure)
+		path, err = task.generateSerialWithRefresh(ctx, duration, first, refreshAfterFailure)
 	}
-	return path, err
+	return path, mediaInputError(ctx, err)
 }
 
 type teaserSegmentCandidate struct {
@@ -870,9 +868,6 @@ func (g *Generator) generateSingleSegment(ctx context.Context, index int, start,
 	out, err := g.runMediaCommand(ctx, link, ffmpegLink, args, outputArgs, colorRepair)
 	if err != nil {
 		_ = os.Remove(segPath)
-		if ctx.Err() != nil {
-			err = ctx.Err()
-		}
 		return "", g.processingError(ffmpegCommandError("ffmpeg segment", err, out))
 	}
 	if info, statErr := os.Stat(segPath); statErr != nil || info.Size() == 0 {
@@ -893,6 +888,12 @@ func teaserSegmentFallbackAllowed(err error) bool {
 	if _, ok := drives.RateLimitRetryAfter(err); ok {
 		return false
 	}
+	// Authentication and precondition failures cannot be repaired by seeking to
+	// another segment. Return them to the generation source refresh policy.
+	if drives.ErrorMentionsHTTPStatus(err, http.StatusUnauthorized, http.StatusPreconditionFailed) {
+		return false
+	}
+
 	text := strings.ToLower(err.Error())
 	if strings.Contains(text, "server returned 403") ||
 		strings.Contains(text, "403 forbidden") ||
@@ -1111,6 +1112,11 @@ func ffmpegHTTPInputOptions(link *drives.StreamLink) []string {
 
 func ffmpegCommandError(tool string, err error, output []byte) error {
 	wrapped := fmt.Errorf("%s: %w, stderr: %s", tool, err, redactURLs(string(output)))
+	// A relay already supplied structured retry metadata. Do not shadow it
+	// with the default rate-limit wrapper inferred from subprocess text.
+	if _, limited := drives.RateLimitRetryAfter(err); limited {
+		return wrapped
+	}
 	if ffmpegOutputLooksRateLimited(output) || drives.ErrorMentionsHTTPStatus(err, http.StatusTooManyRequests) {
 		return &drives.RateLimitError{
 			Provider: "media source",
@@ -2067,7 +2073,7 @@ func (w *ThumbWorker) process(ctx context.Context, v *catalog.Video) bool {
 		return false
 	}
 	_ = w.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{ThumbnailStatus: "pending"})
-	link, optimized, err := w.streamLink(ctx, v)
+	input, err := resolveGenerationInput(ctx, w.Drive, v.FileID)
 	if err != nil {
 		if w.pauseForRecoverableError(ctx, v, err, "streamURL") {
 			return true
@@ -2076,11 +2082,12 @@ func (w *ThumbWorker) process(ctx context.Context, v *catalog.Video) bool {
 		_ = w.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{ThumbnailStatus: "failed"})
 		return false
 	}
-	if w.probeDuration(ctx, v, link) {
+	defer input.Close()
+	if w.probeDuration(ctx, v, input) {
 		return true
 	}
 
-	if err := w.generateThumbnailWithFallback(ctx, v, link, optimized); err != nil {
+	if err := w.generateThumbnailWithFallback(ctx, v, input); err != nil {
 		if w.pauseForRecoverableError(ctx, v, err, "generate") {
 			return true
 		}
@@ -2089,10 +2096,6 @@ func (w *ThumbWorker) process(ctx context.Context, v *catalog.Video) bool {
 		return false
 	}
 	return false
-}
-
-func (w *ThumbWorker) streamLink(ctx context.Context, v *catalog.Video) (*drives.StreamLink, bool, error) {
-	return preferredGenerationStreamLink(ctx, w.Drive, v.FileID)
 }
 
 func (w *ThumbWorker) generateThumbnailFromLink(ctx context.Context, v *catalog.Video, link *drives.StreamLink, duration float64) error {
@@ -2114,36 +2117,15 @@ func (w *ThumbWorker) generateThumbnailFromLink(ctx context.Context, v *catalog.
 	return nil
 }
 
-func (w *ThumbWorker) generateThumbnailWithFallback(ctx context.Context, v *catalog.Video, link *drives.StreamLink, optimized bool) error {
+func (w *ThumbWorker) generateThumbnailWithFallback(ctx context.Context, v *catalog.Video, input *generationInput) error {
 	duration := float64(v.DurationSeconds)
-	err := w.generateThumbnailFromLink(ctx, v, link, duration)
-	if err == nil {
-		return nil
-	}
-	if !optimized {
-		return w.retryThumbnailWithFreshOriginal(ctx, v, err, duration)
-	}
-	if generationStreamForbidden(err) {
-		refreshed, refreshErr := refreshGenerationStreamLink(ctx, w.Drive, v.FileID)
-		switch {
-		case refreshErr == nil:
-			err = w.generateThumbnailFromLink(ctx, v, refreshed, duration)
-			if err == nil || (isRateLimitError(err) && !generationStreamForbidden(err)) {
-				return err
-			}
-		case !errors.Is(refreshErr, drives.ErrGenerationStreamUnavailable):
-			return refreshErr
+	return input.run(ctx, func(ctx context.Context, link *drives.StreamLink) error {
+		err := w.generateThumbnailFromLink(ctx, v, link, duration)
+		if input.source == nil {
+			return w.retryThumbnailWithFreshOriginal(ctx, v, err, duration)
 		}
-	}
-	if isRateLimitError(err) && !generationStreamForbidden(err) {
 		return err
-	}
-	original, originalErr := w.Drive.StreamURL(ctx, v.FileID)
-	if originalErr != nil {
-		return originalErr
-	}
-	err = w.generateThumbnailFromLink(ctx, v, original, duration)
-	return w.retryThumbnailWithFreshOriginal(ctx, v, err, duration)
+	})
 }
 
 func (w *ThumbWorker) retryThumbnailWithFreshOriginal(ctx context.Context, v *catalog.Video, cause error, duration float64) error {
@@ -2164,7 +2146,7 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
 	if w.skipIfRateLimited(v) {
 		return true
 	}
-	link, optimized, err := preferredGenerationStreamLink(ctx, w.Drive, v.FileID)
+	input, err := resolveGenerationInput(ctx, w.Drive, v.FileID)
 	if err != nil {
 		if w.pauseForRecoverableError(err, "streamURL", v.Title) {
 			return true
@@ -2174,8 +2156,11 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
 		return false
 	}
 
+	defer input.Close()
 	// Metadata failures do not prevent generation with the unknown-duration plan.
-	duration, probeErr := probeSourceDuration(ctx, w.Catalog, v, w.Gen, link)
+	duration, probeErr := input.probe(ctx, func(ctx context.Context, link *drives.StreamLink) (float64, error) {
+		return probeSourceDuration(ctx, w.Catalog, v, w.Gen, link)
+	})
 	if probeErr != nil {
 		if w.pauseForRecoverableError(probeErr, "probe", v.Title) {
 			return true
@@ -2184,7 +2169,7 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
 	}
 
 	// 2) 预览视频
-	tmp, err := w.generateTeaser(ctx, v, link, duration, optimized)
+	tmp, err := w.generateTeaser(ctx, v, input, duration)
 	if err != nil {
 		if w.pauseForRecoverableError(err, "generate", v.Title) {
 			return true
@@ -2221,34 +2206,18 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
 	return false
 }
 
-func (w *Worker) generateTeaser(ctx context.Context, v *catalog.Video, link *drives.StreamLink, duration float64, optimized bool) (string, error) {
-	if optimized {
-		tmp, err := w.Gen.Generate(ctx, link, duration)
-		if err == nil {
-			return tmp, nil
+func (w *Worker) generateTeaser(ctx context.Context, v *catalog.Video, input *generationInput, duration float64) (string, error) {
+	var tmp string
+	err := input.run(ctx, func(ctx context.Context, link *drives.StreamLink) error {
+		var err error
+		if input.source == nil {
+			tmp, err = w.generateTeaserFromOriginal(ctx, v, link, duration)
+		} else {
+			tmp, err = w.Gen.Generate(ctx, link, duration)
 		}
-		if generationStreamForbidden(err) {
-			refreshed, refreshErr := refreshGenerationStreamLink(ctx, w.Drive, v.FileID)
-			switch {
-			case refreshErr == nil:
-				tmp, err = w.Gen.Generate(ctx, refreshed, duration)
-				if err == nil || (isRateLimitError(err) && !generationStreamForbidden(err)) {
-					return tmp, err
-				}
-			case !errors.Is(refreshErr, drives.ErrGenerationStreamUnavailable):
-				return "", refreshErr
-			}
-		}
-		if isRateLimitError(err) && !generationStreamForbidden(err) {
-			return "", err
-		}
-		original, originalErr := w.Drive.StreamURL(ctx, v.FileID)
-		if originalErr != nil {
-			return "", originalErr
-		}
-		return w.generateTeaserFromOriginal(ctx, v, original, duration)
-	}
-	return w.generateTeaserFromOriginal(ctx, v, link, duration)
+		return err
+	})
+	return tmp, err
 }
 
 func (w *Worker) generateTeaserFromOriginal(ctx context.Context, v *catalog.Video, link *drives.StreamLink, duration float64) (string, error) {
@@ -2259,42 +2228,6 @@ func (w *Worker) generateTeaserFromOriginal(ctx context.Context, v *catalog.Vide
 	return gen.GenerateWithLinkRefresh(ctx, link, duration, func(ctx context.Context) (*drives.StreamLink, error) {
 		return w.Drive.StreamURL(ctx, v.FileID)
 	})
-}
-
-func preferredGenerationStreamLink(ctx context.Context, drive drives.Drive, fileID string) (*drives.StreamLink, bool, error) {
-	if drive == nil {
-		return nil, false, errors.New("missing drive")
-	}
-	if provider, ok := drive.(drives.GenerationStreamProvider); ok {
-		link, err := provider.GenerationStreamURL(ctx, fileID, false)
-		if err == nil && link != nil && strings.TrimSpace(link.URL) != "" {
-			return link, true, nil
-		}
-		if err != nil && !errors.Is(err, drives.ErrGenerationStreamUnavailable) {
-			return nil, false, err
-		}
-	}
-	link, err := drive.StreamURL(ctx, fileID)
-	return link, false, err
-}
-
-func refreshGenerationStreamLink(ctx context.Context, drive drives.Drive, fileID string) (*drives.StreamLink, error) {
-	provider, ok := drive.(drives.GenerationStreamProvider)
-	if !ok {
-		return nil, drives.ErrGenerationStreamUnavailable
-	}
-	link, err := provider.GenerationStreamURL(ctx, fileID, true)
-	if err != nil {
-		return nil, err
-	}
-	if link == nil || strings.TrimSpace(link.URL) == "" {
-		return nil, fmt.Errorf("%w: empty refreshed link", drives.ErrGenerationStreamUnavailable)
-	}
-	return link, nil
-}
-
-func generationStreamForbidden(err error) bool {
-	return drives.ErrorMentionsHTTPStatus(err, http.StatusForbidden)
 }
 
 func isRateLimitError(err error) bool {

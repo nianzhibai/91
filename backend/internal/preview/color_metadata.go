@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -44,11 +43,12 @@ func (g *Generator) runMediaCommand(
 	}
 	run := func() ([]byte, error) {
 		args := append([]string{}, beforeInput...)
-		args = append(args, ffmpegHTTPInputOptions(prepared)...)
+		args = append(args, mediaInputOptions(ctx, g.cfg.FFmpegPath, prepared)...)
 		args = append(args, repair.inputOptions...)
 		args = append(args, "-i", prepared.URL)
 		args = append(args, afterInput...)
-		return exec.CommandContext(ctx, g.cfg.FFmpegPath, args...).CombinedOutput()
+		out, err := mediaInputCommand(ctx, g.cfg.FFmpegPath, prepared, args...).CombinedOutput()
+		return out, mediaInputError(ctx, err)
 	}
 	out, err := run()
 	if err == nil || ctx.Err() != nil || repair.checked || !invalidColorMetadataText(string(out)) {
@@ -84,12 +84,13 @@ func (g *Generator) probeColorRepair(ctx context.Context, link *drives.StreamLin
 		"-show_entries", "stream=index,codec_name,color_space,color_primaries,color_transfer",
 		"-of", "json",
 	}
-	args = append(args, ffmpegHTTPInputOptions(link)...)
+	args = append(args, mediaInputOptions(ctx, g.cfg.FFprobePath, link)...)
 	args = append(args, link.URL)
-	cmd := exec.CommandContext(ctx, g.cfg.FFprobePath, args...)
+	cmd := mediaInputCommand(ctx, g.cfg.FFprobePath, link, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
+	err = mediaInputError(ctx, err)
 	if err != nil {
 		return nil, ffmpegCommandError("ffprobe color metadata", err, stderr.Bytes())
 	}

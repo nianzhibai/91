@@ -44,14 +44,26 @@ type DirectoryNameProvider interface {
 
 // GenerationStreamProvider is an optional drive capability for a provider-
 // generated playback stream that is cheaper to seek than the original file.
-// Background thumbnail/preview workers prefer this stream, while ordinary
-// playback and fingerprinting continue to use StreamURL.
+// Background thumbnail, preview and duration workers prefer this stream.
+// Playback resolves its own sources; fingerprinting continues to use StreamURL.
 //
 // forceRefresh invalidates any short-lived provider cache after a signed
 // playlist rejection. Implementations must never expose account credentials in
 // the returned StreamLink.
 type GenerationStreamProvider interface {
-	GenerationStreamURL(ctx context.Context, fileID string, forceRefresh bool) (*StreamLink, error)
+	GenerationSource(ctx context.Context, fileID string, forceRefresh bool) (*GenerationSource, error)
+}
+
+// GenerationSource describes a ready input for background media generation.
+// Relay keeps HLS credentials and resource requests in the Go process. Playback
+// and generation share provider resolution, but own separate input lifetimes.
+type GenerationSource struct {
+	Protocol string // file or hls
+	Link     *StreamLink
+	Relay    *HLSRelay
+	// RefreshStatuses identifies media rejections that permit one fresh lookup.
+	// API authentication errors and explicit rate limits must remain errors.
+	RefreshStatuses []int
 }
 
 // GenerationStreamScanResetter resets optional stream availability when a new
@@ -187,8 +199,10 @@ type Entry struct {
 }
 
 type StreamLink struct {
-	URL     string
-	Headers http.Header
+	// Protocol is set on prepared HLS inputs; empty means an ordinary file.
+	Protocol string
+	URL      string
+	Headers  http.Header
 	// URLSource identifies the resolver that actually produced this link.
 	// It is safe diagnostic metadata, never a signed URL or account credential.
 	URLSource string

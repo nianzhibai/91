@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/generationsource"
 	"github.com/nianzhibai/91/backend/internal/scopedproxy"
 )
 
@@ -27,6 +28,7 @@ type Config struct {
 }
 
 type Driver struct {
+	generation               generationsource.Cache
 	id, rootID, personalHost string
 	client, uploadClient     *http.Client
 	routeURL, refreshURL     string

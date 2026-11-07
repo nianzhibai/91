@@ -13,6 +13,10 @@ import (
 )
 
 func (d *Driver) PlaybackSources(ctx context.Context, fileID string) ([]drives.PlaybackSource, error) {
+	return d.playbackSources(ctx, fileID)
+}
+
+func (d *Driver) playbackSources(ctx context.Context, fileID string) ([]drives.PlaybackSource, error) {
 	d.clientMu.Lock()
 	defer d.clientMu.Unlock()
 	if d.client == nil {
@@ -46,7 +50,7 @@ func (d *Driver) PlaybackSources(ctx context.Context, fileID string) ([]drives.P
 		}
 		return []drives.PlaybackSource{source}, nil
 	}
-	return nil, fmt.Errorf("wopan playback: source not found in preview response")
+	return nil, fmt.Errorf("wopan playback: %w: source not found in preview response", drives.ErrGenerationStreamUnavailable)
 }
 
 func browserPlaybackLink(raw string) (*drives.StreamLink, error) {

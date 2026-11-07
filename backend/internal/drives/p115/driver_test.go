@@ -288,6 +288,11 @@ func TestGenerationStreamURLKeepsCookieOutOfReturnedLinkAndCaches(t *testing.T) 
 	if gotRequests != 2 {
 		t.Fatalf("master requests after refresh = %d, want 2", gotRequests)
 	}
+	source, err := driver.GenerationSource(context.Background(), "file-1", false)
+	if err != nil || source.Protocol != "hls" || source.Link.URL != first.URL || source.Relay == nil || source.Relay.Authorize != nil {
+		t.Fatalf("generation descriptor = %+v, %v", source, err)
+	}
+
 }
 
 func TestGenerationStreamURLCoalescesConcurrentResolution(t *testing.T) {

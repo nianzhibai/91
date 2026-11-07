@@ -15,7 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/nianzhibai/91/backend/internal/drives"
 	"github.com/nianzhibai/91/backend/internal/hlsplaylist"
-	"github.com/nianzhibai/91/backend/internal/streamhttp"
+	"github.com/nianzhibai/91/backend/internal/hlsrelay"
 )
 
 const (
@@ -125,38 +125,7 @@ func (p *Proxy) ServeHLS(w http.ResponseWriter, r *http.Request, driveID, fileID
 		p.serveHLSPlaylist(w, r, sessionID, session, root, session.policy.Playlist)
 		return
 	}
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), nil)
-	if err != nil {
-		hlsRequestFailed(w)
-		return
-	}
-	req.Header = session.headers.Clone()
-	if req.Header == nil {
-		req.Header = make(http.Header)
-	}
-	req.Header.Set("Accept-Encoding", "identity")
-	for _, name := range []string{"Range", "If-Range"} {
-		if value := r.Header.Get(name); value != "" {
-			req.Header.Set(name, value)
-		}
-	}
-	if session.policy.Authorize != nil {
-		session.policy.Authorize(req)
-	}
-	client := *p.http
-	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
-		if len(via) >= 10 || !allowedPlaybackURL(root, next.URL, session.policy.AllowedHosts) {
-			return errors.New("HLS redirect is not allowed")
-		}
-		if err := streamhttp.CheckRedirect(next, via); err != nil {
-			return err
-		}
-		if session.policy.Authorize != nil {
-			session.policy.Authorize(next)
-		}
-		return nil
-	}
-	resp, err := client.Do(req)
+	resp, err := hlsrelay.Fetch(p.http, r, root, target, session.headers, session.policy)
 	if err != nil {
 		hlsRequestFailed(w)
 		return
@@ -234,18 +203,7 @@ func (p *Proxy) serveHLSPlaylist(w http.ResponseWriter, r *http.Request, id stri
 }
 
 func resolveHLSResource(root, base *url.URL, raw string, hosts []string) (*url.URL, error) {
-	if raw == "" || strings.Contains(raw, "{$") {
-		return nil, errors.New("invalid HLS resource URI")
-	}
-	ref, err := url.Parse(raw)
-	if err != nil {
-		return nil, errors.New("invalid HLS resource URI")
-	}
-	target := base.ResolveReference(ref)
-	if !allowedPlaybackURL(root, target, hosts) {
-		return nil, errors.New("HLS resource host is not allowed")
-	}
-	return target, nil
+	return hlsrelay.Resolve(root, base, raw, hosts)
 }
 
 func copyHLSMediaHeaders(dst, src http.Header) {
