@@ -94,26 +94,10 @@
 
 .video-player,
 .video-player__art.art-video-player {
-  --video-player-progress: #ff5634;
-  --video-player-progress-loaded: rgba(255, 86, 52, 0.34);
+  --video-player-progress: #e2e4e8;
+  --video-player-progress-loaded: rgba(226, 228, 232, 0.34);
   --video-player-progress-track: rgba(255, 255, 255, 0.24);
-  --video-player-progress-hover: rgba(255, 210, 198, 0.36);
-}
-
-:root[data-theme="pink"] .video-player,
-:root[data-theme="pink"] .video-player__art.art-video-player {
-  --video-player-progress: #ec4f86;
-  --video-player-progress-loaded: rgba(236, 79, 134, 0.34);
-  --video-player-progress-track: rgba(255, 255, 255, 0.28);
-  --video-player-progress-hover: rgba(255, 197, 216, 0.42);
-}
-
-:root[data-theme="sky"] .video-player,
-:root[data-theme="sky"] .video-player__art.art-video-player {
-  --video-player-progress: #58b8ff;
-  --video-player-progress-loaded: rgba(88, 184, 255, 0.36);
-  --video-player-progress-track: rgba(210, 236, 255, 0.32);
-  --video-player-progress-hover: rgba(166, 220, 255, 0.45);
+  --video-player-progress-hover: rgba(255, 255, 255, 0.36);
 }
 
 .video-player__mount {
@@ -739,12 +723,6 @@
   top: calc(env(safe-area-inset-top, 0px) + 12px);
 }
 
-:root[data-theme="pink"] .video-player__error,
-:root[data-theme="pink"] .video-player__seek-preview,
-:root[data-theme="pink"] .video-player__gesture-hud {
-  border-color: rgba(255, 197, 216, 0.28);
-}
-
 @media (orientation: landscape) and (max-height: 560px) {
   .video-player__art-gesture-hud {
     top: 14%;
@@ -801,17 +779,6 @@
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-sm);
-}
-
-:root[data-theme="dark"] .vd-summary {
-  background: rgba(20, 22, 28, 0.86);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-}
-
-:root[data-theme="pink"] .vd-summary {
-  background: #fff;
-  box-shadow: 0 10px 28px rgba(120, 50, 80, 0.08);
 }
 
 /* ---------- Header (meta + title) ---------- */
@@ -1337,11 +1304,6 @@
   }
 }
 
-:root[data-theme="pink"] .vd-info {
-  background: #fff;
-  box-shadow: 0 10px 28px rgba(120, 50, 80, 0.07);
-}
-
 .vd-info__section-head {
   display: flex;
   align-items: center;
@@ -1620,7 +1582,7 @@
 }
 
 .vd-tag-editor__btn.is-primary {
-  background: var(--accent-gradient);
+  background: var(--accent);
   color: var(--text-on-accent);
 }
 
@@ -2451,8 +2413,8 @@
   .vd-skeleton__tag-edit,
   .vd-skeleton__tag-row span
 ),
-.vd-rail__loading-body > span,
-.vd-collection-sheet__skeleton-body span {
+  .vd-rail__loading-body > span,
+  .vd-collection-sheet__skeleton-body span {
   background: var(--bg-skeleton);
   border-radius: var(--radius-xs);
 }

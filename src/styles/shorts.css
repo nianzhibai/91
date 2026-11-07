@@ -2,6 +2,15 @@
    滚动靠原生 scroll-snap 实现 TikTok 式吸附切屏。 */
 
 .shorts-page {
+  /* 播放环境固定使用石墨灰阶，避免亮色主题影响视频上的控件对比。 */
+  --shorts-bg-page: #111214;
+  --shorts-bg-surface: #1b1d20;
+  --shorts-bg-elevated: #25282c;
+  --shorts-bg-hover: #30343a;
+  --shorts-bg-active: #41464e;
+  --shorts-text-muted: #a4a9b2;
+  --shorts-accent: #e1e4e8;
+  --shorts-text-on-accent: #202328;
   --shorts-header-height: calc(64px + env(safe-area-inset-top));
   /* 不能用 fixed 定位：iOS Safari/WebKit 不会合成（渲染）嵌套在 fixed
      祖先里的内联 <video>，视频能解码播放但画面始终不显示（黑屏）。
@@ -687,7 +696,7 @@ html.shorts-document-scroll.is-pager-driven body {
   display: inline-block;
   width: 6px;
   height: 6px;
-  background: #ff4060;
+  background: var(--shorts-accent);
   border-radius: 50%;
   animation: shorts-ping 1.2s infinite;
 }
@@ -969,8 +978,7 @@ html.shorts-document-scroll.is-pager-driven body {
   left: 0;
   top: 0;
   bottom: 0;
-  /* 使用高颜值渐变（从粉红到蛇金橙），契合主色调，带来极高的高级感 */
-  background: linear-gradient(90deg, #ff4060 0%, #ff8030 100%);
+  background: var(--shorts-accent);
   border-radius: 99px;
   width: var(--progress-pct, 0%);
   transition: width 80ms linear;
@@ -978,8 +986,8 @@ html.shorts-document-scroll.is-pager-driven body {
 
 .shorts-slide__progress.is-scrubbing .shorts-slide__progress-fill {
   transition: none;
-  background: linear-gradient(90deg, #ff4060 0%, #ff8030 100%);
-  box-shadow: 0 0 10px rgba(255, 64, 96, 0.6);
+  background: var(--shorts-accent);
+  box-shadow: 0 0 8px rgba(225, 228, 232, 0.3);
 }
 
 .shorts-slide__progress-hover-time {
@@ -1118,7 +1126,7 @@ html.shorts-document-scroll.is-pager-driven body {
   padding: 13px 32px;
   border: 0;
   border-radius: 12px;
-  background: #252632;
+  background: var(--shorts-bg-elevated);
   color: #fff;
   font-size: 16px;
   font-weight: 400;

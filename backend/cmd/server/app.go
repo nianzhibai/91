@@ -56,7 +56,7 @@ type App struct {
 	driveCredentialStatesMu sync.Mutex
 	driveCredentialStates   map[string]*driveCredentialState
 
-	// 全站主题（"dark" | "pink" | "sky"），从 DB 读
+	// 全站主题（"dark" | "light"），从 DB 读
 	theme string
 
 	// configManager 将 config.yaml 的已校验热更新字段发布给运行时消费者；

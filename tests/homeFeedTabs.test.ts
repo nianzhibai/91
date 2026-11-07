@@ -63,7 +63,7 @@ test("the home tabs are an accessible tab list with the random feed first", () =
   assert.match(tabs, /display\s*:\s*flex/);
   assert.match(tabs, /border-bottom\s*:\s*1px solid var\(--border-subtle\)/);
   const activeUnderline = ruleBody(layoutCss, '.content-tabs__tab[aria-selected="true"]::after');
-  assert.match(activeUnderline, /background\s*:\s*var\(--accent-gradient\)/);
+  assert.match(activeUnderline, /background\s*:\s*var\(--accent\)/);
 });
 
 test("switching tabs replaces the history entry and restarts at the top", () => {

@@ -196,21 +196,20 @@ test("admin tag dialogs use the lightweight modal style", () => {
   assert.match(adminCss, /\.admin-modal--tag-delete-confirm \.admin-confirm\s*\{[^}]*display\s*:\s*block/s);
 });
 
-test("admin tag source badges share one readable palette across themes", () => {
+test("admin tag source badges keep readable contrast in each theme", () => {
   const badge = ruleBody(adminCss, ".admin-tag-card__source-badge");
   const userBadge = ruleBody(adminCss, '.admin-tag-card__source-badge[data-source="user"]');
   const generatedBadge = ruleBody(adminCss, '.admin-tag-card__source-badge[data-source="generated"]');
   const crawlerBadge = ruleBody(adminCss, '.admin-tag-card__source-badge[data-source="crawler"]');
   const darkTokens = ruleBody(tokensCss, ':root[data-theme="dark"]');
-  const pinkTokens = ruleBody(tokensCss, ':root[data-theme="pink"]');
-  const skyTokens = ruleBody(tokensCss, ':root[data-theme="sky"]');
+  const lightTokens = ruleBody(tokensCss, ':root[data-theme="light"]');
 
   assert.match(badge, /font-weight\s*:\s*var\(--weight-medium\)/);
   assert.match(badge, /background\s*:\s*var\(--tag-source-bg/);
   assert.match(badge, /color\s*:\s*var\(--tag-source-fg/);
   assert.doesNotMatch(badge, /box-shadow/);
   assert.doesNotMatch(adminCss, /--tag-source-border/);
-  assert.doesNotMatch(adminCss, /:root\[data-theme="(?:pink|sky)"\] \.admin-tag-card__source-badge/);
+  assert.doesNotMatch(adminCss, /:root\[data-theme="light"\] \.admin-tag-card__source-badge/);
 
   assert.match(userBadge, /--tag-source-bg\s*:\s*var\(--tag-source-user-bg\)/);
   assert.match(userBadge, /--tag-source-fg\s*:\s*var\(--tag-source-user-fg\)/);
@@ -220,14 +219,26 @@ test("admin tag source badges share one readable palette across themes", () => {
   assert.match(crawlerBadge, /--tag-source-bg\s*:\s*var\(--tag-source-crawler-bg\)/);
   assert.match(crawlerBadge, /--tag-source-fg\s*:\s*var\(--tag-source-crawler-fg\)/);
 
-  assert.match(darkTokens, /--tag-source-user-bg\s*:\s*#dff3ec/);
-  assert.match(darkTokens, /--tag-source-user-fg\s*:\s*#126b47/);
-  assert.match(darkTokens, /--tag-source-generated-bg\s*:\s*#f9eddc/);
-  assert.match(darkTokens, /--tag-source-generated-fg\s*:\s*#7a4a00/);
-  assert.match(darkTokens, /--tag-source-crawler-bg\s*:\s*#eeeafc/);
-  assert.match(darkTokens, /--tag-source-crawler-fg\s*:\s*#62429b/);
-  assert.doesNotMatch(pinkTokens, /--tag-source-/);
-  assert.doesNotMatch(skyTokens, /--tag-source-/);
+  function luminance(palette: string, token: string) {
+    const match = palette.match(new RegExp(`${token}\\s*:\\s*#([a-f0-9]{6});`, "i"));
+    assert.ok(match, `missing opaque palette color: ${token}`);
+    const channels = [0, 2, 4].map((offset) => {
+      const value = parseInt(match[1].slice(offset, offset + 2), 16) / 255;
+      return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+    });
+    return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+  }
+
+  for (const [theme, palette] of [["dark", darkTokens], ["light", lightTokens]]) {
+    for (const source of ["user", "generated", "crawler"]) {
+      const background = luminance(palette, `--tag-source-${source}-bg`);
+      const foreground = luminance(palette, `--tag-source-${source}-fg`);
+      const contrast = (Math.max(background, foreground) + 0.05) /
+        (Math.min(background, foreground) + 0.05);
+      assert.ok(contrast >= 4.5, `${theme} ${source} badge contrast: ${contrast}`);
+      assert.equal(foreground > background, theme === "dark");
+    }
+  }
 });
 
 test("admin tag edit dialog edits match rules directly", () => {

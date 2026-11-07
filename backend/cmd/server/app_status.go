@@ -26,13 +26,16 @@ func (a *App) Theme() string {
 
 // SetTheme 切换并持久化主题；未知值会返回错误。
 func (a *App) SetTheme(ctx context.Context, theme string) error {
-	if theme != "dark" && theme != "pink" && theme != "sky" {
+	if theme != "dark" && theme != "light" {
 		return fmt.Errorf("unsupported theme %q", theme)
 	}
 	a.mu.Lock()
+	defer a.mu.Unlock()
+	if err := a.cat.SetSetting(ctx, "ui.theme", theme); err != nil {
+		return err
+	}
 	a.theme = theme
-	a.mu.Unlock()
-	return a.cat.SetSetting(ctx, "ui.theme", theme)
+	return nil
 }
 
 // loadTheme 从 DB 读全站主题；找不到时回退到 "dark"。
@@ -45,7 +48,13 @@ func (a *App) loadTheme(ctx context.Context) {
 		a.mu.Unlock()
 		return
 	}
-	if v != "pink" && v != "dark" && v != "sky" {
+	if v == "pink" || v == "sky" {
+		v = "light"
+		if err := a.cat.SetSetting(ctx, "ui.theme", v); err != nil {
+			log.Printf("[theme] migrate light theme: %v", err)
+		}
+	}
+	if v != "light" && v != "dark" {
 		v = "dark"
 	}
 	a.mu.Lock()

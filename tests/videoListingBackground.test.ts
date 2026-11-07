@@ -182,6 +182,6 @@ test("the app keeps the listing mounted behind an independently scrolling detail
   assert.match(layout, /scrollbar-gutter:\s*stable/);
   assert.match(
     layout,
-    /rgba\(255, 138, 60, 0\.09\)[\s\S]*?background-size:\s*88px 88px/
+    /background-color:\s*var\(--bg-page\)/
   );
 });

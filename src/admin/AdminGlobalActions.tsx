@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import { Check, Home, Loader2, LogOut, Palette, RefreshCw } from "lucide-react";
-import { applyTheme, getCurrentTheme } from "@/lib/theme";
+import { applyTheme, getCurrentTheme, isTheme, type Theme } from "@/lib/theme";
 import * as api from "./api";
-import type { Theme } from "./api";
 import { useToast } from "@/components/ToastContext";
 import { useNativeBackHandler } from "@/lib/useNativeBack";
 
@@ -13,14 +12,9 @@ type ThemeOption = {
 };
 
 const THEME_OPTIONS: ThemeOption[] = [
-  { id: "dark", title: "暗黑 + 暖橙" },
-  { id: "pink", title: "奶油白 + 樱花粉" },
-  { id: "sky", title: "星空蓝 + 暖星黄" },
+  { id: "dark", title: "暗色" },
+  { id: "light", title: "亮色" },
 ];
-
-function isTheme(value: unknown): value is Theme {
-  return value === "dark" || value === "pink" || value === "sky";
-}
 
 type AdminGlobalActionsProps = {
   checkingUpdate: boolean;

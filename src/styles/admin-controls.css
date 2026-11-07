@@ -38,7 +38,7 @@
 .admin-form__row input:focus {
   outline: none;
   border-color: var(--border-accent);
-  box-shadow: 0 0 0 3px var(--accent-soft), 0 0 12px rgba(255, 138, 60, 0.15);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .admin-form__row input.is-invalid {
@@ -122,7 +122,7 @@
     border-color: var(--border-strong);
     background: var(--bg-surface);
     color: var(--text-strong);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    box-shadow: var(--shadow-sm);
   }
 }
 

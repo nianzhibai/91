@@ -50,9 +50,9 @@
  * Card
  * ========================================================= */
 .video-card {
-  --video-card-bg: #fff;
+  --video-card-bg: var(--bg-surface);
   --video-card-title: var(--video-link-color);
-  --video-card-meta: #777;
+  --video-card-meta: var(--text-muted);
   position: relative;
   display: block;
   background: var(--video-card-bg);
@@ -60,7 +60,7 @@
   border-radius: var(--radius-xs);
   padding: 9px;
   color: var(--video-card-meta);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.07);
+  box-shadow: var(--shadow-sm);
 }
 
 .video-card__link {
@@ -95,6 +95,7 @@
   }
 
   .video-card__title-link:hover .video-title {
+    color: var(--accent);
     text-decoration-line: underline;
   }
 }
@@ -245,8 +246,8 @@
 .video-badge {
   padding: 1px 3px 0;
   border-radius: 3px;
-  background: var(--video-card-title);
-  color: #000;
+  background: var(--accent);
+  color: var(--text-on-accent);
   font-size: var(--font-sm);
   line-height: 16px;
   font-weight: var(--weight-bold);
@@ -261,6 +262,7 @@
   margin-right: auto;
   order: -1;
   background: #5dc4f5;
+  color: #102c3b;
 }
 
 /* ----- 来源网盘徽标（左上） ----- */
@@ -282,15 +284,13 @@
   font-weight: var(--weight-semibold);
   backdrop-filter: blur(8px);
   border: 1px solid var(--drive-border, rgba(255, 255, 255, 0.09));
-  box-shadow: 0 4px 12px var(--drive-shadow, rgba(0, 0, 0, 0.3)), inset 0 1px 0 rgba(255, 255, 255, 0.05);
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 @media (hover: hover) and (pointer: fine) {
   .source-badge:hover {
-    transform: scale(1.04);
     border-color: var(--drive-color);
-    box-shadow: 0 0 12px var(--drive-shadow-strong, var(--accent-glow));
+    box-shadow: var(--shadow-sm);
   }
 }
 
@@ -301,7 +301,6 @@
   height: 6px;
   border-radius: 50%;
   background: var(--drive-color, var(--accent));
-  box-shadow: 0 0 6px var(--drive-color, var(--accent));
 }
 
 .source-badge__label {
@@ -321,80 +320,60 @@
   --drive-bg: rgba(91, 141, 239, 0.12);
   --drive-text: #a4c5ff;
   --drive-border: rgba(91, 141, 239, 0.35);
-  --drive-shadow: rgba(91, 141, 239, 0.15);
-  --drive-shadow-strong: rgba(91, 141, 239, 0.4);
 }
 .source-badge[data-kind="p115"] {
   --drive-color: var(--drive-p115);
   --drive-bg: rgba(245, 107, 118, 0.12);
   --drive-text: #ffb1b7;
   --drive-border: rgba(245, 107, 118, 0.35);
-  --drive-shadow: rgba(245, 107, 118, 0.15);
-  --drive-shadow-strong: rgba(245, 107, 118, 0.4);
 }
 .source-badge[data-kind="p123"] {
   --drive-color: var(--drive-p123);
   --drive-bg: rgba(34, 184, 200, 0.12);
   --drive-text: #98edf5;
   --drive-border: rgba(34, 184, 200, 0.35);
-  --drive-shadow: rgba(34, 184, 200, 0.15);
-  --drive-shadow-strong: rgba(34, 184, 200, 0.4);
 }
 .source-badge[data-kind="pikpak"] {
   --drive-color: var(--drive-pikpak);
   --drive-bg: rgba(138, 109, 255, 0.12);
   --drive-text: #cabaff;
   --drive-border: rgba(138, 109, 255, 0.35);
-  --drive-shadow: rgba(138, 109, 255, 0.15);
-  --drive-shadow-strong: rgba(138, 109, 255, 0.4);
 }
 .source-badge[data-kind="yun139"] {
   --drive-color: var(--drive-yun139);
   --drive-bg: rgba(36, 155, 219, 0.12);
   --drive-text: #9bd9fa;
   --drive-border: rgba(36, 155, 219, 0.35);
-  --drive-shadow: rgba(36, 155, 219, 0.15);
-  --drive-shadow-strong: rgba(36, 155, 219, 0.4);
 }
 .source-badge[data-kind="wopan"] {
   --drive-color: var(--drive-wopan);
   --drive-bg: rgba(255, 138, 60, 0.12);
   --drive-text: #ffc49e;
   --drive-border: rgba(255, 138, 60, 0.35);
-  --drive-shadow: rgba(255, 138, 60, 0.15);
-  --drive-shadow-strong: rgba(255, 138, 60, 0.4);
 }
 .source-badge[data-kind="guangyapan"] {
   --drive-color: var(--drive-guangyapan);
   --drive-bg: rgba(48, 195, 168, 0.12);
   --drive-text: #9debdc;
   --drive-border: rgba(48, 195, 168, 0.35);
-  --drive-shadow: rgba(48, 195, 168, 0.15);
-  --drive-shadow-strong: rgba(48, 195, 168, 0.4);
 }
 .source-badge[data-kind="onedrive"] {
   --drive-color: var(--drive-onedrive);
   --drive-bg: rgba(76, 171, 234, 0.12);
   --drive-text: #abd9ff;
   --drive-border: rgba(76, 171, 234, 0.35);
-  --drive-shadow: rgba(76, 171, 234, 0.15);
-  --drive-shadow-strong: rgba(76, 171, 234, 0.4);
 }
 .source-badge[data-kind="webdav"] {
   --drive-color: var(--drive-webdav);
   --drive-bg: rgba(42, 167, 200, 0.12);
   --drive-text: #9de9f8;
   --drive-border: rgba(42, 167, 200, 0.35);
-  --drive-shadow: rgba(42, 167, 200, 0.15);
-  --drive-shadow-strong: rgba(42, 167, 200, 0.4);
 }
 .source-badge[data-kind="localstorage"] {
   --drive-color: var(--drive-localstorage);
   --drive-bg: rgba(53, 184, 143, 0.12);
   --drive-text: #a8efdc;
   --drive-border: rgba(53, 184, 143, 0.35);
-  --drive-shadow: rgba(53, 184, 143, 0.15);
-  --drive-shadow-strong: rgba(53, 184, 143, 0.4);
 }
 
 /* =========================================================
@@ -462,7 +441,7 @@
 
 .video-meta__reaction svg {
   flex-shrink: 0;
-  color: #999;
+  color: var(--text-faint);
 }
 
 /* =========================================================
@@ -588,28 +567,18 @@
 }
 
 .skeleton-card {
-  --skeleton-card-bg: #fff;
-  --skeleton-shimmer-base: rgba(0, 0, 0, 0.05);
-  --skeleton-shimmer-highlight: rgba(0, 0, 0, 0.1);
+  --skeleton-card-bg: var(--bg-surface);
+  --skeleton-shimmer-base: var(--bg-skeleton);
+  --skeleton-shimmer-highlight: var(--bg-elevated);
 
   background: var(--skeleton-card-bg);
   border: 0;
   border-radius: var(--radius-xs);
   padding: 9px;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.07);
+  box-shadow: var(--shadow-sm);
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-}
-
-:root[data-theme="pink"] .skeleton-card {
-  --skeleton-shimmer-base: rgba(255, 91, 138, 0.12);
-  --skeleton-shimmer-highlight: rgba(255, 91, 138, 0.26);
-}
-
-:root[data-theme="sky"] .skeleton-card {
-  --skeleton-shimmer-base: rgba(60, 100, 170, 0.13);
-  --skeleton-shimmer-highlight: rgba(60, 100, 170, 0.26);
 }
 
 .skeleton-card__thumb,
@@ -701,10 +670,10 @@
 }
 
 .pagination__btn.is-active {
-  background: var(--accent-gradient);
+  background: var(--accent);
   border-color: transparent;
   color: var(--text-on-accent);
-  box-shadow: 0 4px 12px var(--accent-glow);
+  box-shadow: var(--shadow-sm);
 }
 
 .pagination__btn.is-pending {

@@ -283,7 +283,7 @@ test("user create action reuses the crawler-style floating button", () => {
     /bottom\s*:\s*var\(--space-5\)/,
     /min-height\s*:\s*44px/,
     /border-radius\s*:\s*12px/,
-    /box-shadow\s*:\s*0 12px 32px/,
+    /box-shadow\s*:\s*var\(--shadow-lg\)/,
   ]) {
     assert.match(sharedFab, declaration);
   }
@@ -1142,8 +1142,9 @@ test("mobile video cards keep metadata and actions within the viewport", () => {
   assert.match(card, /--admin-video-card-bg\s*:\s*color-mix\(in srgb,\s*var\(--bg-surface\) 82%,\s*transparent\)/);
   assert.match(card, /padding\s*:\s*12px\s+14px/);
   assert.match(card, /gap\s*:\s*10px/);
-  assert.match(css, /:root:not\(\[data-theme="pink"\]\) \.admin-video-card\s*\{[^}]*--admin-video-card-bg\s*:\s*#1e1e1e/s);
-  assert.match(css, /:root\[data-theme="pink"\] \.admin-video-card\s*\{/);
+  assert.match(card, /--admin-video-card-bg\s*:\s*var\(--bg-surface\)/);
+  assert.match(card, /--admin-video-card-main\s*:\s*var\(--text-strong\)/);
+  assert.doesNotMatch(css, /:root:not\(\[data-theme="pink"\]\) \.admin-video-card/);
   assert.doesNotMatch(videosPageSource, /className="is-checkbox"/);
   assert.doesNotMatch(videosPageSource, /admin-table-checkbox-btn/);
   assert.match(titleCell, /grid-template-columns\s*:\s*clamp\(104px,\s*32vw,\s*156px\)\s+minmax\(0,\s*1fr\)/);

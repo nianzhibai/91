@@ -11,7 +11,7 @@ import (
 )
 
 func TestGetSettingsReturnsDatabasePreferencesOnly(t *testing.T) {
-	server := &AdminServer{GetTheme: func() string { return "sky" }}
+	server := &AdminServer{GetTheme: func() string { return "light" }}
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/admin/api/settings", nil)
 	server.handleGetSettings(recorder, request)
@@ -26,8 +26,8 @@ func TestGetSettingsReturnsDatabasePreferencesOnly(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if response.Theme != "sky" {
-		t.Fatalf("theme = %q, want sky", response.Theme)
+	if response.Theme != "light" {
+		t.Fatalf("theme = %q, want light", response.Theme)
 	}
 	for _, configField := range []string{"nightlyDisabled", "nightlyStartTime", "builtinTagsEnabled", "autoGenerateTagsEnabled"} {
 		if strings.Contains(recorder.Body.String(), configField) {
@@ -81,14 +81,51 @@ func TestPutSettingsStillSupportsPartialThemeUpdate(t *testing.T) {
 	request := httptest.NewRequest(
 		http.MethodPut,
 		"/admin/api/settings",
-		strings.NewReader(`{"theme":"pink"}`),
+		strings.NewReader(`{"theme":"light"}`),
 	)
 	server.handlePutSettings(recorder, request)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
 	}
-	if theme != "pink" {
-		t.Fatalf("theme = %q, want pink", theme)
+	if theme != "light" {
+		t.Fatalf("theme = %q, want light", theme)
+	}
+}
+
+func TestPutSettingsRejectsUnsupportedThemes(t *testing.T) {
+	for _, value := range []string{`"pink"`, `"sky"`, `"orange"`, `"auto"`, `""`, `null`, `42`} {
+		t.Run(value, func(t *testing.T) {
+			called := false
+			server := &AdminServer{SetTheme: func(string) error { called = true; return nil }}
+			recorder := httptest.NewRecorder()
+			server.handlePutSettings(recorder, httptest.NewRequest(
+				http.MethodPut, "/admin/api/settings", strings.NewReader(`{"theme":`+value+`}`),
+			))
+			if recorder.Code != http.StatusBadRequest || called {
+				t.Fatalf("unsupported theme reached persistence: status=%d called=%v", recorder.Code, called)
+			}
+		})
+	}
+}
+
+func TestPublicThemeReturnsOnlyDarkOrLight(t *testing.T) {
+	for _, value := range []string{"dark", "light", "invalid", ""} {
+		t.Run(value, func(t *testing.T) {
+			server := &Server{GetTheme: func() string { return value }}
+			recorder := httptest.NewRecorder()
+			server.handleGetTheme(recorder, httptest.NewRequest(http.MethodGet, "/api/settings/theme", nil))
+			var response settingsDTO
+			if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			want := "dark"
+			if value == "light" {
+				want = "light"
+			}
+			if recorder.Code != http.StatusOK || response.Theme != want {
+				t.Fatalf("theme=%q status=%d, want %q", response.Theme, recorder.Code, want)
+			}
+		})
 	}
 }

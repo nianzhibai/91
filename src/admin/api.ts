@@ -1,4 +1,6 @@
 import { applyPreviewEnabled } from "../lib/previewSettings";
+import type { Theme } from "../lib/theme";
+export type { Theme } from "../lib/theme";
 import { applyTelegramEnabled } from "./telegram/availability";
 
 // 管理后台 API 客户端
@@ -1358,8 +1360,6 @@ export function deleteTag(id: number) {
 
 // ---------- Settings ----------
 
-export type Theme = "dark" | "pink" | "sky";
-
 export type Settings = {
   theme: Theme;
 };
@@ -1372,7 +1372,7 @@ export function getSettings() {
  * 更新设置。后端按字段存在与否判断是否变更，所以可以传 Partial 局部更新。
  *
  * 例：只切换主题，其它字段保持原状：
- *   updateSettings({ theme: "pink" })
+ *   updateSettings({ theme: "light" })
  */
 export function updateSettings(body: Partial<Settings>) {
   return request<Settings>("/settings", {

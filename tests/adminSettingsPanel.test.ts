@@ -395,7 +395,7 @@ test("configuration panel follows the CLIProxy configuration workspace UI", () =
   );
   assert.match(
     adminCss,
-    /:root\[data-theme="pink"\][\s\S]*?\.admin-config-picker-field > :is\(input, select\)[\s\S]*?color-scheme:\s*light;/s
+    /:root\[data-theme="light"\][\s\S]*?\.admin-config-picker-field > :is\(input, select\)[\s\S]*?color-scheme:\s*light;/s
   );
   assert.match(
     pageSource,

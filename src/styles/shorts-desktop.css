@@ -43,7 +43,7 @@
     --shorts-header-height: 16px;
     --shorts-sidebar-width: 160px;
     --shorts-player-gutter: 16px;
-    --shorts-desktop-background: #161722;
+    --shorts-desktop-background: var(--shorts-bg-page);
     background: var(--shorts-desktop-background);
   }
 
@@ -118,7 +118,7 @@
   }
 
   .shorts-desktop-nav a:hover, .shorts-desktop-nav .shorts-header__tab:hover {
-    background: #22232f;
+    background: var(--shorts-bg-surface);
     color: #fff;
   }
 
@@ -214,7 +214,7 @@
 
   .shorts-slide__player {
     border-radius: 12px;
-    background: #08090d;
+    background: #0c0d0f;
     cursor: pointer;
   }
 
@@ -315,7 +315,7 @@
     padding: 8px 12px;
     border: 0;
     border-radius: 12px;
-    background: #252632;
+    background: var(--shorts-bg-elevated);
     color: #fff;
     font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
     font-size: 12px;
@@ -341,7 +341,7 @@
     right: -7px;
     top: 50%;
     transform: translateY(-50%);
-    color: #252632;
+    color: var(--shorts-bg-elevated);
   }
 
   .shorts-action-tooltip__content kbd {
@@ -354,7 +354,7 @@
     border: 1px solid #fff;
     border-radius: 6px;
     background: #fff;
-    color: #252632;
+    color: var(--shorts-text-on-accent);
     font: inherit;
     font-size: 13px;
     font-weight: 500;
@@ -364,13 +364,13 @@
   .shorts-drive-badge {
     width: 46px;
     height: 46px;
-    background: #31323f;
+    background: var(--shorts-bg-hover);
     margin-bottom: 2px;
     border: 2px solid rgb(255 255 255 / 80%);
   }
 
   .shorts-drive-badge:hover {
-    background: #454653;
+    background: var(--shorts-bg-active);
     border-color: #fff;
   }
 
@@ -418,7 +418,7 @@
     width: 44px;
     padding: 6px;
     gap: 8px;
-    background: #22232f;
+    background: var(--shorts-bg-surface);
     border-radius: 24px;
     pointer-events: auto;
   }
@@ -431,7 +431,7 @@
     padding: 0;
     border: 0;
     border-radius: 18px;
-    color: #a5a6b5;
+    color: var(--shorts-text-muted);
     background: transparent;
     cursor: pointer;
     transition: color 150ms ease, background 150ms ease;
@@ -444,7 +444,7 @@
 
   .shorts-slide__pager button:hover:enabled {
     color: #fff;
-    background: #353644;
+    background: var(--shorts-bg-hover);
   }
 
   .shorts-slide__pager button:disabled {
@@ -465,7 +465,7 @@
   }
 
   .shorts-slide__progress-fill {
-    background: #fff;
+    background: var(--shorts-accent);
   }
 
   .shorts-slide__progress:hover .shorts-slide__progress-track, .shorts-slide__progress.is-scrubbing .shorts-slide__progress-track {
@@ -473,7 +473,7 @@
   }
 
   .shorts-slide__progress.is-scrubbing .shorts-slide__progress-fill {
-    background: #ff3b64;
+    background: var(--shorts-accent);
     box-shadow: none;
   }
 
@@ -589,7 +589,7 @@
     min-height: 38px;
     padding: 10px;
     border-radius: 12px;
-    background: #252632;
+    background: var(--shorts-bg-elevated);
     color: #fff;
     font-size: 12px;
     font-weight: 400;
@@ -620,7 +620,7 @@
     padding: 0 3px;
     border-radius: 6px;
     background: #fff;
-    color: #252632;
+    color: var(--shorts-text-on-accent);
     font: inherit;
     font-size: 13px;
     font-weight: 500;
@@ -657,10 +657,11 @@
   }
 
   .shorts-slide__controls [aria-checked="true"] .shorts-control-switch {
-    background: #ff2c55;
+    background: var(--shorts-accent);
   }
 
   .shorts-slide__controls [aria-checked="true"] .shorts-control-switch::after {
+    background: var(--shorts-text-on-accent);
     transform: translateX(12px);
   }
 
@@ -681,7 +682,7 @@
     height: 196px;
     padding: 10px 16px;
     border-radius: 12px;
-    background: #252632;
+    background: var(--shorts-bg-elevated);
   }
 
   .shorts-volume-control__panel::after {
@@ -728,7 +729,7 @@
     width: 100%;
     height: var(--shorts-volume-percent);
     border-radius: inherit;
-    background: #fa1f41;
+    background: var(--shorts-accent);
   }
 
   .shorts-volume-control__track > span::after {
@@ -795,7 +796,7 @@
     width: 72px;
     padding: 12px 12px 4px;
     border-radius: 12px;
-    background: #252632;
+    background: var(--shorts-bg-elevated);
   }
 
   /* 覆盖菜单与触发器之间的空隙，鼠标向上进入选项时保持展开。 */

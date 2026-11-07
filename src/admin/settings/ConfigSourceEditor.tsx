@@ -20,7 +20,7 @@ export default function ConfigSourceEditor({
   onChange,
 }: Props) {
   const activeTheme = useCurrentTheme();
-  const theme = activeTheme === "pink" ? "light" : "dark";
+  const theme = activeTheme === "dark" ? "dark" : "light";
   const extensions = useMemo(
     () => [yaml(), EditorView.contentAttributes.of({ "aria-label": "config.yaml 源码" })],
     []

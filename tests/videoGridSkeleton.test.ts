@@ -25,8 +25,6 @@ test("video skeleton mirrors thumbnail, title, and metadata structure", () => {
   assert.match(videoGridSource, /className="video-grid-loading"/);
 
   const skeleton = ruleBody(videoCardCss, ".skeleton-card");
-  const pink = ruleBody(videoCardCss, ':root[data-theme="pink"] .skeleton-card');
-  const sky = ruleBody(videoCardCss, ':root[data-theme="sky"] .skeleton-card');
   const thumb = ruleBody(videoCardCss, ".skeleton-card__thumb");
 
   assert.match(skeleton, /--skeleton-shimmer-base\s*:/);
@@ -39,8 +37,9 @@ test("video skeleton mirrors thumbnail, title, and metadata structure", () => {
     videoCardCss,
     /\.skeleton-card__meta\s*\{\s*margin-top:\s*6px;[^}]*width:\s*100%;[^}]*height:\s*14px;[^}]*border-radius:\s*var\(--radius-xs\)/s
   );
-  assert.match(pink, /--skeleton-shimmer-base\s*:\s*rgba\(255,\s*91,\s*138,\s*0\.12\)/);
-  assert.match(sky, /--skeleton-shimmer-base\s*:\s*rgba\(60,\s*100,\s*170,\s*0\.13\)/);
+  assert.match(skeleton, /--skeleton-card-bg\s*:\s*var\(--bg-surface\)/);
+  assert.match(skeleton, /--skeleton-shimmer-base\s*:\s*var\(--bg-skeleton\)/);
+  assert.match(skeleton, /--skeleton-shimmer-highlight\s*:\s*var\(--bg-elevated\)/);
   assert.doesNotMatch(videoCardCss, /is-compact/);
 });
 

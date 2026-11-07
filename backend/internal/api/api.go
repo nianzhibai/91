@@ -85,7 +85,7 @@ type Server struct {
 	// without sleeping. Production leaves it nil and uses time.Now.
 	shareNow func() time.Time
 
-	// GetTheme 返回当前生效的主题（"dark" | "pink" | "sky"）。前台 /api/settings/theme 用，
+	// GetTheme 返回当前生效的主题（"dark" | "light"）。前台 /api/settings/theme 用，
 	// 不需要登录。无注入时返回 "dark"。
 	GetTheme func() string
 	// GetPreviewEnabled exposes only the live global preview policy to cards.
@@ -305,11 +305,11 @@ func (s *Server) RegisterRoutes(r chi.Router, a *auth.Authenticator) {
 }
 
 // handleGetTheme 返回当前生效的主题。无需登录。响应永远是
-// {"theme": "dark" | "pink" | "sky"}，便于前端无脑解析。
+// {"theme": "dark" | "light"}。
 func (s *Server) handleGetTheme(w http.ResponseWriter, r *http.Request) {
 	theme := "dark"
 	if s.GetTheme != nil {
-		if v := s.GetTheme(); v == "pink" || v == "dark" || v == "sky" {
+		if v := s.GetTheme(); v == "light" || v == "dark" {
 			theme = v
 		}
 	}

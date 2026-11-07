@@ -16,13 +16,15 @@
     <title>91</title>
     <!--
       在 React 挂载前，从 localStorage 同步上次保存的主题，立刻设到 <html data-theme>，
-      避免"先黑后粉"的闪烁。真实的服务端值会在 main.tsx 启动时异步对齐。
+      避免深浅主题闪烁。真实的服务端值会在 main.tsx 启动时异步对齐。
     -->
     <script>
       (function () {
         try {
           var t = localStorage.getItem("video-site:theme");
-          if (t === "pink" || t === "dark" || t === "sky") {
+          // 旧的浅色主题统一迁移为亮色。
+          if (t === "pink" || t === "sky") t = "light";
+          if (t === "light" || t === "dark") {
             document.documentElement.setAttribute("data-theme", t);
           } else {
             document.documentElement.setAttribute("data-theme", "dark");

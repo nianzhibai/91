@@ -48,13 +48,13 @@
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--border-default);
   border-radius: 0;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4), var(--shadow-inset);
+  box-shadow: var(--shadow-md);
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .search-panel__form:focus-within {
   border-color: var(--border-accent);
-  box-shadow: 0 0 0 1px var(--border-accent), 0 8px 24px var(--accent-glow);
+  box-shadow: var(--shadow-selected);
 }
 
 .search-panel__input-wrapper {
@@ -100,7 +100,7 @@
   height: 36px;
   flex: 0 0 auto;
   padding: 0 var(--space-5);
-  background: var(--accent-gradient);
+  background: var(--accent);
   color: var(--text-on-accent);
   border-radius: 0;
   font-weight: var(--weight-semibold);
@@ -109,14 +109,14 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  box-shadow: 0 4px 12px var(--accent-glow), var(--shadow-inset);
+  box-shadow: var(--shadow-sm);
   transition: background var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 @media (hover: hover) and (pointer: fine) {
   .search-panel__submit:hover {
     filter: brightness(1.05);
-    box-shadow: 0 8px 20px var(--accent-glow), var(--shadow-inset);
+    box-shadow: var(--shadow-sm);
   }
 }
 
@@ -214,7 +214,7 @@
 .tag-cloud__link {
   display: inline-block;
   max-width: 100%;
-  color: var(--video-link-color);
+  color: var(--text-muted);
   vertical-align: top;
   overflow-wrap: anywhere;
   text-decoration-thickness: 1px;
@@ -223,13 +223,14 @@
 }
 
 .tag-cloud__link.is-active {
+  color: var(--accent);
   text-decoration-line: underline;
 }
 
 /* Touch browsers can retain :hover after a tap and while returning in history. */
 @media (hover: hover) and (pointer: fine) {
   .tag-cloud__link:hover {
-    color: var(--video-link-color);
+    color: var(--accent);
     text-decoration-line: underline;
   }
 }

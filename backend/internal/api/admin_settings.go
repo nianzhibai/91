@@ -18,7 +18,7 @@ func (a *AdminServer) handleGetSettings(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Cache-Control", "no-store")
 	theme := "dark"
 	if a.GetTheme != nil {
-		if v := a.GetTheme(); v != "" {
+		if v := a.GetTheme(); v == "dark" || v == "light" {
 			theme = v
 		}
 	}
@@ -45,17 +45,15 @@ func (a *AdminServer) handlePutSettings(w http.ResponseWriter, r *http.Request) 
 			writeErr(w, r, http.StatusBadRequest, err)
 			return
 		}
-		if theme != "" {
-			if err := a.SetTheme(theme); err != nil {
-				writeErr(w, r, http.StatusBadRequest, err)
-				return
-			}
+		if theme != "dark" && theme != "light" {
+			writeErr(w, r, http.StatusBadRequest, errors.New("theme must be dark or light"))
+			return
+		}
+		if err := a.SetTheme(theme); err != nil {
+			writeErr(w, r, http.StatusBadRequest, err)
+			return
 		}
 	}
 	// 回显当前值
-	resp := settingsDTO{}
-	if a.GetTheme != nil {
-		resp.Theme = a.GetTheme()
-	}
-	writeJSON(w, http.StatusOK, resp)
+	a.handleGetSettings(w, r)
 }

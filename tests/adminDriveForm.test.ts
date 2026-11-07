@@ -896,7 +896,7 @@ test("drive list actions use ordinary text buttons in the requested positions", 
   );
   assert.match(
     adminCss,
-    /\.admin-create-fab\s*\{[^}]*position\s*:\s*fixed[^}]*right\s*:\s*var\(--space-7\)[^}]*bottom\s*:\s*var\(--space-5\)[^}]*width\s*:\s*fit-content[^}]*min-width\s*:\s*0[^}]*min-height\s*:\s*44px[^}]*box-shadow\s*:\s*0 12px 32px/s
+    /\.admin-create-fab\s*\{[^}]*position\s*:\s*fixed[^}]*right\s*:\s*var\(--space-7\)[^}]*bottom\s*:\s*var\(--space-5\)[^}]*width\s*:\s*fit-content[^}]*min-width\s*:\s*0[^}]*min-height\s*:\s*44px[^}]*box-shadow\s*:\s*var\(--shadow-lg\)/s
   );
   assert.match(
     adminCss,

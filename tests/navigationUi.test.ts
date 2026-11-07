@@ -56,7 +56,7 @@ test("mobile menu links fill the full expanded menu row", () => {
 test("mobile logo motion resets after a tap", () => {
   assert.match(
     navigationCss,
-    /@media \(hover: hover\) and \(pointer: fine\) \{\s*\.main-nav__logo:hover \{[^}]*transform:\s*scale\(1\.02\);[^}]*\}\s*\.main-nav__logo:hover \.main-nav__logo-mark \{[^}]*transform:\s*rotate\(3deg\) scale\(1\.04\);/s
+    /@media \(hover: hover\) and \(pointer: fine\) \{\s*\.main-nav__logo:hover \{[^}]*transform:\s*scale\(1\.02\);[^}]*\}\s*\.main-nav__logo:hover \.main-nav__logo-mark \{[^}]*transform:\s*scale\(1\.02\);/s
   );
 
   const activeLogo = ruleBody(navigationCss, ".main-nav__logo:active");
@@ -65,7 +65,7 @@ test("mobile logo motion resets after a tap", () => {
     ".main-nav__logo:active .main-nav__logo-mark"
   );
   assert.match(activeLogo, /transform\s*:\s*scale\(0\.98\)/);
-  assert.match(activeMark, /transform\s*:\s*rotate\(3deg\) scale\(0\.96\)/);
+  assert.match(activeMark, /transform\s*:\s*scale\(0\.98\)/);
 });
 
 test("short video navigation uses the supplied Font Awesome icon", () => {

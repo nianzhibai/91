@@ -17,6 +17,7 @@ body,
 }
 
 html {
+  accent-color: var(--accent);
   /*
    * 历史记录恢复必须是即时的。全局 smooth 会让浏览器后退到视频列表时
    * 从页面顶部缓慢滚回原位置；需要动画的按钮会在调用 scrollTo 时单独声明。
@@ -48,16 +49,6 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
-}
-
-/* 各主题的背景纹理由 tokens.css 定义；基础层不叠加局部光晕。 */
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
-  background: none;
 }
 
 #root {
@@ -174,7 +165,7 @@ a:focus-visible {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--scrollbar-thumb);
   border-radius: var(--radius-pill);
   border: 2px solid transparent;
   background-clip: padding-box;
@@ -182,7 +173,7 @@ a:focus-visible {
 
 @media (hover: hover) and (pointer: fine) {
   ::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.18);
+    background: var(--scrollbar-thumb-hover);
     background-clip: padding-box;
     border: 2px solid transparent;
   }
@@ -190,5 +181,5 @@ a:focus-visible {
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }

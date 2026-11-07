@@ -10,13 +10,13 @@
 // 公开端点 /api/settings/theme 不需要登录，原因见 backend/internal/api/api.go 中
 // 的注释——登录页本身就要在用户登录之前正确显示主题。
 
-export type Theme = "dark" | "pink" | "sky";
+export type Theme = "dark" | "light";
 
-export const THEMES: Theme[] = ["dark", "pink", "sky"];
+export const THEMES: Theme[] = ["dark", "light"];
 const STORAGE_KEY = "video-site:theme";
 
-function isTheme(value: unknown): value is Theme {
-  return value === "dark" || value === "pink" || value === "sky";
+export function isTheme(value: unknown): value is Theme {
+  return value === "dark" || value === "light";
 }
 
 /**

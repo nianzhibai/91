@@ -113,7 +113,7 @@ type AdminServer struct {
 	GetDriveGenerationStatuses   func() map[string]DriveGenerationStatuses
 	GetDriveGenerationStatus     func(string) DriveGenerationStatuses
 	GetPreviewGenerationVideoIDs func() map[string]bool
-	// Theme 读写（"dark" | "pink" | "sky"）
+	// Theme 读写（"dark" | "light"）
 	GetTheme func() string
 	SetTheme func(theme string) error
 	// OnRunScanAllJob 触发一次手动全量扫盘：只扫描配置的真实云盘、等待新视频

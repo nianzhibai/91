@@ -15,7 +15,6 @@ import {
   useNavigationType,
   type Location,
 } from "react-router";
-import { SkyStarfield } from "@/components/SkyStarfield";
 import { VideoDetailLoading } from "@/components/VideoDetailLoading";
 import { CrawlersPageLoading } from "@/admin/CrawlersPageLoading";
 import { DrivesPageLoading } from "@/admin/DrivesPageLoading";
@@ -354,7 +353,6 @@ function VideoDetailForeground() {
       className="video-detail-foreground"
       data-video-detail-foreground
     >
-      <SkyStarfield />
       <PageScrollRootProvider scrollRootRef={scrollRootRef}>
         <Routes>
           <Route
@@ -388,8 +386,6 @@ export default function App() {
 
   return (
     <>
-      {/* 星空蓝主题的固定位置星星层，仅在 data-theme="sky" 下可见 */}
-      <SkyStarfield />
       <VideoReturnPathRecorder />
       {listingLocation ? (
         <RetainedListingSurface

@@ -36,7 +36,7 @@ test("global theme picker persists the site-wide setting and rolls back failures
   assert.match(globalActionsSource, /await api\.updateSettings\(\{ theme: next \}\)/);
   assert.match(globalActionsSource, /catch \(error\) \{\s*setActiveTheme\(previous\);\s*applyTheme\(previous\);/);
   assert.match(globalActionsSource, /role="menu"[\s\S]*?aria-label="选择全站主题"/);
-  assert.match(globalActionsSource, /"dark"[\s\S]*?"pink"[\s\S]*?"sky"/);
+  assert.match(globalActionsSource, /"dark"[\s\S]*?"light"/);
   assert.doesNotMatch(globalActionsSource, /<strong>全站主题<\/strong>/);
   assert.doesNotMatch(globalActionsSource, /所有访客将使用所选主题/);
 });

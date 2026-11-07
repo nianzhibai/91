@@ -24,10 +24,7 @@
   place-items: center;
   padding: var(--space-4);
   padding-bottom: calc(var(--space-4) + env(safe-area-inset-bottom));
-  background:
-    radial-gradient(800px 400px at 80% 10%, rgba(255, 138, 60, 0.16), transparent 60%),
-    radial-gradient(900px 500px at 10% 90%, rgba(120, 80, 200, 0.1), transparent 60%),
-    var(--bg-page);
+  background: transparent;
 }
 
 .admin-login__card {
@@ -43,7 +40,7 @@
 .admin-login__error {
   margin-top: var(--space-2);
   padding: 8px var(--space-3);
-  border: 1px solid rgba(241, 85, 108, 0.3);
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
   border-radius: var(--radius-sm);
   background: var(--danger-soft);
   color: var(--danger);

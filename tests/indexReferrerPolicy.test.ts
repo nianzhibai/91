@@ -20,14 +20,31 @@ test("app shell applies the saved theme without writing storage", () => {
     url: "http://localhost/",
     runScripts: "dangerously",
     beforeParse(window) {
-      window.localStorage.setItem("video-site:theme", "pink");
+      window.localStorage.setItem("video-site:theme", "light");
       window.Storage.prototype.setItem = () => { throw new Error("Storage quota exceeded"); };
     },
   });
   try {
-    assert.equal(dom.window.document.documentElement.getAttribute("data-theme"), "pink");
-    assert.equal(dom.window.localStorage.getItem("video-site:theme"), "pink");
+    assert.equal(dom.window.document.documentElement.getAttribute("data-theme"), "light");
+    assert.equal(dom.window.localStorage.getItem("video-site:theme"), "light");
   } finally {
     dom.window.close();
+  }
+});
+
+test("retired light palettes restore as light before the app mounts", () => {
+  for (const saved of ["pink", "sky"]) {
+    const dom = new JSDOM(indexHtml, {
+      url: "http://localhost/",
+      runScripts: "dangerously",
+      beforeParse(window) {
+        window.localStorage.setItem("video-site:theme", saved);
+      },
+    });
+    try {
+      assert.equal(dom.window.document.documentElement.dataset.theme, "light");
+    } finally {
+      dom.window.close();
+    }
   }
 });
