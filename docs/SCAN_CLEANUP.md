@@ -2,7 +2,7 @@
 
 扫盘按目录存在性判断哪些视频可以退出媒体库。失败目录只保护自身子树；当前配置范围完整时，已确认消失的记录立即清理。
 
-后端路径均相对 `backend/`：`internal/scanner/` 负责发现与对账，`internal/catalog/scan_presence.go` 判断缺失候选，`cmd/server/scan.go` 编排清理。跳过目录保存接口位于 `internal/api/admin_drive_operations.go`，前端为根目录 `src/admin/drive/SkipDirsPanel.tsx`。
+后端路径均相对 `backend/`：`internal/scanner/` 负责发现与对账，`internal/catalog/scan_presence.go` 判断缺失候选，`cmd/server/scan.go` 编排清理。跳过目录保存接口位于 `internal/api/admin_drive_operations.go`，前端位于 `91-web` 仓库的 `src/admin/drive/SkipDirsPanel.tsx`。
 
 ## 执行顺序
 

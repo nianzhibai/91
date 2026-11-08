@@ -49,7 +49,7 @@ flowchart TD
 
 兼容播放的清单和分片经过本站服务器。HLS 会话每次访问延长 30 分钟闲置期限；上游签名被拒绝时，播放器可重新解析一次兼容源。115 的 405/429 限流会中止继续尝试，并返回冷却信息。
 
-代码：[原画及 HLS 取链](../internal/drives/p115/driver.go)、[兼容播放](../internal/drives/p115/playback.go)、[准备转码](../internal/drives/p115/playback_prepare.go)。
+代码：[原画及 HLS 取链](../backend/internal/drives/p115/driver.go)、[兼容播放](../backend/internal/drives/p115/playback.go)、[准备转码](../backend/internal/drives/p115/playback_prepare.go)。
 
 ## 2. 夸克网盘（quark）
 
@@ -92,7 +92,7 @@ flowchart TD
 
 当前没有夸克的本站转码准备接口：处理中只轮询状态。兼容源网络失败可刷新一次地址；无可用版本时，自动模式仍可尝试原画链路。
 
-代码：[下载取链及 Cookie](../internal/drives/quark/driver.go)、[raw 回退与多清晰度 HLS](../internal/drives/quark/playback.go)。
+代码：[下载取链及 Cookie](../backend/internal/drives/quark/driver.go)、[raw 回退与多清晰度 HLS](../backend/internal/drives/quark/playback.go)。
 
 ## 3. 123 网盘（p123）
 
@@ -116,7 +116,7 @@ flowchart TD
 
 当前只提供原画链路，没有单独的云端兼容播放源。
 
-代码：[元数据、下载接口和跳转解析](../internal/drives/p123/driver.go)、[下载响应字段](../internal/drives/p123/types.go)。
+代码：[元数据、下载接口和跳转解析](../backend/internal/drives/p123/driver.go)、[下载响应字段](../backend/internal/drives/p123/types.go)。
 
 ## 4. PikPak（pikpak）
 
@@ -133,7 +133,7 @@ flowchart TD
 
 当前没有独立兼容源列表。启用媒体链接只是改变此播放入口最终选择的 URL，不会生成可切换的 `cloud-*` 清晰度。
 
-代码：[文件取链和媒体选择](../internal/drives/pikpak/driver.go)、[Token 与 Captcha 刷新](../internal/drives/pikpak/auth.go)。
+代码：[文件取链和媒体选择](../backend/internal/drives/pikpak/driver.go)、[Token 与 Captcha 刷新](../backend/internal/drives/pikpak/auth.go)。
 
 ## 5. 联通网盘（wopan）
 
@@ -159,7 +159,7 @@ flowchart TD
 
 兼容源网络失败可重新解析一次 `VideoDisplayFiles`。此链路没有本站转码准备操作，播放依赖上游提供可直接访问的 HLS。
 
-代码：[原画取链](../internal/drives/wopan/driver.go)、[HLS 取链](../internal/drives/wopan/playback.go)。
+代码：[原画取链](../backend/internal/drives/wopan/driver.go)、[HLS 取链](../backend/internal/drives/wopan/playback.go)。
 
 ## 6. 移动网盘（yun139）
 
@@ -188,7 +188,7 @@ flowchart TD
 
 原画和兼容播放共用 API 授权，但各自调用独立取链接口。兼容地址失败时可以刷新预览查询，不能把原画下载 URL 当作 HLS 使用。
 
-代码：[下载地址和个人云路由](../internal/drives/yun139/driver.go)、[请求授权与签名](../internal/drives/yun139/auth.go)、[HLS 预览](../internal/drives/yun139/playback.go)。
+代码：[下载地址和个人云路由](../backend/internal/drives/yun139/driver.go)、[请求授权与签名](../backend/internal/drives/yun139/auth.go)、[HLS 预览](../backend/internal/drives/yun139/playback.go)。
 
 ## 7. 光鸭网盘（guangyapan）
 
@@ -205,7 +205,7 @@ flowchart TD
 
 驱动链接复用期限为 10 分钟，代理最多缓存 5 分钟。当前只提供原画链路，没有独立云端兼容播放源。
 
-代码：[签名下载地址及刷新](../internal/drives/guangyapan/driver.go)、[响应字段](../internal/drives/guangyapan/types.go)。
+代码：[签名下载地址及刷新](../backend/internal/drives/guangyapan/driver.go)、[响应字段](../backend/internal/drives/guangyapan/types.go)。
 
 ## 8. OneDrive / SharePoint（onedrive）
 
@@ -226,7 +226,7 @@ Graph 返回 `InvalidAuthenticationToken` 时，驱动刷新 Token 后重试当�
 
 驱动链接期限为 10 分钟，代理最多缓存 5 分钟；地址刷新后再次从 Graph 元数据读取。当前没有独立云端兼容播放源。
 
-代码：[Graph 取链及 Token 刷新](../internal/drives/onedrive/driver.go)、[区域和响应字段](../internal/drives/onedrive/types.go)。
+代码：[Graph 取链及 Token 刷新](../backend/internal/drives/onedrive/driver.go)、[区域和响应字段](../backend/internal/drives/onedrive/types.go)。
 
 ## 9. Google Drive（googledrive）
 
@@ -268,7 +268,7 @@ flowchart TD
 
 兼容源及并发取链按观众 UA 隔离。未配置网页登录 Cookie、网页账号无权访问文件或没有可用 MP4 时，兼容源不可用；OAuth 原画仍使用前面的独立链路。
 
-代码：[OAuth 原画取链](../internal/drives/googledrive/driver.go)、[媒体回源和刷新](../internal/drives/googledrive/stream.go)、[网页 MP4 取链](../internal/drives/googledrive/playback.go)、[MP4 跳转与转发](../internal/proxy/playback_file.go)。
+代码：[OAuth 原画取链](../backend/internal/drives/googledrive/driver.go)、[媒体回源和刷新](../backend/internal/drives/googledrive/stream.go)、[网页 MP4 取链](../backend/internal/drives/googledrive/playback.go)、[MP4 跳转与转发](../backend/internal/proxy/playback_file.go)。
 
 ## 10. WebDAV（webdav）
 
@@ -284,4 +284,4 @@ flowchart TD
 
 WebDAV 链接的驱动复用期限为 24 小时，代理最多缓存 5 分钟。当前没有独立兼容源；最终媒体是否经过本站取决于上游直接返回字节，还是提供可用的下载跳转。
 
-代码：[文件 URL 和请求头](../internal/drives/webdav/driver.go)、[媒体回源和跳转交付](../internal/proxy/proxy.go)。
+代码：[文件 URL 和请求头](../backend/internal/drives/webdav/driver.go)、[媒体回源和跳转交付](../backend/internal/proxy/proxy.go)。

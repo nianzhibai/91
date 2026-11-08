@@ -4,20 +4,23 @@ Go 服务提供 API、媒体代理和前端静态资源，使用纯 Go SQLite �
 
 > 本文以当前仓库代码为准；部署时请使用配套的管理脚本、发布包或镜像。
 
+使用指南、扩展协议与运行机制见 [文档索引](../docs/README.md)。
+
 ## 本地开发
 
 依赖 **Go 1.27.3+**、**Node.js 24.22.1**、**npm 12.2.1**、**ffmpeg / ffprobe**；运行爬虫还需 `python3`。前端版本见根目录 `.nvmrc` 和 `package.json`。
 
-在仓库根目录安装前端依赖后，使用 Linux 开发启动脚本：
+把 `91-web` 克隆到本仓库旁边并安装其依赖，再使用 Linux 开发启动脚本：
 
 ```bash
-npm ci
+git clone https://github.com/nianzhibai/91-web.git ../91-web
+npm --prefix ../91-web ci
 FRONTEND_MODE=dev bash start.sh
 bash start.sh --status
 bash start.sh --stop
 ```
 
-前端访问 `http://localhost:9191/`，API 与媒体请求代理到 `127.0.0.1:9192`。脚本使用独立的 `backend/config.dev.yaml`，首次创建时将数据目录设为 `backend/data-dev/`；可通过 `BACKEND_PORT` 同时调整后端监听和前端代理端口。不设置 `FRONTEND_MODE=dev` 时，脚本构建前端并使用 preview 模式，无热更新。
+前端访问 `http://localhost:9191/`，API 与媒体请求代理到 `127.0.0.1:9192`。`FRONTEND_DIR` 可指定其他前端工作区。脚本使用独立的 `backend/config.dev.yaml`，首次创建时将数据目录设为 `backend/data-dev/`；可通过 `BACKEND_PORT` 同时调整后端监听和前端代理端口。不设置 `FRONTEND_MODE=dev` 时，脚本在前端工作区构建并使用 preview 模式，无热更新。
 
 单独运行后端、测试或构建：
 
@@ -28,11 +31,11 @@ go test ./...
 go build -o server ./cmd/server
 ```
 
-直接运行时使用 `VIDEO_CONFIG` 指定的配置，未设置则读取当前目录的 `config.yaml`，缺失时自动生成。需要同时手动运行 Vite 时，先将后端配置的 `server.listen` 改为 `127.0.0.1:9192`，再在根目录执行 `npm run dev`。
+直接运行时使用 `VIDEO_CONFIG` 指定的配置，未设置则读取当前目录的 `config.yaml`，缺失时自动生成。需要同时手动运行 Vite 时，先将后端配置的 `server.listen` 改为 `127.0.0.1:9192`，再在 `91-web` 仓库执行 `npm run dev`。
 
 ## 源码部署
 
-在 Linux 仓库根目录执行，脚本会构建前端和后端，并注册 `91.service`：
+在 Linux 仓库根目录执行，脚本会获取锁定的前端发布包、构建后端，并注册 `91.service`。离线构建和前端尚未发布时可使用 `FRONTEND_ARCHIVE` 指定与锁文件一致的本地归档：
 
 ```bash
 sudo bash deploy.sh
@@ -90,7 +93,7 @@ bash 91-docker.sh reset-password
 
 配置通过校验后才会写入，原文件保留为 `.bak-*`。主配置会重新序列化，旧名称迁移还会重写相关附加配置，注释、锚点和排版不保证保留。`up --wait` 在没有健康检查时只确认容器运行；失败处理见下节。
 
-Telegram 部署和后台配置见 [接入 Telegram](docs/Enable_Telegram.md)。脚本不修改应用配置，也不自动启用 GPU。
+Telegram 部署和后台配置见 [接入 Telegram](../docs/TELEGRAM.md)。脚本不修改应用配置，也不自动启用 GPU。
 
 ## 旧部署升级
 
@@ -183,7 +186,7 @@ GPU 主机可运行 `cd backend && VIDEO_TEST_GPU=1 go test ./internal/preview -
 | `internal/mediaimport/`、`internal/telegram/`、`internal/crawlerupload/` | 导入、Telegram 接收和爬虫产物转存 |
 | `internal/nightly/`、`internal/dedupe/`、`internal/mediasim/` | 定时编排、去重计划和相似度算法 |
 
-前端代码位于根目录 `src/`，测试位于根目录 `tests/`；构建和发布脚本位于 `scripts/` 与 `.github/`。
+官方前端源码和 UI 测试位于独立的 `nianzhibai/91-web` 仓库。本仓库的 `sdk/` 提供客户端库，`tests/` 验证 SDK、接口约定和部署脚本；`scripts/` 与 `.github/` 负责产品构建发布。前端安装、切换及版本锁定见 [前端版本与发布](../docs/FRONTEND_RELEASES.md)。
 
 ## 运行流程
 
@@ -194,7 +197,7 @@ GPU 主机可运行 `cd backend && VIDEO_TEST_GPU=1 go test ./internal/preview -
 | 来源 | 触发与处理 |
 | --- | --- |
 | 扫盘 | 后台单盘扫描、扫描所有网盘、定时维护；发现、对账和清理后统一投递新视频的生成任务 |
-| 爬虫 | 后台或定时执行；仅接受 [crawler.v3](docs/CRAWLER_PROTOCOL.md)，依次发现、解析、下载、入库、生成、转存和恢复保留视频 |
+| 爬虫 | 后台或定时执行；仅接受 [crawler.v3](../docs/CRAWLER_PROTOCOL.md)，依次发现、解析、下载、入库、生成、转存和恢复保留视频 |
 | 本地上传 | `POST /api/upload`，写入 `uploads/` 后入库并排生成任务 |
 | 视频直链 | 管理员提交 `POST /api/upload/remote`，持久化任务串行下载，验证视频流后复用上传流程 |
 | Telegram | 私聊机器人导入本地媒体库，配置目标网盘后由定时维护转存 |
@@ -214,14 +217,14 @@ flowchart LR
 - **跳过目录**：保存名单只写配置，下次扫描对账后清理；此前取消可保留记录。清理使用更新后的祖先链，并保护本轮已见文件，避免把移出跳过目录的视频误删。
 - 两种清理都删除库记录和本地生成资产，不写墓碑、不删网盘源文件；取消跳过后可重新扫描入库，原手动标签和播放记录不恢复。爬虫、站内上传和 Telegram 本地盘不参与。
 
-目录判定、重试、旧数据处理和已知边界见 [扫盘清理](docs/SCAN_CLEANUP.md)。
+目录判定、重试、旧数据处理和已知边界见 [扫盘清理](../docs/SCAN_CLEANUP.md)。
 
 ### 异步生成
 
 各盘有独立队列，封面、预览和指纹各自使用所有来源共享的并发额度，见 `generation.*_concurrency`。上传和爬虫入库后直接投递；扫盘在本轮清理后投递。pending 补扫负责中断恢复。
 
 - **封面**：`ffprobe` 探测时长，`ffmpeg` 抽帧。Shorts 背景首次请求 `/p/thumb/{videoID}?variant=shorts-bg` 时，从普通封面生成最长边 96px 的模糊 JPEG；原封面更新时刷新，随视频一起清理。
-- **预览**：30 秒以下最多 3 段，30 秒及以上固定 4 段，每段 3 秒。10 分钟以上在 20%–80% 均匀取点；30 秒到 10 分钟避开片头片尾（5% 或 3 秒起、85% 前结束）；30 秒以下从 10% 起。段数不足时仅在明确降级路径接受 2 段并记录日志。**选段起点只由时长决定，是内容去重帧对齐的前提**，修改算法须同步评估 [去重体系](docs/DEDUP.md)。
+- **预览**：30 秒以下最多 3 段，30 秒及以上固定 4 段，每段 3 秒。10 分钟以上在 20%–80% 均匀取点；30 秒到 10 分钟避开片头片尾（5% 或 3 秒起、85% 前结束）；30 秒以下从 10% 起。段数不足时仅在明确降级路径接受 2 段并记录日志。**选段起点只由时长决定，是内容去重帧对齐的前提**，修改算法须同步评估 [去重体系](../docs/DEDUP.md)。
 - **指纹**：Go 读取少量 Range 字节计算 `sampled_sha256`，不依赖 ffmpeg。
 
 上游限流会触发盘级冷却，生成任务保留 pending 等待后续执行；115 签名链接提前失效时刷新一次重试。
@@ -249,7 +252,7 @@ flowchart TD
 
 扫描入库检查原生哈希及文件名加大小的弱兜底；前台软过滤还使用采样指纹。全库硬去重依次执行采样指纹、标题/封面、内容帧三个通道。
 
-硬去重先合并标签、反应、计数、分享和历史引用，再为重复行写 `reason=duplicate` 墓碑并指向最终保留项，提交后清理本地资产。**不删除网盘源文件；重复项不能从后台恢复**，旧公开 ID 会解析到保留项。阈值、选择规则和预演工具见 [去重体系](docs/DEDUP.md)，内部 SQL 审计见 [重复决策记录](internal/dedupe/RECORDS.md)。
+硬去重先合并标签、反应、计数、分享和历史引用，再为重复行写 `reason=duplicate` 墓碑并指向最终保留项，提交后清理本地资产。**不删除网盘源文件；重复项不能从后台恢复**，旧公开 ID 会解析到保留项。阈值、选择规则和预演工具见 [去重体系](../docs/DEDUP.md)，内部 SQL 审计见 [重复决策记录](internal/dedupe/RECORDS.md)。
 
 ## 播放
 

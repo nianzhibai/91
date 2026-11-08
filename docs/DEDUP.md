@@ -22,7 +22,7 @@ flowchart LR
 | 标题相似度 + 封面 SSIM | 归一化 Levenshtein（含核心段变体）+ 96×96 亮度 SSIM | 同源重发（标题几乎一样） | 改名重发、跨源转码 |
 | teaser 帧签名 | teaser 按 1fps 抽 12 帧 96×96 灰度 | **跨源不同压制**（标题、封面全对不上也能抓） | 时长差 >2 秒的剪辑版 |
 
-预览的**选段起点只由时长决定**，分档策略见 [README「异步生成」](../README.md#异步生成)。时长接近的视频在 teaser 相同偏移处通常对应同一源画面，因此可比较不同压制、水印或裁切版本。
+预览的**选段起点只由时长决定**，分档策略见 [README「异步生成」](../backend/README.md#异步生成)。时长接近的视频在 teaser 相同偏移处通常对应同一源画面，因此可比较不同压制、水印或裁切版本。
 
 内容级判定规则，阈值常量统一在 `mediasim`：
 
@@ -92,4 +92,4 @@ Planner 跑完全部通道后会压缩 canonical 链。例如精确通道先得�
 
 - 帧签名按 `(teaser size, mtime)` 缓存在 `previews/framesigs/`，预览更新后失效，视频删除时清理；全库维护和爬虫内容通道共用缓存。
 - 在 `backend/` 执行 `go run ./cmd/dedupe-dryrun` 默认仅预演内容通道，不合并视频或删除资产；工具打开数据库时仍可能执行 schema 初始化或迁移。通过 `-db` / `-local-dir` 指定数据库与预览目录；加 `-apply` 提交计划，沿用维护的合并事务和资产清理路径。
-- 重复决策的 SQL 查询、证据和备份规则见 [内部记录](../internal/dedupe/RECORDS.md)。
+- 重复决策的 SQL 查询、证据和备份规则见 [内部记录](../backend/internal/dedupe/RECORDS.md)。

@@ -13,7 +13,7 @@
 - **短视频模式** — 一键切换抖音风格，沉浸刷片
 - **视频分享** — 视频支持一次性分享，"看完即焚"
 - **爬虫脚本** — 支持导入自定义脚本，可参考 [SpiderFor91](https://github.com/Just-Spider/SpiderFor91)
-- **接入TG** — 支持接入 Telegram，具体可查看 [接入指南](backend/docs/Enable_Telegram.md)
+- **接入TG** — 支持接入 Telegram，具体可查看 [接入指南](docs/TELEGRAM.md)
 
 ## 预览图
 
@@ -77,7 +77,9 @@ docker compose logs -f            # 查看日志
 
 ## 其他说明
 
-源码部署、开发运行及 GPU 配置见 [后端文档](backend/README.md)，各网盘的直连与代理行为见 [在线播放链路](backend/docs/CLOUD_PLAYBACK.md)
+完整指南与机制说明见 [文档索引](docs/README.md)
+
+源码部署、开发运行及 GPU 配置见 [后端文档](backend/README.md)，各网盘的直连与代理行为见 [在线播放链路](docs/CLOUD_PLAYBACK.md)
 
 ### 分享链接
 

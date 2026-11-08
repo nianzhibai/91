@@ -2,7 +2,7 @@
 
 适用于当前项目「网盘管理 → 添加网盘 / 编辑凭证」中的全部 11 种存储类型。字段名称、必填条件和自动续期行为已按当前代码核对；外部授权页面核对日期为 2026-11-07。
 
-本文按后台表单说明填写方法。Telegram 使用独立配置入口，见 [配置 Telegram](Enable_Telegram.md)。
+本文按后台表单说明填写方法。Telegram 使用独立配置入口，见 [配置 Telegram](TELEGRAM.md)。
 
 ## 快速选择
 
@@ -298,8 +298,8 @@ services:
 
 ## 代码依据与字段边界
 
-- [表单字段与默认根目录](../../src/admin/drive/constants.ts)、[扫码填充](../../src/admin/drive/DriveForm.tsx)、[组合必填校验](../../src/admin/drive/credentials.ts)。
-- [后端驱动装配](../cmd/server/drives.go)、[凭证保存规则](../internal/api/admin_drive_operations.go)、[各网盘驱动](../internal/drives/)。
+- [表单字段与默认根目录](https://github.com/nianzhibai/91-web/blob/main/src/admin/drive/constants.ts)、[扫码填充](https://github.com/nianzhibai/91-web/blob/main/src/admin/drive/DriveForm.tsx)、[组合必填校验](https://github.com/nianzhibai/91-web/blob/main/src/admin/drive/credentials.ts)。
+- [后端驱动装配](../backend/cmd/server/drives.go)、[凭证保存规则](../backend/internal/api/admin_drive_operations.go)、[各网盘驱动](../backend/internal/drives/)。
 - 播放凭证的具体用途见 [网盘在线播放链路](CLOUD_PLAYBACK.md)。
 
 当前表单没有要求用户填写所有后端内部字段。例如 PikPak 的 `access_token`、`captcha_token`、`device_id` 由程序维护，OneDrive 和 Google Drive 的 `access_token` 由刷新令牌换取，联通的 `family_id` 可由扫码返回。光鸭的短信登录参数、OneDrive 的区域及 SharePoint 参数等也未在当前表单开放；不要把其他项目的配置字段直接当作本站输入项。

@@ -32,4 +32,4 @@ flowchart TD
 - 明确的 405/429 限流保留状态及 `Retry-After`，进入现有任务冷却机制；账号失效和任务取消不触发原文件回退。没有探测出时长不视为 HLS 故障，继续使用未知时长的生成策略。
 - 任务结束、切换源或取消时关闭中继。文件指纹仍读取原文件字节。
 
-代码入口：[生成接口](../internal/drives/iface.go)、[生成源缓存](../internal/generationsource/cache.go)、[任务恢复](../internal/preview/generation_source.go)、[HLS 中继](../internal/hlsrelay/loopback.go)。
+代码入口：[生成接口](../backend/internal/drives/iface.go)、[生成源缓存](../backend/internal/generationsource/cache.go)、[任务恢复](../backend/internal/preview/generation_source.go)、[HLS 中继](../backend/internal/hlsrelay/loopback.go)。

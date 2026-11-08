@@ -17,7 +17,7 @@ import (
 
 func documentedPython(t *testing.T, marker string) string {
 	t.Helper()
-	data, err := os.ReadFile("../../../docs/CRAWLER_PROTOCOL.md")
+	data, err := os.ReadFile("../../../../docs/CRAWLER_PROTOCOL.md")
 	if err != nil {
 		t.Fatal(err)
 	}

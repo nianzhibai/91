@@ -10,7 +10,7 @@ import { classifyChanges, detectChanges } from "../.github/scripts/ci-changes.mj
 
 test("documentation-only changes skip builds while deployment and unknown inputs run everything", () => {
   const all = { frontend: true, backend: true, images: true };
-  assert.deepEqual(classifyChanges(["README.md", "backend/README.md", "backend/docs/CRAWLER_PROTOCOL.md", "AGENTS.md"]),
+  assert.deepEqual(classifyChanges(["README.md", "backend/README.md", "docs/README.md", "docs/CRAWLER_PROTOCOL.md", "AGENTS.md"]),
     { frontend: false, backend: false, images: false });
   for (const path of ["install.sh", "docker-entrypoint.sh", "scripts/build-release.sh", "Dockerfile", ".github/workflows/ci.yml", ".github/scripts/release.mjs", "new-build-input"]) {
     assert.deepEqual(classifyChanges([path]), all, path);
