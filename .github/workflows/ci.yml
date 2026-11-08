@@ -22,8 +22,13 @@ jobs:
   checks:
     uses: ./.github/workflows/checks.yml
 
-  images:
+  frontend:
     needs: checks
+    if: needs.checks.outputs.images == 'true'
+    uses: ./.github/workflows/prepare-frontend.yml
+
+  images:
+    needs: [checks, frontend]
     if: needs.checks.outputs.images == 'true'
     permissions:
       contents: read
@@ -31,11 +36,12 @@ jobs:
     uses: ./.github/workflows/docker-build.yml
     with:
       push: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+      frontend-artifact: ${{ needs.frontend.outputs.artifact }}
 
   check:
     name: Check
     if: always()
-    needs: [checks, images]
+    needs: [checks, frontend, images]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -46,8 +52,9 @@ jobs:
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"' | tee -a "$GITHUB_STEP_SUMMARY"
           echo "$RESULTS" | jq -e '
             .checks.result == "success" and
-            (.images.result == "success" or
-              (.images.result == "skipped" and .checks.outputs.images == "false"))' > /dev/null
+            ((.frontend.result == "success" and .images.result == "success") or
+              (.frontend.result == "skipped" and .images.result == "skipped" and
+                .checks.outputs.images == "false"))' > /dev/null
 
   publish:
     name: Publish main images

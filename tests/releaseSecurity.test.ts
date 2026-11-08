@@ -66,12 +66,14 @@ test("container and release builds use supported Node and run checks", () => {
   assert.ok(checks.backend.steps.some((step: { run?: string }) => step.run?.includes("go test -count=1 -timeout=15m ./...")));
   assert.deepEqual(checks.check.needs, ["changes", "frontend", "backend"]);
   const ci = parse(ciWorkflow).jobs;
-  assert.equal(ci.images.needs, "checks");
+  assert.equal(ci.frontend.needs, "checks");
+  assert.deepEqual(ci.images.needs, ["checks", "frontend"]);
   assert.deepEqual(ci.publish.needs, ["checks", "images"]);
   const release = parse(releaseWorkflow).jobs;
   assert.equal(release.checks.with["force-all"], true);
-  assert.deepEqual(release.images.needs, ["preflight", "checks"]);
-  assert.deepEqual(release.packages.needs, ["preflight", "checks"]);
+  assert.equal(release.frontend.needs, "checks");
+  assert.deepEqual(release.images.needs, ["preflight", "checks", "frontend"]);
+  assert.deepEqual(release.packages.needs, ["preflight", "checks", "frontend"]);
   assert.deepEqual(release.publish.needs, ["preflight", "checks", "images", "packages"]);
   assert.deepEqual(Object.keys(parse(dockerWorkflow).on), ["workflow_call"], "Image builds must run through a checked caller");
 });

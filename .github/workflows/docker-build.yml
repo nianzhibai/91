@@ -9,6 +9,10 @@ on:
       version:
         type: string
         default: ""
+      frontend-artifact:
+        description: Verified frontend archive from the preparation job
+        type: string
+        required: true
     outputs:
       image:
         description: Registry image name
@@ -68,6 +72,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
+
+      - name: Download verified frontend archive
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: ${{ inputs.frontend-artifact }}
+          path: frontend-bundle
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4.4.1

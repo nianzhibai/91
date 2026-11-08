@@ -1,0 +1,47 @@
+name: Prepare frontend
+
+on:
+  workflow_call:
+    outputs:
+      artifact:
+        description: Verified frontend archive for image and package builds
+        value: ${{ jobs.prepare.outputs.artifact }}
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      artifact: frontend-bundle
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Download pinned frontend archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          repository=$(jq -er '.repository' frontend.lock.json)
+          version=$(jq -er '.version' frontend.lock.json)
+          gh release download "$version" --repo "$repository" \
+            --pattern frontend.tar.gz --dir frontend-bundle
+      - name: Verify frontend package
+        env:
+          FRONTEND_ARCHIVE: ${{ github.workspace }}/frontend-bundle/frontend.tar.gz
+        shell: bash
+        run: bash scripts/prepare-frontend.sh "$RUNNER_TEMP/verified-frontend"
+      - name: Share verified frontend archive
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: frontend-bundle
+          archive: true
+          path: frontend-bundle/frontend.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true

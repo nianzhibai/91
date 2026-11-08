@@ -76,19 +76,21 @@ test("Check rejects failed, canceled and unexplained skipped jobs", (t) => {
   assert.notEqual(run("skipped", "skipped", "false", "failure").status, 0);
 });
 
-test("the branch-protection Check also rejects failed or unexpectedly skipped images", (t) => {
+test("the branch-protection Check rejects failed or unexpectedly skipped frontend preparation and images", (t) => {
   const workflow = parse(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"));
   const directory = mkdtempSync(join(tmpdir(), "91-ci-images-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const run = (checks: string, images: string, affected = "true") => spawnSync("bash", ["-e", "-o", "pipefail", "-c", workflow.jobs.check.steps[0].run], {
+  const run = (checks: string, frontend: string, images: string, affected = "true") => spawnSync("bash", ["-e", "-o", "pipefail", "-c", workflow.jobs.check.steps[0].run], {
     encoding: "utf8", env: { ...process.env, GITHUB_STEP_SUMMARY: join(directory, "summary"), RESULTS: JSON.stringify({
-      checks: { result: checks, outputs: { images: affected } }, images: { result: images },
+      checks: { result: checks, outputs: { images: affected } }, frontend: { result: frontend }, images: { result: images },
     }) },
   });
-  assert.equal(run("success", "success").status, 0);
-  assert.equal(run("success", "skipped", "false").status, 0);
+  assert.equal(run("success", "success", "success").status, 0);
+  assert.equal(run("success", "skipped", "skipped", "false").status, 0);
   for (const status of ["failure", "cancelled", "skipped"]) {
-    assert.notEqual(run(status, "success").status, 0, status);
-    assert.notEqual(run("success", status).status, 0, status);
+    assert.notEqual(run(status, "success", "success").status, 0, status);
+    assert.notEqual(run("success", status, "success").status, 0, status);
+    assert.notEqual(run("success", "success", status).status, 0, status);
+    assert.notEqual(run("success", status, "skipped").status, 0, status);
   }
 });

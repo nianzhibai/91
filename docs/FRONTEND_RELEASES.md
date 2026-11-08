@@ -65,6 +65,8 @@ GitHub Release 必须同时提供 `frontend.tar.gz` 与 `frontend.tar.gz.sha256`
 
 `frontend.lock.json` 固定官方前端仓库、名称、版本和归档 SHA-256。先发布 `91-web`，再更新此锁文件并发布 `91`。构建辅助程序会验证摘要、清单身份及 API 范围；下载失败会中止打包，不替换现有页面。
 
+CI 和正式发布流程先用 `gh release download` 下载一次锁定版本的前端归档，验证通过后保存为工作流 artifact。各架构 Docker 构建和 Linux 安装包复用此归档，并在打包时继续校验；准备失败会阻止后续构建。
+
 ```bash
 # 新目录；不会覆盖正在使用的 dist
 bash scripts/prepare-frontend.sh /tmp/91-frontend-build
