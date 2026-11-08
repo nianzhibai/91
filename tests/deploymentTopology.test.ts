@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { loadConfigFromFile } from "vite";
 
 const deploy = readFileSync(new URL("../deploy.sh", import.meta.url), "utf8");
 
@@ -71,38 +70,12 @@ test("source deployment enforces the pinned npm version when installation is dis
   }
 });
 
-test("Docker frontend inputs can load the complete Vite build configuration", async (t) => {
-  const repository = fileURLToPath(new URL("../", import.meta.url));
-  const directory = mkdtempSync(join(tmpdir(), "91-docker-frontend-inputs-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const dockerfile = readFileSync(join(repository, "Dockerfile"), "utf8");
-  const frontend = dockerfile.split(/^FROM\s+/m).find((stage) => /^[^\n]+\s+AS\s+frontend\s*$/im.test(stage));
-  assert.ok(frontend, "Dockerfile contains a frontend build stage");
-
-  // Materialize the same local inputs as the frontend stage. Resolving the
-  // actual config catches missing helper imports when build tooling changes.
-  for (const line of frontend.split("\n")) {
-    const copy = line.match(/^COPY\s+(.+)/);
-    if (!copy) continue;
-    const paths = copy[1].trim().split(/\s+/);
-    const target = join(directory, paths.pop()!);
-    mkdirSync(target, { recursive: true });
-    for (const source of paths) {
-      const origin = join(repository, source);
-      const destination = statSync(origin).isDirectory()
-        ? target
-        : join(target, source);
-      cpSync(origin, destination, { recursive: true });
-    }
-  }
-  symlinkSync(join(repository, "node_modules"), join(directory, "node_modules"), "dir");
-  const loaded = await loadConfigFromFile(
-    { command: "build", mode: "production" },
-    join(directory, "vite.config.ts"),
-    directory
-  );
-  assert.ok(loaded, "Vite config loads from Docker's copied inputs");
-  await Promise.all((loaded.config.plugins ?? []).flat(Infinity));
+test("Docker consumes a verified frontend release without frontend sources", () => {
+  const dockerfile = readFileSync(new URL("../Dockerfile", import.meta.url), "utf8");
+  assert.match(dockerfile, /frontend-package --lock/);
+  assert.match(dockerfile, /COPY frontend.lock.json/);
+  assert.match(dockerfile, /COPY --from=frontend \/out\/frontend \.\/dist/);
+  assert.doesNotMatch(dockerfile, /COPY src\/|npm run build/);
 });
 
 test("systemd deployment serves built frontend assets from the backend", () => {
@@ -110,7 +83,7 @@ test("systemd deployment serves built frontend assets from the backend", () => {
     deploy,
     /BACKEND_LISTEN="\$\{BACKEND_LISTEN:-0\.0\.0\.0:\$\{FRONTEND_PORT\}\}"/
   );
-  assert.match(deploy, /npm run build/);
+  assert.match(deploy, /prepare-frontend\.sh/);
   assert.doesNotMatch(deploy, /npm run preview/);
   assert.match(deploy, /ExecStart=\$\{REPO_DIR\}\/backend\/server/);
   assert.match(deploy, /retire_legacy_frontend_service/);

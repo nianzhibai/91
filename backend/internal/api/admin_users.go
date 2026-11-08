@@ -13,6 +13,7 @@ import (
 
 	"github.com/nianzhibai/91/backend/internal/auth"
 	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/httpapi"
 )
 
 type createUserReq struct {
@@ -53,11 +54,11 @@ func (a *AdminServer) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	username := strings.TrimSpace(body.Username)
 	if username == "" {
-		http.Error(w, "username is required", http.StatusBadRequest)
+		httpapi.Error(w, "username is required", http.StatusBadRequest)
 		return
 	}
 	if len(body.Password) < 6 {
-		http.Error(w, "password must be at least 6 characters", http.StatusBadRequest)
+		httpapi.Error(w, "password must be at least 6 characters", http.StatusBadRequest)
 		return
 	}
 	role := body.Role
@@ -65,7 +66,7 @@ func (a *AdminServer) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		role = "user"
 	}
 	if role != "admin" && role != "user" {
-		http.Error(w, "role must be admin or user", http.StatusBadRequest)
+		httpapi.Error(w, "role must be admin or user", http.StatusBadRequest)
 		return
 	}
 
@@ -77,7 +78,7 @@ func (a *AdminServer) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	id, err := a.Catalog.CreateUser(r.Context(), username, hashed, role)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
-			http.Error(w, "username already exists", http.StatusConflict)
+			httpapi.Error(w, "username already exists", http.StatusConflict)
 			return
 		}
 		writeErr(w, r, http.StatusInternalServerError, err)
@@ -89,20 +90,20 @@ func (a *AdminServer) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 func (a *AdminServer) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
-		http.Error(w, "invalid user id", http.StatusBadRequest)
+		httpapi.Error(w, "invalid user id", http.StatusBadRequest)
 		return
 	}
 	target, err := a.Catalog.GetUserByID(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			http.Error(w, "user not found", http.StatusNotFound)
+			httpapi.Error(w, "user not found", http.StatusNotFound)
 			return
 		}
 		writeErr(w, r, http.StatusInternalServerError, err)
 		return
 	}
 	if currentSessionUserID(r.Context(), a.Catalog, r) == id {
-		http.Error(w, "cannot delete yourself", http.StatusBadRequest)
+		httpapi.Error(w, "cannot delete yourself", http.StatusBadRequest)
 		return
 	}
 	if target.Role == "admin" {
@@ -112,13 +113,13 @@ func (a *AdminServer) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if admins <= 1 {
-			http.Error(w, "cannot delete the last admin", http.StatusBadRequest)
+			httpapi.Error(w, "cannot delete the last admin", http.StatusBadRequest)
 			return
 		}
 	}
 	if err := a.Catalog.DeleteUser(r.Context(), id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			http.Error(w, "user not found", http.StatusNotFound)
+			httpapi.Error(w, "user not found", http.StatusNotFound)
 			return
 		}
 		writeErr(w, r, http.StatusInternalServerError, err)
@@ -134,20 +135,20 @@ func (a *AdminServer) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 func (a *AdminServer) handleBanUser(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
-		http.Error(w, "invalid user id", http.StatusBadRequest)
+		httpapi.Error(w, "invalid user id", http.StatusBadRequest)
 		return
 	}
 	target, err := a.Catalog.GetUserByID(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			http.Error(w, "user not found", http.StatusNotFound)
+			httpapi.Error(w, "user not found", http.StatusNotFound)
 			return
 		}
 		writeErr(w, r, http.StatusInternalServerError, err)
 		return
 	}
 	if currentSessionUserID(r.Context(), a.Catalog, r) == id {
-		http.Error(w, "cannot ban yourself", http.StatusBadRequest)
+		httpapi.Error(w, "cannot ban yourself", http.StatusBadRequest)
 		return
 	}
 	if target.Role == "admin" && !target.Banned {
@@ -157,13 +158,13 @@ func (a *AdminServer) handleBanUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if activeAdmins <= 1 {
-			http.Error(w, "cannot ban the last active admin", http.StatusBadRequest)
+			httpapi.Error(w, "cannot ban the last active admin", http.StatusBadRequest)
 			return
 		}
 	}
 	if err := a.Catalog.SetUserBanned(r.Context(), id, true); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			http.Error(w, "user not found", http.StatusNotFound)
+			httpapi.Error(w, "user not found", http.StatusNotFound)
 			return
 		}
 		writeErr(w, r, http.StatusInternalServerError, err)
@@ -179,12 +180,12 @@ func (a *AdminServer) handleBanUser(w http.ResponseWriter, r *http.Request) {
 func (a *AdminServer) handleUnbanUser(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
-		http.Error(w, "invalid user id", http.StatusBadRequest)
+		httpapi.Error(w, "invalid user id", http.StatusBadRequest)
 		return
 	}
 	if err := a.Catalog.SetUserBanned(r.Context(), id, false); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			http.Error(w, "user not found", http.StatusNotFound)
+			httpapi.Error(w, "user not found", http.StatusNotFound)
 			return
 		}
 		writeErr(w, r, http.StatusInternalServerError, err)
@@ -196,7 +197,7 @@ func (a *AdminServer) handleUnbanUser(w http.ResponseWriter, r *http.Request) {
 func (a *AdminServer) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
-		http.Error(w, "invalid user id", http.StatusBadRequest)
+		httpapi.Error(w, "invalid user id", http.StatusBadRequest)
 		return
 	}
 	var body struct {
@@ -207,7 +208,7 @@ func (a *AdminServer) handleResetPassword(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if len(body.Password) < 6 {
-		http.Error(w, "password must be at least 6 characters", http.StatusBadRequest)
+		httpapi.Error(w, "password must be at least 6 characters", http.StatusBadRequest)
 		return
 	}
 	hashed, err := auth.HashPassword(body.Password)
@@ -217,7 +218,7 @@ func (a *AdminServer) handleResetPassword(w http.ResponseWriter, r *http.Request
 	}
 	if err := a.Catalog.UpdateUserPassword(r.Context(), id, hashed); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			http.Error(w, "user not found", http.StatusNotFound)
+			httpapi.Error(w, "user not found", http.StatusNotFound)
 			return
 		}
 		writeErr(w, r, http.StatusInternalServerError, err)
@@ -266,7 +267,7 @@ func (a *AdminServer) handleUnbanIP(w http.ResponseWriter, r *http.Request) {
 	ip := chi.URLParam(r, "ip")
 	if err := a.Catalog.UnbanLoginIP(r.Context(), ip); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			http.Error(w, "IP not found", http.StatusNotFound)
+			httpapi.Error(w, "IP not found", http.StatusNotFound)
 			return
 		}
 		writeErr(w, r, http.StatusInternalServerError, err)

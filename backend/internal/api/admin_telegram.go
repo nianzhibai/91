@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/httpapi"
 )
 
 func (a *AdminServer) handleTelegramAvailability(w http.ResponseWriter, r *http.Request) {
@@ -20,7 +21,7 @@ func (a *AdminServer) handleTelegramAvailability(w http.ResponseWriter, r *http.
 
 func (a *AdminServer) handleTelegramStatus(w http.ResponseWriter, r *http.Request) {
 	if a.Telegram == nil {
-		http.Error(w, "Telegram 服务未配置", http.StatusServiceUnavailable)
+		httpapi.Error(w, "Telegram 服务未配置", http.StatusServiceUnavailable)
 		return
 	}
 	status := a.Telegram.Status()
@@ -32,7 +33,7 @@ func (a *AdminServer) handleTelegramStatus(w http.ResponseWriter, r *http.Reques
 }
 func (a *AdminServer) handleTelegramTest(w http.ResponseWriter, r *http.Request) {
 	if a.Telegram == nil {
-		http.Error(w, "Telegram 服务未配置", http.StatusServiceUnavailable)
+		httpapi.Error(w, "Telegram 服务未配置", http.StatusServiceUnavailable)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
@@ -46,7 +47,7 @@ func (a *AdminServer) handleTelegramTest(w http.ResponseWriter, r *http.Request)
 }
 func (a *AdminServer) handleTelegramResume(w http.ResponseWriter, r *http.Request) {
 	if a.Telegram == nil {
-		http.Error(w, "Telegram 服务未配置", http.StatusServiceUnavailable)
+		httpapi.Error(w, "Telegram 服务未配置", http.StatusServiceUnavailable)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)

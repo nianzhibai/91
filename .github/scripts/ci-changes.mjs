@@ -8,7 +8,7 @@ export function classifyChanges(paths) {
   const checks = { frontend: false, backend: false, images: false };
   for (const path of paths) {
     if (/^(docs\/|backend\/docs\/)/.test(path) || /(^|\/)(README[^/]*\.md|AGENTS\.md|CHANGELOG\.md|LICENSE)$/.test(path)) continue;
-    if (path.startsWith('tests/')) {
+    if (path.startsWith('tests/') || path.startsWith('sdk/') || path.startsWith('examples/')) {
       checks.frontend = true;
     } else if (path.startsWith('backend/')) {
       // Several Node tests also verify backend source and configuration.

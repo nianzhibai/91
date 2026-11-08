@@ -6,8 +6,11 @@
 node_modules
 dist
 release
+tmp
 data
 backend/data
+backend/server
+backend/server.*
 backend/config.yaml
 backend/telegram.yml
 config.yaml

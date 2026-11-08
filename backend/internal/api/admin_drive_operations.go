@@ -24,6 +24,7 @@ import (
 	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
 	"github.com/nianzhibai/91/backend/internal/drives/wopan"
 	"github.com/nianzhibai/91/backend/internal/driveview"
+	"github.com/nianzhibai/91/backend/internal/httpapi"
 	"github.com/nianzhibai/91/backend/internal/scopedproxy"
 )
 
@@ -248,13 +249,13 @@ func (a *AdminServer) handleDeleteDrive(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if !body.DeleteVideos {
-		http.Error(w, "deleteVideos=true is required when deleting a drive", http.StatusBadRequest)
+		httpapi.Error(w, "deleteVideos=true is required when deleting a drive", http.StatusBadRequest)
 		return
 	}
 
 	deletedVideos := 0
 	if a.OnDriveDeleteCleanup == nil {
-		http.Error(w, "drive video cleanup is not available", http.StatusInternalServerError)
+		httpapi.Error(w, "drive video cleanup is not available", http.StatusInternalServerError)
 		return
 	}
 	configLease, ok := a.beginDriveConfigUpdate(w, id)
@@ -481,7 +482,7 @@ func (a *AdminServer) handleP123QRStatus(w http.ResponseWriter, r *http.Request)
 	uniID := chi.URLParam(r, "uniID")
 	loginUUID := r.URL.Query().Get("loginUuid")
 	if strings.TrimSpace(uniID) == "" || strings.TrimSpace(loginUUID) == "" {
-		http.Error(w, "uniID and loginUuid are required", http.StatusBadRequest)
+		httpapi.Error(w, "uniID and loginUuid are required", http.StatusBadRequest)
 		return
 	}
 	status, err := a.p123QRClient().Poll(r.Context(), loginUUID, uniID)
@@ -513,7 +514,7 @@ func (a *AdminServer) handleWopanQRStart(w http.ResponseWriter, r *http.Request)
 func (a *AdminServer) handleWopanQRStatus(w http.ResponseWriter, r *http.Request) {
 	uuid := chi.URLParam(r, "uuid")
 	if strings.TrimSpace(uuid) == "" {
-		http.Error(w, "uuid is required", http.StatusBadRequest)
+		httpapi.Error(w, "uuid is required", http.StatusBadRequest)
 		return
 	}
 	status, err := a.wopanQRClient().Poll(r.Context(), uuid)
@@ -545,7 +546,7 @@ func (a *AdminServer) handleGuangYaPanQRStart(w http.ResponseWriter, r *http.Req
 func (a *AdminServer) handleGuangYaPanQRStatus(w http.ResponseWriter, r *http.Request) {
 	deviceCode := r.URL.Query().Get("deviceCode")
 	if strings.TrimSpace(deviceCode) == "" {
-		http.Error(w, "deviceCode is required", http.StatusBadRequest)
+		httpapi.Error(w, "deviceCode is required", http.StatusBadRequest)
 		return
 	}
 	status, err := a.guangYaPanQRClient().Poll(r.Context(), deviceCode)
@@ -634,7 +635,7 @@ type skipDirsReq struct {
 func (a *AdminServer) handleSetDriveSkipDirs(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if id == "" {
-		http.Error(w, "id is required", http.StatusBadRequest)
+		httpapi.Error(w, "id is required", http.StatusBadRequest)
 		return
 	}
 	var body skipDirsReq
@@ -668,7 +669,7 @@ func (a *AdminServer) handleSetDriveSkipDirs(w http.ResponseWriter, r *http.Requ
 	}
 	if err := a.Catalog.SetDriveSkipDirIDs(r.Context(), id, cleaned); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			http.Error(w, "drive not found", http.StatusNotFound)
+			httpapi.Error(w, "drive not found", http.StatusNotFound)
 			return
 		}
 		writeErr(w, r, http.StatusInternalServerError, err)
@@ -697,7 +698,7 @@ func (a *AdminServer) handleSetDriveSkipDirs(w http.ResponseWriter, r *http.Requ
 func (a *AdminServer) handleListDriveDirTree(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if id == "" {
-		http.Error(w, "id is required", http.StatusBadRequest)
+		httpapi.Error(w, "id is required", http.StatusBadRequest)
 		return
 	}
 	if a.ListDriveDirChildren == nil {

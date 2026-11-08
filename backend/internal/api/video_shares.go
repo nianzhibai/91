@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/httpapi"
 	"github.com/nianzhibai/91/backend/internal/localpath"
 	"github.com/nianzhibai/91/backend/internal/mediaasset"
 	"github.com/nianzhibai/91/backend/internal/subtitles"
@@ -30,7 +31,8 @@ const (
 )
 
 type createVideoShareResponse struct {
-	URL string `json:"url"`
+	URL   string `json:"url"`
+	Token string `json:"token"`
 }
 
 type consumeVideoShareResponse struct {
@@ -80,7 +82,8 @@ func (s *Server) handleCreateVideoShare(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusCreated, createVideoShareResponse{
 		// URL fragments never reach the HTTP server or its access logs. The SPA
 		// reads the token and submits it in the one-time POST body instead.
-		URL: "/share#" + token,
+		URL:   "/share#" + token,
+		Token: token,
 	})
 }
 
@@ -351,7 +354,7 @@ func (s *Server) serveUploadedVideo(w http.ResponseWriter, r *http.Request, v *c
 	}
 	path, err := s.localUploadFilePath(v.FileID)
 	if err != nil {
-		http.Error(w, "invalid upload file", http.StatusForbidden)
+		httpapi.Error(w, "invalid upload file", http.StatusForbidden)
 		return
 	}
 	info, err := os.Stat(path)
@@ -365,13 +368,13 @@ func (s *Server) serveUploadedVideo(w http.ResponseWriter, r *http.Request, v *c
 
 func (s *Server) servePreviewVideo(w http.ResponseWriter, r *http.Request, v *catalog.Video) {
 	if v == nil || v.Hidden || v.PreviewStatus != "ready" {
-		http.Error(w, "preview not ready", http.StatusNotFound)
+		httpapi.Error(w, "preview not ready", http.StatusNotFound)
 		return
 	}
 	if v.PreviewLocal != "" {
 		localPreview, ok := localpath.Managed(s.LocalDir, v.PreviewLocal)
 		if !ok {
-			http.Error(w, "invalid local path", http.StatusForbidden)
+			httpapi.Error(w, "invalid local path", http.StatusForbidden)
 			return
 		}
 		expectedVersion := ""
@@ -396,7 +399,7 @@ func (s *Server) serveVideoThumb(w http.ResponseWriter, r *http.Request, videoID
 	for _, path := range mediaasset.ThumbnailPathCandidates(s.LocalDir, videoID) {
 		candidate, ok := localpath.Within(s.LocalDir, path)
 		if !ok {
-			http.Error(w, "invalid path", http.StatusForbidden)
+			httpapi.Error(w, "invalid path", http.StatusForbidden)
 			return
 		}
 		if _, err := os.Stat(candidate); err == nil {
@@ -415,7 +418,7 @@ func (s *Server) serveVideoThumb(w http.ResponseWriter, r *http.Request, videoID
 			mediaasset.ShortsBackgroundPath(s.LocalDir, videoID),
 		)
 		if !ok {
-			http.Error(w, "invalid path", http.StatusForbidden)
+			httpapi.Error(w, "invalid path", http.StatusForbidden)
 			return
 		}
 		if err := mediaasset.EnsureShortsBackground(clean, backgroundPath); err == nil {

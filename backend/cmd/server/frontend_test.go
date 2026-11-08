@@ -7,7 +7,53 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/go-chi/chi/v5"
 )
+
+func TestFrontendModesPreserveBackendRoutes(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("custom frontend"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VIDEO_FRONTEND_DIR", dir)
+	for _, mode := range []string{"auto", "disabled"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("VIDEO_FRONTEND_MODE", mode)
+			router := chi.NewRouter()
+			router.Get("/api/server", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("backend")) })
+			if err := mountFrontend(router, nil); err != nil {
+				t.Fatal(err)
+			}
+			for _, path := range []string{"/", "/admin", "/api/server", "/api/missing", "/admin/api/missing", "/p/missing"} {
+				res := httptest.NewRecorder()
+				router.ServeHTTP(res, httptest.NewRequest("GET", path, nil))
+				want := 404
+				if path == "/api/server" || mode == "auto" && (path == "/" || path == "/admin") {
+					want = 200
+				}
+				if res.Code != want {
+					t.Errorf("%s status=%d want=%d", path, res.Code, want)
+				}
+				if path == "/admin" && mode == "auto" && res.Body.String() != "custom frontend" {
+					t.Fatal("management page was not replaced")
+				}
+			}
+		})
+	}
+}
+
+func TestInvalidFrontendConfigurationFailsExplicitly(t *testing.T) {
+	t.Setenv("VIDEO_FRONTEND_MODE", "auto")
+	t.Setenv("VIDEO_FRONTEND_DIR", t.TempDir())
+	if err := mountFrontend(chi.NewRouter(), nil); err == nil {
+		t.Fatal("missing custom index.html accepted")
+	}
+	t.Setenv("VIDEO_FRONTEND_MODE", "typo")
+	if err := mountFrontend(chi.NewRouter(), nil); err == nil {
+		t.Fatal("invalid mode accepted")
+	}
+}
 
 func TestFrontendHandlerServesStaticAsset(t *testing.T) {
 	dir := t.TempDir()
@@ -70,9 +116,12 @@ func TestFrontendHandlerServesUnversionedAssetsWithRevalidation(t *testing.T) {
 		if got := rr.Header().Get("Cache-Control"); got != frontendUnversionedAssetCacheControl {
 			t.Fatalf("%s Cache-Control = %q, want %q", target, got, frontendUnversionedAssetCacheControl)
 		}
+		if rr.Header().Get("ETag") == "" || rr.Header().Get("Last-Modified") != "" {
+			t.Fatalf("%s must use content validation: %v", target, rr.Header())
+		}
 
 		conditionalReq := httptest.NewRequest(http.MethodGet, target, nil)
-		conditionalReq.Header.Set("If-Modified-Since", rr.Header().Get("Last-Modified"))
+		conditionalReq.Header.Set("If-None-Match", rr.Header().Get("ETag"))
 		conditionalRR := httptest.NewRecorder()
 		frontendHandler(dir).ServeHTTP(conditionalRR, conditionalReq)
 		if conditionalRR.Code != http.StatusNotModified {

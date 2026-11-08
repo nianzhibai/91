@@ -10,6 +10,7 @@ export GOCACHE="${GOCACHE:-/tmp/91/go-build}"
 FRONTEND_HOST="${FRONTEND_HOST:-0.0.0.0}"
 FRONTEND_PORT="${FRONTEND_PORT:-9191}"
 FRONTEND_MODE="${FRONTEND_MODE:-preview}"
+FRONTEND_DIR="${FRONTEND_DIR:-$ROOT_DIR/../91-web}"
 BACKEND_PORT="${BACKEND_PORT:-9192}"
 export BACKEND_PORT
 DEV_CONFIG="$ROOT_DIR/backend/config.dev.yaml"
@@ -159,6 +160,7 @@ start_backend() {
 }
 
 start_frontend() {
+  [[ -f "$FRONTEND_DIR/package.json" ]] || { echo "91-web checkout is required; set FRONTEND_DIR" >&2; return 1; }
   check_port_owner "frontend" "$FRONTEND_PORT"
   if [[ -n "$(pids_on_port "$FRONTEND_PORT")" ]]; then
     print_port_status "frontend" "$FRONTEND_PORT"
@@ -170,19 +172,19 @@ start_frontend() {
   if [[ "$FRONTEND_MODE" == "dev" ]]; then
     echo "starting frontend dev server on $FRONTEND_HOST:$FRONTEND_PORT"
     (
-      cd "$ROOT_DIR"
+      cd "$FRONTEND_DIR"
       export VIDEO_DEV_ROOT="$ROOT_DIR"
       setsid nohup npm run dev -- --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" >>"$FRONTEND_LOG" 2>&1 </dev/null &
     )
   else
     echo "building frontend for preview mode"
     (
-      cd "$ROOT_DIR"
+      cd "$FRONTEND_DIR"
       npm run build >>"$FRONTEND_LOG" 2>&1
     )
     echo "starting frontend preview server on $FRONTEND_HOST:$FRONTEND_PORT"
     (
-      cd "$ROOT_DIR"
+      cd "$FRONTEND_DIR"
       export VIDEO_DEV_ROOT="$ROOT_DIR"
       setsid nohup npm run preview -- --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" >>"$FRONTEND_LOG" 2>&1 </dev/null &
     )

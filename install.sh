@@ -60,6 +60,10 @@ die() {
 usage() {
   local action="${1:-}"
   case "$action" in
+    frontend)
+      printf 'Usage: 91 frontend status|install|activate|rollback|reset [options]\n\n'
+      printf 'Install: --repository owner/name --version v1.0.0, or --package FILE [--sha256 HASH]\nActivate: --id name@version\n'
+      ;;
     install)
       cat <<EOF
 Usage: sudo bash install.sh [install] [--package FILE]
@@ -144,6 +148,7 @@ Manage the native (systemd) deployment of 91.
   stop            Stop service
   status          Show service status
   logs            Follow service logs
+  frontend        Manage frontend versions (status, install, activate, rollback, reset)
   reset-password  Reset a user's password
   uninstall       Uninstall 91 and related services
 
@@ -966,7 +971,7 @@ main() {
   fi
 
   case "$action" in
-    install|start|stop|restart|status|logs|update|uninstall|reset-password|-h|--help|help) ;;
+    install|start|stop|restart|status|logs|update|uninstall|reset-password|frontend|-h|--help|help) ;;
     *)
       warn "unknown command: $action"
       usage >&2
@@ -1007,17 +1012,28 @@ main() {
       PACKAGE_SHA256="$(sha256sum < "$PACKAGE_FILE")"
       PACKAGE_SHA256="${PACKAGE_SHA256%% *}"
     fi
-  elif [[ "$action" != reset-password ]] && (( $# )); then
+  elif [[ "$action" != reset-password && "$action" != frontend ]] && (( $# )); then
     warn "unexpected arguments for $action: $*"
     usage "$action" >&2
     return 2
   fi
 
   case "$action" in
-    install|update|start|restart|stop|status|logs|reset-password|uninstall) resolve_installation ;;
+    install|update|start|restart|stop|status|logs|reset-password|frontend|uninstall) resolve_installation ;;
   esac
 
   case "$action" in
+    frontend)
+      need_root "$action" "$@"
+      local -a frontend_args=("$@")
+      local frontend_arg_index
+      for ((frontend_arg_index=0; frontend_arg_index<${#frontend_args[@]}; frontend_arg_index++)); do
+        if [[ "${frontend_args[frontend_arg_index]}" == --package ]] && (( frontend_arg_index+1 < ${#frontend_args[@]} )); then
+          frontend_args[frontend_arg_index+1]="$(realpath -- "${frontend_args[frontend_arg_index+1]}")"
+        fi
+      done
+      (cd "$INSTALL_PATH" && VIDEO_CONFIG="${VIDEO_CONFIG:-$INSTALL_PATH/config.yaml}" ./server frontend "${frontend_args[@]}")
+      ;;
     install)
       need_root "$action" "${action_args[@]}"
       if [[ "$SERVICE_NAME" == video-site-91 && -f "$INSTALL_PATH/server" ]]; then

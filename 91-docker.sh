@@ -224,6 +224,9 @@ json() {
 usage() {
   local action="${1:-}"
   case "$action" in
+    frontend)
+      printf 'Usage: bash 91-docker.sh frontend status|install|activate|rollback|reset [options]\n\nPackage paths are resolved inside the running container.\n'
+      ;;
     install|update)
       printf 'Usage: bash 91-docker.sh %s [--image IMAGE]\n\n' "$action"
       if [[ "$action" == install ]]; then
@@ -271,6 +274,7 @@ Manage the 91 Docker deployment.
   install [--image IMAGE]  Install 91 (default: stable)
   update [--image IMAGE]   Update 91 (default: configured image)
   uninstall               Remove the deployment, images, configuration and application data (you'd better know what you're doing)
+  frontend [arguments]    Manage frontend versions using the running backend
   reset-password          Reset a user's password (91 must be running)
   gpu                     Configure GPU access (select if multiple)
 EOF
@@ -283,6 +287,10 @@ parse_args() {
   if (( $# == 0 )); then usage; exit 0; fi
   case "$1" in
     -h|--help) usage; exit 0 ;;
+    frontend)
+      ACTION="frontend"; shift
+      if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then usage frontend; exit 0; fi
+      FRONTEND_ARGS=("$@"); return ;;
     install|update|uninstall|reset-password|gpu) ACTION="$1"; shift ;;
     *) die "Unknown command: $1 (see --help)" ;;
   esac
@@ -930,6 +938,13 @@ main() {
   parse_args "$@"
   # Restart before acquiring deployment locks or creating rollback state.
   if [[ "$ACTION" == update ]]; then self_update_script "$@"; fi
+  if [[ "$ACTION" == frontend ]]; then
+    command -v docker >/dev/null 2>&1 || die "docker is required"
+    deployment_files
+    select_existing_service
+    compose exec -T "$SERVICE" docker-entrypoint.sh ./server frontend "${FRONTEND_ARGS[@]}"
+    return
+  fi
   if [[ "$ACTION" == reset-password ]]; then
     command -v docker >/dev/null 2>&1 || die "docker is required; install it before running this script"
     deployment_files

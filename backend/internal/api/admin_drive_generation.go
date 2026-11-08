@@ -6,6 +6,8 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/nianzhibai/91/backend/internal/httpapi"
 )
 
 type DriveGenerationKind string
@@ -38,7 +40,7 @@ func (a *AdminServer) handleGenerateDriveFingerprints(w http.ResponseWriter, r *
 
 func (a *AdminServer) handleDriveGeneration(w http.ResponseWriter, r *http.Request, kind DriveGenerationKind) {
 	if a.OnDriveGenerationRequested == nil {
-		http.Error(w, "生成服务不可用", http.StatusServiceUnavailable)
+		httpapi.Error(w, "生成服务不可用", http.StatusServiceUnavailable)
 		return
 	}
 	result, err := a.OnDriveGenerationRequested(r.Context(), chi.URLParam(r, "id"), kind)

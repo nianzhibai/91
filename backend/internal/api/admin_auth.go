@@ -13,6 +13,7 @@ import (
 
 	"github.com/nianzhibai/91/backend/internal/auth"
 	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/httpapi"
 )
 
 type updateCheckDTO struct {
@@ -57,11 +58,11 @@ func (a *AdminServer) handleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !required {
-		http.Error(w, "setup already completed", http.StatusConflict)
+		httpapi.Error(w, "setup already completed", http.StatusConflict)
 		return
 	}
 	if a.Auth == nil {
-		http.Error(w, "setup is not available", http.StatusInternalServerError)
+		httpapi.Error(w, "setup is not available", http.StatusInternalServerError)
 		return
 	}
 	var body setupReq
@@ -72,11 +73,11 @@ func (a *AdminServer) handleSetup(w http.ResponseWriter, r *http.Request) {
 	username := strings.TrimSpace(body.Username)
 	password := body.Password
 	if username == "" {
-		http.Error(w, "username is required", http.StatusBadRequest)
+		httpapi.Error(w, "username is required", http.StatusBadRequest)
 		return
 	}
 	if len(password) < 6 || len(password) > 72 {
-		http.Error(w, "password must be between 6 and 72 bytes", http.StatusBadRequest)
+		httpapi.Error(w, "password must be between 6 and 72 bytes", http.StatusBadRequest)
 		return
 	}
 	hashed, err := auth.HashPassword(password)
@@ -86,7 +87,7 @@ func (a *AdminServer) handleSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := a.Catalog.InitializeAdmin(r.Context(), username, hashed); err != nil {
 		if errors.Is(err, catalog.ErrAdminAlreadyInitialized) {
-			http.Error(w, "setup already completed", http.StatusConflict)
+			httpapi.Error(w, "setup already completed", http.StatusConflict)
 			return
 		}
 		writeServiceUnavailable(w, r, "initialize administrator", err)
@@ -95,14 +96,14 @@ func (a *AdminServer) handleSetup(w http.ResponseWriter, r *http.Request) {
 	role, err := a.Auth.UserLogin(w, r, username, password)
 	if err != nil {
 		if errors.Is(err, auth.ErrLoginIPBanned) {
-			http.Error(w, "ip banned", http.StatusForbidden)
+			httpapi.Error(w, "ip banned", http.StatusForbidden)
 			return
 		}
 		writeServiceUnavailable(w, r, "login after administrator setup", err)
 		return
 	}
 	if role != "admin" {
-		http.Error(w, "setup completed but login failed", http.StatusInternalServerError)
+		httpapi.Error(w, "setup completed but login failed", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -115,7 +116,7 @@ func (a *AdminServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if required {
-		http.Error(w, "setup required", http.StatusPreconditionRequired)
+		httpapi.Error(w, "setup required", http.StatusPreconditionRequired)
 		return
 	}
 	var body loginReq
@@ -127,18 +128,18 @@ func (a *AdminServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 	role, err := a.Auth.UserLogin(w, r, body.Username, body.Password)
 	if err != nil {
 		if errors.Is(err, auth.ErrLoginIPBanned) {
-			http.Error(w, "ip banned", http.StatusForbidden)
+			httpapi.Error(w, "ip banned", http.StatusForbidden)
 			return
 		}
 		if errors.Is(err, auth.ErrUserBanned) {
-			http.Error(w, "user banned", http.StatusForbidden)
+			httpapi.Error(w, "user banned", http.StatusForbidden)
 			return
 		}
 		writeServiceUnavailable(w, r, "login", err)
 		return
 	}
 	if role == "" {
-		http.Error(w, "invalid credentials", http.StatusBadRequest)
+		httpapi.Error(w, "invalid credentials", http.StatusBadRequest)
 		return
 	}
 	response := map[string]any{"ok": true, "role": role}

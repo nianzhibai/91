@@ -25,6 +25,8 @@ func runServerCommand(args []string, in io.Reader, out, errorOut io.Writer) (boo
 		return false, nil
 	}
 	switch args[0] {
+	case "frontend":
+		return true, runFrontendCommand(args[1:], out, errorOut)
 	case "storage-paths":
 		return true, runStoragePathsCommand(args[1:], out, errorOut)
 	case "reset-password":
@@ -35,7 +37,7 @@ func runServerCommand(args []string, in io.Reader, out, errorOut io.Writer) (boo
 		}
 		return true, runHashPasswordCommand(in, out)
 	case "help", "--help", "-h":
-		_, err := fmt.Fprintln(out, "Usage: server [reset-password [--config PATH] [--user-id ID] | storage-paths [--config PATH] | hash-password]")
+		_, err := fmt.Fprintln(out, "Usage: server [frontend status|install|activate|rollback|reset [options] | reset-password [--config PATH] [--user-id ID] | storage-paths [--config PATH] | hash-password]")
 		return true, err
 	default:
 		return true, errors.New("unknown command; use server --help")

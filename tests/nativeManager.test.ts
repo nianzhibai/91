@@ -176,6 +176,18 @@ console.log(JSON.stringify(process.argv.slice(2)));
   assert.deepEqual(f.calls(), []);
 });
 
+test("native frontend management forwards the release choice without restarting services", t => {
+  const f = fixture(t);
+  writeFileSync(join(f.root, "server"), `#!${process.execPath}\nconsole.log(JSON.stringify({args: process.argv.slice(2), config: process.env.VIDEO_CONFIG}));\n`, { mode: 0o755 });
+  const result = f.run(["frontend", "install", "--repository", "owner/web", "--version", "v1.2.0"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { args: ["frontend", "install", "--repository", "owner/web", "--version", "v1.2.0"], config: join(f.root, "config.yaml") });
+  assert.deepEqual(f.calls(), []);
+  const help = f.run(["frontend", "--help"]);
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /^Usage: 91 frontend/);
+});
+
 test("privileged native actions retain their command and arguments when elevated", (t) => {
   const f = fixture(t);
   const bin = f.env.PATH.split(":")[0];

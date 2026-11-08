@@ -27,6 +27,7 @@ import (
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/drives/localstorage"
 	"github.com/nianzhibai/91/backend/internal/drives/localupload"
+	"github.com/nianzhibai/91/backend/internal/httpapi"
 	"github.com/nianzhibai/91/backend/internal/localpath"
 	"github.com/nianzhibai/91/backend/internal/persistence"
 	"github.com/nianzhibai/91/backend/internal/proxy"
@@ -132,6 +133,7 @@ type VideoDTO struct {
 	PreviewDuration int      `json:"previewDuration"`
 	PreviewStrategy string   `json:"previewStrategy"`
 	Duration        string   `json:"duration"`
+	DurationSeconds int      `json:"durationSeconds"`
 	Badges          []string `json:"badges"`
 	SourceLabel     string   `json:"sourceLabel,omitempty"`
 	Author          string   `json:"author"`
@@ -142,6 +144,13 @@ type VideoDTO struct {
 	Dislikes        int      `json:"dislikes"`
 	PublishedAt     string   `json:"publishedAt"`
 	Tags            []string `json:"tags,omitempty"`
+}
+
+type VideoListDTO struct {
+	Items []VideoDTO `json:"items"`
+	Total int        `json:"total"`
+	Page  int        `json:"page"`
+	Size  int        `json:"size"`
 }
 
 // VideoCardDTO is the compact transport used by infinite listing feeds. The
@@ -157,6 +166,7 @@ type VideoCardDTO struct {
 	PreviewDuration int      `json:"previewDuration"`
 	PreviewStrategy string   `json:"previewStrategy"`
 	Duration        string   `json:"duration"`
+	DurationSeconds int      `json:"durationSeconds"`
 	Badges          []string `json:"badges"`
 	Author          string   `json:"author"`
 	Views           int      `json:"views"`
@@ -201,14 +211,15 @@ type VideoCollectionDTO struct {
 // can explicitly request PreviewSrc without pulling reactions, tags, badges or
 // the rest of VideoDTO for every item in a large provider directory.
 type VideoCollectionItemDTO struct {
-	ID          string `json:"id"`
-	Href        string `json:"href"`
-	Title       string `json:"title"`
-	Thumbnail   string `json:"thumbnail"`
-	PreviewSrc  string `json:"previewSrc,omitempty"`
-	Duration    string `json:"duration"`
-	Views       int    `json:"views"`
-	PublishedAt string `json:"publishedAt"`
+	ID              string `json:"id"`
+	Href            string `json:"href"`
+	Title           string `json:"title"`
+	Thumbnail       string `json:"thumbnail"`
+	PreviewSrc      string `json:"previewSrc,omitempty"`
+	Duration        string `json:"duration"`
+	DurationSeconds int    `json:"durationSeconds"`
+	Views           int    `json:"views"`
+	PublishedAt     string `json:"publishedAt"`
 }
 
 type SubtitleDTO struct {
@@ -408,11 +419,11 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, map[string]any{
-		"items": mapVideos(items),
-		"total": total,
-		"page":  params.Page,
-		"size":  params.PageSize,
+	writeJSON(w, http.StatusOK, VideoListDTO{
+		Items: mapVideos(items),
+		Total: total,
+		Page:  params.Page,
+		Size:  params.PageSize,
 	})
 }
 
@@ -1316,6 +1327,7 @@ func mapVideo(v *catalog.Video) VideoDTO {
 		PreviewDuration: 12,
 		PreviewStrategy: "teaser-file",
 		Duration:        formatDuration(v.DurationSeconds),
+		DurationSeconds: v.DurationSeconds,
 		Badges:          badges,
 		Author:          v.Author,
 		Views:           v.Views,
@@ -1922,6 +1934,7 @@ func mapVideoSummaries(videos []*catalog.VideoSummary) []VideoCardDTO {
 			PreviewDuration: 12,
 			PreviewStrategy: "teaser-file",
 			Duration:        formatDuration(video.DurationSeconds),
+			DurationSeconds: video.DurationSeconds,
 			Badges:          badges,
 			Author:          video.Author,
 			Views:           video.Views,
@@ -1942,13 +1955,14 @@ func mapVideoCollectionItems(videos []*catalog.Video, includePreview bool) []Vid
 			continue
 		}
 		item := VideoCollectionItemDTO{
-			ID:          video.ID,
-			Href:        "/video/" + pathSegment(video.ID),
-			Title:       video.Title,
-			Thumbnail:   thumbnailURL(video),
-			Duration:    formatDuration(video.DurationSeconds),
-			Views:       video.Views,
-			PublishedAt: video.PublishedAt.Format("2006-01-02"),
+			ID:              video.ID,
+			Href:            "/video/" + pathSegment(video.ID),
+			Title:           video.Title,
+			Thumbnail:       thumbnailURL(video),
+			Duration:        formatDuration(video.DurationSeconds),
+			DurationSeconds: video.DurationSeconds,
+			Views:           video.Views,
+			PublishedAt:     video.PublishedAt.Format("2006-01-02"),
 		}
 		if includePreview {
 			item.PreviewSrc = previewURL(video)
@@ -1968,6 +1982,18 @@ func formatDuration(sec int) string {
 }
 
 func writeJSON(w http.ResponseWriter, code int, body any) {
+	if code >= http.StatusBadRequest {
+		switch value := body.(type) {
+		case map[string]string:
+			if value["code"] == "" && value["error"] != "" {
+				value["code"] = httpapi.Code(code)
+			}
+		case map[string]any:
+			if _, ok := value["error"]; ok && value["code"] == nil {
+				value["code"] = httpapi.Code(code)
+			}
+		}
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(body)
@@ -1977,7 +2003,7 @@ func writeErr(w http.ResponseWriter, r *http.Request, code int, err error) {
 	if code >= http.StatusInternalServerError {
 		applog.Error(r.Context(), "HTTP request failed", err, applog.Fields{Component: "api", Stage: r.Method + " " + r.URL.Path})
 	}
-	writeJSON(w, code, map[string]string{"error": err.Error()})
+	httpapi.Error(w, err.Error(), code)
 }
 
 func writeCatalogLookupError(w http.ResponseWriter, r *http.Request, err error) {
@@ -1993,7 +2019,5 @@ func writeServiceUnavailable(w http.ResponseWriter, r *http.Request, operation s
 		return
 	}
 	applog.Error(r.Context(), "Service unavailable", err, applog.Fields{Component: "api", Stage: operation + " " + r.Method + " " + r.URL.Path})
-	writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-		"error": "service temporarily unavailable",
-	})
+	httpapi.Error(w, "service temporarily unavailable", http.StatusServiceUnavailable)
 }

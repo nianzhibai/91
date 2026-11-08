@@ -28,6 +28,8 @@ import (
 	"github.com/nianzhibai/91/backend/internal/driveevents"
 	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
 	"github.com/nianzhibai/91/backend/internal/fingerprint"
+	"github.com/nianzhibai/91/backend/internal/frontend"
+	"github.com/nianzhibai/91/backend/internal/httpapi"
 	"github.com/nianzhibai/91/backend/internal/mediaimport"
 	"github.com/nianzhibai/91/backend/internal/nightly"
 	"github.com/nianzhibai/91/backend/internal/preview"
@@ -418,8 +420,23 @@ func main() {
 	r.Use(corsMiddleware(cfg.Server.AllowedOrigins))
 
 	apiServer.RegisterRoutes(r, authr)
+	builtinFrontend, _ := resolveFrontendDir()
+	frontendManager, err := frontend.New(cfg.Storage.DataDir, builtinFrontend, httpapi.Version)
+	if err != nil {
+		log.Fatalf("prepare frontend storage: %v", err)
+	}
+	if builtinFrontend != "" {
+		if _, err := os.Stat(filepath.Join(builtinFrontend, "frontend.json")); err == nil {
+			if err := frontendManager.RetainBuiltin(); err != nil {
+				log.Fatalf("retain bundled frontend: %v", err)
+			}
+		}
+	}
+	adminServer.Frontend = frontendManager
 	adminServer.Register(r)
-	mountFrontend(r)
+	if err := mountFrontend(r, frontendManager); err != nil {
+		log.Fatal(err)
+	}
 
 	// 凌晨流水线：每天按后台可热更新的 HH:mm + IANA 时区触发一次，依次运行以下阶段：
 	//   Phase 1 并行扫所有非爬虫 / localupload 网盘 + 跳过策略/缺失确认清理 + 入队封面/预览视频

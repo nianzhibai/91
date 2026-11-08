@@ -1838,8 +1838,9 @@ func TestHandleUpsertUnknownDriveKindIsRejected(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body = %s", rr.Code, rr.Body.String())
 	}
-	if rr.Body.String() != "unsupported drive kind\n" {
-		t.Fatalf("body = %q, want unsupported kind", rr.Body.String())
+	var failure map[string]string
+	if err := json.Unmarshal(rr.Body.Bytes(), &failure); err != nil || failure["error"] != "unsupported drive kind" || failure["code"] != "bad_request" {
+		t.Fatalf("body = %q, want structured unsupported-kind error", rr.Body.String())
 	}
 
 	got, err := cat.GetDrive(ctx, "unknown-main")

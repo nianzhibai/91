@@ -33,16 +33,9 @@ need_cmd() {
 }
 
 build_frontend() {
-  need_cmd npm
-  log "installing frontend dependencies"
-  if [[ -f "$ROOT_DIR/package-lock.json" ]]; then
-    npm --prefix "$ROOT_DIR" ci
-  else
-    npm --prefix "$ROOT_DIR" install
-  fi
-
-  log "verifying and building frontend"
-  npm --prefix "$ROOT_DIR" run verify
+  log "preparing the pinned frontend release"
+  FRONTEND_WORK_DIR="$(mktemp -d "$OUT_DIR/.work/frontend.XXXXXX")"
+  bash "$ROOT_DIR/scripts/prepare-frontend.sh" "$FRONTEND_WORK_DIR/dist"
 }
 
 build_package() {
@@ -62,7 +55,7 @@ build_package() {
 
   cp "$ROOT_DIR/backend/config.example.yaml" "$work/config.example.yaml"
   cp "$ROOT_DIR/install.sh" "$work/install.sh"
-  cp -R "$ROOT_DIR/dist" "$work/dist"
+  cp -R "$FRONTEND_WORK_DIR/dist" "$work/dist"
 
   cat >"$work/README.txt" <<EOF
 $APP_NAME $VERSION

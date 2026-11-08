@@ -36,9 +36,9 @@ if [ "${1:-}" = ./server ]; then shift; set -- "$APP_DIR/server" "$@"; fi
 
 case "${1:-}" in
   "$APP_DIR/server")
-    if [ "${2:-}" = "reset-password" ]; then
-      exec "$@"
-    fi
+    case "${2:-}" in
+      reset-password|frontend) exec "$@" ;;
+    esac
     ;;
 esac
 

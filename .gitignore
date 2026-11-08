@@ -24,6 +24,8 @@ tools/
 backend/server
 backend/server.*
 release/
+frontend-bundle/*
+!frontend-bundle/.gitkeep
 tsconfig.tsbuildinfo
 tmp/
 

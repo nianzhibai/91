@@ -37,7 +37,7 @@ jobs:
         run: node .github/scripts/ci-changes.mjs
 
   frontend:
-    name: Frontend and deployment tests
+    name: SDK and deployment tests
     needs: changes
     if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-24.04

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>我的影库</title>
+  </head>
+  <body>
+    <header><a href="/" class="brand">我的影库<span>私人收藏，自在浏览</span></a><button id="logout" hidden>退出登录</button></header>
+    <main>
+      <p id="status" role="status" aria-live="polite">正在连接影库…</p>
+      <form id="login" class="panel" hidden>
+        <p class="eyebrow">WELCOME</p><h1 id="login-title">登录你的影库</h1>
+        <label>用户名<input name="username" autocomplete="username" required /></label>
+        <label>密码<input name="password" type="password" autocomplete="current-password" required /></label>
+        <button type="submit" class="primary">继续</button>
+      </form>
+      <section id="library" hidden>
+        <div class="toolbar"><div><p class="eyebrow">YOUR COLLECTION</p><h1>发现好内容</h1></div><form id="search"><input name="q" aria-label="搜索视频" placeholder="搜索你的影库…" type="search" /><button>搜索</button></form></div>
+        <div id="videos" class="grid"></div>
+        <div class="pagination"><button id="previous">上一页</button><span id="page"></span><button id="next">下一页</button></div>
+      </section>
+      <section id="management" class="panel" hidden>
+        <p class="eyebrow">WORKSPACE</p><h2>管理影库</h2>
+        <p>存储来源</p><ul id="drives"></ul>
+        <form id="settings"><label>站点主题<select name="theme"><option value="dark">深色</option><option value="light">浅色</option></select></label><button type="submit">保存设置</button></form>
+      </section>
+    </main>
+    <dialog id="player"><div class="player-heading"><h2 id="video-title"></h2><button id="close-player" aria-label="关闭播放器">关闭</button></div><video controls playsinline></video><div class="player-tools"><select id="sources" aria-label="选择播放源"></select><button id="prepare" hidden>准备兼容播放</button><button id="retry">刷新播放地址</button></div><p id="playback-status" role="status"></p></dialog>
+    <script type="module" src="/main.ts"></script>
+  </body>
+</html>

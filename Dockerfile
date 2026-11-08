@@ -14,21 +14,6 @@ RUN curl -fL --retry 3 https://github.com/MarcA711/Rockchip-FFmpeg-Builds/releas
       | sha256sum -c - \
     && chmod 755 ffmpeg ffprobe
 
-# ---- Build frontend ----
-FROM --platform=$BUILDPLATFORM node:24.22.1-slim AS frontend
-
-WORKDIR /app
-
-COPY package.json package-lock.json .npmrc ./
-RUN npm install --global "$(node -p "require('./package.json').packageManager")" \
-    && npm ci
-
-COPY tsconfig.json vite.config.ts index.html ./
-COPY scripts/ scripts/
-COPY public/ public/
-COPY src/ src/
-RUN npm run build
-
 # ---- Build backend ----
 FROM --platform=$BUILDPLATFORM golang:1.27.3-bookworm AS backend
 ARG TARGETOS
@@ -42,6 +27,17 @@ COPY backend/cmd/ cmd/
 COPY backend/internal/ internal/
 COPY backend/config_template.go backend/config.example.yaml ./
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
+
+# ---- Fetch and verify the pinned frontend release (or an offline artifact) ----
+FROM backend AS frontend
+COPY frontend.lock.json /app/frontend.lock.json
+COPY frontend-bundle/ /bundle/
+RUN CGO_ENABLED=0 go build -o /out/frontend-package ./cmd/frontend-package \
+    && if [ -f /bundle/frontend.tar.gz ]; then \
+         /out/frontend-package --lock /app/frontend.lock.json --archive /bundle/frontend.tar.gz --output /out/frontend; \
+       else \
+         /out/frontend-package --lock /app/frontend.lock.json --output /out/frontend; \
+       fi
 
 # ---- Shared application runtime ----
 FROM debian:bookworm-slim AS application
@@ -75,7 +71,7 @@ RUN python3 -c "import requests, bs4, lxml, socks"
 WORKDIR /opt/91
 
 COPY --from=backend /out/server ./server
-COPY --from=frontend /app/dist ./dist
+COPY --from=frontend /out/frontend ./dist
 COPY backend/config.example.yaml ./config.example.yaml
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 COPY docker-compose.yml docker-compose.gpu-nvidia.yml docker-compose.gpu-vaapi.yml docker-compose.gpu-rockchip.yml /usr/local/share/91/deploy/

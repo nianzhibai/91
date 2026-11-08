@@ -12,6 +12,7 @@ import (
 	drivepkg "github.com/nianzhibai/91/backend/internal/drives"
 	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
 	"github.com/nianzhibai/91/backend/internal/driveview"
+	"github.com/nianzhibai/91/backend/internal/httpapi"
 	"github.com/nianzhibai/91/backend/internal/scanjob"
 )
 
@@ -157,11 +158,11 @@ func (a *AdminServer) handleUpsertDrive(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if body.ID == "" || body.Kind == "" {
-		http.Error(w, "id and kind are required", http.StatusBadRequest)
+		httpapi.Error(w, "id and kind are required", http.StatusBadRequest)
 		return
 	}
 	if !isSupportedDriveKind(body.Kind) {
-		http.Error(w, "unsupported drive kind", http.StatusBadRequest)
+		httpapi.Error(w, "unsupported drive kind", http.StatusBadRequest)
 		return
 	}
 	configLease, ok := a.beginDriveConfigUpdate(w, body.ID)
@@ -194,18 +195,18 @@ func (a *AdminServer) handleUpsertDrive(w http.ResponseWriter, r *http.Request) 
 	if body.Kind == scriptcrawler.Kind {
 		credentials, err := mergeScriptCrawlerCredentials(existing, body.Credentials)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			httpapi.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		body.Credentials = credentials
 		if err := a.normalizeCrawlerScriptReference(body.Credentials); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			httpapi.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 	} else if body.Kind == "googledrive" {
 		body.Credentials, err = googleDriveCredentialPatch(body.Credentials)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			httpapi.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 	} else if body.Kind == "onedrive" && patchCredentials {
@@ -314,7 +315,7 @@ func (a *AdminServer) beginDriveConfigUpdate(w http.ResponseWriter, driveID stri
 	if reason == "" {
 		reason = "当前网盘配置正在更新，请稍后重试"
 	}
-	http.Error(w, reason, http.StatusConflict)
+	httpapi.Error(w, reason, http.StatusConflict)
 	return nil, false
 }
 
@@ -323,7 +324,7 @@ func authorizeDriveConfigUpdate(w http.ResponseWriter, lease DriveConfigUpdateLe
 		return true
 	}
 	if reason := lease.Authorize(scope); reason != "" {
-		http.Error(w, reason, http.StatusConflict)
+		httpapi.Error(w, reason, http.StatusConflict)
 		return false
 	}
 	return true

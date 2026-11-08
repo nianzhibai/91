@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -157,5 +158,31 @@ func TestCORSMiddlewareWildcardEntryIsIgnored(t *testing.T) {
 
 	if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "" {
 		t.Fatalf("Allow-Origin = %q, '*' must not whitelist arbitrary origins", got)
+	}
+}
+
+func TestCORSAllowsConfigConcurrencyAndMediaHeaders(t *testing.T) {
+	handler := corsMiddleware([]string{"https://frontend.example.com"})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"version"`)
+		w.WriteHeader(http.StatusOK)
+	}))
+	request := httptest.NewRequest(http.MethodOptions, "/admin/api/config.yaml", nil)
+	request.Header.Set("Origin", "https://frontend.example.com")
+	request.Header.Set("Access-Control-Request-Method", "PUT")
+	request.Header.Set("Access-Control-Request-Headers", "Content-Type, If-Match")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("preflight status=%d", response.Code)
+	}
+	for _, header := range []string{"If-Match", "Range"} {
+		if !strings.Contains(response.Header().Get("Access-Control-Allow-Headers"), header) {
+			t.Errorf("header %s is unavailable", header)
+		}
+	}
+	for _, header := range []string{"ETag", "Content-Range", "Content-Disposition"} {
+		if !strings.Contains(response.Header().Get("Access-Control-Expose-Headers"), header) {
+			t.Errorf("header %s is not exposed", header)
+		}
 	}
 }

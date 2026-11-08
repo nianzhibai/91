@@ -77,6 +77,7 @@ if (args[0] === "compose") {
   if (command === "exec") {
     if (state.existingContainer === false) { process.stderr.write("service 91 is not running\\n"); exit(1); }
     const values = args.slice(commandIndex + 1).filter((value) => value !== "-T");
+    if (["91", "video-site-91"].includes(values[0]) && values[1] === "docker-entrypoint.sh" && values[2] === "./server" && values[3] === "frontend") { output(JSON.stringify({active: "owner-web@1.2.0"})); exit(); }
     if (values.length !== 4 || !["91", "video-site-91"].includes(values[0]) || values[1] !== "docker-entrypoint.sh" || values[2] !== "./server" || values[3] !== "reset-password") exit(2);
     output("ID | Username | Role | Account banned\\n7 | test-user | admin | false");
     process.stdout.write("User ID to reset: ");
@@ -523,6 +524,19 @@ test("uninstall requires an existing deployment", requiresCompose, (t) => {
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /uninstall requires an existing Compose configuration/);
   assert.equal(f.state().uninstalls, undefined);
+});
+
+test("frontend management forwards a fixed version without replacing the deployment", requiresCompose, t => {
+  const f = fixture(t);
+  const original = readFileSync(f.target, "utf8");
+  const result = f.run(["frontend", "install", "--repository", "owner/web", "--version", "v1.2.0"]);
+  succeeded(result);
+  const call = f.state().calls.find(args => args.includes("exec"));
+  assert.deepEqual(call?.slice(call.indexOf("exec")), ["exec", "-T", service, "docker-entrypoint.sh", "./server", "frontend", "install", "--repository", "owner/web", "--version", "v1.2.0"]);
+  assert.equal(readFileSync(f.target, "utf8"), original);
+  assert.deepEqual(f.state().starts, []);
+  assert.deepEqual(f.backups(), []);
+  assert.equal(f.state().pulled, false);
 });
 
 test("password reset invokes the running server and leaves deployment files untouched", requiresCompose, (t) => {

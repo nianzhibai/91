@@ -220,7 +220,7 @@ test("release packaging produces only the current installation layout", (t) => {
   writeFileSync(releaseScript, readFileSync(join(repository, "scripts/build-release.sh"), "utf8").replace(/\nmain "\$@"\s*$/, "\n"));
   const result = spawnSync("bash", ["-c", `
     source "$1" help >/dev/null
-    ROOT_DIR="$2" OUT_DIR="$2/release" VERSION=test
+    ROOT_DIR="$2" OUT_DIR="$2/release" VERSION=test FRONTEND_WORK_DIR="$2"
     mkdir -p "$OUT_DIR/.work"
     go() { while [[ "$1" != -o ]]; do shift; done; printf binary > "$2"; }
     build_package linux amd64

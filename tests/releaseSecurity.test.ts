@@ -34,7 +34,7 @@ const releaseScript = readFileSync(
   "utf8"
 );
 
-test("frontend verification rejects every npm audit finding before release", () => {
+test("SDK verification rejects every npm audit finding before release", () => {
   assert.deepEqual(packageJson.allowScripts, {
     "esbuild@0.28.1": true,
     "fsevents@2.3.3": true,
@@ -47,7 +47,7 @@ test("frontend verification rejects every npm audit finding before release", () 
   assert.equal(packageJson.scripts?.verify, "npm run check && npm run build");
   assert.match(
     releaseScript,
-    /npm --prefix "\$ROOT_DIR" run verify/
+    /prepare-frontend\.sh/
   );
 });
 
@@ -57,8 +57,8 @@ test("container and release builds use supported Node and run checks", () => {
   assert.match(packageJson.packageManager ?? "", /^npm@\d+\.\d+\.\d+$/);
   assert.equal(packageJson.engines?.npm, `^${packageJson.packageManager!.slice(4)}`);
   const frontendStage = dockerfile.match(/^FROM(?:\s+--platform=\S+)?\s+(\S+)\s+AS\s+frontend\s*$/im);
-  assert.equal(frontendStage?.[1], `node:${nodeVersion}-slim`, "Frontend image must use the pinned Node version");
-  assert.match(dockerfile, /^COPY package\.json package-lock\.json \.npmrc \.\/$/m);
+  assert.equal(frontendStage?.[1], "backend", "Frontend release verification uses the backend helper");
+  assert.match(dockerfile, /^COPY frontend\.lock\.json /m);
   assert.match(checksWorkflow, /node-version-file: \.nvmrc/);
   assert.match(releaseWorkflow, /node-version-file: \.nvmrc/);
   const checks = parse(checksWorkflow).jobs;

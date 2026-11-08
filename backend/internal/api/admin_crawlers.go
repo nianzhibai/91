@@ -24,6 +24,7 @@ import (
 	"github.com/nianzhibai/91/backend/internal/crawljob"
 	"github.com/nianzhibai/91/backend/internal/drives"
 	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
+	"github.com/nianzhibai/91/backend/internal/httpapi"
 	"github.com/nianzhibai/91/backend/internal/persistence"
 	"github.com/nianzhibai/91/backend/internal/uploadjob"
 )
@@ -293,7 +294,7 @@ func (a *AdminServer) handleUpsertCrawler(w http.ResponseWriter, r *http.Request
 	}
 	if body.SelectedFeedID != nil {
 		if strings.TrimSpace(*body.SelectedFeedID) == "" {
-			http.Error(w, "请选择抓取栏目", http.StatusBadRequest)
+			httpapi.Error(w, "请选择抓取栏目", http.StatusBadRequest)
 			return
 		}
 		incoming["feed_id"] = *body.SelectedFeedID
@@ -302,16 +303,16 @@ func (a *AdminServer) handleUpsertCrawler(w http.ResponseWriter, r *http.Request
 		creds[k] = v
 	}
 	if err := a.validateCrawlerUploadDrive(r.Context(), creds["upload_drive_id"]); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		httpapi.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	merged, err := mergeScriptCrawlerCredentials(existing, creds)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		httpapi.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if err := a.normalizeCrawlerScriptReference(merged); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		httpapi.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	// Existing crawler saves patch only user-owned configuration keys. Runtime
@@ -333,17 +334,17 @@ func (a *AdminServer) handleUpsertCrawler(w http.ResponseWriter, r *http.Request
 	}
 	resolvedScript, err := a.crawlerScriptPath(merged)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		httpapi.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	meta, err := scriptcrawler.ReadMetadata(resolvedScript)
 	if err != nil {
-		http.Error(w, "脚本元信息无效："+err.Error(), http.StatusBadRequest)
+		httpapi.Error(w, "脚本元信息无效："+err.Error(), http.StatusBadRequest)
 		return
 	}
 	feed, err := meta.ResolveFeed(merged["feed_id"])
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		httpapi.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	persistedCredentials["feed_id"] = feed.ID
@@ -488,12 +489,12 @@ func (a *AdminServer) handleTestCrawlerScript(w http.ResponseWriter, r *http.Req
 	}
 	scriptPath := strings.TrimSpace(body.ScriptPath)
 	if scriptPath == "" {
-		http.Error(w, "请先导入爬虫脚本", http.StatusBadRequest)
+		httpapi.Error(w, "请先导入爬虫脚本", http.StatusBadRequest)
 		return
 	}
 	proxyURL, err := normalizeCrawlerProxyURL(body.Proxy, "脚本爬虫")
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		httpapi.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	result := scriptcrawler.DryRun(r.Context(), scriptcrawler.DryRunConfig{
@@ -758,7 +759,7 @@ func (a *AdminServer) handleRunCrawler(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	d, err := a.Catalog.GetDrive(r.Context(), id)
 	if err != nil || d == nil || !isCrawlerDriveKind(d.Kind) || !scriptcrawler.IsConfigured(d.Credentials) {
-		http.Error(w, "crawler not found", http.StatusNotFound)
+		httpapi.Error(w, "crawler not found", http.StatusNotFound)
 		return
 	}
 	status := a.nightlyJobStatus()
@@ -787,7 +788,7 @@ func (a *AdminServer) handleSetCrawlerPaused(w http.ResponseWriter, r *http.Requ
 	id := chi.URLParam(r, "id")
 	d, err := a.Catalog.GetDrive(r.Context(), id)
 	if err != nil || d == nil || !isConfiguredCrawlerDrive(d) {
-		http.Error(w, "crawler not found", http.StatusNotFound)
+		httpapi.Error(w, "crawler not found", http.StatusNotFound)
 		return
 	}
 	var body crawlerPausedReq
@@ -818,7 +819,7 @@ func (a *AdminServer) handleUploadCrawlerVideos(w http.ResponseWriter, r *http.R
 	id := chi.URLParam(r, "id")
 	d, err := a.Catalog.GetDrive(r.Context(), id)
 	if err != nil || d == nil || !isConfiguredCrawlerDrive(d) {
-		http.Error(w, "crawler not found", http.StatusNotFound)
+		httpapi.Error(w, "crawler not found", http.StatusNotFound)
 		return
 	}
 	reject := func(reason string) {
@@ -891,7 +892,7 @@ func (a *AdminServer) handleDeleteCrawler(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if !isCrawlerDriveKind(d.Kind) {
-		http.Error(w, "crawler not found", http.StatusNotFound)
+		httpapi.Error(w, "crawler not found", http.StatusNotFound)
 		return
 	}
 	if !authorizeDriveConfigUpdate(w, configLease, DriveConfigUpdateDestructive) {
@@ -902,7 +903,7 @@ func (a *AdminServer) handleDeleteCrawler(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if a.OnDriveDeleteCleanup == nil {
-		http.Error(w, "crawler video cleanup is not available", http.StatusInternalServerError)
+		httpapi.Error(w, "crawler video cleanup is not available", http.StatusInternalServerError)
 		return
 	}
 	deletedVideos, err := a.OnDriveDeleteCleanup(r.Context(), id)

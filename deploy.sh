@@ -292,20 +292,24 @@ prepare_config() {
 }
 
 install_frontend() {
-  log "installing frontend dependencies"
-  if [[ -f "$REPO_DIR/package-lock.json" ]]; then
-    as_deploy_user bash -lc "cd '$REPO_DIR' && npm ci"
-  else
-    as_deploy_user bash -lc "cd '$REPO_DIR' && npm install"
-  fi
-
-  log "building frontend"
-  as_deploy_user bash -lc "cd '$REPO_DIR' && npm run build"
+  log "preparing the pinned frontend release"
+  mkdir -p "$REPO_DIR/tmp"
+  DEPLOY_BUILD_DIR="$(mktemp -d "$REPO_DIR/tmp/deploy.XXXXXX")"
+  chown "$DEPLOY_USER:$DEPLOY_GROUP" "$DEPLOY_BUILD_DIR"
+  as_deploy_user bash "$REPO_DIR/scripts/prepare-frontend.sh" "$DEPLOY_BUILD_DIR/dist"
 }
 
 build_backend() {
   log "building backend binary"
-  as_deploy_user bash -lc "cd '$REPO_DIR/backend' && go build -o server ./cmd/server"
+  as_deploy_user bash -lc "cd '$REPO_DIR/backend' && go build -o '$DEPLOY_BUILD_DIR/server' ./cmd/server"
+}
+
+publish_application() {
+  systemctl stop "${SERVICE_NAME}.service" 2>/dev/null || true
+  if [[ -f "$REPO_DIR/backend/server" ]]; then cp -p "$REPO_DIR/backend/server" "$DEPLOY_BUILD_DIR/previous-server"; fi
+  if [[ -d "$REPO_DIR/dist" ]]; then mv "$REPO_DIR/dist" "$DEPLOY_BUILD_DIR/previous-dist"; fi
+  mv "$DEPLOY_BUILD_DIR/dist" "$REPO_DIR/dist"
+  mv "$DEPLOY_BUILD_DIR/server" "$REPO_DIR/backend/server"
 }
 
 systemd_env_lines() {
@@ -428,6 +432,7 @@ install_or_update() {
   prepare_config
   write_systemd_units
   open_firewall_port
+  publish_application
   restart_services
   show_status
   if [[ "$mode" == "install" ]]; then

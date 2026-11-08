@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/nianzhibai/91/backend/internal/config"
+	"github.com/nianzhibai/91/backend/internal/httpapi"
 )
 
 const maxConfigYAMLBytes = 2 << 20
@@ -16,7 +17,7 @@ func (a *AdminServer) previewEnabled() bool {
 
 func (a *AdminServer) requirePreviewEnabled(w http.ResponseWriter) bool {
 	if !a.previewEnabled() {
-		http.Error(w, "全局预览视频生成已关闭", http.StatusConflict)
+		httpapi.Error(w, "全局预览视频生成已关闭", http.StatusConflict)
 		return false
 	}
 	return true

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"log"
@@ -22,6 +23,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/nianzhibai/91/backend/internal/applog"
+	"github.com/nianzhibai/91/backend/internal/frontend"
 	"github.com/nianzhibai/91/backend/internal/requestmeta"
 )
 
@@ -205,8 +207,9 @@ func corsMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
 			if isAllowedOrigin {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Access-Control-Allow-Credentials", "true")
-				w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+				w.Header().Set("Access-Control-Allow-Methods", "GET,HEAD,POST,PUT,DELETE,OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, If-Match, Range")
+				w.Header().Set("Access-Control-Expose-Headers", "ETag, Content-Disposition, Content-Range, Accept-Ranges, X-Request-ID, Retry-After")
 				w.Header().Set("Access-Control-Max-Age", "600")
 			}
 
@@ -440,13 +443,64 @@ func addHeaderToken(header http.Header, name, token string) {
 	header.Add(name, token)
 }
 
-func mountFrontend(r chi.Router) {
+func mountFrontend(r chi.Router, manager *frontend.Manager) error {
+	switch mode := strings.TrimSpace(os.Getenv("VIDEO_FRONTEND_MODE")); mode {
+	case "disabled":
+		return nil
+	case "", "auto":
+	default:
+		return fmt.Errorf("invalid VIDEO_FRONTEND_MODE %q: expected auto or disabled", mode)
+	}
 	dir, ok := resolveFrontendDir()
 	if !ok {
-		return
+		if dir := strings.TrimSpace(os.Getenv("VIDEO_FRONTEND_DIR")); dir != "" {
+			return fmt.Errorf("VIDEO_FRONTEND_DIR %q must contain index.html", dir)
+		}
+	} else {
+		log.Printf("serving bundled frontend from %s", dir)
 	}
-	log.Printf("serving frontend from %s", dir)
-	r.NotFound(frontendHandler(dir))
+	if manager != nil {
+		serveAsset := func(w http.ResponseWriter, request *http.Request) {
+			directory, err := manager.AssetDirectory(chi.URLParam(request, "name"), chi.URLParam(request, "version"))
+			if err != nil {
+				http.NotFound(w, request)
+				return
+			}
+			asset := chi.URLParam(request, "*")
+			if asset == "" || asset == "index.html" || path.Clean(asset) != asset {
+				http.NotFound(w, request)
+				return
+			}
+			if info, err := os.Stat(filepath.Join(directory, filepath.FromSlash(asset))); err != nil || !info.Mode().IsRegular() {
+				http.NotFound(w, request)
+				return
+			}
+			cloned := request.Clone(request.Context())
+			urlCopy := *request.URL
+			urlCopy.Path = "/" + asset
+			cloned.URL = &urlCopy
+			frontendHandler(directory)(w, cloned)
+		}
+		r.Get(frontend.AssetPrefix+"{name}/{version}/*", serveAsset)
+		r.Head(frontend.AssetPrefix+"{name}/{version}/*", serveAsset)
+		r.NotFound(func(w http.ResponseWriter, request *http.Request) {
+			if strings.HasPrefix(request.URL.Path, frontend.AssetPrefix) {
+				http.NotFound(w, request)
+				return
+			}
+			active, err := manager.ActiveDirectory()
+			if err != nil {
+				// Keep the shipped recovery UI available after an API upgrade.
+				active = dir
+			}
+			frontendHandler(active)(w, request)
+		})
+		return nil
+	}
+	if ok {
+		r.NotFound(frontendHandler(dir))
+	}
+	return nil
 }
 
 func resolveFrontendDir() (string, bool) {
@@ -471,7 +525,7 @@ func resolveFrontendDir() (string, bool) {
 
 func frontendHandler(dir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		if dir == "" || r.Method != http.MethodGet && r.Method != http.MethodHead {
 			http.NotFound(w, r)
 			return
 		}
@@ -489,21 +543,13 @@ func frontendHandler(dir string) http.HandlerFunc {
 			if err == nil {
 				defer f.Close()
 				if st, statErr := f.Stat(); statErr == nil && !st.IsDir() {
-					if strings.HasPrefix(cleanPath, "/assets/") {
-						w.Header().Set("Cache-Control", frontendHashedAssetCacheControl)
-						addHeaderToken(w.Header(), "Vary", "Accept-Encoding")
-					} else {
-						// Stable URLs such as the PWA manifest must revalidate so
-						// existing installations receive changes after an upgrade.
-						w.Header().Set("Cache-Control", frontendUnversionedAssetCacheControl)
-					}
 					if encoding != "" {
 						w.Header().Set("Content-Encoding", encoding)
 						if contentType := mime.TypeByExtension(filepath.Ext(name)); contentType != "" {
 							w.Header().Set("Content-Type", contentType)
 						}
 					}
-					http.ServeContent(w, r, filepath.Base(name), st.ModTime(), f)
+					serveFrontendContent(w, r, cleanPath, f, st)
 					return
 				}
 			}
@@ -513,12 +559,45 @@ func frontendHandler(dir string) http.HandlerFunc {
 			}
 		}
 
-		// index.html names hashed assets that are removed on the next build. It
-		// may be stored locally, but every navigation must revalidate it so an
-		// old document never points at files that no longer exist.
-		w.Header().Set("Cache-Control", frontendUnversionedAssetCacheControl)
-		http.ServeFile(w, r, filepath.Join(dir, "index.html"))
+		index, err := os.Open(filepath.Join(dir, "index.html"))
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		defer index.Close()
+		info, err := index.Stat()
+		if err != nil || !info.Mode().IsRegular() {
+			http.NotFound(w, r)
+			return
+		}
+		serveFrontendContent(w, r, "/index.html", index, info)
 	}
+}
+
+func serveFrontendContent(w http.ResponseWriter, r *http.Request, requestPath string, file *os.File, info os.FileInfo) {
+	modified := info.ModTime()
+	if strings.HasPrefix(requestPath, "/assets/") {
+		w.Header().Set("Cache-Control", frontendHashedAssetCacheControl)
+		addHeaderToken(w.Header(), "Vary", "Accept-Encoding")
+	} else {
+		// Stable URLs can switch to older files on rollback. Only content, not
+		// modification time, identifies the representation currently selected.
+		hash := sha256.New()
+		if _, err := io.Copy(hash, file); err != nil {
+			http.Error(w, "read frontend asset", http.StatusInternalServerError)
+			return
+		}
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			http.Error(w, "read frontend asset", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Cache-Control", frontendUnversionedAssetCacheControl)
+		// Compression can change the wire bytes without changing the content.
+		w.Header().Set("ETag", fmt.Sprintf(`W/"%x"`, hash.Sum(nil)))
+		// A zero time also ignores If-Modified-Since from previously cached pages.
+		modified = time.Time{}
+	}
+	http.ServeContent(w, r, path.Base(requestPath), modified, file)
 }
 
 func openFrontendAsset(r *http.Request, assetPath, requestPath string) (*os.File, string, error) {

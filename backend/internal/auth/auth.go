@@ -14,6 +14,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/httpapi"
 	"github.com/nianzhibai/91/backend/internal/requestmeta"
 )
 
@@ -238,12 +239,12 @@ func (a *Authenticator) require(next http.Handler, adminOnly bool) http.Handler 
 			return
 		}
 		if !ok {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			httpapi.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		u, err := a.Catalog.GetUserByID(r.Context(), userID)
 		if errors.Is(err, sql.ErrNoRows) {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			httpapi.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		if err != nil {
@@ -251,7 +252,7 @@ func (a *Authenticator) require(next http.Handler, adminOnly bool) http.Handler 
 			return
 		}
 		if u.Banned || (adminOnly && u.Role != "admin") {
-			http.Error(w, "forbidden", http.StatusForbidden)
+			httpapi.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, withSessionIdentity(r))
@@ -266,7 +267,7 @@ func writeAuthUnavailable(w http.ResponseWriter, r *http.Request, operation stri
 		return
 	}
 	log.Printf("[auth] %s method=%s path=%s: %v", operation, r.Method, r.URL.Path, err)
-	http.Error(w, "service temporarily unavailable", http.StatusServiceUnavailable)
+	httpapi.Error(w, "service temporarily unavailable", http.StatusServiceUnavailable)
 }
 
 func setSessionCookie(w http.ResponseWriter, token string, expiresAt time.Time) {

@@ -16,6 +16,7 @@ import (
 	"github.com/nianzhibai/91/backend/internal/drives/quark"
 	"github.com/nianzhibai/91/backend/internal/drives/yun139"
 	"github.com/nianzhibai/91/backend/internal/driveview"
+	"github.com/nianzhibai/91/backend/internal/frontend"
 	"github.com/nianzhibai/91/backend/internal/mediaimport"
 	"github.com/nianzhibai/91/backend/internal/preview"
 	"github.com/nianzhibai/91/backend/internal/scanjob"
@@ -48,6 +49,7 @@ type DriveConfigUpdateLease interface {
 }
 
 type AdminServer struct {
+	Frontend           *frontend.Manager
 	Telegram           *telegram.Integration
 	Imports            *mediaimport.Manager
 	Catalog            *catalog.Catalog
@@ -236,17 +238,22 @@ type deleteVideoReq struct {
 }
 
 func (a *AdminServer) Register(r chi.Router) {
+	// Identity belongs to every client, independently of the management UI.
+	r.Route("/api/auth", a.registerAuthRoutes)
+	r.Get("/api/server", a.handleServerInfo)
+	r.Get("/api/openapi.json", handleOpenAPI)
 	r.Route("/admin/api", func(r chi.Router) {
-		// 登录、登出和首次部署初始化不需要鉴权
-		r.Get("/setup", a.handleSetupStatus)
-		r.Post("/setup", a.handleSetup)
-		r.Post("/login", a.handleLogin)
-		r.Post("/logout", a.handleLogout)
-		r.Get("/me", a.handleMe)
+		// Older installed clients may still use these session URLs.
+		a.registerAuthRoutes(r)
 
 		// 其余路由需管理员鉴权
 		r.Group(func(r chi.Router) {
 			r.Use(a.Auth.AdminRequired)
+			r.Get("/frontend", a.handleFrontendStatus)
+			r.Post("/frontend/install", a.handleFrontendInstall)
+			r.Put("/frontend/active", a.handleFrontendActivate)
+			r.Post("/frontend/rollback", a.handleFrontendRollback)
+			r.Post("/frontend/reset", a.handleFrontendReset)
 
 			// 网盘
 			r.Get("/drives", a.handleListDrives)
