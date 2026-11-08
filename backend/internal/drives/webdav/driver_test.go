@@ -66,8 +66,9 @@ func TestDriverListsStatsAndStreamsWithRange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StreamURL: %v", err)
 	}
-	if strings.Contains(link.URL, testDAVUsername) || strings.Contains(link.URL, testDAVPassword) {
-		t.Fatalf("stream URL exposes credentials: %q", link.URL)
+	wantURL := server.URL + "/dav/library/" + url.PathEscape("示例 影片.mp4")
+	if link.URL != wantURL {
+		t.Fatalf("stream URL = %q, want credential-free URL %q", link.URL, wantURL)
 	}
 	if !link.PassThroughRedirects {
 		t.Fatal("WebDAV stream link must relay upstream redirects to the browser")
