@@ -30,9 +30,16 @@ type Selection struct {
 	Previous *string `json:"previous,omitempty"`
 }
 
+type Current struct {
+	Name       string `json:"name"`
+	Version    string `json:"version"`
+	Repository string `json:"repository"`
+}
+
 type Status struct {
 	Selection
 	Builtin   *Manifest `json:"builtin,omitempty"`
+	Current   *Current  `json:"current,omitempty"`
 	Installed []Release `json:"installed"`
 }
 
@@ -143,6 +150,21 @@ func (m *Manager) Status() (Status, error) {
 			return status, err
 		}
 		status.Installed = append(status.Installed, release)
+	}
+	if status.Active == "" && status.Builtin != nil {
+		repository := ""
+		// The official bundled frontend is shipped from this repository.
+		if status.Builtin.Name == "91-web" {
+			repository = "https://github.com/nianzhibai/91-web"
+		}
+		status.Current = &Current{Name: status.Builtin.Name, Version: status.Builtin.Version, Repository: repository}
+	} else {
+		for _, release := range status.Installed {
+			if release.ID() == status.Active {
+				status.Current = &Current{Name: release.Name, Version: release.Version, Repository: release.Repository}
+				break
+			}
+		}
 	}
 	return status, nil
 }
@@ -299,6 +321,13 @@ func (m *Manager) store(staging string, release Release) error {
 		var existing Release
 		if json.Unmarshal(data, &existing) != nil || existing.ContentHash != release.ContentHash {
 			return errors.New("frontend version already exists with different content; publish a new version")
+		}
+		// An identical bundled/local copy may acquire its source when installed
+		// from GitHub. Retaining the builtin must not erase a known source.
+		if release.Repository != "" && release.Repository != existing.Repository {
+			existing.Repository = release.Repository
+			existing.SHA256 = release.SHA256
+			return writeJSONFile(filepath.Join(target, "release.json"), existing)
 		}
 		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {

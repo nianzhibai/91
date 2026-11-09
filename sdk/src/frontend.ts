@@ -15,8 +15,22 @@ export type FrontendRelease = FrontendManifest & {
   installedAt: string;
 };
 
+export type FrontendCurrent = {
+  name: string;
+  version: string;
+  repository: string;
+};
+
+export type FrontendUpdateCheck = {
+  repository: string;
+  current: FrontendCurrent;
+  latestVersion: string;
+  updateAvailable: boolean;
+};
+
 export type FrontendStatus = {
   active: string;
+  current?: FrontendCurrent;
   previous?: string;
   builtin?: FrontendManifest;
   installed: FrontendRelease[];
@@ -26,13 +40,9 @@ export function createFrontendClient(http: Transport) {
   const base = "/admin/api/frontend";
   return {
     status: () => http.request<FrontendStatus>(base),
-    install: (repository: string, version: string) => http.request<FrontendRelease>(`${base}/install`, {
-      method: "POST", body: JSON.stringify({ repository, version }),
+    checkUpdate: () => http.request<FrontendUpdateCheck>(`${base}/update`),
+    install: () => http.request<FrontendRelease>(`${base}/install`, {
+      method: "POST",
     }),
-    activate: (id: string) => http.request<FrontendStatus>(`${base}/active`, {
-      method: "PUT", body: JSON.stringify({ id }),
-    }),
-    rollback: () => http.request<FrontendStatus>(`${base}/rollback`, { method: "POST" }),
-    reset: () => http.request<FrontendStatus>(`${base}/reset`, { method: "POST" }),
   };
 }

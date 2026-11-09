@@ -250,10 +250,8 @@ func (a *AdminServer) Register(r chi.Router) {
 		r.Group(func(r chi.Router) {
 			r.Use(a.Auth.AdminRequired)
 			r.Get("/frontend", a.handleFrontendStatus)
+			r.Get("/frontend/update", a.handleFrontendUpdate)
 			r.Post("/frontend/install", a.handleFrontendInstall)
-			r.Put("/frontend/active", a.handleFrontendActivate)
-			r.Post("/frontend/rollback", a.handleFrontendRollback)
-			r.Post("/frontend/reset", a.handleFrontendReset)
 
 			// 网盘
 			r.Get("/drives", a.handleListDrives)

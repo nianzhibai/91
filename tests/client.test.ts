@@ -124,3 +124,26 @@ test("drive event streams use the configured backend and request cookies", (t) =
   client.admin.subscribeDriveSnapshots("drive/one", () => {}, () => {}, () => {}).close();
   assert.deepEqual(calls, [{ url: "https://api.example/admin/api/drives/drive%2Fone/events", init: { withCredentials: true } }]);
 });
+
+test("frontend installation uses saved configuration in one request", async () => {
+  const calls: { path: string; method: string | undefined; body: unknown }[] = [];
+  const client = createClient({ baseURL: "https://api.example", fetch: async (input, init) => {
+    calls.push({ path: String(input), method: init?.method, body: init?.body });
+    return Response.json({ name: "web", version: "1.2.0" }, { status: 201 });
+  } });
+  await client.frontend.install();
+  assert.deepEqual(calls, [{ path: "https://api.example/admin/api/frontend/install", method: "POST", body: undefined }]);
+  assert.deepEqual(Object.keys(client.frontend).sort(), ["checkUpdate", "install", "status"]);
+});
+
+
+test("frontend update checks only request metadata", async () => {
+  const calls: { path: string; method: string; body: unknown }[] = [];
+  const client = createClient({ baseURL: "https://api.example", fetch: async (input, init) => {
+    calls.push({ path: String(input), method: init?.method || "GET", body: init?.body });
+    return Response.json({ repository: "https://github.com/owner/web", current: {name: "web", version: "1.0.0", repository: "owner/web"}, latestVersion: "1.1.0", updateAvailable: true });
+  } });
+  const result = await client.frontend.checkUpdate();
+  assert.equal(result.updateAvailable, true);
+  assert.deepEqual(calls, [{ path: "https://api.example/admin/api/frontend/update", method: "GET", body: undefined }]);
+});

@@ -9,12 +9,14 @@ import (
 	"time"
 
 	"github.com/nianzhibai/91/backend/internal/atomicfile"
+	"github.com/nianzhibai/91/backend/internal/githubrepo"
 	"github.com/nianzhibai/91/backend/internal/localpath"
 	"github.com/nianzhibai/91/backend/internal/schedule"
 	"gopkg.in/yaml.v3"
 )
 
 const (
+	DefaultFrontendRepository    = "https://github.com/nianzhibai/91-web"
 	DefaultNightlyDisabled       = false
 	DefaultNightlyStartTime      = "01:00"
 	DefaultNightlyTimezone       = schedule.DefaultTimezone
@@ -27,7 +29,12 @@ var ErrInvalidNightlyTimezone = schedule.ErrInvalidTimezone
 
 var defaultVideoExtensions = []string{".mp4", ".mkv", ".mov", ".webm", ".avi"}
 
+type Frontend struct {
+	Repository string `yaml:"repository"`
+}
+
 type Config struct {
+	Frontend     Frontend     `yaml:"frontend"`
 	Server       Server       `yaml:"server"`
 	Storage      Storage      `yaml:"storage"`
 	Logging      Logging      `yaml:"logging"`
@@ -286,6 +293,12 @@ func Parse(data []byte) (*Config, error) {
 }
 
 func (c *Config) applyDefaults() error {
+	if c.Frontend.Repository == "" {
+		c.Frontend.Repository = DefaultFrontendRepository
+	}
+	if _, err := githubrepo.Name(c.Frontend.Repository); err != nil {
+		return fmt.Errorf("frontend.repository: %w", err)
+	}
 	if c.Server.Listen == "" {
 		c.Server.Listen = "0.0.0.0:9191"
 	}

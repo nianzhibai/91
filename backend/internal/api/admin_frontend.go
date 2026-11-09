@@ -1,7 +1,7 @@
 package api
 
 import (
-	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/nianzhibai/91/backend/internal/frontend"
@@ -33,61 +33,42 @@ func (a *AdminServer) handleFrontendInstall(w http.ResponseWriter, r *http.Reque
 	if !a.requireFrontend(w) {
 		return
 	}
-	var request frontend.ReleaseRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192)).Decode(&request); err != nil {
-		httpapi.Error(w, "invalid frontend release request", http.StatusBadRequest)
-		return
-	}
-	if err := request.Validate(); err != nil {
-		httpapi.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
+	request := frontend.ReleaseRequest{Repository: a.ConfigManager.FrontendRepository()}
+
 	release, err := frontend.NewReleaseSource().Install(r.Context(), a.Frontend, request)
 	if err != nil {
-		writeErr(w, r, http.StatusBadRequest, err)
+		code := http.StatusBadRequest
+		if errors.Is(err, frontend.ErrNoNewerRelease) {
+			code = http.StatusConflict
+		}
+		writeErr(w, r, code, err)
 		return
 	}
-	// Installation never changes the active site. Activation is a separate,
-	// explicit action after the administrator has reviewed the installed version.
+	if err := a.Frontend.Activate(release.Name + "@" + release.Version); err != nil {
+		writeErr(w, r, http.StatusConflict, err)
+		return
+	}
 	writeJSON(w, http.StatusCreated, release)
 }
 
-func (a *AdminServer) handleFrontendActivate(w http.ResponseWriter, r *http.Request) {
+func (a *AdminServer) handleFrontendUpdate(w http.ResponseWriter, r *http.Request) {
 	if !a.requireFrontend(w) {
 		return
 	}
-	var request struct {
-		ID string `json:"id"`
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192)).Decode(&request); err != nil || request.ID == "" {
-		httpapi.Error(w, "frontend id is required", http.StatusBadRequest)
+	repository := a.ConfigManager.FrontendRepository()
+	update, err := frontend.NewReleaseSource().CheckUpdate(r.Context(), a.Frontend, repository)
+	if err != nil {
+		code := http.StatusBadGateway
+		if errors.Is(err, frontend.ErrRepositoryNotActive) {
+			code = http.StatusConflict
+		}
+		writeErr(w, r, code, err)
 		return
 	}
-	if err := a.Frontend.Activate(request.ID); err != nil {
-		writeErr(w, r, http.StatusConflict, err)
+	if a.ConfigManager.FrontendRepository() != repository {
+		httpapi.Error(w, "frontend repository changed; reload configuration and check again", http.StatusConflict)
 		return
 	}
-	a.handleFrontendStatus(w, r)
-}
-
-func (a *AdminServer) handleFrontendRollback(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFrontend(w) {
-		return
-	}
-	if err := a.Frontend.Rollback(); err != nil {
-		writeErr(w, r, http.StatusConflict, err)
-		return
-	}
-	a.handleFrontendStatus(w, r)
-}
-
-func (a *AdminServer) handleFrontendReset(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFrontend(w) {
-		return
-	}
-	if err := a.Frontend.Activate(""); err != nil {
-		writeErr(w, r, http.StatusConflict, err)
-		return
-	}
-	a.handleFrontendStatus(w, r)
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, update)
 }

@@ -13,9 +13,11 @@ flowchart LR
 
 ## 用户更换前端
 
-进入「配置面板 → 前端版本」，填写 GitHub `owner/name` 和明确的版本标签。安装完成后选择启用，也可回到上一版本或恢复随当前服务提供的默认前端。切换后重新打开首页，无需重启后端。
+进入「配置面板 → 前端配置」，填写完整 GitHub 仓库链接（例如 `https://github.com/nianzhibai/91-web`），预览并保存配置。点击「安装并启用」即可使用该仓库的最新正式发布，完成后自动打开首页，无需重启后端。页面不显示历史版本列表。已使用该仓库时按钮显示「检查更新」，只读取最新发布信息；发现新版后显示「更新并启用」，没有新版则提示「已是最新版本」。重新进入页面仍可检查更新，改用其他仓库则恢复「安装并启用」。
 
-原生安装提供同一组操作：
+仓库地址保存在 `config.yaml` 的 `frontend.repository`，可视化与源码编辑共用同一份配置。保存地址不会下载或切换前端；点击安装时才获取最新发布。
+
+原生命令行还提供固定版本和离线维护操作：
 
 ```bash
 91 frontend status
@@ -26,7 +28,7 @@ flowchart LR
 91 frontend reset
 ```
 
-命令行 `install` 安装并启用；管理 API 的安装和启用是两个操作。安装包只包含静态页面，不会执行安装脚本。
+命令行和管理 API 的 `install` 都会安装并启用。安装包只包含静态页面，不会执行安装脚本。
 
 Docker 用户在 Compose 目录运行：
 
@@ -39,13 +41,13 @@ bash 91-docker.sh frontend reset
 
 Docker 中 `--package` 指容器内可读取的文件路径。也可以直接运行 `docker compose exec -T 91 docker-entrypoint.sh ./server frontend ...`。
 
-前端文件和启用记录存放在 `storage.data_dir/frontends/`，因此现有 Docker 数据挂载即可持久保存。应用升级不覆盖自定义版本。切换前验证 API 兼容范围，拒绝同名同版本但内容不同的安装；旧资源保留供已有页面和回滚使用。暂不自动删除历史版本，也不自动追踪 `latest`。
+前端文件和启用记录存放在 `storage.data_dir/frontends/`，因此现有 Docker 数据挂载即可持久保存。应用升级不覆盖自定义版本。切换前验证 API 兼容范围，拒绝同名同版本但内容不同的安装；旧资源保留供已有页面和回滚使用。暂不自动删除历史版本，也不会定时自动更新。
 
-管理 API：`GET /admin/api/frontend`、`POST /install`、`PUT /active`、`POST /rollback`、`POST /reset`（后四个路径以 `/admin/api/frontend` 开头），均需要管理员会话。
+管理 API：`GET /admin/api/frontend` 读取状态和当前仓库，`GET /admin/api/frontend/update` 检查更新（不下载或安装），`POST /admin/api/frontend/install` 使用已保存的仓库配置安装并启用最新发布（无请求体），均需要管理员会话。独立启用、回滚和恢复默认的管理接口已移除。
 
 ## 前端包协议
 
-GitHub Release 必须同时提供 `frontend.tar.gz` 与 `frontend.tar.gz.sha256`。校验文件使用 `SHA256  frontend.tar.gz` 格式。仅支持固定 `vX.Y.Z` 标签。
+GitHub Release 必须同时提供 `frontend.tar.gz` 与 `frontend.tar.gz.sha256`。校验文件使用 `SHA256  frontend.tar.gz` 格式。发布标签使用 `vX.Y.Z`；面板自动解析最新正式发布，并校验包内版本与标签一致。
 
 压缩包根目录的 `frontend.json`：
 

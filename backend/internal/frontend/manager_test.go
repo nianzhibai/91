@@ -262,3 +262,57 @@ func TestReleaseTagMismatchLeavesNoInstalledVersion(t *testing.T) {
 		t.Fatal("rejected release can be activated")
 	}
 }
+
+func TestLatestReleaseResolvesTagAndVerifiesManifest(t *testing.T) {
+	for _, scenario := range []struct {
+		name, tag                  string
+		draft, prerelease, success bool
+	}{
+		{name: "latest", tag: "v1.3.0", success: true},
+		{name: "manifest mismatch", tag: "v1.4.0"},
+		{name: "invalid tag", tag: "main"},
+		{name: "draft", tag: "v1.3.0", draft: true},
+		{name: "prerelease", tag: "v1.3.0", prerelease: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			m := testManager(t)
+			before, err := m.Status()
+			if err != nil {
+				t.Fatal(err)
+			}
+			archive := testArchive(t, "1.3.0", "1.0.0", "latest", nil)
+			digest := sha256.Sum256(archive)
+			var base string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/repos/owner/web/releases/latest":
+					json.NewEncoder(w).Encode(map[string]any{"tag_name": scenario.tag, "draft": scenario.draft, "prerelease": scenario.prerelease, "assets": []releaseAsset{{Name: ArchiveName, URL: base + "/archive"}, {Name: ArchiveName + ".sha256", URL: base + "/checksum"}}})
+				case "/archive":
+					w.Write(archive)
+				case "/checksum":
+					fmt.Fprintf(w, "%x  %s\n", digest, ArchiveName)
+				default:
+					t.Errorf("unexpected request: %s", r.URL.Path)
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			base = server.URL
+			source := &ReleaseSource{Client: server.Client(), apiURL: server.URL}
+			release, err := source.Install(context.Background(), m, ReleaseRequest{Repository: "https://github.com/owner/web.git"})
+			if scenario.success {
+				if err != nil || release.Version != "1.3.0" {
+					t.Fatalf("latest: %+v %v", release, err)
+				}
+			} else {
+				if err == nil {
+					t.Fatal("accepted invalid latest release")
+				}
+				status, err := m.Status()
+				if err != nil || !reflect.DeepEqual(before, status) {
+					t.Fatalf("failed install published release: %+v %v", status, err)
+				}
+			}
+		})
+	}
+}

@@ -98,3 +98,7 @@ telegram:
   upload_directory: "Telegram"
   # 仅用于 TG 网盘转存，支持 HTTP、HTTPS、SOCKS5、SOCKS5H
   upload_proxy: ""
+
+# 前端配置；保存后可在管理面板安装仓库的最新发布
+frontend:
+  repository: "https://github.com/nianzhibai/91-web"
