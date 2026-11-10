@@ -30,6 +30,31 @@ npm run build:example
 # 构建产物：examples/custom-frontend/dist/
 ```
 
+## 发布可安装版本
+
+要让用户在「前端配置」填写仓库链接即可安装，需要按 [前端包协议](FRONTEND_RELEASES.md#前端包协议) 发布 GitHub Release。示例已提供完整流程：
+
+```bash
+npm run package:example
+# examples/custom-frontend/release/frontend.tar.gz 与 frontend.tar.gz.sha256
+```
+
+1. 在 `frontend.json` 中声明名称、版本和 API 范围；每次发布递增 `version`。
+2. 以 release 模式构建：资源 `base` 为 `/_frontend/<name>/<version>/`，并把 `frontend.json` 输出到构建目录。见示例的 [`vite.config.ts`](../examples/custom-frontend/vite.config.ts)。
+3. 用 [`scripts/package-frontend.sh`](../scripts/package-frontend.sh) 打包，输出目录须在构建目录之外。脚本不依赖本仓库，可复制到自己的前端仓库。
+4. 以 `v<version>` 为标签发布两个文件。例如在自己仓库的 GitHub Actions 中：
+
+```bash
+bash scripts/package-frontend.sh dist release
+gh release create "v$VERSION" release/frontend.tar.gz release/frontend.tar.gz.sha256
+```
+
+发布本示例时，两个文件位于 `examples/custom-frontend/release/`。
+
+普通构建不含 `frontend.json` 且使用根路径，适用于下文的 `VIDEO_FRONTEND_DIR` 和独立托管。
+
+前端会同时接管前台和管理页面。若自定义前端不提供「前端配置」页面，用户只能通过 `91 frontend rollback`、`91 frontend reset`（Docker 为 `bash 91-docker.sh frontend ...`）切回。
+
 ## 部署
 
 ### Go 托管整个前端
@@ -130,4 +155,4 @@ await client.admin.updateSettings({ theme: "light" });
 | 实时状态 | 网盘 `/events` 使用 SSE，支持 `snapshot`、`heartbeat`；离开页面时关闭连接 |
 | 备份 | 下载和分块上传使用二进制；恢复前需要明确确认，202 表示已接受，后续可能重启 |
 
-维护时同步修改契约和 SDK；后端仓库运行 `npm run check`、`npm run build:client`、`npm run build:example` 与 `cd backend && go test ./...`。前端仓库单独运行 `npm run check` 和 `npm run package`。
+维护时同步修改契约和 SDK；后端仓库运行 `npm run check`、`npm run build:client`、`npm run build:example`、`npm run package:example` 与 `cd backend && go test ./...`。前端仓库单独运行 `npm run check` 和 `npm run package`。

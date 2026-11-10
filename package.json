@@ -21,7 +21,8 @@
     "verify": "npm run check && npm run build",
     "build:client": "tsc -p sdk/tsconfig.json",
     "dev:example": "vite --config examples/custom-frontend/vite.config.ts",
-    "build:example": "tsc -p examples/custom-frontend/tsconfig.json && vite build --config examples/custom-frontend/vite.config.ts"
+    "build:example": "tsc -p examples/custom-frontend/tsconfig.json && vite build --config examples/custom-frontend/vite.config.ts",
+    "package:example": "tsc -p examples/custom-frontend/tsconfig.json && vite build --config examples/custom-frontend/vite.config.ts --mode release && bash scripts/package-frontend.sh examples/custom-frontend/dist examples/custom-frontend/release"
   },
   "dependencies": {
     "hls.js": "^1.7.3",

@@ -1,0 +1,7 @@
+{
+  "formatVersion": 1,
+  "name": "custom-frontend-example",
+  "version": "1.0.0",
+  "apiMin": "1.0.0",
+  "apiMaxExclusive": "2.0.0"
+}
