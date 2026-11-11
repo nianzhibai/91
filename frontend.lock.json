@@ -1,5 +1,5 @@
 {
-  "default": "91-web",
+  "default": "91-web-nostalgic",
   "frontends": [
     {
       "repository": "https://github.com/nianzhibai/91-web",

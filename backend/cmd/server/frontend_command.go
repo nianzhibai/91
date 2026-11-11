@@ -26,7 +26,7 @@ func runFrontendCommand(args []string, out, errorOut io.Writer) error {
 	flags := flag.NewFlagSet("frontend "+action, flag.ContinueOnError)
 	flags.SetOutput(errorOut)
 	configPath := flags.String("config", applicationConfigPath(), "server configuration")
-	repository := flags.String("repository", "nianzhibai/91-web", "frontend GitHub owner/name")
+	repository := flags.String("repository", config.DefaultFrontendRepository, "frontend GitHub repository")
 	version := flags.String("version", "", "explicit frontend release tag")
 	archive := flags.String("package", "", "local frontend.tar.gz")
 	checksum := flags.String("sha256", "", "expected local archive SHA-256")

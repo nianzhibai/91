@@ -101,4 +101,4 @@ telegram:
 
 # 前端配置；保存后在管理面板启用：已内置的前端无需下载，其他仓库安装最新发布
 frontend:
-  repository: "https://github.com/nianzhibai/91-web"
+  repository: "https://github.com/nianzhibai/91-web-nostalgic"

@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	DefaultFrontendRepository    = "https://github.com/nianzhibai/91-web"
+	DefaultFrontendRepository    = "https://github.com/nianzhibai/91-web-nostalgic"
 	DefaultNightlyDisabled       = false
 	DefaultNightlyStartTime      = "01:00"
 	DefaultNightlyTimezone       = schedule.DefaultTimezone

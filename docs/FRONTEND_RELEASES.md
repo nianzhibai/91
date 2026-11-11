@@ -4,8 +4,8 @@
 
 | 仓库 | 说明 |
 | --- | --- |
-| `nianzhibai/91-web` | 默认前端 |
-| `nianzhibai/91-web-nostalgic` | 改版前的界面 |
+| `nianzhibai/91-web-nostalgic` | 默认前端 |
+| `nianzhibai/91-web` | 新版界面，仍在完善 |
 
 两者都随安装包和镜像内置，可在后台直接切换，无需联网。
 
@@ -32,7 +32,7 @@ flowchart LR
 
 页面不显示历史版本列表。
 
-仓库地址保存在 `config.yaml` 的 `frontend.repository`，新安装默认为 `91-web`，可视化与源码编辑共用同一份配置。保存地址不会下载或切换前端；点击按钮时才执行。
+仓库地址保存在 `config.yaml` 的 `frontend.repository`，新安装默认为 `91-web-nostalgic`，可视化与源码编辑共用同一份配置。保存地址不会下载或切换前端；点击按钮时才执行。
 
 原生命令行还提供固定版本和离线维护操作：
 
@@ -86,10 +86,10 @@ GitHub Release 必须同时提供 `frontend.tar.gz` 与 `frontend.tar.gz.sha256`
 
 ```json
 {
-  "default": "91-web",
+  "default": "91-web-nostalgic",
   "frontends": [
-    { "repository": "https://github.com/nianzhibai/91-web", "name": "91-web", "version": "v1.0.0", "sha256": "…" },
-    { "repository": "https://github.com/nianzhibai/91-web-nostalgic", "name": "91-web-nostalgic", "version": "v1.0.0", "sha256": "…" }
+    { "repository": "https://github.com/nianzhibai/91-web-nostalgic", "name": "91-web-nostalgic", "version": "v1.0.0", "sha256": "…" },
+    { "repository": "https://github.com/nianzhibai/91-web", "name": "91-web", "version": "v1.0.0", "sha256": "…" }
   ]
 }
 ```

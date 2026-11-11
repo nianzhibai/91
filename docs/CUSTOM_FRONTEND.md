@@ -1,6 +1,6 @@
 # 自定义前端
 
-前台和管理后台都可以完全重写。Go 服务负责身份认证、权限、数据、任务和媒体访问；页面路由与界面由客户端决定。官方 React 应用位于独立的 `nianzhibai/91-web`（默认）和 `nianzhibai/91-web-nostalgic` 仓库，与独立示例使用同一个无 React 依赖的客户端库。
+前台和管理后台都可以完全重写。Go 服务负责身份认证、权限、数据、任务和媒体访问；页面路由与界面由客户端决定。官方 React 应用位于独立的 `nianzhibai/91-web-nostalgic`（默认）和 `nianzhibai/91-web` 仓库，与独立示例使用同一个无 React 依赖的客户端库。
 
 用户安装并启用前端及命令行维护步骤见 [前端版本与发布](FRONTEND_RELEASES.md)。
 
