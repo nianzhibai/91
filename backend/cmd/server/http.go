@@ -454,10 +454,15 @@ func mountFrontend(r chi.Router, manager *frontend.Manager) error {
 	dir, ok := resolveFrontendDir()
 	if !ok {
 		if dir := strings.TrimSpace(os.Getenv("VIDEO_FRONTEND_DIR")); dir != "" {
-			return fmt.Errorf("VIDEO_FRONTEND_DIR %q must contain index.html", dir)
+			return fmt.Errorf("VIDEO_FRONTEND_DIR %q must contain index.html or %s", dir, frontend.BundleFile)
 		}
 	} else {
-		log.Printf("serving bundled frontend from %s", dir)
+		site, err := frontend.BuiltinSite(dir)
+		if err != nil {
+			return err
+		}
+		log.Printf("serving bundled frontend from %s", site)
+		dir = site
 	}
 	if manager != nil {
 		serveAsset := func(w http.ResponseWriter, request *http.Request) {
@@ -515,9 +520,11 @@ func resolveFrontendDir() (string, bool) {
 		if err != nil || !info.IsDir() {
 			continue
 		}
-		indexPath := filepath.Join(dir, "index.html")
-		if st, err := os.Stat(indexPath); err == nil && !st.IsDir() {
-			return dir, true
+		// A directory is either one site or a bundle of shipped frontends.
+		for _, marker := range []string{"index.html", frontend.BundleFile} {
+			if st, err := os.Stat(filepath.Join(dir, marker)); err == nil && !st.IsDir() {
+				return dir, true
+			}
 		}
 	}
 	return "", false

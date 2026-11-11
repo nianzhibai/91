@@ -4,7 +4,7 @@ on:
   workflow_call:
     outputs:
       artifact:
-        description: Verified frontend archive for image and package builds
+        description: Verified frontend archives for image and package builds
         value: ${{ jobs.prepare.outputs.artifact }}
 
 permissions:
@@ -22,26 +22,29 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
-      - name: Download pinned frontend archive
+      - name: Download pinned frontend archives
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          repository=$(jq -er '.repository' frontend.lock.json)
-          version=$(jq -er '.version' frontend.lock.json)
-          gh release download "$version" --repo "$repository" \
-            --pattern frontend.tar.gz --dir frontend-bundle
-      - name: Verify frontend package
+          jq -c '.frontends[]' frontend.lock.json | while read -r pinned; do
+            repository=$(jq -er '.repository' <<<"$pinned")
+            name=$(jq -er '.name' <<<"$pinned")
+            version=$(jq -er '.version' <<<"$pinned")
+            gh release download "$version" --repo "${repository#https://github.com/}" \
+              --pattern frontend.tar.gz --output "frontend-bundle/$name.tar.gz"
+          done
+      - name: Verify frontend packages
         env:
-          FRONTEND_ARCHIVE: ${{ github.workspace }}/frontend-bundle/frontend.tar.gz
+          FRONTEND_ARCHIVES: ${{ github.workspace }}/frontend-bundle
         shell: bash
         run: bash scripts/prepare-frontend.sh "$RUNNER_TEMP/verified-frontend"
-      - name: Share verified frontend archive
+      - name: Share verified frontend archives
         uses: actions/upload-artifact@v7.0.2
         with:
           name: frontend-bundle
           archive: true
-          path: frontend-bundle/frontend.tar.gz
+          path: frontend-bundle/*.tar.gz
           if-no-files-found: error
           retention-days: 30
           overwrite: true

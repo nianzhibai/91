@@ -234,3 +234,52 @@ func TestManagedFrontendCanBeInstalledAfterServerStartsWithoutBuiltin(t *testing
 		})
 	}
 }
+
+func TestBundleDirectoryServesItsDefaultFrontend(t *testing.T) {
+	packager, err := frontend.New(t.TempDir(), "", httpapi.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := packager.Install(bytes.NewReader(frontendFixture(t, "1.0.0")), frontend.InstallOptions{Repository: "https://github.com/owner/fixture"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle := filepath.Join(t.TempDir(), "dist")
+	if err := packager.WriteBundle(bundle, release.ID(), []string{release.ID()}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VIDEO_FRONTEND_DIR", bundle)
+	t.Setenv("VIDEO_FRONTEND_MODE", "auto")
+	if dir, ok := resolveFrontendDir(); !ok || dir != bundle {
+		t.Fatalf("bundle not resolved: %q %v", dir, ok)
+	}
+	manager, err := frontend.New(t.TempDir(), bundle, httpapi.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RetainBuiltin(); err != nil {
+		t.Fatal(err)
+	}
+	for name, current := range map[string]*frontend.Manager{"managed": manager, "unmanaged": nil} {
+		t.Run(name, func(t *testing.T) {
+			router := chi.NewRouter()
+			if err := mountFrontend(router, current); err != nil {
+				t.Fatal(err)
+			}
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest("GET", "/admin", nil))
+			if response.Code != 200 || !bytes.Contains(response.Body.Bytes(), []byte(release.BaseURL())) {
+				t.Fatalf("default page: %d %s", response.Code, response.Body.String())
+			}
+		})
+	}
+	router := chi.NewRouter()
+	if err := mountFrontend(router, manager); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest("GET", "/_frontend/fixture/1.0.0/assets/app.js", nil))
+	if response.Code != 200 || response.Body.String() != "1.0.0" {
+		t.Fatalf("bundled asset: %d %s", response.Code, response.Body.String())
+	}
+}

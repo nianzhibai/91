@@ -35,7 +35,7 @@ go build -o server ./cmd/server
 
 ## 源码部署
 
-在 Linux 仓库根目录执行，脚本会获取锁定的前端发布包、构建后端，并注册 `91.service`。离线构建和前端尚未发布时可使用 `FRONTEND_ARCHIVE` 指定与锁文件一致的本地归档：
+在 Linux 仓库根目录执行，脚本会获取锁定的前端发布包、构建后端，并注册 `91.service`。离线构建和前端尚未发布时可使用 `FRONTEND_ARCHIVES` 指定一个目录，其中为锁文件中的每个前端放入与之一致的 `<name>.tar.gz`：
 
 ```bash
 sudo bash deploy.sh
@@ -186,7 +186,7 @@ GPU 主机可运行 `cd backend && VIDEO_TEST_GPU=1 go test ./internal/preview -
 | `internal/mediaimport/`、`internal/telegram/`、`internal/crawlerupload/` | 导入、Telegram 接收和爬虫产物转存 |
 | `internal/nightly/`、`internal/dedupe/`、`internal/mediasim/` | 定时编排、去重计划和相似度算法 |
 
-官方前端源码和 UI 测试位于独立的 `nianzhibai/91-web` 仓库。本仓库的 `sdk/` 提供客户端库，`tests/` 验证 SDK、接口约定和部署脚本；`scripts/` 与 `.github/` 负责产品构建发布。前端安装、切换及版本锁定见 [前端版本与发布](../docs/FRONTEND_RELEASES.md)。
+官方前端源码和 UI 测试位于独立的 `nianzhibai/91-web`（默认）和 `nianzhibai/91-web-nostalgic` 仓库。本仓库的 `sdk/` 提供客户端库，`tests/` 验证 SDK、接口约定和部署脚本；`scripts/` 与 `.github/` 负责产品构建发布。前端安装、切换及版本锁定见 [前端版本与发布](../docs/FRONTEND_RELEASES.md)。
 
 ## 运行流程
 

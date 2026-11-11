@@ -33,19 +33,13 @@ func (a *AdminServer) handleFrontendInstall(w http.ResponseWriter, r *http.Reque
 	if !a.requireFrontend(w) {
 		return
 	}
-	request := frontend.ReleaseRequest{Repository: a.ConfigManager.FrontendRepository()}
-
-	release, err := frontend.NewReleaseSource().Install(r.Context(), a.Frontend, request)
+	release, err := frontend.NewReleaseSource().Enable(r.Context(), a.Frontend, a.ConfigManager.FrontendRepository())
 	if err != nil {
 		code := http.StatusBadRequest
 		if errors.Is(err, frontend.ErrNoNewerRelease) {
 			code = http.StatusConflict
 		}
 		writeErr(w, r, code, err)
-		return
-	}
-	if err := a.Frontend.Activate(release.Name + "@" + release.Version); err != nil {
-		writeErr(w, r, http.StatusConflict, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, release)

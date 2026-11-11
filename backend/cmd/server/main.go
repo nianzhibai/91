@@ -425,12 +425,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("prepare frontend storage: %v", err)
 	}
-	if builtinFrontend != "" {
-		if _, err := os.Stat(filepath.Join(builtinFrontend, "frontend.json")); err == nil {
-			if err := frontendManager.RetainBuiltin(); err != nil {
-				log.Fatalf("retain bundled frontend: %v", err)
-			}
-		}
+	if err := frontendManager.RetainBuiltin(); err != nil {
+		log.Fatalf("retain bundled frontend: %v", err)
 	}
 	adminServer.Frontend = frontendManager
 	adminServer.Register(r)

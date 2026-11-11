@@ -178,3 +178,27 @@ func (source *ReleaseSource) Install(ctx context.Context, manager *Manager, requ
 		Version: release.Version,
 	})
 }
+
+// Enable activates a repository's frontend. Switching to a repository that is
+// already installed, such as a bundled frontend, needs no network access. The
+// active repository, or one not installed yet, gets its latest release.
+func (source *ReleaseSource) Enable(ctx context.Context, manager *Manager, repository string) (Release, error) {
+	status, err := manager.Status()
+	if err != nil {
+		return Release{}, err
+	}
+	if status.Current == nil || !sameRepository(status.Current.Repository, repository) {
+		release, found, err := manager.installedFrom(repository)
+		if err != nil {
+			return Release{}, err
+		}
+		if found {
+			return release, manager.Activate(release.ID())
+		}
+	}
+	release, err := source.Install(ctx, manager, ReleaseRequest{Repository: repository})
+	if err != nil {
+		return Release{}, err
+	}
+	return release, manager.Activate(release.ID())
+}

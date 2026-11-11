@@ -28,13 +28,13 @@ COPY backend/internal/ internal/
 COPY backend/config_template.go backend/config.example.yaml ./
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
 
-# ---- Fetch and verify the pinned frontend release (or an offline artifact) ----
+# ---- Fetch and verify the pinned frontend releases (or offline artifacts) ----
 FROM backend AS frontend
 COPY frontend.lock.json /app/frontend.lock.json
 COPY frontend-bundle/ /bundle/
 RUN CGO_ENABLED=0 go build -o /out/frontend-package ./cmd/frontend-package \
-    && if [ -f /bundle/frontend.tar.gz ]; then \
-         /out/frontend-package --lock /app/frontend.lock.json --archive /bundle/frontend.tar.gz --output /out/frontend; \
+    && if ls /bundle/*.tar.gz >/dev/null 2>&1; then \
+         /out/frontend-package --lock /app/frontend.lock.json --archives /bundle --output /out/frontend; \
        else \
          /out/frontend-package --lock /app/frontend.lock.json --output /out/frontend; \
        fi

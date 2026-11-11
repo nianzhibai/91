@@ -7,12 +7,13 @@ if [[ $# != 1 ]]; then
   exit 2
 fi
 output="$(realpath -m -- "$1")"
-archive="${FRONTEND_ARCHIVE:-}"
-if [[ -n "$archive" ]]; then archive="$(realpath -- "$archive")"; fi
-if [[ -z "$archive" && -f "$ROOT_DIR/frontend-bundle/frontend.tar.gz" ]]; then
-  archive="$ROOT_DIR/frontend-bundle/frontend.tar.gz"
+# Offline builds provide <name>.tar.gz for every frontend in frontend.lock.json.
+archives="${FRONTEND_ARCHIVES:-}"
+if [[ -n "$archives" ]]; then archives="$(realpath -- "$archives")"; fi
+if [[ -z "$archives" ]] && compgen -G "$ROOT_DIR/frontend-bundle/*.tar.gz" >/dev/null; then
+  archives="$ROOT_DIR/frontend-bundle"
 fi
 args=(--lock "$ROOT_DIR/frontend.lock.json" --output "$output")
-if [[ -n "$archive" ]]; then args+=(--archive "$archive"); fi
+if [[ -n "$archives" ]]; then args+=(--archives "$archives"); fi
 cd "$ROOT_DIR/backend"
 go run ./cmd/frontend-package "${args[@]}"

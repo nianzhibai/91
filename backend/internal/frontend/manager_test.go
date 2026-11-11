@@ -20,7 +20,12 @@ import (
 
 func testArchive(t *testing.T, version, apiMin, script string, extra *tar.Header) []byte {
 	t.Helper()
-	manifest := Manifest{FormatVersion: 1, Name: "test-web", Version: version, APIMin: apiMin, APIMax: "2.0.0"}
+	return testNamedArchive(t, "test-web", version, apiMin, script, extra)
+}
+
+func testNamedArchive(t *testing.T, name, version, apiMin, script string, extra *tar.Header) []byte {
+	t.Helper()
+	manifest := Manifest{FormatVersion: 1, Name: name, Version: version, APIMin: apiMin, APIMax: "2.0.0"}
 	metadata, _ := json.Marshal(manifest)
 	var buffer bytes.Buffer
 	gz := gzip.NewWriter(&buffer)

@@ -101,8 +101,8 @@ func TestCurrentFrontendTracksBuiltinAndInstalledSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	status, err := manager.Status()
-	if err != nil || status.Current == nil || status.Current.Repository != "https://github.com/nianzhibai/91-web" {
-		t.Fatalf("builtin: %+v %v", status, err)
+	if err != nil || status.Current == nil || status.Current.Name != "91-web" || status.Current.Repository != "" {
+		t.Fatalf("a site without bundle metadata has no known source: %+v %v", status, err)
 	}
 	archive := testArchive(t, "1.2.0", "1.0.0", "local", nil)
 	local, err := manager.Install(bytes.NewReader(archive), InstallOptions{})

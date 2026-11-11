@@ -99,6 +99,6 @@ telegram:
   # 仅用于 TG 网盘转存，支持 HTTP、HTTPS、SOCKS5、SOCKS5H
   upload_proxy: ""
 
-# 前端配置；保存后可在管理面板安装仓库的最新发布
+# 前端配置；保存后在管理面板启用：已内置的前端无需下载，其他仓库安装最新发布
 frontend:
   repository: "https://github.com/nianzhibai/91-web"

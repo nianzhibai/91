@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/nianzhibai/91/backend/internal/atomicfile"
 	"github.com/nianzhibai/91/backend/internal/filelock"
+	"golang.org/x/mod/semver"
 )
 
 type Release struct {
@@ -26,7 +26,7 @@ type Release struct {
 }
 
 type Selection struct {
-	Active   string  `json:"active"` // Empty selects the bundled frontend.
+	Active   string  `json:"active"` // Empty selects the default bundled frontend.
 	Previous *string `json:"previous,omitempty"`
 }
 
@@ -45,7 +45,8 @@ type Status struct {
 
 type Manager struct {
 	root       string
-	builtin    string
+	builtin    string // Site served when no release is selected.
+	bundle     string // Shipped bundle, when the builtin directory is one.
 	apiVersion string
 }
 
@@ -60,6 +61,14 @@ type InstallOptions struct {
 
 func New(dataDirectory, builtinDirectory, apiVersion string) (*Manager, error) {
 	m := &Manager{root: filepath.Join(dataDirectory, "frontends"), builtin: builtinDirectory, apiVersion: apiVersion}
+	index, ok, err := readBundleIndex(builtinDirectory)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		m.bundle = builtinDirectory
+		m.builtin = filepath.Join(builtinDirectory, "releases", index.Default, "site")
+	}
 	if err := os.MkdirAll(filepath.Join(m.root, "releases"), 0755); err != nil {
 		return nil, err
 	}
@@ -152,10 +161,13 @@ func (m *Manager) Status() (Status, error) {
 		status.Installed = append(status.Installed, release)
 	}
 	if status.Active == "" && status.Builtin != nil {
+		// Retained bundled releases record the repository they were built from.
 		repository := ""
-		// The official bundled frontend is shipped from this repository.
-		if status.Builtin.Name == "91-web" {
-			repository = "https://github.com/nianzhibai/91-web"
+		for _, release := range status.Installed {
+			if release.ID() == status.Builtin.ID() {
+				repository = release.Repository
+				break
+			}
 		}
 		status.Current = &Current{Name: status.Builtin.Name, Version: status.Builtin.Version, Repository: repository}
 	} else {
@@ -342,51 +354,72 @@ func (m *Manager) store(staging string, release Release) error {
 	return atomicfile.SyncDirectory(filepath.Dir(target))
 }
 
-// RetainBuiltin preserves the shipped assets before later application upgrades
+// RetainBuiltin preserves shipped frontends before later application upgrades
 // replace the bundled directory. No selection is changed by this operation.
 func (m *Manager) RetainBuiltin() error {
+	if m.bundle != "" {
+		return m.retainBundle()
+	}
 	if m.builtin == "" {
 		return nil
 	}
-	manifest, err := readManifest(m.builtin, m.apiVersion)
+	if _, err := os.Stat(filepath.Join(m.builtin, "frontend.json")); errors.Is(err, os.ErrNotExist) {
+		return nil // A custom site without a manifest is served but not versioned.
+	}
+	return m.retain(m.builtin, Release{})
+}
+
+// retain stores a shipped site. Metadata from a bundle must match its files.
+func (m *Manager) retain(site string, release Release) error {
+	manifest, err := readManifest(site, m.apiVersion)
 	if err != nil {
 		return err
 	}
+	if release.Name != "" && release.Manifest != manifest {
+		return errors.New("release metadata does not match frontend.json")
+	}
+	release.Manifest = manifest
 	return m.withLock(func() error {
-		contentHash, err := treeDigest(m.builtin)
+		contentHash, err := treeDigest(site)
 		if err != nil {
 			return err
 		}
+		if release.ContentHash != "" && release.ContentHash != contentHash {
+			return errors.New("files do not match the recorded content hash")
+		}
+		release.ContentHash = contentHash
+		release.InstalledAt = time.Now().UTC().Format(time.RFC3339)
 		staging, err := os.MkdirTemp(m.root, ".builtin-*")
 		if err != nil {
 			return err
 		}
 		defer os.RemoveAll(staging)
-		site := filepath.Join(staging, "site")
-		err = filepath.WalkDir(m.builtin, func(name string, entry fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			relative, err := filepath.Rel(m.builtin, name)
-			if err != nil {
-				return err
-			}
-			target := filepath.Join(site, relative)
-			if entry.IsDir() {
-				return os.MkdirAll(target, 0755)
-			}
-			if !entry.Type().IsRegular() {
-				return errors.New("bundled frontend contains non-regular files")
-			}
-			data, err := os.ReadFile(name)
-			if err != nil {
-				return err
-			}
-			return os.WriteFile(target, data, 0644)
-		})
-		if err != nil {
+		if err := copyTree(site, filepath.Join(staging, "site")); err != nil {
 			return err
 		}
-		return m.store(staging, Release{Manifest: manifest, ContentHash: contentHash, InstalledAt: time.Now().UTC().Format(time.RFC3339)})
+		return m.store(staging, release)
 	})
+}
+
+// installedFrom returns the newest installed release from repository that this
+// server can still serve.
+func (m *Manager) installedFrom(repository string) (Release, bool, error) {
+	status, err := m.Status()
+	if err != nil {
+		return Release{}, false, err
+	}
+	var newest Release
+	found := false
+	for _, release := range status.Installed {
+		if !sameRepository(release.Repository, repository) {
+			continue
+		}
+		if _, err := m.directory(release.ID()); err != nil {
+			continue
+		}
+		if !found || semver.Compare("v"+release.Version, "v"+newest.Version) > 0 {
+			newest, found = release, true
+		}
+	}
+	return newest, found, nil
 }

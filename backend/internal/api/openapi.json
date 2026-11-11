@@ -7786,7 +7786,7 @@
     "/admin/api/frontend/install": {
       "post": {
         "operationId": "post_admin_frontend_install",
-        "summary": "Install and activate the latest frontend release",
+        "summary": "Enable the configured frontend repository",
         "tags": [
           "Management"
         ],
@@ -7806,7 +7806,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "description": "Install and activate the latest published release from frontend.repository in config.yaml."
+        "description": "Enable frontend.repository from config.yaml. When another repository is active and a release of this repository is already installed, such as a bundled frontend, its newest installed release is activated without downloading. Otherwise the latest published release is installed and activated."
       }
     },
     "/admin/api/frontend/update": {
@@ -12237,7 +12237,7 @@
         "properties": {
           "active": {
             "type": "string",
-            "description": "Empty means bundled frontend"
+            "description": "Empty means the default bundled frontend"
           },
           "previous": {
             "type": "string"

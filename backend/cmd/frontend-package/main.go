@@ -1,4 +1,4 @@
-// frontend-package prepares a verified web release for native and Docker builds.
+// frontend-package prepares the verified frontend bundle for native and Docker builds.
 package main
 
 import (
@@ -7,7 +7,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,43 +15,70 @@ import (
 	"github.com/nianzhibai/91/backend/internal/httpapi"
 )
 
+type pinnedFrontend struct {
+	Repository string `json:"repository"`
+	Name       string `json:"name"`
+	Version    string `json:"version"` // Release tag, such as v1.0.0.
+	SHA256     string `json:"sha256"`
+}
+
+type lockFile struct {
+	Default   string           `json:"default"` // Name of the frontend served on first start.
+	Frontends []pinnedFrontend `json:"frontends"`
+}
+
 func main() {
-	lockPath := flag.String("lock", "frontend.lock.json", "pinned frontend release")
-	archive := flag.String("archive", "", "optional offline frontend.tar.gz")
-	output := flag.String("output", "", "new output directory")
+	lockPath := flag.String("lock", "frontend.lock.json", "pinned frontend releases")
+	archives := flag.String("archives", "", "optional directory with <name>.tar.gz for every pinned frontend")
+	output := flag.String("output", "", "new bundle directory")
 	flag.Parse()
-	if err := prepare(*lockPath, *archive, *output); err != nil {
+	if err := prepare(*lockPath, *archives, *output); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func prepare(lockPath, archive, output string) error {
+func readLock(lockPath string) (lockFile, error) {
+	var lock lockFile
+	data, err := os.ReadFile(lockPath)
+	if err != nil {
+		return lock, err
+	}
+	if err = json.Unmarshal(data, &lock); err != nil {
+		return lock, err
+	}
+	if len(lock.Frontends) == 0 {
+		return lock, errors.New("lock file pins no frontends")
+	}
+	names := map[string]bool{}
+	for _, pinned := range lock.Frontends {
+		if err := (frontend.ReleaseRequest{Repository: pinned.Repository, Version: pinned.Version}).Validate(); err != nil {
+			return lock, err
+		}
+		if pinned.Version == "" || len(pinned.SHA256) != 64 {
+			return lock, fmt.Errorf("%s requires a release tag and SHA-256", pinned.Name)
+		}
+		if names[pinned.Name] {
+			return lock, fmt.Errorf("%s is pinned more than once", pinned.Name)
+		}
+		names[pinned.Name] = true
+	}
+	if !names[lock.Default] {
+		return lock, errors.New("the default frontend must be pinned")
+	}
+	return lock, nil
+}
+
+func prepare(lockPath, archives, output string) error {
 	if output == "" {
 		return errors.New("--output is required; existing directories are never overwritten")
 	}
 	if _, err := os.Stat(output); !errors.Is(err, os.ErrNotExist) {
 		return errors.New("output directory must not already exist")
 	}
-	data, err := os.ReadFile(lockPath)
+	lock, err := readLock(lockPath)
 	if err != nil {
 		return err
-	}
-	var lock struct {
-		Repository string `json:"repository"`
-		Name       string `json:"name"`
-		Version    string `json:"version"`
-		SHA256     string `json:"sha256"`
-	}
-	if err = json.Unmarshal(data, &lock); err != nil {
-		return err
-	}
-	request := frontend.ReleaseRequest{Repository: lock.Repository, Version: lock.Version}
-	if err = request.Validate(); err != nil {
-		return err
-	}
-	if len(lock.SHA256) != 64 {
-		return errors.New("lock file requires the release SHA-256")
 	}
 	work, err := os.MkdirTemp("", "91-bundled-frontend-")
 	if err != nil {
@@ -63,68 +89,41 @@ func prepare(lockPath, archive, output string) error {
 	if err != nil {
 		return err
 	}
-	var release frontend.Release
-	if archive != "" {
-		file, err := os.Open(archive)
+	ids := make([]string, 0, len(lock.Frontends))
+	defaultID := ""
+	for _, pinned := range lock.Frontends {
+		release, err := install(manager, pinned, archives)
 		if err != nil {
-			return err
+			return fmt.Errorf("%s: %w", pinned.Name, err)
 		}
-		release, err = manager.Install(file, frontend.InstallOptions{
-			SHA256: lock.SHA256, Repository: lock.Repository,
-			Name: lock.Name, Version: strings.TrimPrefix(lock.Version, "v"),
-		})
-		file.Close()
-		if err != nil {
-			return err
+		if !strings.EqualFold(release.SHA256, pinned.SHA256) || release.Name != pinned.Name || "v"+release.Version != pinned.Version {
+			return fmt.Errorf("%s does not match the pinned release", pinned.Name)
 		}
-	} else {
-		release, err = frontend.NewReleaseSource().Install(context.Background(), manager, request)
-		if err != nil {
-			return err
+		ids = append(ids, release.ID())
+		if pinned.Name == lock.Default {
+			defaultID = release.ID()
 		}
+		fmt.Printf("Verified %s from %s (%s)\n", release.ID(), pinned.Repository, release.SHA256)
 	}
-	if !strings.EqualFold(release.SHA256, lock.SHA256) || release.Name != lock.Name || "v"+release.Version != lock.Version {
-		return errors.New("frontend package does not match the pinned release")
-	}
-	if err = manager.Activate(release.ID()); err != nil {
+	if err := manager.WriteBundle(output, defaultID, ids); err != nil {
 		return err
 	}
-	site, err := manager.ActiveDirectory()
-	if err != nil {
-		return err
-	}
-	if err = os.MkdirAll(filepath.Dir(output), 0755); err != nil {
-		return err
-	}
-	staged, err := os.MkdirTemp(filepath.Dir(output), ".frontend-*")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(staged)
-	err = filepath.WalkDir(site, func(name string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		relative, err := filepath.Rel(site, name)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(staged, relative)
-		if entry.IsDir() {
-			return os.MkdirAll(target, 0755)
-		}
-		contents, err := os.ReadFile(name)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(target, contents, 0644)
-	})
-	if err != nil {
-		return err
-	}
-	if err = os.Rename(staged, output); err != nil {
-		return err
-	}
-	fmt.Printf("Prepared %s from %s (%s)\n", release.ID(), lock.Repository, release.SHA256)
+	fmt.Printf("Prepared %d frontends; %s is the default\n", len(ids), defaultID)
 	return nil
+}
+
+func install(manager *frontend.Manager, pinned pinnedFrontend, archives string) (frontend.Release, error) {
+	if archives == "" {
+		return frontend.NewReleaseSource().Install(context.Background(), manager, frontend.ReleaseRequest{Repository: pinned.Repository, Version: pinned.Version})
+	}
+	// Offline builds must provide every pinned archive; nothing is downloaded.
+	file, err := os.Open(filepath.Join(archives, pinned.Name+".tar.gz"))
+	if err != nil {
+		return frontend.Release{}, err
+	}
+	defer file.Close()
+	return manager.Install(file, frontend.InstallOptions{
+		SHA256: pinned.SHA256, Repository: pinned.Repository,
+		Name: pinned.Name, Version: strings.TrimPrefix(pinned.Version, "v"),
+	})
 }
