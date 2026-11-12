@@ -73,9 +73,9 @@ func TestPrepareBundlesEveryPinnedFrontend(t *testing.T) {
 	if err := manager.RetainBuiltin(); err != nil {
 		t.Fatal(err)
 	}
-	status, err := manager.Status()
-	if err != nil || len(status.Installed) != 2 || status.Current == nil || status.Current.Repository != "https://github.com/owner/web" {
-		t.Fatalf("bundle: %+v %v", status, err)
+	frontends, err := manager.Frontends()
+	if err != nil || len(frontends) != 2 || !frontends[1].Active || frontends[1].ID != "" || frontends[1].Repository != "https://github.com/owner/web" {
+		t.Fatalf("bundle: %+v %v", frontends, err)
 	}
 }
 

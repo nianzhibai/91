@@ -124,15 +124,6 @@ func liveSettingsFromConfig(cfg *Config) LiveSettings {
 	}
 }
 
-func (m *Manager) FrontendRepository() string {
-	if m == nil {
-		return DefaultFrontendRepository
-	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.current.Frontend.Repository
-}
-
 func (m *Manager) LiveSettings() LiveSettings {
 	if m == nil {
 		return DefaultLiveSettings()
@@ -473,7 +464,6 @@ func removeLiveDocumentValues(document any) {
 		return
 	}
 	delete(root, "telegram")
-	removeNestedValue(root, "frontend", "repository")
 	removeNestedValue(root, "nightly", "start_time")
 	removeNestedValue(root, "nightly", "cron_hour")
 	removeNestedValue(root, "nightly", "timezone")

@@ -249,9 +249,11 @@ func (a *AdminServer) Register(r chi.Router) {
 		// 其余路由需管理员鉴权
 		r.Group(func(r chi.Router) {
 			r.Use(a.Auth.AdminRequired)
-			r.Get("/frontend", a.handleFrontendStatus)
-			r.Get("/frontend/update", a.handleFrontendUpdate)
+			r.Get("/frontend", a.handleFrontendList)
+			r.Get("/frontend/updates", a.handleFrontendUpdates)
+			r.Post("/frontend/activate", a.handleFrontendActivate)
 			r.Post("/frontend/install", a.handleFrontendInstall)
+			r.Post("/frontend/upload", a.handleFrontendUpload)
 
 			// 网盘
 			r.Get("/drives", a.handleListDrives)

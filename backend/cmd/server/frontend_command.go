@@ -26,7 +26,7 @@ func runFrontendCommand(args []string, out, errorOut io.Writer) error {
 	flags := flag.NewFlagSet("frontend "+action, flag.ContinueOnError)
 	flags.SetOutput(errorOut)
 	configPath := flags.String("config", applicationConfigPath(), "server configuration")
-	repository := flags.String("repository", config.DefaultFrontendRepository, "frontend GitHub repository")
+	repository := flags.String("repository", "", "frontend GitHub repository")
 	version := flags.String("version", "", "explicit frontend release tag")
 	archive := flags.String("package", "", "local frontend.tar.gz")
 	checksum := flags.String("sha256", "", "expected local archive SHA-256")
@@ -75,6 +75,8 @@ func runFrontendCommand(args []string, out, errorOut io.Writer) error {
 			}
 			release, err = manager.Install(file, frontend.InstallOptions{SHA256: *checksum})
 			file.Close()
+		} else if *repository == "" {
+			return errors.New("--repository or --package is required")
 		} else {
 			release, err = frontend.NewReleaseSource().Install(context.Background(), manager, frontend.ReleaseRequest{Repository: *repository, Version: *version})
 		}

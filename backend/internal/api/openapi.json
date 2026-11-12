@@ -7761,7 +7761,7 @@
     "/admin/api/frontend": {
       "get": {
         "operationId": "get_admin_frontend",
-        "summary": "Get frontend versions",
+        "summary": "List frontends",
         "tags": [
           "Management"
         ],
@@ -7772,7 +7772,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FrontendStatus"
+                  "$ref": "#/components/schemas/FrontendList"
                 }
               }
             }
@@ -7780,24 +7780,91 @@
           "default": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "description": "Every frontend this server can serve, one entry per frontend name. Builtin frontends come first; exactly one entry is active."
+      }
+    },
+    "/admin/api/frontend/activate": {
+      "post": {
+        "operationId": "post_admin_frontend_activate",
+        "summary": "Switch to an installed frontend",
+        "tags": [
+          "Management"
+        ],
+        "x-role": "admin",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "id"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Frontend id from the list; empty selects the default site"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrontendList"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "description": "Activate an entry by its id without network access. An empty id selects the application's default site. Returns the resulting list."
       }
     },
     "/admin/api/frontend/install": {
       "post": {
         "operationId": "post_admin_frontend_install",
-        "summary": "Enable the configured frontend repository",
+        "summary": "Add or update a frontend from GitHub and switch to it",
         "tags": [
           "Management"
         ],
         "x-role": "admin",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "repository"
+                ],
+                "properties": {
+                  "repository": {
+                    "type": "string",
+                    "description": "Complete GitHub URL such as https://github.com/owner/name"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
         "responses": {
-          "201": {
+          "200": {
             "description": "Success",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FrontendRelease"
+                  "$ref": "#/components/schemas/FrontendList"
                 }
               }
             }
@@ -7806,13 +7873,50 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "description": "Enable frontend.repository from config.yaml. When another repository is active and a release of this repository is already installed, such as a bundled frontend, its newest installed release is activated without downloading. Otherwise the latest published release is installed and activated."
+        "description": "Resolve the latest published release of the repository. An installed copy of that version, or a newer one, is activated without downloading; otherwise the release is downloaded, verified, installed and activated. Returns the resulting list."
       }
     },
-    "/admin/api/frontend/update": {
+    "/admin/api/frontend/upload": {
+      "post": {
+        "operationId": "post_admin_frontend_upload",
+        "summary": "Upload a frontend package and switch to it",
+        "tags": [
+          "Management"
+        ],
+        "x-role": "admin",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/gzip": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrontendList"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "description": "Install a frontend.tar.gz built with the frontend package protocol and activate it. Returns the resulting list."
+      }
+    },
+    "/admin/api/frontend/updates": {
       "get": {
-        "operationId": "get_admin_frontend_update",
-        "summary": "Check the active frontend repository for a newer published release",
+        "operationId": "get_admin_frontend_updates",
+        "summary": "Check frontends for newer published releases",
         "tags": [
           "Management"
         ],
@@ -7823,7 +7927,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FrontendUpdateCheck"
+                  "$ref": "#/components/schemas/FrontendUpdates"
                 }
               }
             }
@@ -7832,7 +7936,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "description": "Read release metadata only. Does not download, install or activate a frontend."
+        "description": "Read GitHub release metadata for frontends with a known repository. Does not download, install or activate a frontend. Frontends whose metadata cannot be read report no update."
       }
     }
   },
@@ -12171,97 +12275,57 @@
           }
         }
       },
-      "FrontendManifest": {
+      "Frontend": {
         "type": "object",
         "required": [
-          "formatVersion",
+          "id",
           "name",
-          "version",
-          "apiMin",
-          "apiMaxExclusive"
+          "builtin",
+          "active"
         ],
         "properties": {
-          "formatVersion": {
-            "type": "integer",
-            "const": 1
+          "id": {
+            "type": "string",
+            "description": "Passed to activate; empty selects the application's default site"
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "description": "Manifest name; empty for a default site without frontend.json"
           },
           "version": {
             "type": "string"
           },
-          "apiMin": {
-            "type": "string"
-          },
-          "apiMaxExclusive": {
-            "type": "string"
-          }
-        }
-      },
-      "FrontendRelease": {
-        "allOf": [
-          {
-            "$ref": "#/components/schemas/FrontendManifest"
-          },
-          {
-            "type": "object",
-            "required": [
-              "sha256",
-              "contentHash",
-              "installedAt"
-            ],
-            "properties": {
-              "repository": {
-                "type": "string"
-              },
-              "sha256": {
-                "type": "string"
-              },
-              "contentHash": {
-                "type": "string"
-              },
-              "installedAt": {
-                "type": "string"
-              }
-            }
-          }
-        ]
-      },
-      "FrontendStatus": {
-        "type": "object",
-        "required": [
-          "active",
-          "installed"
-        ],
-        "properties": {
-          "active": {
-            "type": "string",
-            "description": "Empty means the default bundled frontend"
-          },
-          "previous": {
+          "repository": {
             "type": "string"
           },
           "builtin": {
-            "$ref": "#/components/schemas/FrontendManifest"
+            "type": "boolean",
+            "description": "Shipped with the application"
           },
-          "installed": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/FrontendRelease"
-            }
-          },
-          "current": {
-            "$ref": "#/components/schemas/FrontendCurrent"
+          "active": {
+            "type": "boolean"
           }
         }
       },
-      "FrontendCurrent": {
+      "FrontendList": {
+        "type": "object",
+        "required": [
+          "frontends"
+        ],
+        "properties": {
+          "frontends": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Frontend"
+            }
+          }
+        }
+      },
+      "FrontendUpdate": {
         "type": "object",
         "required": [
           "name",
-          "version",
-          "repository"
+          "version"
         ],
         "properties": {
           "name": {
@@ -12269,32 +12333,20 @@
           },
           "version": {
             "type": "string"
-          },
-          "repository": {
-            "type": "string"
           }
         }
       },
-      "FrontendUpdateCheck": {
+      "FrontendUpdates": {
         "type": "object",
         "required": [
-          "repository",
-          "current",
-          "latestVersion",
-          "updateAvailable"
+          "updates"
         ],
         "properties": {
-          "repository": {
-            "type": "string"
-          },
-          "current": {
-            "$ref": "#/components/schemas/FrontendCurrent"
-          },
-          "latestVersion": {
-            "type": "string"
-          },
-          "updateAvailable": {
-            "type": "boolean"
+          "updates": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FrontendUpdate"
+            }
           }
         }
       }

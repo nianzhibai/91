@@ -125,25 +125,24 @@ test("drive event streams use the configured backend and request cookies", (t) =
   assert.deepEqual(calls, [{ url: "https://api.example/admin/api/drives/drive%2Fone/events", init: { withCredentials: true } }]);
 });
 
-test("frontend installation uses saved configuration in one request", async () => {
-  const calls: { path: string; method: string | undefined; body: unknown }[] = [];
+test("frontend management sends one request per explicit action", async () => {
+  const calls: { path: string; method: string; body: unknown; type: string | null }[] = [];
   const client = createClient({ baseURL: "https://api.example", fetch: async (input, init) => {
-    calls.push({ path: String(input), method: init?.method, body: init?.body });
-    return Response.json({ name: "web", version: "1.2.0" }, { status: 201 });
+    calls.push({ path: String(input), method: init?.method || "GET", body: init?.body, type: new Headers(init?.headers).get("Content-Type") });
+    return Response.json({ frontends: [] });
   } });
-  await client.frontend.install();
-  assert.deepEqual(calls, [{ path: "https://api.example/admin/api/frontend/install", method: "POST", body: undefined }]);
-  assert.deepEqual(Object.keys(client.frontend).sort(), ["checkUpdate", "install", "status"]);
-});
-
-
-test("frontend update checks only request metadata", async () => {
-  const calls: { path: string; method: string; body: unknown }[] = [];
-  const client = createClient({ baseURL: "https://api.example", fetch: async (input, init) => {
-    calls.push({ path: String(input), method: init?.method || "GET", body: init?.body });
-    return Response.json({ repository: "https://github.com/owner/web", current: {name: "web", version: "1.0.0", repository: "owner/web"}, latestVersion: "1.1.0", updateAvailable: true });
-  } });
-  const result = await client.frontend.checkUpdate();
-  assert.equal(result.updateAvailable, true);
-  assert.deepEqual(calls, [{ path: "https://api.example/admin/api/frontend/update", method: "GET", body: undefined }]);
+  const archive = new Blob(["archive"]);
+  await client.frontend.list();
+  await client.frontend.updates();
+  await client.frontend.activate("");
+  await client.frontend.install("https://github.com/owner/web");
+  await client.frontend.upload(archive);
+  assert.deepEqual(calls, [
+    { path: "https://api.example/admin/api/frontend", method: "GET", body: undefined, type: null },
+    { path: "https://api.example/admin/api/frontend/updates", method: "GET", body: undefined, type: null },
+    { path: "https://api.example/admin/api/frontend/activate", method: "POST", body: '{"id":""}', type: "application/json" },
+    { path: "https://api.example/admin/api/frontend/install", method: "POST", body: '{"repository":"https://github.com/owner/web"}', type: "application/json" },
+    { path: "https://api.example/admin/api/frontend/upload", method: "POST", body: archive, type: "application/gzip" },
+  ]);
+  assert.deepEqual(Object.keys(client.frontend).sort(), ["activate", "install", "list", "updates", "upload"]);
 });

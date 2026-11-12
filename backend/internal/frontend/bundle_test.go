@@ -3,10 +3,13 @@ package frontend
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -37,17 +40,6 @@ func testBundle(t *testing.T) string {
 	return bundle
 }
 
-// offlineSource fails the test when any release metadata or package is requested.
-func offlineSource(t *testing.T) *ReleaseSource {
-	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Errorf("unexpected network request: %s", r.URL)
-		http.Error(w, "offline", http.StatusServiceUnavailable)
-	}))
-	t.Cleanup(server.Close)
-	return &ReleaseSource{Client: server.Client(), apiURL: server.URL}
-}
-
 func TestBundledFrontendsAreRetainedWithTheirSources(t *testing.T) {
 	bundle := testBundle(t)
 	site, err := BuiltinSite(bundle)
@@ -69,7 +61,7 @@ func TestBundledFrontendsAreRetainedWithTheirSources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.Active != "" || status.Current == nil || status.Current.Name != "web" || status.Current.Repository != officialRepository {
+	if status.Active != "" || status.Builtin == nil || status.Builtin.Name != "web" {
 		t.Fatalf("default frontend: %+v", status)
 	}
 	sources := map[string]string{}
@@ -92,7 +84,7 @@ func TestBundledFrontendsAreRetainedWithTheirSources(t *testing.T) {
 	}
 }
 
-func TestEnableSwitchesBetweenInstalledRepositoriesOffline(t *testing.T) {
+func TestFrontendsListBundledAndInstalledFrontends(t *testing.T) {
 	m, err := New(t.TempDir(), testBundle(t), "1.0.0")
 	if err != nil {
 		t.Fatal(err)
@@ -100,40 +92,78 @@ func TestEnableSwitchesBetweenInstalledRepositoriesOffline(t *testing.T) {
 	if err := m.RetainBuiltin(); err != nil {
 		t.Fatal(err)
 	}
-	source := offlineSource(t)
-	for _, step := range []struct{ repository, active string }{
-		{"https://github.com/Owner/Nostalgic.git", "nostalgic@1.0.0"},
-		{officialRepository, "web@1.0.0"},
-	} {
-		release, err := source.Enable(context.Background(), m, step.repository)
-		if err != nil || release.ID() != step.active {
-			t.Fatalf("enable %s: %+v %v", step.repository, release, err)
-		}
-		status, _ := m.Status()
-		if status.Active != step.active {
-			t.Fatalf("enable %s selected %q", step.repository, status.Active)
-		}
-	}
-}
-
-func TestEnablePrefersTheNewestInstalledRelease(t *testing.T) {
-	m := testManager(t)
 	for _, version := range []string{"1.1.0", "1.3.0", "1.2.0"} {
-		if _, err := m.Install(bytes.NewReader(testArchive(t, version, "1.0.0", version, nil)), InstallOptions{Repository: "owner/web"}); err != nil {
+		if _, err := m.Install(bytes.NewReader(testArchive(t, version, "1.0.0", version, nil)), InstallOptions{Repository: "owner/community"}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// An incompatible newer release is skipped instead of failing the switch.
-	if _, err := m.Install(bytes.NewReader(testArchive(t, "2.0.0", "1.0.0", "future", nil)), InstallOptions{Repository: "owner/web"}); err != nil {
+	// An incompatible newer release is skipped instead of being offered.
+	if _, err := m.Install(bytes.NewReader(testArchive(t, "2.0.0", "1.0.0", "future", nil)), InstallOptions{Repository: "owner/community"}); err != nil {
 		t.Fatal(err)
 	}
 	future := Manifest{FormatVersion: 1, Name: "test-web", Version: "2.0.0", APIMin: "1.5.0", APIMax: "2.0.0"}
 	if err := writeJSONFile(filepath.Join(m.root, "releases", future.ID(), "site", "frontend.json"), future); err != nil {
 		t.Fatal(err)
 	}
-	release, err := offlineSource(t).Enable(context.Background(), m, "https://github.com/owner/web")
-	if err != nil || release.Version != "1.3.0" {
-		t.Fatalf("enabled %+v %v", release, err)
+	if _, err := m.Install(bytes.NewReader(testNamedArchive(t, "local", "0.1.0", "1.0.0", "local", nil)), InstallOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	want := []Frontend{
+		{ID: "nostalgic@1.0.0", Name: "nostalgic", Version: "1.0.0", Repository: nostalgicRepository, Builtin: true},
+		// The default site follows application upgrades instead of a pinned version.
+		{ID: "", Name: "web", Version: "1.0.0", Repository: officialRepository, Builtin: true, Active: true},
+		{ID: "local@0.1.0", Name: "local", Version: "0.1.0"},
+		{ID: "test-web@1.3.0", Name: "test-web", Version: "1.3.0", Repository: "owner/community"},
+	}
+	if frontends, err := m.Frontends(); err != nil || !reflect.DeepEqual(frontends, want) {
+		t.Fatalf("frontends:\n got %+v\nwant %+v (%v)", frontends, want, err)
+	}
+	// An older active version is listed as it is served.
+	if err := m.Activate("test-web@1.1.0"); err != nil {
+		t.Fatal(err)
+	}
+	want[1].Active = false
+	want[3].ID, want[3].Version, want[3].Active = "test-web@1.1.0", "1.1.0", true
+	if frontends, err := m.Frontends(); err != nil || !reflect.DeepEqual(frontends, want) {
+		t.Fatalf("pinned frontends:\n got %+v\nwant %+v (%v)", frontends, want, err)
+	}
+}
+
+func TestDefaultSiteWithoutManifestIsListed(t *testing.T) {
+	site := t.TempDir()
+	if err := os.WriteFile(filepath.Join(site, "index.html"), []byte("custom"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(t.TempDir(), site, "1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	frontends, err := m.Frontends()
+	if err != nil || !reflect.DeepEqual(frontends, []Frontend{{Builtin: true, Active: true}}) {
+		t.Fatalf("frontends: %+v %v", frontends, err)
+	}
+}
+
+func TestInstallReusesInstalledReleaseOffline(t *testing.T) {
+	m := testManager(t)
+	for _, version := range []string{"1.1.0", "1.3.0"} {
+		if _, err := m.Install(bytes.NewReader(testArchive(t, version, "1.0.0", version, nil)), InstallOptions{Repository: "owner/web"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tag := range []string{"v1.3.0", "v1.2.0"} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !strings.EqualFold(r.URL.Path, "/repos/owner/web/releases/latest") {
+				t.Errorf("unexpected download: %s", r.URL)
+			}
+			json.NewEncoder(w).Encode(map[string]any{"tag_name": tag, "assets": []releaseAsset{{Name: ArchiveName, URL: "https://github.com/archive"}, {Name: ArchiveName + ".sha256", URL: "https://github.com/checksum"}}})
+		}))
+		source := &ReleaseSource{Client: server.Client(), apiURL: server.URL}
+		release, err := source.Install(context.Background(), m, ReleaseRequest{Repository: "https://github.com/Owner/Web.git"})
+		server.Close()
+		if err != nil || release.Version != "1.3.0" {
+			t.Fatalf("latest %s installed %+v %v", tag, release, err)
+		}
 	}
 }
 

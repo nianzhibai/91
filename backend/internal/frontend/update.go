@@ -2,21 +2,17 @@ package frontend
 
 import (
 	"context"
-	"errors"
 	"strings"
+	"sync"
 
 	"golang.org/x/mod/semver"
 )
 
-var ErrNoNewerRelease = errors.New("当前前端已是最新版本，请重新检查更新")
-
-var ErrRepositoryNotActive = errors.New("configured frontend repository is not active; reload frontend status")
-
-type UpdateCheck struct {
-	Repository      string  `json:"repository"`
-	Current         Current `json:"current"`
-	LatestVersion   string  `json:"latestVersion"`
-	UpdateAvailable bool    `json:"updateAvailable"`
+// Update reports a published release newer than every installed version of a
+// frontend.
+type Update struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
 }
 
 func sameRepository(left, right string) bool {
@@ -25,30 +21,48 @@ func sameRepository(left, right string) bool {
 	return errA == nil && errB == nil && strings.EqualFold(a, b)
 }
 
-// CheckUpdate only reads release metadata. Packages are downloaded after the
-// administrator chooses to install, and older releases are never offered as updates.
-func (source *ReleaseSource) CheckUpdate(ctx context.Context, manager *Manager, repository string) (UpdateCheck, error) {
+// Updates reads only release metadata for listed frontends with a known
+// repository. Packages are downloaded after the administrator chooses to
+// update. A frontend whose metadata cannot be read reports no update.
+func (source *ReleaseSource) Updates(ctx context.Context, manager *Manager) ([]Update, error) {
+	frontends, err := manager.Frontends()
+	if err != nil {
+		return nil, err
+	}
 	status, err := manager.Status()
 	if err != nil {
-		return UpdateCheck{}, err
+		return nil, err
 	}
-	if status.Current == nil || !sameRepository(status.Current.Repository, repository) {
-		return UpdateCheck{}, ErrRepositoryNotActive
+	installed := map[string]string{}
+	if status.Builtin != nil {
+		installed[status.Builtin.Name] = status.Builtin.Version
 	}
-	release, err := source.resolve(ctx, ReleaseRequest{Repository: repository})
-	if err != nil {
-		return UpdateCheck{}, err
+	for _, release := range status.Installed {
+		if semver.Compare("v"+release.Version, "v"+installed[release.Name]) > 0 {
+			installed[release.Name] = release.Version
+		}
 	}
-	// An installation can finish while the metadata request is in flight.
-	status, err = manager.Status()
-	if err != nil {
-		return UpdateCheck{}, err
+	found := make([]*Update, len(frontends))
+	var wait sync.WaitGroup
+	for i, frontend := range frontends {
+		if frontend.Repository == "" {
+			continue
+		}
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			release, err := source.resolve(ctx, ReleaseRequest{Repository: frontend.Repository})
+			if err == nil && semver.Compare("v"+release.Version, "v"+installed[frontend.Name]) > 0 {
+				found[i] = &Update{Name: frontend.Name, Version: release.Version}
+			}
+		}()
 	}
-	if status.Current == nil || !sameRepository(status.Current.Repository, repository) {
-		return UpdateCheck{}, ErrRepositoryNotActive
+	wait.Wait()
+	updates := []Update{}
+	for _, update := range found {
+		if update != nil {
+			updates = append(updates, *update)
+		}
 	}
-	return UpdateCheck{
-		Repository: repository, Current: *status.Current, LatestVersion: release.Version,
-		UpdateAvailable: semver.Compare("v"+release.Version, "v"+status.Current.Version) > 0,
-	}, nil
+	return updates, nil
 }

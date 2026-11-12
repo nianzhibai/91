@@ -2,7 +2,7 @@
 
 前台和管理后台都可以完全重写。Go 服务负责身份认证、权限、数据、任务和媒体访问；页面路由与界面由客户端决定。官方 React 应用位于独立的 `nianzhibai/91-web-nostalgic`（默认）和 `nianzhibai/91-web` 仓库，与独立示例使用同一个无 React 依赖的客户端库。
 
-用户安装并启用前端及命令行维护步骤见 [前端版本与发布](FRONTEND_RELEASES.md)。
+用户安装、切换前端及命令行维护步骤见 [前端版本与发布](FRONTEND_RELEASES.md)。
 
 ```mermaid
 flowchart LR
@@ -49,7 +49,7 @@ bash scripts/package-frontend.sh dist release
 gh release create "v$VERSION" release/frontend.tar.gz release/frontend.tar.gz.sha256
 ```
 
-发布本示例时，两个文件位于 `examples/custom-frontend/release/`。
+发布本示例时，两个文件位于 `examples/custom-frontend/release/`。不发布时，也可以在「前端配置」直接上传构建出的 `frontend.tar.gz`。
 
 普通构建不含 `frontend.json` 且使用根路径，适用于下文的 `VIDEO_FRONTEND_DIR` 和独立托管。
 
@@ -66,7 +66,7 @@ cd backend
 VIDEO_FRONTEND_DIR=/absolute/path/to/custom/dist ./server
 ```
 
-未设置目录时，服务查找 `./dist` 和 `../dist`。没有默认目录时，也可通过 CLI 或管理 API 安装并启用前端，无需重启。显式配置的目录缺少 `index.html` 会启动失败。页面深链接回退到当前前端的 `index.html`，缺失的 API 和静态文件返回 404。`/assets/` 下的文件应使用内容哈希命名；页面和其他固定路径资源按内容 ETag 重新验证，支持切换及回滚。
+未设置目录时，服务查找 `./dist` 和 `../dist`。没有默认目录时，也可通过 CLI 或管理 API 安装并切换前端，无需重启。显式配置的目录缺少 `index.html` 会启动失败。页面深链接回退到当前前端的 `index.html`，缺失的 API 和静态文件返回 404。`/assets/` 下的文件应使用内容哈希命名；页面和其他固定路径资源按内容 ETag 重新验证，支持切换及回滚。
 
 Docker 可创建 `compose.frontend.yml`：
 

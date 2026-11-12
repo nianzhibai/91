@@ -10,7 +10,7 @@
 ## 开发与发布
 
 - [自定义前端](CUSTOM_FRONTEND.md)：API、SDK、接入示例与部署约定。
-- [前端版本与发布](FRONTEND_RELEASES.md)：安装、启用、回滚、包协议和产品打包。
+- [前端版本与发布](FRONTEND_RELEASES.md)：安装、切换、包协议和产品打包。
 - [爬虫协议](CRAWLER_PROTOCOL.md)：`crawler.v3` 消息格式与脚本模板。
 - [CI 与发布工作流](WORKFLOWS.md)：检查、构建、版本发布与失败恢复。
 

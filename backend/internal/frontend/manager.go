@@ -30,16 +30,9 @@ type Selection struct {
 	Previous *string `json:"previous,omitempty"`
 }
 
-type Current struct {
-	Name       string `json:"name"`
-	Version    string `json:"version"`
-	Repository string `json:"repository"`
-}
-
 type Status struct {
 	Selection
 	Builtin   *Manifest `json:"builtin,omitempty"`
-	Current   *Current  `json:"current,omitempty"`
 	Installed []Release `json:"installed"`
 }
 
@@ -159,24 +152,6 @@ func (m *Manager) Status() (Status, error) {
 			return status, err
 		}
 		status.Installed = append(status.Installed, release)
-	}
-	if status.Active == "" && status.Builtin != nil {
-		// Retained bundled releases record the repository they were built from.
-		repository := ""
-		for _, release := range status.Installed {
-			if release.ID() == status.Builtin.ID() {
-				repository = release.Repository
-				break
-			}
-		}
-		status.Current = &Current{Name: status.Builtin.Name, Version: status.Builtin.Version, Repository: repository}
-	} else {
-		for _, release := range status.Installed {
-			if release.ID() == status.Active {
-				status.Current = &Current{Name: release.Name, Version: release.Version, Repository: release.Repository}
-				break
-			}
-		}
 	}
 	return status, nil
 }

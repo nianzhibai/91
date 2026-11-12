@@ -28,8 +28,8 @@ func TestOpenAPIMatchesClientDTOs(t *testing.T) {
 		"VideoDetailDTO": VideoDetailDTO{}, "videoFeedResponse": videoFeedResponse{},
 		"shortsFeedResponse": shortsFeedResponse{}, "VideoCollectionDTO": VideoCollectionDTO{},
 		"PlaybackManifestDTO": PlaybackManifestDTO{}, "createVideoShareResponse": createVideoShareResponse{},
-		"FrontendCurrent": frontend.Current{}, "FrontendUpdateCheck": frontend.UpdateCheck{},
-		"FrontendManifest": frontend.Manifest{}, "FrontendRelease": frontend.Release{}, "FrontendStatus": frontend.Status{},
+		"Frontend": frontend.Frontend{}, "FrontendList": FrontendList{},
+		"FrontendUpdate": frontend.Update{}, "FrontendUpdates": FrontendUpdates{},
 	} {
 		t.Run(name, func(t *testing.T) {
 			schema, ok := document.Components.Schemas[name]

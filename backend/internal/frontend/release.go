@@ -140,17 +140,14 @@ func (source *ReleaseSource) Install(ctx context.Context, manager *Manager, requ
 	if err != nil {
 		return Release{}, err
 	}
-	// The latest release can change between checking and installing. Never
-	// reinstall or downgrade the same repository through the latest-release flow.
-	if request.Version == "" {
-		status, err := manager.Status()
-		if err != nil {
-			return Release{}, err
-		}
-		if status.Current != nil && sameRepository(status.Current.Repository, request.Repository) &&
-			semver.Compare("v"+release.Version, "v"+status.Current.Version) <= 0 {
-			return Release{}, ErrNoNewerRelease
-		}
+	// Switch to an installed copy instead of downloading it again. The latest
+	// release flow never replaces a newer installed release with an older one.
+	installed, found, err := manager.installedFrom(request.Repository)
+	if err != nil {
+		return Release{}, err
+	}
+	if found && (installed.Version == release.Version || request.Version == "" && semver.Compare("v"+installed.Version, "v"+release.Version) > 0) {
+		return installed, nil
 	}
 	checksumResponse, err := source.get(ctx, release.ChecksumURL)
 	if err != nil {
@@ -177,28 +174,4 @@ func (source *ReleaseSource) Install(ctx context.Context, manager *Manager, requ
 		SHA256: fields[0], Repository: request.Repository,
 		Version: release.Version,
 	})
-}
-
-// Enable activates a repository's frontend. Switching to a repository that is
-// already installed, such as a bundled frontend, needs no network access. The
-// active repository, or one not installed yet, gets its latest release.
-func (source *ReleaseSource) Enable(ctx context.Context, manager *Manager, repository string) (Release, error) {
-	status, err := manager.Status()
-	if err != nil {
-		return Release{}, err
-	}
-	if status.Current == nil || !sameRepository(status.Current.Repository, repository) {
-		release, found, err := manager.installedFrom(repository)
-		if err != nil {
-			return Release{}, err
-		}
-		if found {
-			return release, manager.Activate(release.ID())
-		}
-	}
-	release, err := source.Install(ctx, manager, ReleaseRequest{Repository: repository})
-	if err != nil {
-		return Release{}, err
-	}
-	return release, manager.Activate(release.ID())
 }
