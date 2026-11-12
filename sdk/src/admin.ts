@@ -1,4 +1,5 @@
 import { APIResponseError, type RequestOptions, type Transport } from "./http.js";
+import type { Schema } from "./contract.js";
 import type { TagItem, Theme, VideoItem } from "./types.js";
 
 const LOG_REQUEST_TIMEOUT_MS = 15000;
@@ -9,33 +10,9 @@ export type UploadVideoInput = {
   tags: string[];
 };
 
-export type RemoteUploadState =
-  | "queued"
-  | "downloading"
-  | "validating"
-  | "saving"
-  | "completed"
-  | "failed"
-  | "canceled";
+export type RemoteUploadState = RemoteUploadJob["state"];
 
-export type RemoteUploadJob = {
-  id: string;
-  state: RemoteUploadState;
-  sourceLabel: string;
-  title?: string;
-  tags: string[];
-  bytesDownloaded: number;
-  totalBytes: number;
-  canCancel: boolean;
-  cancelRequested?: boolean;
-  error?: string;
-  completedVideoId?: string;
-  videoHref?: string;
-  createdAt: string;
-  startedAt?: string;
-  updatedAt: string;
-  finishedAt?: string;
-};
+export type RemoteUploadJob = Schema<"RemoteUploadJobDTO">;
 
 export type CreateRemoteUploadInput = {
   url: string;
@@ -44,14 +21,7 @@ export type CreateRemoteUploadInput = {
 };
 
 
-export type UpdateCheck = {
-  currentVersion: string;
-  latestVersion: string;
-  hasUpdate: boolean;
-  releaseUrl?: string;
-  releaseNotes?: string;
-  checkedAt: string;
-};
+export type UpdateCheck = Schema<"updateCheckDTO">;
 
 export type AdminLogSource = "application" | "http";
 
@@ -117,28 +87,9 @@ export type AdminLogFilters = {
     to?: string;
 };
 
-export type BackupEstimate = {
-  fileCount: number;
-  totalBytes: number;
-  availableBytes: number;
-  requiredBytes: number;
-};
+export type BackupEstimate = Schema<"backupEstimate">;
 
-export type BackupTask = {
-  id: string;
-  state: string;
-  phase?: string;
-  name?: string;
-  startedAt: string;
-  finishedAt?: string;
-  fileCount: number;
-  processedFiles: number;
-  totalBytes: number;
-  processedBytes: number;
-  bytesPerSecond: number;
-  error?: string;
-  cancellable: boolean;
-};
+export type BackupTask = Schema<"backupTaskStatus">;
 
 export type BackupRecord = {
   id: string;
@@ -166,18 +117,9 @@ export type BackupList = {
   pendingRestore: boolean;
 };
 
-export type BackupOperationProgress = {
-  phase: string;
-  processedBytes: number;
-  totalBytes: number;
-  processedFiles: number;
-  totalFiles: number;
-};
+export type BackupOperationProgress = Schema<"backupOperationProgress">;
 
-export type BackupUploadChunk = {
-  index: number;
-  size: number;
-};
+export type BackupUploadChunk = Schema<"backupUploadChunk">;
 
 export type BackupUploadSession = {
   id: string;
@@ -204,13 +146,7 @@ export type BackupManifest = {
   selection: BackupSelection;
 };
 
-export type BackupSelection = {
-  cloudDrives: boolean;
-  crawlerScripts: boolean;
-  uploadStorage: boolean;
-  localStorage: boolean;
-  userInfo: boolean;
-};
+export type BackupSelection = Schema<"backupBackupSelection">;
 
 export type RestoreReport = {
   manifest: BackupManifest;
@@ -231,54 +167,11 @@ export type BackupTransferState =
   | "failed"
   | "canceled";
 
-export type BackupTransferJob = {
-  id: string;
-  backupId: string;
-  backupName: string;
-  targetUrl: string;
-  state: BackupTransferState | string;
-  size: number;
-  sha256: string;
-  processedBytes: number;
-  bytesPerSecond: number;
-  totalRanges?: number;
-  processedRanges?: number;
-  attempts?: number;
-  nextAttemptAt?: string;
-  error?: string;
-  targetBackupId?: string;
-  targetBackupName?: string;
-  createdAt: string;
-  startedAt?: string;
-  updatedAt: string;
-  finishedAt?: string;
-  cancellable: boolean;
-  retryable: boolean;
-};
+export type BackupTransferJob = Schema<"backuptransferTransferJob">;
 
-export type BackupReceiveToken = {
-  id: string;
-  token: string;
-  createdAt: string;
-  expiresAt: string;
-};
+export type BackupReceiveToken = Schema<"backuptransferReceiveToken">;
 
-export type BackupReceiveTransfer = {
-  id: string;
-  sourceServerId: string;
-  backupId: string;
-  backupName: string;
-  state: BackupTransferState | string;
-  size: number;
-  processedBytes: number;
-  bytesPerSecond: number;
-  createdAt: string;
-  updatedAt: string;
-  finishedAt?: string;
-  targetBackupId?: string;
-  error?: string;
-  cancellable: boolean;
-};
+export type BackupReceiveTransfer = Schema<"backuptransferReceiveTransfer">;
 
 export type AdminDrive = {
   id: string;
@@ -327,11 +220,7 @@ export type DriveGenerationStatus = {
   totalCount: number;
 };
 
-export type DriveStorageUsage = {
-  thumbnailBytes: number;
-  teaserBytes: number;
-  totalBytes: number;
-};
+export type DriveStorageUsage = Schema<"storageusageDriveUsage">;
 
 export type AdminDriveStorage = DriveStorageUsage & {
   availableBytes: number;
@@ -416,11 +305,7 @@ export type CrawlerUploadResult = {
   issues?: Array<{ videoId?: string; title?: string; stage: string; reason: string; message: string }>;
 };
 
-export type CrawlerFeed = {
-  id: string;
-  label: string;
-  default?: boolean;
-};
+export type CrawlerFeed = Schema<"scriptcrawlerFeed">;
 
 export type AdminCrawler = {
   id: string;
@@ -479,21 +364,9 @@ export type ImportCrawlerScriptResult = {
   sourceUrl?: string;
 };
 
-export type CrawlerDryRunItem = {
-  title: string;
-  sourceId?: string;
-  mediaUrl?: string;
-  thumbnailUrl?: string;
-  detailUrl?: string;
-};
+export type CrawlerDryRunItem = Schema<"scriptcrawlerDryRunItem">;
 
-export type CrawlerDryRunMediaCheck = {
-  ok: boolean;
-  status?: number;
-  contentType?: string;
-  contentLengthBytes?: number;
-  error?: string;
-};
+export type CrawlerDryRunMediaCheck = Schema<"scriptcrawlerDryRunMediaCheck">;
 
 export type CrawlerDryRunResult = {
   ok: boolean;
@@ -508,36 +381,16 @@ export type CrawlerDryRunResult = {
 };
 
 /** Drive kinds that support QR login. */
-export type DriveLoginKind = "guangyapan" | "p115" | "p123" | "quark" | "wopan" | "yun139";
+export type DriveLoginKind = Schema<"startDriveLoginRequest">["kind"];
 
-export type DriveLoginSession = {
-  id: string;
-  kind: DriveLoginKind;
-  /** Link encoded in the QR code, when the provider exposes one. */
-  qrCodeUrl?: string;
-  qrImageDataUrl: string;
-  expiresAt: string;
-  /** Delay between polls; each poll result may raise it. */
-  intervalMs: number;
-};
+export type DriveLoginSession = Schema<"DriveLoginSession">;
 
 /** `waiting` and `scanned` continue; every other state ends the login. */
-export type DriveLoginState = "waiting" | "scanned" | "success" | "expired" | "rejected" | "failed";
+export type DriveLoginState = DriveLoginResult["state"];
 
-export type DriveLoginResult = {
-  state: DriveLoginState;
-  /** Provider status text for display. */
-  message?: string;
-  /** Present only on success, keyed by the drive's credential fields (`cookie`, `access_token`, ...). */
-  credentials?: Record<string, string>;
-  /** Delay before the next poll; the provider may raise it. */
-  intervalMs: number;
-};
+export type DriveLoginResult = Schema<"DriveLoginResult">;
 
-export type DriveDirEntry = {
-  id: string;
-  name: string;
-};
+export type DriveDirEntry = Schema<"DriveDirEntry">;
 
 /**
  * 列指定 drive 在 parentId 目录下的直接子目录。
@@ -662,21 +515,7 @@ export type ConfigYAMLDocument = {
   version: string;
 };
 
-export type ConfigSaveResult = {
-  version: string;
-  restartRequired: boolean;
-  settings: {
-    useGPU: boolean;
-    telegramEnabled: boolean;
-    nightlyDisabled: boolean;
-    nightlyStartTime: string;
-    nightlyTimezone: string;
-    previewEnabled: boolean;
-    previewConcurrency: number;
-    thumbnailConcurrency: number;
-    fingerprintConcurrency: number;
-  };
-};
+export type ConfigSaveResult = Schema<"configSaveResult">;
 
 export type GPUStatus = {
   enabled: boolean;
@@ -699,7 +538,7 @@ export class ConfigConflictError extends APIResponseError {
 
 export type ScanOutcome = "succeeded" | "partial" | "failed" | "canceled" | "skipped";
 
-export type ScanIssue = { stage: string; message: string };
+export type ScanIssue = Schema<"scanjobIssue">;
 
 export type ScanResult = {
   driveId: string;
@@ -734,19 +573,9 @@ export type MaintenanceJobStatus = {
   issues?: ScanIssue[];
 };
 
-export type AdminUser = {
-  id: number;
-  username: string;
-  role: string;
-  banned: boolean;
-  createdAt: number;
-};
+export type AdminUser = Schema<"userDTO">;
 
-export type BannedIP = {
-  ip: string;
-  reason: string;
-  createdAt: number;
-};
+export type BannedIP = Schema<"bannedIPDTO">;
 
 export type TelegramConfig = {
   enabled: boolean;

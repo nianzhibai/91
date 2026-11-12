@@ -14,7 +14,8 @@
   },
   "scripts": {
     "audit": "npm audit --audit-level=info",
-    "lint": "tsc -p sdk/tsconfig.json --noEmit && tsc -p examples/custom-frontend/tsconfig.json",
+    "lint": "node scripts/generate-sdk-types.mjs --check && tsc -p sdk/tsconfig.json --noEmit && tsc -p examples/custom-frontend/tsconfig.json",
+    "generate:types": "node scripts/generate-sdk-types.mjs",
     "test": "node --import tsx --test tests/*.test.ts",
     "check": "npm run audit && npm run lint && npm test",
     "build": "npm run build:client",

@@ -4,10 +4,12 @@ import { createAdminClient } from "./admin.js";
 import { createVideoClient } from "./videos.js";
 import { createPlaybackClient } from "./playback.js";
 import { createFrontendClient } from "./frontend.js";
+import type { Schema } from "./contract.js";
 
 export { APIResponseError, UnauthorizedError } from "./http.js";
 export type { ClientOptions, RequestOptions } from "./http.js";
 export * from "./types.js";
+export type { Schema, Schemas } from "./contract.js";
 export * from "./auth.js";
 export * from "./playback.js";
 export * from "./frontend.js";
@@ -20,13 +22,7 @@ export type {
   VideoReactionResult, ShortsItem, ShortsFeedItem, ShortsNextResponse,
 } from "./videos.js";
 
-export type ServerInfo = {
-  name: string;
-  version: string;
-  apiVersion: string;
-  auth: { type: "cookie"; login: string; session: string };
-  endpoints: { openapi: string; media: string; admin: string };
-};
+export type ServerInfo = Schema<"ServerInfo">;
 
 export function createClient(options: ClientOptions = {}) {
   const http = createTransport(options);

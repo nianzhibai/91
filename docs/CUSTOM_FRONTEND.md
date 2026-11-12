@@ -130,7 +130,7 @@ if (source?.url) video.src = client.resourceURL(source.url);
 await client.admin.updateSettings({ theme: "light" });
 ```
 
-`client.auth` 提供初始化和会话接口，`client.videos` 提供视频、feed、标签、互动和分享，`client.admin` 提供上传、视频编辑等全部管理方法及数据类型，`client.playback` 提供播放源获取、解析和准备。也可以用 `client.http.request<T>(path, options)` 调用完整 HTTP 契约中的任意接口。
+`client.auth` 提供初始化和会话接口，`client.videos` 提供视频、feed、标签、互动和分享，`client.admin` 提供上传、视频编辑等全部管理方法及数据类型，`client.playback` 提供播放源获取、解析和准备。也可以用 `client.http.request<T>(path, options)` 调用完整 HTTP 契约中的任意接口；`Schema<"名称">` 给出 OpenAPI 中任意 schema 对应的类型。
 
 所有请求经过同一个传输层：`options.retry` 只对读取开启，遇到网络错误、超时、408、425、429 或 5xx 时重试一次；`options.timeoutMs` 超时后以 `TimeoutError` 结束。SDK 中视频读取默认重试并在 10 秒后超时，写操作从不自动重试。
 
@@ -158,4 +158,4 @@ await client.admin.updateSettings({ theme: "light" });
 | 网盘扫码登录 | 所有网盘共用一个流程：POST `/admin/api/drive-logins` `{"kind"}` 获得二维码，每隔 `intervalMs` GET `/admin/api/drive-logins/{id}`，直到 `state` 不再是 `waiting` 或 `scanned`。成功时 `credentials` 的键即该网盘的凭据字段，可直接合并进表单；放弃时 DELETE。会话只存于服务端内存，重启或结束后返回 404 |
 | 备份 | 下载和分块上传使用二进制；恢复前需要明确确认，202 表示已接受，后续可能重启 |
 
-维护时同步修改契约和 SDK；后端仓库运行 `npm run check`、`npm run build:client`、`npm run build:example`、`npm run package:example` 与 `cd backend && go test ./...`。前端仓库单独运行 `npm run check` 和 `npm run package`。
+维护时先修改契约，再运行 `npm run generate:types` 重新生成 SDK 的线上类型 [`sdk/src/contract.ts`](../sdk/src/contract.ts)，不要手改该文件；`npm run lint` 会在它过期时失败。后端仓库运行 `npm run check`、`npm run build:client`、`npm run build:example`、`npm run package:example` 与 `cd backend && go test ./...`。前端仓库单独运行 `npm run check` 和 `npm run package`。

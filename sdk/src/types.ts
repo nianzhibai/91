@@ -1,101 +1,19 @@
-export type VideoItem = {
-  id: string;
-  href: string;
-  title: string;
-  thumbnail: string;
-  previewSrc: string;
-  previewDuration: number;
-  previewStrategy: "teaser-file" | "sprite-frames";
-  duration: string;
-  /** Raw duration in seconds; zero means unknown. */
-  durationSeconds?: number;
-  badges: string[];
-  sourceLabel?: string;
-  author: string;
-  views: number;
-  favorites?: number;
-  comments?: number;
-  likes?: number;
-  dislikes?: number;
-  publishedAt: string;
-  rating?: number;
-  tags?: string[];
-};
+import type { Schema } from "./contract.js";
 
-export type AuthorProfile = {
-  id: string;
-  name: string;
-  href: string;
-  badges: string[];
-  signupAge?: string;
-  level?: number;
-  points?: number;
-  videoCount?: number;
-  followers?: number;
-  following?: number;
-  isFollowing?: boolean;
-};
+// Wire types come from the generated contract; field documentation lives in openapi.json.
 
-export type CommentItem = {
-  id: string;
-  author: string;
-  body: string;
-  createdAt: string;
-  likes?: number;
-};
-
-export type VideoCollectionSummary = {
-  name: string;
-  total: number;
-  /** One-based position in the canonical ascending directory order. */
-  currentIndex: number;
-};
-
-export type VideoCollectionItem = Pick<
-  VideoItem,
-  "id" | "href" | "title" | "thumbnail" | "duration" | "durationSeconds" | "views" | "publishedAt"
-> & {
-  /** Present only when a collection view requests preview metadata. */
-  previewSrc?: string;
-};
-
-export type VideoCollection = VideoCollectionSummary & {
-  items: VideoCollectionItem[];
-};
-
-export type VideoDetail = VideoItem & {
-  videoSrc: string;
-  playbackUrl?: string;
-  /** 实际交给浏览器播放的资源 MIME；后端无法确认时省略。 */
-  mediaType?: string;
-  poster: string;
-  embedUrl: string;
-  points?: number;
-  authorProfile: AuthorProfile;
-  /** The source row has a directory; its collection summary loads separately. */
-  collectionCandidate?: boolean;
-  commentsList: CommentItem[];
-};
-
-export type VideoSubtitle = {
-  name: string;
-  label: string;
-  language?: string;
-  ext: string;
-  type: "vtt" | "srt" | "ass";
-  url: string;
-  source: string;
-};
+export type VideoItem = Schema<"VideoDTO">;
+export type AuthorProfile = Schema<"AuthorProfile">;
+export type CommentItem = Schema<"Comment">;
+export type VideoCollectionSummary = Schema<"VideoCollectionSummary">;
+export type VideoCollectionItem = Schema<"VideoCollectionItemDTO">;
+export type VideoCollection = Schema<"VideoCollectionDTO">;
+export type VideoDetail = Schema<"VideoDetailDTO">;
+export type VideoSubtitle = Schema<"SubtitleDTO">;
+export type TagItem = Schema<"TagDTO">;
 
 export type SortKey = "latest" | "hot" | "recent";
-
-export type TagItem = {
-  id: string;
-  label: string;
-  count?: number;
-};
-
 export type Theme = "dark" | "light";
-export type VideoReaction = "none" | "like" | "dislike";
-export type VideoReactionCounts = { likes: number; dislikes: number };
+export type VideoReaction = Schema<"Reaction">["reaction"];
+export type VideoReactionCounts = Pick<Schema<"Reaction">, "likes" | "dislikes">;
 export type ShortsFeedMode = "recommend" | "latest" | "hot";

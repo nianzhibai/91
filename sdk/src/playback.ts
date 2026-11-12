@@ -1,27 +1,8 @@
 import type { Transport } from "./http.js";
+import type { Schema } from "./contract.js";
 
-export type PlaybackSource = {
-  id: string;
-  label: string;
-  kind: "original" | "transcoded";
-  protocol: "file" | "hls";
-  status: "unknown" | "ready" | "processing" | "unavailable";
-  url?: string;
-  resolveUrl?: string;
-  prepareUrl?: string;
-  mediaType?: string;
-  message?: string;
-  expiresAt?: string;
-  resolution?: string;
-  width?: number;
-  height?: number;
-  bitrate?: number;
-  codec?: string;
-  urlSource?: string;
-  sourceInfoUrl?: string;
-};
-
-export type PlaybackManifest = { sources: PlaybackSource[] };
+export type PlaybackSource = Schema<"PlaybackSourceDTO">;
+export type PlaybackManifest = Schema<"PlaybackManifestDTO">;
 export type PlaybackOptions = { source?: string; refresh?: boolean; signal?: AbortSignal };
 
 export function createPlaybackClient(http: Transport) {

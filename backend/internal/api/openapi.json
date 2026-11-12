@@ -7389,10 +7389,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "href": {
             "type": "string"
@@ -7740,10 +7737,7 @@
             "items": {
               "$ref": "#/components/schemas/PlaybackSourceDTO"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -7865,16 +7859,22 @@
             "type": "string"
           },
           "state": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "queued",
+              "downloading",
+              "validating",
+              "saving",
+              "completed",
+              "failed",
+              "canceled"
+            ]
           },
           "tags": {
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "title": {
             "type": "string"
@@ -7914,10 +7914,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "comments": {
             "type": "integer"
@@ -7959,7 +7956,10 @@
             "type": "string"
           },
           "previewStrategy": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "teaser-file"
+            ]
           },
           "publishedAt": {
             "type": "string"
@@ -7974,10 +7974,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "thumbnail": {
             "type": "string"
@@ -8032,7 +8029,12 @@
             "type": "string"
           },
           "type": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "vtt",
+              "srt",
+              "ass"
+            ]
           },
           "url": {
             "type": "string"
@@ -8111,10 +8113,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "comments": {
             "type": "integer"
@@ -8150,7 +8149,10 @@
             "type": "string"
           },
           "previewStrategy": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "teaser-file"
+            ]
           },
           "publishedAt": {
             "type": "string",
@@ -8196,10 +8198,7 @@
             "items": {
               "$ref": "#/components/schemas/VideoCollectionItemDTO"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "name": {
             "type": "string"
@@ -8290,10 +8289,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "comments": {
             "type": "integer"
@@ -8329,7 +8325,10 @@
             "type": "string"
           },
           "previewStrategy": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "teaser-file"
+            ]
           },
           "publishedAt": {
             "type": "string",
@@ -8342,10 +8341,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "thumbnail": {
             "type": "string"
@@ -8390,10 +8386,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "collectionCandidate": {
             "type": "boolean"
@@ -8405,10 +8398,7 @@
             "items": {
               "$ref": "#/components/schemas/Comment"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "dislikes": {
             "type": "integer"
@@ -8453,7 +8443,10 @@
             "type": "string"
           },
           "previewStrategy": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "teaser-file"
+            ]
           },
           "publishedAt": {
             "type": "string"
@@ -8465,10 +8458,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "thumbnail": {
             "type": "string"
@@ -10611,10 +10601,7 @@
             "items": {
               "$ref": "#/components/schemas/ShortsItemDTO"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "nextCursor": {
             "type": "integer"
@@ -11055,10 +11042,7 @@
             "items": {
               "$ref": "#/components/schemas/VideoCardDTO"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "nextCursor": {
             "type": "integer"
@@ -11116,7 +11100,11 @@
             "type": "boolean"
           },
           "role": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "admin",
+              "user"
+            ]
           },
           "telegramEnabled": {
             "type": "boolean"
@@ -11140,10 +11128,7 @@
             "type": "string"
           },
           "auth": {
-            "type": [
-              "object",
-              "null"
-            ],
+            "type": "object",
             "properties": {
               "type": {
                 "const": "cookie"
@@ -11162,10 +11147,7 @@
             ]
           },
           "endpoints": {
-            "type": [
-              "object",
-              "null"
-            ],
+            "type": "object",
             "properties": {
               "openapi": {
                 "type": "string"
@@ -11196,10 +11178,7 @@
         "type": "object",
         "properties": {
           "items": {
-            "type": [
-              "array",
-              "null"
-            ],
+            "type": "array",
             "items": {
               "$ref": "#/components/schemas/VideoDTO"
             }

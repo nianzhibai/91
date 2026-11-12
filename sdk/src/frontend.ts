@@ -1,22 +1,11 @@
 import type { Transport } from "./http.js";
+import type { Schema } from "./contract.js";
 
 /** One selectable frontend; each installed frontend name appears once. */
-export type Frontend = {
-  /** Passed to `activate`. Empty selects the application's default site. */
-  id: string;
-  /** Manifest name. Empty for a default site without `frontend.json`. */
-  name: string;
-  version?: string;
-  repository?: string;
-  /** Shipped with the application. */
-  builtin: boolean;
-  active: boolean;
-};
-
-export type FrontendList = { frontends: Frontend[] };
-
+export type Frontend = Schema<"Frontend">;
+export type FrontendList = Schema<"FrontendList">;
 /** A published release newer than every installed version of a frontend. */
-export type FrontendUpdate = { name: string; version: string };
+export type FrontendUpdate = Schema<"FrontendUpdate">;
 
 export function createFrontendClient(http: Transport) {
   const base = "/admin/api/frontend";
@@ -27,7 +16,7 @@ export function createFrontendClient(http: Transport) {
   return {
     list: () => http.request<FrontendList>(base),
     /** Reads release metadata only; nothing is downloaded or switched. */
-    updates: () => http.request<{ updates: FrontendUpdate[] }>(`${base}/updates`),
+    updates: () => http.request<Schema<"FrontendUpdates">>(`${base}/updates`),
     /** Switch to an installed frontend without network access. */
     activate: (id: string) => post("activate", { id }),
     /** Add or update a frontend from its latest GitHub release and switch to it. */

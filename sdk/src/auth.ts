@@ -1,7 +1,8 @@
 import type { Transport } from "./http.js";
+import type { Schema } from "./contract.js";
 
-export type Session = { authenticated: boolean; role?: string; telegramEnabled?: boolean };
-export type LoginResult = { ok: boolean; role?: string; telegramEnabled?: boolean };
+export type Session = Schema<"Session">;
+export type LoginResult = Schema<"LoginResult">;
 
 export function createAuthClient(http: Transport) {
   return {

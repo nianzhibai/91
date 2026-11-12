@@ -1,11 +1,8 @@
 import { APIResponseError, type Transport } from "./http.js";
-import type { TagItem, VideoCollection, VideoCollectionSummary, VideoDetail, VideoItem, VideoSubtitle, VideoReaction, VideoReactionCounts, ShortsFeedMode } from "./types.js";
+import type { Schema } from "./contract.js";
+import type { TagItem, VideoCollection, VideoCollectionSummary, VideoDetail, VideoItem, VideoSubtitle, VideoReaction, ShortsFeedMode } from "./types.js";
 
-export type VideoShareClaim = {
-  shareId: string;
-  expiresAt: string;
-  video: VideoDetail;
-};
+export type VideoShareClaim = Schema<"consumeVideoShareResponse">;
 
 export class VideoShareUnavailableError extends Error {
   constructor(readonly status: number) {
@@ -21,13 +18,12 @@ export type VideoFeedCursor = {
   position: number;
 };
 
-export type VideoFeedResponse = {
-  items: VideoItem[];
-  total: number;
-  feedToken: string;
-  nextCursor: number;
-  exhausted: boolean;
-};
+/**
+ * Idempotent snapshot feed. A first response with more data creates an ordered
+ * server-side snapshot; later requests address it with a token and cursor.
+ * A result completed by the first response intentionally has no token.
+ */
+export type VideoFeedResponse = Schema<"videoFeedResponse">;
 
 export class VideoFeedExpiredError extends Error {
   constructor() {
@@ -36,47 +32,17 @@ export class VideoFeedExpiredError extends Error {
   }
 }
 
-/**
- * Idempotent snapshot feed. A first response with more data creates an ordered
- * server-side snapshot; later requests address it with a token and cursor.
- * A result completed by the first response intentionally has no token.
- */
+export type VideoReactionResult = Schema<"Reaction">;
 
-export type VideoReactionResult = VideoReactionCounts & {
-  reaction: VideoReaction;
-};
+export type ShortsItem = Omit<Schema<"ShortsItemDTO">, "feedCursor">;
 
-
-export type ShortsItem = VideoItem & {
-  videoSrc: string;
-  playbackUrl?: string;
-  poster: string;
-  /** Tiny server-preblurred texture for the viewport-sized letterbox backdrop. */
-  backgroundPoster?: string;
-  /**
-   * 文件大小与时长，用来算平均码率，进而把预加载门槛从固定秒数换算成
-   * 一份固定的字节预算。元数据缺失时后端会省略这两个字段（omitempty），
-   * 消费方必须按"未知码率"兜底回原有的固定门槛。
-   */
-  sizeBytes?: number;
-  durationSeconds?: number;
-};
-
+/** A shorts item whose feed position the SDK has validated. */
 export type ShortsFeedItem = ShortsItem & {
   /** Resume position immediately after this item in the server-side feed. */
   feedCursor: number;
 };
 
-/** 短视频"取下一批"接口的响应。 */
-
-export type ShortsNextResponse = {
-  items: ShortsFeedItem[];
-  total: number;
-  feedToken: string;
-  nextCursor: number;
-  /** true 表示当前服务端随机轮次已经读到末尾。 */
-  roundComplete: boolean;
-};
+export type ShortsNextResponse = Omit<Schema<"shortsFeedResponse">, "items"> & { items: ShortsFeedItem[] };
 
 export class ShortsFeedExpiredError extends Error {
   constructor() {
