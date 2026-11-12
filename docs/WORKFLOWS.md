@@ -28,7 +28,8 @@ flowchart TD
   inputs run everything. Missing diff information also runs everything.
 - Tags and manual runs always run all checks. Failed or canceled jobs cannot
   pass `Check`; skips are accepted only when change detection permits them.
-- Release tags use `vMAJOR.MINOR.PATCH` or `vMAJOR.MINOR.PATCH-prerelease`.
+- Release tags use `vMAJOR.MINOR.PATCH` or `vMAJOR.MINOR.PATCH-prerelease`
+  and must point to a commit on the default branch.
   Prereleases publish version tags only. Stable releases may advance their
   major/minor channels and `latest`/`stable`, but never replace newer versions.
 - Release runs are serialized across tags. Packages and image digests remain

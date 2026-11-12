@@ -196,3 +196,37 @@ test("publishing an older tag does not update latest or stable", (t) => {
   assert.equal(result.status, 0, result.stderr);
   assert.ok(!f.state().calls.some(call => call.args.includes("--latest=true") || call.args.includes("ghcr.io/example/91:stable")));
 });
+
+test("release metadata accepts only commits on the release branch", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "91-release-branch-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const git = (...args: string[]) => {
+    const result = spawnSync("git", args, { cwd: directory, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  git("init", "-q", "-b", "main");
+  git("config", "user.name", "CI test");
+  git("config", "user.email", "ci@example.invalid");
+  git("commit", "-q", "--allow-empty", "-m", "Reviewed");
+  const reviewed = git("rev-parse", "HEAD");
+  git("update-ref", "refs/remotes/origin/main", reviewed);
+  git("checkout", "-q", "-b", "unmerged");
+  git("commit", "-q", "--allow-empty", "-m", "Unreviewed");
+  const unmerged = git("rev-parse", "HEAD");
+
+  const output = join(directory, "outputs");
+  const metadata = (commit: string, branch = "main") => spawnSync(process.execPath, [publisher, "metadata"], {
+    cwd: directory, encoding: "utf8",
+    env: { ...process.env, RELEASE_TAG: "v1.2.3", RELEASE_BRANCH: branch, GITHUB_SHA: commit, GITHUB_OUTPUT: output },
+  });
+  const accepted = metadata(reviewed);
+  assert.equal(accepted.status, 0, accepted.stderr);
+  assert.equal(readFileSync(output, "utf8"), "version=v1.2.3\n");
+  rmSync(output);
+  const rejected = metadata(unmerged);
+  assert.notEqual(rejected.status, 0);
+  assert.match(rejected.stderr, /is not on main/);
+  assert.notEqual(metadata(reviewed, "missing").status, 0);
+  assert.throws(() => readFileSync(output), "Rejected releases must not produce a version");
+});

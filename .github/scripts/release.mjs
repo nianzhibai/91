@@ -40,6 +40,17 @@ function command(program, args, options = {}) {
   return execFileSync(program, args, { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, ...options });
 }
 
+// Releases promote shared image channels, so they must come from reviewed history.
+export function verifyReleaseCommit(sha, branch) {
+  if (!/^[a-f0-9]{40}$/.test(sha ?? '') || !branch) throw new Error('Missing release commit or branch');
+  try {
+    command('git', ['merge-base', '--is-ancestor', sha, `refs/remotes/origin/${branch}`], { stdio: 'pipe' });
+  } catch (error) {
+    if (error.status === 1) throw new Error(`Release commit ${sha} is not on ${branch}`);
+    throw error;
+  }
+}
+
 function publishImages(tags, sourceTag) {
   command('bash', [fileURLToPath(new URL('./publish-images.sh', import.meta.url))], {
     stdio: 'inherit',
@@ -137,6 +148,7 @@ export function publishRelease() {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   if (process.argv[2] === 'metadata') {
     const version = parseVersion(process.env.RELEASE_TAG);
+    verifyReleaseCommit(process.env.GITHUB_SHA, process.env.RELEASE_BRANCH);
     appendFileSync(process.env.GITHUB_OUTPUT, `version=${version.tag}\n`);
   } else if (process.argv[2] === 'publish') {
     publishRelease();

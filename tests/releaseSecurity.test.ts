@@ -75,5 +75,7 @@ test("container and release builds use supported Node and run checks", () => {
   assert.deepEqual(release.images.needs, ["preflight", "checks", "frontend"]);
   assert.deepEqual(release.packages.needs, ["preflight", "checks", "frontend"]);
   assert.deepEqual(release.publish.needs, ["preflight", "checks", "images", "packages"]);
+  assert.equal(release.preflight.steps.find((step: { id?: string }) => step.id === "version").env.RELEASE_BRANCH,
+    "${{ github.event.repository.default_branch }}");
   assert.deepEqual(Object.keys(parse(dockerWorkflow).on), ["workflow_call"], "Image builds must run through a checked caller");
 });
