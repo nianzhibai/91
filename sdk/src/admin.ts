@@ -933,11 +933,16 @@ export function createAdminClient(http: Transport) {
     return request<DriveLoginSession>("/drive-logins", { method: "POST", body: JSON.stringify({ kind }), signal });
   }
 
-  /** Checks the provider once. After a final state the login is gone and polling it returns 404. */
+  /**
+   * Checks the provider once. A final state is returned again to repeated polls
+   * for one minute, so a lost response can be recovered; call `cancelDriveLogin`
+   * once you have it. Afterwards polling returns 404.
+   */
   function pollDriveLogin(id: string, signal?: AbortSignal) {
     return request<DriveLoginResult>(`/drive-logins/${encodeURIComponent(id)}`, { signal });
   }
 
+  /** Forgets the login and any credentials the server still holds for it. */
   function cancelDriveLogin(id: string) {
     return request<void>(`/drive-logins/${encodeURIComponent(id)}`, { method: "DELETE" });
   }

@@ -155,7 +155,7 @@ await client.admin.updateSettings({ theme: "light" });
 | 配置 | GET YAML 并保存 ETag；PUT 时带 If-Match。409 时重新读取并让用户处理冲突，避免自动覆盖 |
 | 后台任务 | 接受请求与任务完成分开处理；读取对应状态，按允许的操作取消。创建、上传、准备转码等写操作不能自动重试 |
 | 实时状态 | 网盘 `/events` 使用 SSE，支持 `snapshot`、`heartbeat`；离开页面时关闭连接 |
-| 网盘扫码登录 | 所有网盘共用一个流程：POST `/admin/api/drive-logins` `{"kind"}` 获得二维码，每隔 `intervalMs` GET `/admin/api/drive-logins/{id}`，直到 `state` 不再是 `waiting` 或 `scanned`。成功时 `credentials` 的键即该网盘的凭据字段，可直接合并进表单；放弃时 DELETE。会话只存于服务端内存，重启或结束后返回 404 |
+| 网盘扫码登录 | 所有网盘共用一个流程：POST `/admin/api/drive-logins` `{"kind"}` 获得二维码，每隔 `intervalMs` GET `/admin/api/drive-logins/{id}`，直到 `state` 不再是 `waiting` 或 `scanned`。成功时 `credentials` 的键即该网盘的凭据字段，可直接合并进表单。最终结果会保留 1 分钟，响应丢失时可再次 GET 取回；拿到最终结果或放弃时 DELETE。会话只存于服务端内存，保留期过后、DELETE 或重启后返回 404 |
 | 备份 | 下载和分块上传使用二进制；恢复前需要明确确认，202 表示已接受，后续可能重启 |
 
 维护时先修改契约，再运行 `npm run generate:types` 重新生成 SDK 的线上类型 [`sdk/src/contract.ts`](../sdk/src/contract.ts)，不要手改该文件；`npm run lint` 会在它过期时失败。后端仓库运行 `npm run check`、`npm run build:client`、`npm run build:example`、`npm run package:example` 与 `cd backend && go test ./...`。前端仓库单独运行 `npm run check` 和 `npm run package`。

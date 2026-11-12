@@ -23,10 +23,13 @@ func fixedProvider(statuses ...Status) Provider {
 }
 
 func TestLoginReportsProgressThenCredentialsAndEnds(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	// fixedProvider panics if polled a third time, so repeats must not reach it.
 	m := New(map[string]Provider{"demo": fixedProvider(
 		Status{State: Scanned, Interval: 5 * time.Second},
 		Status{State: Success, Credentials: map[string]string{"access_token": "token", "family_id": ""}},
 	)})
+	m.now = func() time.Time { return now }
 	session, err := m.Start(context.Background(), "demo")
 	if err != nil {
 		t.Fatal(err)
@@ -42,8 +45,44 @@ func TestLoginReportsProgressThenCredentialsAndEnds(t *testing.T) {
 	if err != nil || second.State != Success || len(second.Credentials) != 1 || second.Credentials["access_token"] != "token" {
 		t.Fatalf("second = %#v, %v", second, err)
 	}
+	// A client that lost the success response can poll again.
+	now = now.Add(FinishedRetention - time.Second)
+	repeated, err := m.Poll(context.Background(), session.ID)
+	if err != nil || repeated.State != Success || repeated.Credentials["access_token"] != "token" {
+		t.Fatalf("repeated poll = %#v, %v", repeated, err)
+	}
+	now = now.Add(2 * time.Second)
 	if _, err := m.Poll(context.Background(), session.ID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("poll after success: %v", err)
+		t.Fatalf("poll after retention: %v", err)
+	}
+}
+
+func TestCanceledFinishedLoginDropsCredentials(t *testing.T) {
+	m := New(map[string]Provider{"demo": fixedProvider(Status{State: Success, Credentials: map[string]string{"cookie": "c"}})})
+	session, _ := m.Start(context.Background(), "demo")
+	if result, err := m.Poll(context.Background(), session.ID); err != nil || result.State != Success {
+		t.Fatalf("result = %#v, %v", result, err)
+	}
+	m.Cancel(session.ID)
+	if _, err := m.Poll(context.Background(), session.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("poll after cancel: %v", err)
+	}
+}
+
+func TestFinishedLoginsArePrunedAfterRetention(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	m := New(map[string]Provider{"demo": fixedProvider(Status{State: Rejected})})
+	m.now = func() time.Time { return now }
+	finished, _ := m.Start(context.Background(), "demo")
+	if result, _ := m.Poll(context.Background(), finished.ID); result.State != Rejected {
+		t.Fatalf("result = %#v", result)
+	}
+	now = now.Add(FinishedRetention + time.Second)
+	if _, err := m.Start(context.Background(), "demo"); err != nil {
+		t.Fatal(err)
+	}
+	if _, kept := m.sessions[finished.ID]; kept {
+		t.Fatal("finished login outlived its retention")
 	}
 }
 
@@ -74,9 +113,11 @@ func TestExpiredLoginStopsWithoutCallingProvider(t *testing.T) {
 		t.Fatalf("interval = %d", session.IntervalMs)
 	}
 	now = now.Add(2 * time.Minute)
-	result, err := m.Poll(context.Background(), session.ID)
-	if err != nil || result.State != Expired {
-		t.Fatalf("result = %#v, %v", result, err)
+	for range 2 {
+		result, err := m.Poll(context.Background(), session.ID)
+		if err != nil || result.State != Expired {
+			t.Fatalf("result = %#v, %v", result, err)
+		}
 	}
 }
 

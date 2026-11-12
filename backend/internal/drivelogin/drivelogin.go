@@ -59,6 +59,9 @@ const (
 	DefaultInterval = 2 * time.Second
 	minInterval     = time.Second
 	maxSessions     = 16
+	// FinishedRetention keeps a final result available to repeated polls, so a
+	// client that lost the response carrying credentials can ask again.
+	FinishedRetention = time.Minute
 )
 
 var (
@@ -86,9 +89,13 @@ type Result struct {
 
 type session struct {
 	expiresAt time.Time
-	interval  time.Duration
 	poll      func(context.Context) (Status, error)
-	mu        sync.Mutex // Serializes polls of one session.
+	mu        sync.Mutex    // Serializes polls of one session.
+	interval  time.Duration // Guarded by mu.
+
+	// Guarded by Manager.mu, which pruning holds without polling.
+	final    *Result
+	forgetAt time.Time
 }
 
 // Manager keeps active logins in memory. A login lost on restart is simply
@@ -132,7 +139,13 @@ func (m *Manager) Start(ctx context.Context, kind string) (Session, error) {
 	if expiresAt.IsZero() || !expiresAt.After(now) {
 		expiresAt = now.Add(DefaultTTL)
 	}
-	s := &session{expiresAt: expiresAt, interval: clampInterval(challenge.Interval), poll: challenge.Poll}
+	s := &session{
+		expiresAt: expiresAt,
+		interval:  clampInterval(challenge.Interval),
+		poll:      challenge.Poll,
+		// An unfinished login past its expiry still reports "expired" once polled.
+		forgetAt: expiresAt.Add(FinishedRetention),
+	}
 	id, err := newID()
 	if err != nil {
 		return Session{}, err
@@ -156,23 +169,25 @@ func (m *Manager) Start(ctx context.Context, kind string) (Session, error) {
 	}, nil
 }
 
-// Poll checks a login once. A finished login is forgotten after it reports
-// its final state, so later polls return ErrNotFound.
+// Poll checks a login once. A final state is kept for FinishedRetention and
+// returned again to later polls; after that, or after Cancel, polls return
+// ErrNotFound.
 func (m *Manager) Poll(ctx context.Context, id string) (Result, error) {
-	m.mu.Lock()
-	s, ok := m.sessions[id]
-	m.mu.Unlock()
-	if !ok {
-		return Result{}, ErrNotFound
+	s, err := m.lookup(id)
+	if err != nil {
+		return Result{}, err
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// A concurrent poll may have finished the login while this one waited.
+	if final := m.finalResult(s); final != nil {
+		return *final, nil
+	}
 	var status Status
 	if m.now().After(s.expiresAt) {
 		status = Status{State: Expired, Message: "二维码已过期，请重新生成"}
 	} else {
-		var err error
 		if status, err = s.poll(ctx); err != nil {
 			return Result{}, err
 		}
@@ -181,15 +196,39 @@ func (m *Manager) Poll(ctx context.Context, id string) (Result, error) {
 	if status.Interval > 0 {
 		s.interval = clampInterval(status.Interval)
 	}
-	if status.State.Done() {
-		m.Cancel(id)
-	}
-	return Result{
+	result := Result{
 		State:       status.State,
 		Message:     status.Message,
 		Credentials: status.Credentials,
 		IntervalMs:  s.interval.Milliseconds(),
-	}, nil
+	}
+	if status.State.Done() {
+		m.mu.Lock()
+		s.final = &result
+		s.forgetAt = m.now().Add(FinishedRetention)
+		m.mu.Unlock()
+	}
+	return result, nil
+}
+
+func (m *Manager) lookup(id string) (*session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if m.now().After(s.forgetAt) {
+		delete(m.sessions, id)
+		return nil, ErrNotFound
+	}
+	return s, nil
+}
+
+func (m *Manager) finalResult(s *session) *Result {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return s.final
 }
 
 // Cancel forgets a login. Unknown IDs are ignored.
@@ -229,7 +268,7 @@ func clampInterval(interval time.Duration) time.Duration {
 
 func (m *Manager) pruneLocked(now time.Time) {
 	for id, s := range m.sessions {
-		if now.After(s.expiresAt) {
+		if now.After(s.forgetAt) {
 			delete(m.sessions, id)
 		}
 	}

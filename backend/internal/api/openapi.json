@@ -2871,7 +2871,7 @@
           "Management"
         ],
         "x-role": "admin",
-        "description": "Checks the provider once. A final state (success, expired, rejected or failed) ends the login; later polls return 404. On success, credentials use the drive's configuration field names.",
+        "description": "Checks the provider once. A final state (success, expired, rejected or failed) is kept for one minute and returned again to repeated polls, so a lost response can be recovered; then, or after DELETE, polls return 404. On success, credentials use the drive's configuration field names.",
         "parameters": [
           {
             "name": "id",
@@ -2934,7 +2934,8 @@
           "403": {
             "$ref": "#/components/responses/Forbidden"
           }
-        }
+        },
+        "description": "Forgets the login and any credentials it holds. Clients call this once they have the final result."
       }
     },
     "/admin/api/drives/{id}": {

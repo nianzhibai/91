@@ -61,17 +61,27 @@ func pollDriveLogin(t *testing.T, handler http.Handler, id string) drivelogin.Re
 	return result
 }
 
-// expectDriveLoginSuccess polls once, checks the credentials and confirms the
-// finished login is forgotten.
+// expectFinalDriveLogin checks a final poll, that a client which lost it gets
+// the same answer again, and that cancellation then forgets the login.
+func expectFinalDriveLogin(t *testing.T, handler http.Handler, id string, state drivelogin.State, credentials map[string]string) {
+	t.Helper()
+	for range 2 {
+		result := pollDriveLogin(t, handler, id)
+		if result.State != state || !maps.Equal(result.Credentials, credentials) {
+			t.Fatalf("result = %#v, want %s with credentials %v", result, state, credentials)
+		}
+	}
+	if rr := serveDriveLogin(handler, http.MethodDelete, "/admin/api/drive-logins/"+id, ""); rr.Code != http.StatusNoContent {
+		t.Fatalf("cancel: status=%d", rr.Code)
+	}
+	if rr := serveDriveLogin(handler, http.MethodGet, "/admin/api/drive-logins/"+id, ""); rr.Code != http.StatusNotFound {
+		t.Fatalf("canceled login: status=%d", rr.Code)
+	}
+}
+
 func expectDriveLoginSuccess(t *testing.T, handler http.Handler, session drivelogin.Session, want map[string]string) {
 	t.Helper()
-	result := pollDriveLogin(t, handler, session.ID)
-	if result.State != drivelogin.Success || !maps.Equal(result.Credentials, want) {
-		t.Fatalf("result = %#v, want credentials %v", result, want)
-	}
-	if rr := serveDriveLogin(handler, http.MethodGet, "/admin/api/drive-logins/"+session.ID, ""); rr.Code != http.StatusNotFound {
-		t.Fatalf("finished login polled again: status=%d", rr.Code)
-	}
+	expectFinalDriveLogin(t, handler, session.ID, drivelogin.Success, want)
 }
 
 type driveLoginTransport func(*http.Request) (*http.Response, error)
@@ -186,12 +196,7 @@ func TestRejectedDriveLoginEnds(t *testing.T) {
 	upstream := p123LoginUpstream(t, map[string]any{"loginStatus": 2})
 	handler := driveLoginRouter(&AdminServer{P123UserAPIBaseURL: upstream.URL + "/api"})
 	session := startDriveLogin(t, handler, "p123")
-	if result := pollDriveLogin(t, handler, session.ID); result.State != drivelogin.Rejected || result.Credentials != nil {
-		t.Fatalf("result = %#v", result)
-	}
-	if rr := serveDriveLogin(handler, http.MethodGet, "/admin/api/drive-logins/"+session.ID, ""); rr.Code != http.StatusNotFound {
-		t.Fatalf("rejected login polled again: status=%d", rr.Code)
-	}
+	expectFinalDriveLogin(t, handler, session.ID, drivelogin.Rejected, nil)
 }
 
 func TestYun139DriveLoginReturnsAuthorizationOnce(t *testing.T) {
