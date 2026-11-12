@@ -38,14 +38,16 @@ jobs:
     needs: preflight
     uses: ./.github/workflows/checks.yml
     with:
-      force-all: true
+      frontend: true
+      backend: true
 
+  # Artifacts build alongside the checks; only publish waits for both.
   frontend:
-    needs: checks
+    needs: preflight
     uses: ./.github/workflows/prepare-frontend.yml
 
   images:
-    needs: [preflight, checks, frontend]
+    needs: [preflight, frontend]
     permissions:
       contents: read
       packages: write
@@ -57,7 +59,7 @@ jobs:
 
   packages:
     name: Build Linux packages
-    needs: [preflight, checks, frontend]
+    needs: [preflight, frontend]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:

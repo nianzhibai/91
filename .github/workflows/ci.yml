@@ -14,22 +14,49 @@ defaults:
   run:
     shell: bash
 
+# Superseded pull request runs are disposable. Runs on main may be publishing
+# image tags, so they finish and newer pushes wait.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  checks:
-    uses: ./.github/workflows/checks.yml
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      frontend: ${{ steps.detect.outputs.frontend }}
+      backend: ${{ steps.detect.outputs.backend }}
+      images: ${{ steps.detect.outputs.images }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Detect affected checks
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/ci-changes.mjs
 
+  checks:
+    needs: changes
+    uses: ./.github/workflows/checks.yml
+    with:
+      frontend: ${{ needs.changes.outputs.frontend == 'true' }}
+      backend: ${{ needs.changes.outputs.backend == 'true' }}
+
+  # Images build alongside the checks; only publish waits for both.
   frontend:
-    needs: checks
-    if: needs.checks.outputs.images == 'true'
+    needs: changes
+    if: needs.changes.outputs.images == 'true'
     uses: ./.github/workflows/prepare-frontend.yml
 
   images:
-    needs: [checks, frontend]
-    if: needs.checks.outputs.images == 'true'
+    needs: [changes, frontend]
+    if: needs.changes.outputs.images == 'true'
     permissions:
       contents: read
       packages: write
@@ -41,7 +68,7 @@ jobs:
   check:
     name: Check
     if: always()
-    needs: [checks, frontend, images]
+    needs: [changes, checks, frontend, images]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -51,10 +78,10 @@ jobs:
         run: |
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"' | tee -a "$GITHUB_STEP_SUMMARY"
           echo "$RESULTS" | jq -e '
-            .checks.result == "success" and
+            .changes.result == "success" and .checks.result == "success" and
             ((.frontend.result == "success" and .images.result == "success") or
               (.frontend.result == "skipped" and .images.result == "skipped" and
-                .checks.outputs.images == "false"))' > /dev/null
+                .changes.outputs.images == "false"))' > /dev/null
 
   publish:
     name: Publish main images

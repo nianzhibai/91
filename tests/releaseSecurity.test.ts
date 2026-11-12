@@ -64,16 +64,19 @@ test("container and release builds use supported Node and run checks", () => {
   const checks = parse(checksWorkflow).jobs;
   assert.ok(checks.frontend.steps.some((step: { run?: string }) => step.run?.includes("npm run check")));
   assert.ok(checks.backend.steps.some((step: { run?: string }) => step.run?.includes("go test -count=1 -timeout=15m ./...")));
-  assert.deepEqual(checks.check.needs, ["changes", "frontend", "backend"]);
-  const ci = parse(ciWorkflow).jobs;
-  assert.equal(ci.frontend.needs, "checks");
-  assert.deepEqual(ci.images.needs, ["checks", "frontend"]);
-  assert.deepEqual(ci.publish.needs, ["checks", "images"]);
+  assert.deepEqual(checks.check.needs, ["frontend", "backend"]);
+  // Images build alongside the checks, but nothing is published until both succeed.
+  const ci = parse(ciWorkflow);
+  assert.equal(ci.jobs.checks.needs, "changes");
+  assert.equal(ci.jobs.frontend.needs, "changes");
+  assert.deepEqual(ci.jobs.images.needs, ["changes", "frontend"]);
+  assert.deepEqual(ci.jobs.publish.needs, ["checks", "images"]);
+  assert.equal(ci.concurrency["cancel-in-progress"], "${{ github.event_name == 'pull_request' }}", "Main runs must not be canceled while publishing");
   const release = parse(releaseWorkflow).jobs;
-  assert.equal(release.checks.with["force-all"], true);
-  assert.equal(release.frontend.needs, "checks");
-  assert.deepEqual(release.images.needs, ["preflight", "checks", "frontend"]);
-  assert.deepEqual(release.packages.needs, ["preflight", "checks", "frontend"]);
+  assert.deepEqual(release.checks.with, { frontend: true, backend: true });
+  assert.equal(release.frontend.needs, "preflight");
+  assert.deepEqual(release.images.needs, ["preflight", "frontend"]);
+  assert.deepEqual(release.packages.needs, ["preflight", "frontend"]);
   assert.deepEqual(release.publish.needs, ["preflight", "checks", "images", "packages"]);
   assert.equal(release.preflight.steps.find((step: { id?: string }) => step.id === "version").env.RELEASE_BRANCH,
     "${{ github.event.repository.default_branch }}");

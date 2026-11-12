@@ -3,13 +3,14 @@ name: Checks
 on:
   workflow_call:
     inputs:
-      force-all:
+      frontend:
+        description: Run SDK and deployment tests
         type: boolean
-        default: false
-    outputs:
-      images:
-        description: Whether application images need rebuilding
-        value: ${{ jobs.changes.outputs.images }}
+        required: true
+      backend:
+        description: Run backend tests
+        type: boolean
+        required: true
 
 permissions:
   contents: read
@@ -19,27 +20,9 @@ defaults:
     shell: bash
 
 jobs:
-  changes:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    outputs:
-      frontend: ${{ steps.detect.outputs.frontend }}
-      backend: ${{ steps.detect.outputs.backend }}
-      images: ${{ steps.detect.outputs.images }}
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          fetch-depth: 0
-      - name: Detect affected checks
-        id: detect
-        env:
-          FORCE_ALL: ${{ inputs.force-all }}
-        run: node .github/scripts/ci-changes.mjs
-
   frontend:
     name: SDK and deployment tests
-    needs: changes
-    if: needs.changes.outputs.frontend == 'true'
+    if: inputs.frontend
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -67,8 +50,7 @@ jobs:
 
   backend:
     name: Backend Linux
-    needs: changes
-    if: needs.changes.outputs.backend == 'true'
+    if: inputs.backend
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -96,17 +78,17 @@ jobs:
   check:
     name: Check test results
     if: always()
-    needs: [changes, frontend, backend]
+    needs: [frontend, backend]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Require all affected checks to pass
+      - name: Require all requested checks to pass
         env:
           RESULTS: ${{ toJSON(needs) }}
+          REQUESTED: ${{ toJSON(inputs) }}
         run: |
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"' | tee -a "$GITHUB_STEP_SUMMARY"
-          echo "$RESULTS" | jq -e '
-            . as $results | .changes.result == "success" and
-            (["frontend", "backend"] | all(.[]; . as $job |
+          echo "$RESULTS" | jq -e --argjson requested "$REQUESTED" '
+            . as $results | ["frontend", "backend"] | all(.[]; . as $job |
               $results[$job].result == "success" or
-              ($results[$job].result == "skipped" and $results.changes.outputs[$job] == "false")))' > /dev/null
+              ($results[$job].result == "skipped" and $requested[$job] == false))' > /dev/null
