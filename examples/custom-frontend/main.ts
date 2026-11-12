@@ -34,7 +34,7 @@ async function loadLibrary() {
   listingRequest?.abort();
   const request = listingRequest = new AbortController();
   try {
-    const result = await client.videos.fetchListing(page, 12, { q: query }, { signal: request.signal });
+    const result = await client.videos.list(page, 12, { q: query }, { signal: request.signal });
     if (request.signal.aborted) return;
     const cards = result.items.map(item => {
       const card = document.createElement("button");

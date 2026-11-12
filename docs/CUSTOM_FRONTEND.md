@@ -121,7 +121,7 @@ const info = await client.server();
 if (!info.apiVersion.startsWith("1.")) throw new Error("需要 API v1");
 
 await client.auth.login(username, password);
-const { items } = await client.videos.fetchListing(1, 12, { q: "搜索词" });
+const { items } = await client.videos.list(1, 12, { q: "搜索词" });
 const playback = await client.playback.get(items[0].id);
 const source = playback.sources.find(source => source.status === "ready");
 if (source?.url) video.src = client.resourceURL(source.url);

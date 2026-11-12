@@ -44,7 +44,7 @@ test("the shared error type preserves HTTP status and structured server details"
     return true;
   });
   const guest = createClient({ fetch: async () => new Response("unauthorized", { status: 401 }) });
-  await assert.rejects(guest.videos.fetchListing(1, 12), UnauthorizedError);
+  await assert.rejects(guest.videos.list(1, 12), UnauthorizedError);
 });
 
 test("configuration editing retains ETags and reports a conflict without retrying", async () => {
@@ -111,7 +111,7 @@ test("aborted library reads stop without retrying and writes are sent only once"
     controller.abort();
     throw init!.signal!.reason;
   } });
-  await assert.rejects(client.videos.fetchListing(1, 12, {}, { signal: controller.signal }), { name: "AbortError" });
+  await assert.rejects(client.videos.list(1, 12, {}, { signal: controller.signal }), { name: "AbortError" });
   assert.equal(reads, 1);
   let writes = 0;
   const failing = createClient({ fetch: async () => { writes++; return new Response("unavailable", { status: 503 }); } });
@@ -125,7 +125,7 @@ test("reads retry one transient failure and time out with a distinct error", asy
     reads++;
     return reads === 1 ? new Response("busy", { status: 503 }) : Response.json({ items: [], total: 0 });
   } });
-  assert.deepEqual(await flaky.videos.fetchListing(1, 12), { items: [], total: 0 });
+  assert.deepEqual(await flaky.videos.list(1, 12), { items: [], total: 0 });
   assert.equal(reads, 2);
 
   t.mock.timers.enable({ apis: ["setTimeout"] });
@@ -141,7 +141,7 @@ test("JSON bodies parse without a Content-Type and empty bodies resolve to undef
   const client = createClient({ fetch: async () => new Response(null, { status: 204 }) });
   assert.equal(await client.admin.hideVideo("demo"), undefined);
   const untyped = createClient({ fetch: async () => new Response('{"items":[],"total":0}') });
-  assert.deepEqual(await untyped.videos.fetchListing(1, 12), { items: [], total: 0 });
+  assert.deepEqual(await untyped.videos.list(1, 12), { items: [], total: 0 });
 });
 
 test("an already aborted request never reaches fetch", async () => {
@@ -149,7 +149,7 @@ test("an already aborted request never reaches fetch", async () => {
   const client = createClient({ fetch: async () => { calls++; return Response.json({}); } });
   const controller = new AbortController();
   controller.abort();
-  await assert.rejects(client.videos.fetchListing(1, 12, {}, { signal: controller.signal }), { name: "AbortError" });
+  await assert.rejects(client.videos.list(1, 12, {}, { signal: controller.signal }), { name: "AbortError" });
   await assert.rejects(client.admin.listLogs({}, controller.signal), { name: "AbortError" });
   assert.equal(calls, 0);
 });

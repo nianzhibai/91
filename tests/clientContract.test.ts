@@ -36,9 +36,9 @@ test("OpenAPI describes the query parameters sent by SDK library and log request
     }
     return Response.json({ items: [], total: 0 });
   } });
-  await client.videos.fetchListing(2, 12, { q: "sample", tag: "demo", sort: "hot", includeTotal: false });
-  await client.videos.fetchVideoFeed({ kind: "listing", cursor: { feedToken: "", position: 0 }, count: 2, q: "sample", tag: "demo", sort: "latest" });
-  await client.videos.fetchVideoFeed({ kind: "listing", cursor: { feedToken: "existing-feed", position: 1 }, count: 2 });
+  await client.videos.list(2, 12, { q: "sample", tag: "demo", sort: "hot", includeTotal: false });
+  await client.videos.getFeed({ kind: "listing", cursor: { feedToken: "", position: 0 }, count: 2, q: "sample", tag: "demo", sort: "latest" });
+  await client.videos.getFeed({ kind: "listing", cursor: { feedToken: "existing-feed", position: 1 }, count: 2 });
   await client.admin.listLogs({ from: "2026-01-01T00:00:00Z", to: "2026-01-02T00:00:00Z", source: "http", level: "error", method: "GET", query: "sample", limit: 100, before: 10 });
 
   for (const url of calls) {

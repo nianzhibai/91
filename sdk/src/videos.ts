@@ -92,25 +92,25 @@ export class ShortsFeedExpiredError extends Error {
 
 export function createVideoClient(http: Transport) {
 
-  async function fetchHomeVideos(count?: number): Promise<VideoItem[]> {
+  async function listHome(count?: number): Promise<VideoItem[]> {
     // 整库随机轮次由服务端按登录会话维护；前端只需告知本次展示数量。
     const path = count === undefined ? "/api/home" : `/api/home?count=${count}`;
-    const items = await get<VideoItem[]>(path);
+    const items = await read<VideoItem[]>(path);
     if (!Array.isArray(items)) {
       throw new Error("Invalid /api/home response");
     }
     return items;
   }
 
-  async function fetchLatestHomeVideos(count: number): Promise<VideoItem[]> {
-    const items = await get<VideoItem[]>(`/api/home/latest?count=${count}`);
+  async function listLatest(count: number): Promise<VideoItem[]> {
+    const items = await read<VideoItem[]>(`/api/home/latest?count=${count}`);
     if (!Array.isArray(items)) {
       throw new Error("Invalid /api/home/latest response");
     }
     return items;
   }
 
-  async function fetchListing(
+  async function list(
     page: number,
     pageSize: number,
     params?: { q?: string; tag?: string; sort?: string; includeTotal?: boolean },
@@ -124,7 +124,7 @@ export function createVideoClient(http: Transport) {
     if (params?.tag) qs.set("tag", params.tag);
     if (params?.sort) qs.set("sort", params.sort);
     if (params?.includeTotal === false) qs.set("count", "false");
-    const result = await get<{ items: VideoItem[]; total: number }>(
+    const result = await read<{ items: VideoItem[]; total: number }>(
       `/api/list?${qs.toString()}`,
       options
     );
@@ -138,7 +138,7 @@ export function createVideoClient(http: Transport) {
     return result;
   }
 
-  async function fetchVideoFeed(
+  async function getFeed(
     input: {
       kind: VideoFeedKind;
       cursor: VideoFeedCursor;
@@ -161,7 +161,7 @@ export function createVideoClient(http: Transport) {
 
     let result: VideoFeedResponse;
     try {
-      result = await get<VideoFeedResponse>(`/api/feed?${params.toString()}`, options);
+      result = await read<VideoFeedResponse>(`/api/feed?${params.toString()}`, options);
     } catch (error) {
       if (error instanceof APIResponseError && error.status === 410) {
         throw new VideoFeedExpiredError();
@@ -192,8 +192,8 @@ export function createVideoClient(http: Transport) {
   }
 
   /** Resolves to `null` when the video does not exist or has been removed. */
-  function fetchVideoDetail(id: string): Promise<VideoDetail | null> {
-    return get<VideoDetail>(`/api/video/${encodeURIComponent(id)}`)
+  function get(id: string): Promise<VideoDetail | null> {
+    return read<VideoDetail>(`/api/video/${encodeURIComponent(id)}`)
       .catch((error: unknown) => {
         if (
           error instanceof APIResponseError &&
@@ -205,11 +205,11 @@ export function createVideoClient(http: Transport) {
       });
   }
 
-  async function fetchVideoRecommendations(
+  async function listRecommendations(
     id: string,
     options: { signal?: AbortSignal } = {}
   ): Promise<VideoItem[]> {
-    const items = await get<VideoItem[]>(
+    const items = await read<VideoItem[]>(
       `/api/video/${encodeURIComponent(id)}/recommendations`,
       options
     );
@@ -219,12 +219,12 @@ export function createVideoClient(http: Transport) {
     return items;
   }
 
-  async function fetchVideoCollection(
+  async function getCollection(
     id: string,
     options: { signal?: AbortSignal; includePreview?: boolean } = {}
   ): Promise<VideoCollection> {
     const previewQuery = options.includePreview ? "?preview=1" : "";
-    const collection = await get<VideoCollection>(
+    const collection = await read<VideoCollection>(
       `/api/video/${encodeURIComponent(id)}/collection${previewQuery}`,
       options
     );
@@ -261,11 +261,11 @@ export function createVideoClient(http: Transport) {
     return collection;
   }
 
-  async function fetchVideoCollectionSummary(
+  async function getCollectionSummary(
     id: string,
     options: { signal?: AbortSignal } = {}
   ): Promise<VideoCollectionSummary | null> {
-    const summary = await get<VideoCollectionSummary>(
+    const summary = await read<VideoCollectionSummary>(
       `/api/video/${encodeURIComponent(id)}/collection/summary`,
       options
     );
@@ -285,11 +285,11 @@ export function createVideoClient(http: Transport) {
     return summary.total > 1 ? summary : null;
   }
 
-  function fetchVideoSubtitles(id: string): Promise<VideoSubtitle[]> {
-    return get<VideoSubtitle[]>(`/api/video/${encodeURIComponent(id)}/subtitles`);
+  function listSubtitles(id: string): Promise<VideoSubtitle[]> {
+    return read<VideoSubtitle[]>(`/api/video/${encodeURIComponent(id)}/subtitles`);
   }
 
-  function createVideoShare(id: string): Promise<{ url: string; token: string }> {
+  function createShare(id: string): Promise<{ url: string; token: string }> {
     return post<{ url: string; token: string }>(`/api/video/${encodeURIComponent(id)}/share`);
   }
 
@@ -298,7 +298,7 @@ export function createVideoClient(http: Transport) {
 
   const pendingVideoShareClaims = new Map<string, Promise<VideoShareClaim>>();
 
-  function consumeVideoShare(token: string): Promise<VideoShareClaim> {
+  function claimShare(token: string): Promise<VideoShareClaim> {
     const existing = pendingVideoShareClaims.get(token);
     if (existing) return existing;
 
@@ -332,15 +332,15 @@ export function createVideoClient(http: Transport) {
     return request;
   }
 
-  function fetchSharedVideoSubtitles(
+  function listSharedSubtitles(
     shareId: string
   ): Promise<VideoSubtitle[]> {
-    return get<VideoSubtitle[]>(
+    return read<VideoSubtitle[]>(
       `/api/share/${encodeURIComponent(shareId)}/subtitles`
     );
   }
 
-  function recordSharedVideoView(
+  function recordSharedView(
     shareId: string
   ): Promise<{ views: number }> {
     return post<{ views: number }>(`/api/share/${encodeURIComponent(shareId)}/view`);
@@ -352,7 +352,7 @@ export function createVideoClient(http: Transport) {
 
   /** Legacy counter-style like endpoint used by the immersive shorts UI. */
 
-  async function setVideoLike(id: string, liked: boolean): Promise<number> {
+  async function setLike(id: string, liked: boolean): Promise<number> {
     const result = await post<{ likes: number }>(
       `/api/video/${encodeURIComponent(id)}/like`,
       undefined,
@@ -364,7 +364,7 @@ export function createVideoClient(http: Transport) {
     return result.likes;
   }
 
-  async function setVideoVisitReaction(
+  async function setReaction(
     id: string,
     visitId: string,
     reaction: VideoReaction
@@ -389,11 +389,11 @@ export function createVideoClient(http: Transport) {
     return result;
   }
 
-  function fetchTags(): Promise<TagItem[]> { return get<TagItem[]>("/api/tags"); }
+  function listTags(): Promise<TagItem[]> { return read<TagItem[]>("/api/tags"); }
 
   /** 短视频模式单条记录。比 VideoItem 多 videoSrc / poster。 */
 
-  async function fetchShortsNext(
+  async function getShorts(
     feedToken: string,
     cursor: number,
     count: number,
@@ -409,7 +409,7 @@ export function createVideoClient(http: Transport) {
 
     let result: ShortsNextResponse;
     try {
-      result = await get<ShortsNextResponse>(
+      result = await read<ShortsNextResponse>(
         `/api/shorts/next?${params.toString()}`,
         options
       );
@@ -443,7 +443,7 @@ export function createVideoClient(http: Transport) {
   }
 
   // Reads are idempotent: retry once on transient failures and bound their wait.
-  function get<T>(path: string, options: { signal?: AbortSignal } = {}): Promise<T> {
+  function read<T>(path: string, options: { signal?: AbortSignal } = {}): Promise<T> {
     return http.request<T>(path, { signal: options.signal, retry: true, timeoutMs: 10_000 });
   }
 
@@ -452,23 +452,23 @@ export function createVideoClient(http: Transport) {
   }
 
   return {
-    fetchHomeVideos,
-    fetchLatestHomeVideos,
-    fetchListing,
-    fetchVideoFeed,
-    fetchVideoDetail,
-    fetchVideoRecommendations,
-    fetchVideoCollection,
-    fetchVideoCollectionSummary,
-    fetchVideoSubtitles,
-    createVideoShare,
-    consumeVideoShare,
-    fetchSharedVideoSubtitles,
-    recordSharedVideoView,
+    listHome,
+    listLatest,
+    list,
+    getFeed,
+    get,
+    listRecommendations,
+    getCollection,
+    getCollectionSummary,
+    listSubtitles,
+    createShare,
+    claimShare,
+    listSharedSubtitles,
+    recordSharedView,
     recordView,
-    setVideoLike,
-    setVideoVisitReaction,
-    fetchTags,
-    fetchShortsNext
+    setLike,
+    setReaction,
+    listTags,
+    getShorts
   };
 }
