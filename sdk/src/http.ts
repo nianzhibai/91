@@ -86,11 +86,15 @@ export function createTransport(options: ClientOptions = {}) {
     return (options.fetch ?? globalThis.fetch)(apiURL(path), { credentials: "include", ...init });
   }
 
-  async function attempt(path: string, init: RequestInit, timeoutMs?: number): Promise<Response> {
+  /**
+   * One request whose body `read` consumes before the timeout and the caller's
+   * abort listener are released, so neither stops at the response headers.
+   */
+  async function attempt<T>(path: string, init: RequestInit, timeoutMs: number | undefined, read: (response: Response) => Promise<T>): Promise<T> {
     if (!timeoutMs) {
       const response = await fetchResponse(path, init);
       if (!response.ok) throw await responseError(response);
-      return response;
+      return read(response);
     }
     const caller = init.signal;
     const controller = new AbortController();
@@ -104,7 +108,7 @@ export function createTransport(options: ClientOptions = {}) {
     try {
       const response = await fetchResponse(path, { ...init, signal: controller.signal });
       if (!response.ok) throw await responseError(response);
-      return response;
+      return await read(response);
     } catch (error) {
       // fetch rejects with a generic AbortError; report why the request stopped.
       if (controller.signal.aborted) throw controller.signal.reason;
@@ -115,12 +119,8 @@ export function createTransport(options: ClientOptions = {}) {
     }
   }
 
-  /**
-   * Send a request and return the successful response. Failures become
-   * `APIResponseError`. Requests are never retried unless `retry` is set,
-   * which callers use only for reads.
-   */
-  async function send(path: string, init: RequestOptions = {}): Promise<Response> {
+  /** Requests are never retried unless `retry` is set, which callers use only for reads. */
+  async function exchange<T>(path: string, init: RequestOptions, read: (response: Response) => Promise<T>): Promise<T> {
     const { retry, timeoutMs, ...fetchInit } = init;
     const headers = new Headers(fetchInit.headers);
     if (!headers.has("Accept")) headers.set("Accept", "application/json");
@@ -129,7 +129,7 @@ export function createTransport(options: ClientOptions = {}) {
     for (let attempts = 1; ; attempts++) {
       requestInit.signal?.throwIfAborted();
       try {
-        return await attempt(path, requestInit, timeoutMs);
+        return await attempt(path, requestInit, timeoutMs, read);
       } catch (error) {
         if (!retry || attempts >= RETRY_ATTEMPTS || requestInit.signal?.aborted || !retryable(error)) throw error;
       }
@@ -137,10 +137,21 @@ export function createTransport(options: ClientOptions = {}) {
     }
   }
 
-  /** Send a request whose successful response is JSON or empty. Use `send` for other bodies. */
-  async function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
-    const text = await (await send(path, init)).text();
-    return (text ? JSON.parse(text) : undefined) as T;
+  /**
+   * Send a request and return the successful response for the caller to read.
+   * Failures become `APIResponseError`. The caller's `signal` also cancels the
+   * body read; use `request` when a timeout or retry must cover the body.
+   */
+  function send(path: string, init: RequestInit = {}): Promise<Response> {
+    return exchange(path, init, async (response) => response);
+  }
+
+  /** Send a request whose successful response is JSON or empty, reading the whole body. */
+  function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
+    return exchange(path, init, async (response) => {
+      const text = await response.text();
+      return (text ? JSON.parse(text) : undefined) as T;
+    });
   }
 
   return { apiURL, resourceURL, backendPath, fetch: fetchResponse, send, request };

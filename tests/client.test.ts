@@ -154,6 +154,30 @@ test("an already aborted request never reaches fetch", async () => {
   assert.equal(calls, 0);
 });
 
+// A real fetch errors the body stream when its signal aborts; emulate that.
+const stalledBodyFetch: typeof globalThis.fetch = async (_url, init) => {
+  const body = new ReadableStream({ start(controller) {
+    init!.signal!.addEventListener("abort", () => controller.error(init!.signal!.reason));
+  } });
+  return new Response(body, { headers: { "Content-Type": "application/json" } });
+};
+
+test("a timeout still applies while the response body is arriving", { timeout: 5000 }, async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const logs = createClient({ fetch: stalledBodyFetch }).admin.listLogs();
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(15_000);
+  await assert.rejects(logs, { name: "TimeoutError" });
+});
+
+test("aborting stops a read whose response headers already arrived", { timeout: 5000 }, async () => {
+  const controller = new AbortController();
+  const listing = createClient({ fetch: stalledBodyFetch }).videos.list(1, 12, {}, { signal: controller.signal });
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.abort();
+  await assert.rejects(listing, { name: "AbortError" });
+});
+
 test("drive event streams use the configured backend and request cookies", (t) => {
   const previous = Object.getOwnPropertyDescriptor(globalThis, "EventSource");
   const calls: { url: string; init?: EventSourceInit }[] = [];
