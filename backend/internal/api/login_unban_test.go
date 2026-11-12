@@ -34,7 +34,7 @@ func TestUnbanEndpointResetsLoginFailureCount(t *testing.T) {
 	}
 	for i := 0; i < 3; i++ {
 		res = httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/admin/api/login", strings.NewReader(`{"username":"missing-user","password":"wrong"}`))
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"username":"missing-user","password":"wrong"}`))
 		req.RemoteAddr = ip + ":12345"
 		server.handleLogin(res, req)
 		want := http.StatusBadRequest

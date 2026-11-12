@@ -120,7 +120,7 @@ test("native start starts the configured service and checks readiness without re
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(f.calls(), [
     { command: "systemctl", args: ["start", "91-native-test.service"] },
-    { command: "curl", args: ["--disable", "--noproxy", "*", "-fsS", "--connect-timeout", "2", "--max-time", "5", "http://127.0.0.1:19191/admin/api/setup"] },
+    { command: "curl", args: ["--disable", "--noproxy", "*", "-fsS", "--connect-timeout", "2", "--max-time", "5", "http://127.0.0.1:19191/api/settings/theme"] },
   ]);
 });
 

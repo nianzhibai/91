@@ -1,6 +1,48 @@
-import { APIResponseError, UnauthorizedError, type Transport } from "./http.js";
-import type { Theme } from "./types.js";
-export const ADMIN_LOG_REQUEST_TIMEOUT_MS = 15000;
+import { APIResponseError, type RequestOptions, type Transport } from "./http.js";
+import type { TagItem, Theme, VideoItem } from "./types.js";
+
+const LOG_REQUEST_TIMEOUT_MS = 15000;
+
+export type UploadVideoInput = {
+  file: File;
+  title: string;
+  tags: string[];
+};
+
+export type RemoteUploadState =
+  | "queued"
+  | "downloading"
+  | "validating"
+  | "saving"
+  | "completed"
+  | "failed"
+  | "canceled";
+
+export type RemoteUploadJob = {
+  id: string;
+  state: RemoteUploadState;
+  sourceLabel: string;
+  title?: string;
+  tags: string[];
+  bytesDownloaded: number;
+  totalBytes: number;
+  canCancel: boolean;
+  cancelRequested?: boolean;
+  error?: string;
+  completedVideoId?: string;
+  videoHref?: string;
+  createdAt: string;
+  startedAt?: string;
+  updatedAt: string;
+  finishedAt?: string;
+};
+
+export type CreateRemoteUploadInput = {
+  url: string;
+  title: string;
+  tags: string[];
+};
+
 
 export type UpdateCheck = {
   currentVersion: string;
@@ -710,9 +752,10 @@ export type GPUStatus = {
   fallbackCount: number;
 };
 
-export class ConfigConflictError extends Error {
-  constructor(message = "config.yaml 已被其他操作修改") {
-    super(message);
+/** `config.yaml` changed since it was read; reload it before saving again. */
+export class ConfigConflictError extends APIResponseError {
+  constructor(source: APIResponseError) {
+    super(409, source.message || "config.yaml 已被其他操作修改", source.body);
     this.name = "ConfigConflictError";
   }
 }
@@ -801,7 +844,7 @@ export type ImportJob = {
 
 export function createAdminClient(http: Transport) {
   const BASE = "/admin/api";
-  const request = <T>(path: string, init?: RequestInit) => http.request<T>(BASE + path, init);
+  const request = <T>(path: string, init?: RequestOptions) => http.request<T>(BASE + path, init);
   function checkUpdate() {
     return request<UpdateCheck>("/update/check");
   }
@@ -823,28 +866,10 @@ export function createAdminClient(http: Transport) {
   }
 
   function listLogs(filters: AdminLogFilters = {}, signal?: AbortSignal) {
-    const params = logQueryParams(filters);
-    const timeoutController = new AbortController();
-    let timedOut = false;
-    const abortFromCaller = () => timeoutController.abort();
-    if (signal?.aborted) timeoutController.abort();
-    else signal?.addEventListener("abort", abortFromCaller, { once: true });
-    const timeout = globalThis.setTimeout(() => {
-      timedOut = true;
-      timeoutController.abort();
-    }, ADMIN_LOG_REQUEST_TIMEOUT_MS);
-
-    return request<AdminLogSnapshot>(`/logs?${params.toString()}`, {
-      signal: timeoutController.signal,
-    })
-      .catch((error: unknown) => {
-        if (timedOut) throw new Error("日志请求超时，请稍后重试");
-        throw error;
-      })
-      .finally(() => {
-        globalThis.clearTimeout(timeout);
-        signal?.removeEventListener("abort", abortFromCaller);
-      });
+    return request<AdminLogSnapshot>(`/logs?${logQueryParams(filters)}`, {
+      signal,
+      timeoutMs: LOG_REQUEST_TIMEOUT_MS,
+    });
   }
 
   async function downloadLogs(filters: AdminLogFilters = {}, signal?: AbortSignal) {
@@ -852,9 +877,7 @@ export function createAdminClient(http: Transport) {
     params.set("download", "1");
     params.delete("cursor");
     params.delete("before");
-    const response = await http.fetch(`${BASE}/logs?${params}`, { credentials: "include", signal });
-    if (response.status === 401) throw new UnauthorizedError();
-    if (!response.ok) throw new APIResponseError(response.status, "日志导出失败");
+    const response = await http.send(`${BASE}/logs?${params}`, { signal, headers: { Accept: "*/*" } });
     return response.blob();
   }
 
@@ -909,31 +932,15 @@ export function createAdminClient(http: Transport) {
     chunk: Blob,
     signal?: AbortSignal
   ): Promise<BackupUploadSession> {
-    const res = await http.fetch(
-      `${BASE}/backup-uploads/${encodeURIComponent(id)}/chunks/${index}`,
+    return request<BackupUploadSession>(
+      `/backup-uploads/${encodeURIComponent(id)}/chunks/${index}`,
       {
         method: "PUT",
-        credentials: "include",
-        headers: {
-          "Content-Type": "application/octet-stream",
-        },
+        headers: { "Content-Type": "application/octet-stream" },
         body: chunk,
         signal,
       }
     );
-    if (res.status === 401) throw new UnauthorizedError();
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      let message = text;
-      try {
-        const parsed = JSON.parse(text) as { error?: unknown };
-        if (typeof parsed.error === "string") message = parsed.error;
-      } catch {
-        // Keep plain text.
-      }
-      throw new Error(message || `HTTP ${res.status}`);
-    }
-    return (await res.json()) as BackupUploadSession;
   }
 
   function finalizeBackupUpload(id: string, sha256: string) {
@@ -1352,14 +1359,16 @@ export function createAdminClient(http: Transport) {
     });
   }
 
-  function deleteVideo(id: string, options: { deleteSource?: boolean } = {}) {
-    return request<{ ok: boolean; deletedSource: boolean }>(
+  async function deleteVideo(id: string, options: { deleteSource?: boolean } = {}) {
+    const result = await request<{ ok: boolean; deletedSource: boolean }>(
       `/videos/${encodeURIComponent(id)}`,
       {
         method: "DELETE",
         body: JSON.stringify({ deleteSource: !!options.deleteSource }),
       }
     );
+    if (!result?.ok) throw new Error("Video deletion failed");
+    return result;
   }
 
   function regenPreview(id: string) {
@@ -1367,6 +1376,54 @@ export function createAdminClient(http: Transport) {
       `/videos/${encodeURIComponent(id)}/regen-preview`,
       { method: "POST" }
     );
+  }
+
+  // ---------- Library uploads and per-video edits ----------
+
+  /** Replace a video's manual tags; returns the updated public video item. */
+  function updateVideoTags(id: string, tags: string[]) {
+    return request<VideoItem>(`/videos/${encodeURIComponent(id)}/tags`, {
+      method: "PUT",
+      body: JSON.stringify({ tags }),
+    });
+  }
+
+  /** Blacklist a video: remove it from the library while keeping the source file. */
+  function hideVideo(id: string) {
+    return request<{ ok: boolean }>(`/videos/${encodeURIComponent(id)}/hide`, { method: "POST" });
+  }
+
+  /** Tags that can be assigned while uploading. */
+  async function listUploadTags(signal?: AbortSignal): Promise<TagItem[]> {
+    const tags = await request<TagItem[]>("/upload/tags", { signal });
+    if (!Array.isArray(tags)) throw new Error("Invalid /admin/api/upload/tags response");
+    return tags;
+  }
+
+  /** Upload a local file. Use `uploadURL` with XMLHttpRequest when progress is needed. */
+  function uploadVideo(input: UploadVideoInput) {
+    const body = new FormData();
+    body.append("file", input.file);
+    if (input.title.trim()) body.append("title", input.title.trim());
+    for (const tag of input.tags) body.append("tags", tag);
+    return request<VideoItem>("/upload", { method: "POST", body });
+  }
+
+  const uploadURL = () => http.apiURL(`${BASE}/upload`);
+
+  function createRemoteUpload(input: CreateRemoteUploadInput) {
+    return request<RemoteUploadJob>("/upload/remote", {
+      method: "POST",
+      body: JSON.stringify({ url: input.url.trim(), title: input.title.trim(), tags: input.tags }),
+    });
+  }
+
+  function listRemoteUploads(limit = 20, signal?: AbortSignal) {
+    return request<RemoteUploadJob[]>(`/upload/remote?limit=${encodeURIComponent(String(limit))}`, { signal });
+  }
+
+  function cancelRemoteUpload(id: string) {
+    return request<RemoteUploadJob>(`/upload/remote/${encodeURIComponent(id)}/cancel`, { method: "POST" });
   }
 
   // ---------- Tags ----------
@@ -1434,25 +1491,8 @@ export function createAdminClient(http: Transport) {
     return (value ?? "").replace(/^W\//, "").replace(/^"|"$/g, "");
   }
 
-  async function configResponseError(res: Response): Promise<string> {
-    const text = await res.text().catch(() => "");
-    try {
-      const parsed = JSON.parse(text) as { error?: unknown };
-      if (typeof parsed.error === "string") return parsed.error;
-    } catch {
-      // Keep a plain-text response as-is.
-    }
-    return text || `HTTP ${res.status}`;
-  }
-
   async function getConfigYAML(): Promise<ConfigYAMLDocument> {
-    const res = await http.fetch(`${BASE}/config.yaml`, {
-      credentials: "include",
-      headers: { Accept: "application/yaml" },
-      cache: "no-store",
-    });
-    if (res.status === 401) throw new UnauthorizedError();
-    if (!res.ok) throw new Error(await configResponseError(res));
+    const res = await http.send(`${BASE}/config.yaml`, { headers: { Accept: "application/yaml" } });
     return {
       content: await res.text(),
       version: etagVersion(res.headers.get("ETag")),
@@ -1463,26 +1503,15 @@ export function createAdminClient(http: Transport) {
     content: string,
     version: string
   ): Promise<ConfigSaveResult> {
-    const headers = new Headers({
-      "Content-Type": "application/yaml; charset=utf-8",
-      Accept: "application/json",
-    });
+    const headers = new Headers({ "Content-Type": "application/yaml; charset=utf-8" });
     if (version) headers.set("If-Match", `"${version}"`);
-    const res = await http.fetch(`${BASE}/config.yaml`, {
-      method: "PUT",
-      credentials: "include",
-      headers,
-      body: content,
-    });
-    if (res.status === 401) throw new UnauthorizedError();
-    if (res.status === 409) {
-      throw new ConfigConflictError(await configResponseError(res));
+    try {
+      return await request<ConfigSaveResult>("/config.yaml", { method: "PUT", headers, body: content });
+    } catch (error) {
+      if (error instanceof APIResponseError && error.status === 409) throw new ConfigConflictError(error);
+      throw error;
     }
-    if (!res.ok) throw new Error(await configResponseError(res));
-    const result = (await res.json()) as ConfigSaveResult;
-    return result;
   }
-
 
   // ---------- Jobs ----------
 
@@ -1634,6 +1663,14 @@ export function createAdminClient(http: Transport) {
     updateVideo,
     deleteVideo,
     regenPreview,
+    updateVideoTags,
+    hideVideo,
+    listUploadTags,
+    uploadVideo,
+    uploadURL,
+    createRemoteUpload,
+    listRemoteUploads,
+    cancelRemoteUpload,
     listTags,
     createTag,
     updateTag,

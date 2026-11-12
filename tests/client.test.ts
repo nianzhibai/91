@@ -58,7 +58,13 @@ test("configuration editing retains ETags and reports a conflict without retryin
   } });
   const document = await client.admin.getConfigYAML();
   assert.equal(document.version, "revision-1");
-  await assert.rejects(client.admin.updateConfigYAML(document.content, document.version), ConfigConflictError);
+  await assert.rejects(client.admin.updateConfigYAML(document.content, document.version), error => {
+    assert.ok(error instanceof ConfigConflictError);
+    assert.ok(error instanceof APIResponseError);
+    assert.equal(error.status, 409);
+    assert.equal(error.message, "Changed by another administrator");
+    return true;
+  });
   assert.equal(calls.length, 2);
   assert.equal(new Headers(calls[1].headers).get("If-Match"), '"revision-1"');
   assert.equal(calls[1].body, document.content);
@@ -66,9 +72,12 @@ test("configuration editing retains ETags and reports a conflict without retryin
 
 test("uploads preserve browser multipart boundaries and binary request bodies", async () => {
   const calls: RequestInit[] = [];
-  const client = createClient({ fetch: async (_url, init) => { calls.push(init!); return Response.json({}); } });
+  const urls: string[] = [];
+  const client = createClient({ fetch: async (url, init) => { urls.push(String(url)); calls.push(init!); return Response.json({}); } });
   const file = new File(["sample"], "sample.mp4", { type: "video/mp4" });
-  await client.videos.uploadVideo({ file, title: "Sample", tags: ["one", "two"] });
+  await client.admin.uploadVideo({ file, title: "Sample", tags: ["one", "two"] });
+  assert.equal(urls[0], "/admin/api/upload");
+  assert.equal(client.admin.uploadURL(), "/admin/api/upload");
   assert.ok(calls[0].body instanceof FormData);
   assert.deepEqual(calls[0].body.getAll("tags"), ["one", "two"]);
   assert.equal(new Headers(calls[0].headers).has("Content-Type"), false);
@@ -108,6 +117,41 @@ test("aborted library reads stop without retrying and writes are sent only once"
   const failing = createClient({ fetch: async () => { writes++; return new Response("unavailable", { status: 503 }); } });
   await assert.rejects(failing.admin.createTag("demo"));
   assert.equal(writes, 1);
+});
+
+test("reads retry one transient failure and time out with a distinct error", async (t) => {
+  let reads = 0;
+  const flaky = createClient({ fetch: async () => {
+    reads++;
+    return reads === 1 ? new Response("busy", { status: 503 }) : Response.json({ items: [], total: 0 });
+  } });
+  assert.deepEqual(await flaky.videos.fetchListing(1, 12), { items: [], total: 0 });
+  assert.equal(reads, 2);
+
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const hanging = createClient({ fetch: (_url, init) => new Promise((_resolve, reject) => {
+    init!.signal!.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+  }) });
+  const listing = hanging.admin.listLogs();
+  t.mock.timers.tick(15_000);
+  await assert.rejects(listing, { name: "TimeoutError" });
+});
+
+test("JSON bodies parse without a Content-Type and empty bodies resolve to undefined", async () => {
+  const client = createClient({ fetch: async () => new Response(null, { status: 204 }) });
+  assert.equal(await client.admin.hideVideo("demo"), undefined);
+  const untyped = createClient({ fetch: async () => new Response('{"items":[],"total":0}') });
+  assert.deepEqual(await untyped.videos.fetchListing(1, 12), { items: [], total: 0 });
+});
+
+test("an already aborted request never reaches fetch", async () => {
+  let calls = 0;
+  const client = createClient({ fetch: async () => { calls++; return Response.json({}); } });
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(client.videos.fetchListing(1, 12, {}, { signal: controller.signal }), { name: "AbortError" });
+  await assert.rejects(client.admin.listLogs({}, controller.signal), { name: "AbortError" });
+  assert.equal(calls, 0);
 });
 
 test("drive event streams use the configured backend and request cookies", (t) => {

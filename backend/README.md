@@ -198,8 +198,8 @@ GPU 主机可运行 `cd backend && VIDEO_TEST_GPU=1 go test ./internal/preview -
 | --- | --- |
 | 扫盘 | 后台单盘扫描、扫描所有网盘、定时维护；发现、对账和清理后统一投递新视频的生成任务 |
 | 爬虫 | 后台或定时执行；仅接受 [crawler.v3](../docs/CRAWLER_PROTOCOL.md)，依次发现、解析、下载、入库、生成、转存和恢复保留视频 |
-| 本地上传 | `POST /api/upload`，写入 `uploads/` 后入库并排生成任务 |
-| 视频直链 | 管理员提交 `POST /api/upload/remote`，持久化任务串行下载，验证视频流后复用上传流程 |
+| 本地上传 | `POST /admin/api/upload`，写入 `uploads/` 后入库并排生成任务 |
+| 视频直链 | 管理员提交 `POST /admin/api/upload/remote`，持久化任务串行下载，验证视频流后复用上传流程 |
 | Telegram | 私聊机器人导入本地媒体库，配置目标网盘后由定时维护转存 |
 
 ### 扫描清理
@@ -280,7 +280,7 @@ go test ./integration -run '^TestGoogleDrivePlaybackLive$' -count=1 -v
 
 ## 视频直链任务
 
-管理员提交后立即返回 `202`；`GET /api/upload/remote?limit=20` 查询最近任务，`POST /api/upload/remote/{jobId}/cancel` 取消。唯一 FIFO worker 串行下载，页面关闭不影响；重启从头下载，普通网络错误需重新提交。
+管理员提交后立即返回 `202`；`GET /admin/api/upload/remote?limit=20` 查询最近任务，`POST /admin/api/upload/remote/{jobId}/cancel` 取消。唯一 FIFO worker 串行下载，页面关闭不影响；重启从头下载，普通网络错误需重新提交。
 
 仅接受公网 HTTP(S) 文件地址，不接受 HLS、内网、网页解析或网盘分享页，不提供 Cookie、Referer 或自定义头。提交、DNS、拨号及每次重定向都校验地址，最多重定向 5 次，下载不使用环境代理。
 

@@ -35,8 +35,9 @@ func TestOpenAPICoversClientRoutes(t *testing.T) {
 	}
 	router := chi.NewRouter()
 	authenticator := &auth.Authenticator{}
-	(&Server{}).RegisterRoutes(router, authenticator)
-	(&AdminServer{Auth: authenticator}).Register(router)
+	server := &Server{}
+	server.RegisterRoutes(router, authenticator)
+	(&AdminServer{Auth: authenticator}).Register(router, server.RegisterAdminRoutes)
 	actual := map[string]bool{}
 	err := chi.Walk(router, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
 		if strings.HasPrefix(route, "/peer/") {
@@ -85,11 +86,12 @@ func TestIndependentClientLifecycle(t *testing.T) {
 	authenticator := &auth.Authenticator{Catalog: cat}
 	currentTheme := "dark"
 	router := chi.NewRouter()
-	(&Server{Catalog: cat, UploadDir: uploads}).RegisterRoutes(router, authenticator)
+	library := &Server{Catalog: cat, UploadDir: uploads}
+	library.RegisterRoutes(router, authenticator)
 	(&AdminServer{Catalog: cat, Auth: authenticator, ImageVersion: "test",
 		GetTheme: func() string { return currentTheme },
 		SetTheme: func(value string) error { currentTheme = value; return nil },
-	}).Register(router)
+	}).Register(router, library.RegisterAdminRoutes)
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
 	jar, _ := cookiejar.New(nil)
@@ -181,8 +183,9 @@ func TestEveryDocumentedManagementOperationRejectsRegularUsers(t *testing.T) {
 	}
 	authenticator := &auth.Authenticator{Catalog: cat}
 	router := chi.NewRouter()
-	(&Server{Catalog: cat}).RegisterRoutes(router, authenticator)
-	(&AdminServer{Catalog: cat, Auth: authenticator}).Register(router)
+	server := &Server{Catalog: cat}
+	server.RegisterRoutes(router, authenticator)
+	(&AdminServer{Catalog: cat, Auth: authenticator}).Register(router, server.RegisterAdminRoutes)
 	var document struct {
 		Paths map[string]map[string]struct {
 			Role string `json:"x-role"`

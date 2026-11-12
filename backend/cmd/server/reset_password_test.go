@@ -204,7 +204,7 @@ func TestResetPasswordCommandWorksOnlineAndPreservesProtection(t *testing.T) {
 				t.Fatal("reset ran server startup")
 			}
 			a := &auth.Authenticator{Catalog: f.cat}
-			req := httptest.NewRequest("POST", "/admin/api/login", nil)
+			req := httptest.NewRequest("POST", "/api/auth/login", nil)
 			if role, err := a.UserLogin(httptest.NewRecorder(), req, user.Username, password); err != nil || role != "admin" {
 				t.Fatalf("new-password login role=%q err=%v", role, err)
 			}

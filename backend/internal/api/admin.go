@@ -237,18 +237,19 @@ type deleteVideoReq struct {
 	DeleteSource bool `json:"deleteSource"`
 }
 
-func (a *AdminServer) Register(r chi.Router) {
+// Register mounts identity routes and the administrator API. Each of
+// adminRoutes adds routes relative to /admin/api behind the administrator check.
+func (a *AdminServer) Register(r chi.Router, adminRoutes ...func(chi.Router)) {
 	// Identity belongs to every client, independently of the management UI.
 	r.Route("/api/auth", a.registerAuthRoutes)
 	r.Get("/api/server", a.handleServerInfo)
 	r.Get("/api/openapi.json", handleOpenAPI)
 	r.Route("/admin/api", func(r chi.Router) {
-		// Older installed clients may still use these session URLs.
-		a.registerAuthRoutes(r)
-
-		// 其余路由需管理员鉴权
 		r.Group(func(r chi.Router) {
 			r.Use(a.Auth.AdminRequired)
+			for _, register := range adminRoutes {
+				register(r)
+			}
 			r.Get("/frontend", a.handleFrontendList)
 			r.Get("/frontend/updates", a.handleFrontendUpdates)
 			r.Post("/frontend/activate", a.handleFrontendActivate)
@@ -376,9 +377,6 @@ func (a *AdminServer) Register(r chi.Router) {
 			r.Delete("/backup-receive-tokens/{id}", a.handleRevokeBackupReceiveToken)
 			r.Get("/jobs/scan-all/status", a.handleScanAllJobStatus)
 			r.Post("/jobs/scan-all/run", a.handleRunScanAllJob)
-			// 兼容旧前端缓存；旧路径现在也遵循“只扫盘 + 去重”的语义。
-			r.Get("/jobs/nightly/status", a.handleNightlyJobStatus)
-			r.Post("/jobs/nightly/run", a.handleRunNightlyJob)
 			r.Post("/tasks/stop", a.handleStopAllTasks)
 		})
 	})

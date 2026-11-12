@@ -76,7 +76,7 @@ func TestCreateRemoteUploadReturnsAcceptedRedactedJob(t *testing.T) {
 	server := &Server{Catalog: cat, RemoteUploads: service}
 	req := httptest.NewRequest(
 		http.MethodPost,
-		"/api/upload/remote",
+		"/admin/api/upload/remote",
 		strings.NewReader(`{
 			"url":"https://cdn.example/video.mp4?token=secret",
 			"title":"标题",
@@ -126,7 +126,7 @@ func TestCreateRemoteUploadRejectsInvalidJSONTagsAndOversizedBody(t *testing.T) 
 		"oversized":       `{"url":"https://example.com/` + strings.Repeat("a", maxRemoteUploadRequestBytes) + `.mp4"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/api/upload/remote", strings.NewReader(body))
+			req := httptest.NewRequest(http.MethodPost, "/admin/api/upload/remote", strings.NewReader(body))
 			rr := httptest.NewRecorder()
 			server.handleCreateRemoteUpload(rr, req)
 			if rr.Code != http.StatusBadRequest {
@@ -156,7 +156,7 @@ func TestListAndCancelRemoteUploads(t *testing.T) {
 	}
 	server := &Server{RemoteUploads: service}
 
-	listReq := httptest.NewRequest(http.MethodGet, "/api/upload/remote?limit=7", nil)
+	listReq := httptest.NewRequest(http.MethodGet, "/admin/api/upload/remote?limit=7", nil)
 	listRR := httptest.NewRecorder()
 	server.handleListRemoteUploads(listRR, listReq)
 	if listRR.Code != http.StatusOK || service.listLimit != 7 {
@@ -165,7 +165,7 @@ func TestListAndCancelRemoteUploads(t *testing.T) {
 
 	cancelReq := requestWithRouteParam(
 		http.MethodPost,
-		"/api/upload/remote/remote-1/cancel",
+		"/admin/api/upload/remote/remote-1/cancel",
 		"jobId",
 		"remote-1",
 		strings.NewReader(""),
@@ -195,13 +195,13 @@ func TestUploadRoutesRequireAdminAuthentication(t *testing.T) {
 	service := &fakeRemoteUploadService{}
 	authenticator := &auth.Authenticator{Catalog: cat}
 	router := chi.NewRouter()
-	(&Server{Catalog: cat, RemoteUploads: service}).RegisterRoutes(router, authenticator)
+	(&AdminServer{Auth: authenticator}).Register(router, (&Server{Catalog: cat, RemoteUploads: service}).RegisterAdminRoutes)
 
 	for _, request := range []*http.Request{
-		httptest.NewRequest(http.MethodGet, "/api/upload/tags", nil),
-		httptest.NewRequest(http.MethodPost, "/api/upload/remote", strings.NewReader(`{"url":"https://example.com/video.mp4"}`)),
-		httptest.NewRequest(http.MethodGet, "/api/upload/remote", nil),
-		httptest.NewRequest(http.MethodPost, "/api/upload/remote/remote-1/cancel", nil),
+		httptest.NewRequest(http.MethodGet, "/admin/api/upload/tags", nil),
+		httptest.NewRequest(http.MethodPost, "/admin/api/upload/remote", strings.NewReader(`{"url":"https://example.com/video.mp4"}`)),
+		httptest.NewRequest(http.MethodGet, "/admin/api/upload/remote", nil),
+		httptest.NewRequest(http.MethodPost, "/admin/api/upload/remote/remote-1/cancel", nil),
 	} {
 		rr := httptest.NewRecorder()
 		router.ServeHTTP(rr, request)
@@ -227,7 +227,7 @@ func TestUploadRoutesRequireAdminAuthentication(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"/api/upload/tags", "/api/upload/remote"} {
+	for _, path := range []string{"/admin/api/upload/tags", "/admin/api/upload/remote"} {
 		userRequest := httptest.NewRequest(http.MethodGet, path, nil)
 		userRequest.AddCookie(&http.Cookie{Name: "vs_admin", Value: token})
 		userRR := httptest.NewRecorder()
@@ -246,7 +246,7 @@ func TestRemoteUploadHandlerDoesNotExposeServiceErrors(t *testing.T) {
 	server := &Server{Catalog: cat, RemoteUploads: service}
 	req := httptest.NewRequest(
 		http.MethodPost,
-		"/api/upload/remote",
+		"/admin/api/upload/remote",
 		strings.NewReader(`{"url":"https://cdn.example/video.mp4?token=secret"}`),
 	)
 	rr := httptest.NewRecorder()

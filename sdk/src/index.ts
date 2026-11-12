@@ -6,7 +6,7 @@ import { createPlaybackClient } from "./playback.js";
 import { createFrontendClient } from "./frontend.js";
 
 export { APIResponseError, UnauthorizedError } from "./http.js";
-export type { ClientOptions } from "./http.js";
+export type { ClientOptions, RequestOptions } from "./http.js";
 export * from "./types.js";
 export * from "./auth.js";
 export * from "./playback.js";
@@ -17,8 +17,7 @@ export {
 } from "./videos.js";
 export type {
   VideoFeedKind, VideoFeedCursor, VideoFeedResponse, VideoShareClaim,
-  VideoReactionResult, UploadVideoInput, RemoteUploadJob, RemoteUploadState,
-  CreateRemoteUploadInput, ShortsItem, ShortsFeedItem, ShortsNextResponse,
+  VideoReactionResult, ShortsItem, ShortsFeedItem, ShortsNextResponse,
 } from "./videos.js";
 
 export type ServerInfo = {

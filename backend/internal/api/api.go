@@ -302,17 +302,18 @@ func (s *Server) RegisterRoutes(r chi.Router, a *auth.Authenticator) {
 		r.Get("/p/preview/{videoID}", s.handlePreview)
 		r.Get("/p/thumb/{videoID}", s.handleThumb)
 	})
+}
 
-	r.Group(func(r chi.Router) {
-		r.Use(a.AdminRequired)
-		r.Put("/api/video/{id}/tags", s.handleUpdateVideoTags)
-		r.Post("/api/video/{id}/hide", s.handleHideVideo)
-		r.Get("/api/upload/tags", s.handleUploadTags)
-		r.Post("/api/upload", s.handleUploadVideo)
-		r.Post("/api/upload/remote", s.handleCreateRemoteUpload)
-		r.Get("/api/upload/remote", s.handleListRemoteUploads)
-		r.Post("/api/upload/remote/{jobId}/cancel", s.handleCancelRemoteUpload)
-	})
+// RegisterAdminRoutes mounts library management routes relative to
+// /admin/api. The caller applies the administrator check.
+func (s *Server) RegisterAdminRoutes(r chi.Router) {
+	r.Put("/videos/{id}/tags", s.handleUpdateVideoTags)
+	r.Post("/videos/{id}/hide", s.handleHideVideo)
+	r.Get("/upload/tags", s.handleUploadTags)
+	r.Post("/upload", s.handleUploadVideo)
+	r.Post("/upload/remote", s.handleCreateRemoteUpload)
+	r.Get("/upload/remote", s.handleListRemoteUploads)
+	r.Post("/upload/remote/{jobId}/cancel", s.handleCancelRemoteUpload)
 }
 
 // handleGetTheme 返回当前生效的主题。无需登录。响应永远是

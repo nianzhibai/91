@@ -2338,9 +2338,9 @@
         }
       }
     },
-    "/api/video/{id}/tags": {
+    "/admin/api/videos/{id}/tags": {
       "put": {
-        "operationId": "put_api_video_id_tags",
+        "operationId": "put_admin_api_videos_id_tags",
         "summary": "Update Video Tags",
         "tags": [
           "Library"
@@ -2389,9 +2389,9 @@
         }
       }
     },
-    "/api/video/{id}/hide": {
+    "/admin/api/videos/{id}/hide": {
       "post": {
-        "operationId": "post_api_video_id_hide",
+        "operationId": "post_admin_api_videos_id_hide",
         "summary": "Hide Video",
         "tags": [
           "Library"
@@ -2438,9 +2438,9 @@
         }
       }
     },
-    "/api/upload/tags": {
+    "/admin/api/upload/tags": {
       "get": {
-        "operationId": "get_api_upload_tags",
+        "operationId": "get_admin_api_upload_tags",
         "summary": "Upload Tags",
         "tags": [
           "Library"
@@ -2472,9 +2472,9 @@
         }
       }
     },
-    "/api/upload": {
+    "/admin/api/upload": {
       "post": {
-        "operationId": "post_api_upload",
+        "operationId": "post_admin_api_upload",
         "summary": "Upload Video",
         "tags": [
           "Library"
@@ -2531,9 +2531,9 @@
         }
       }
     },
-    "/api/upload/remote": {
+    "/admin/api/upload/remote": {
       "post": {
-        "operationId": "post_api_upload_remote",
+        "operationId": "post_admin_api_upload_remote",
         "summary": "Create Remote Upload",
         "tags": [
           "Library"
@@ -2572,7 +2572,7 @@
         }
       },
       "get": {
-        "operationId": "get_api_upload_remote",
+        "operationId": "get_admin_api_upload_remote",
         "summary": "List Remote Uploads",
         "tags": [
           "Library"
@@ -2613,9 +2613,9 @@
         }
       }
     },
-    "/api/upload/remote/{jobId}/cancel": {
+    "/admin/api/upload/remote/{jobId}/cancel": {
       "post": {
-        "operationId": "post_api_upload_remote_jobId_cancel",
+        "operationId": "post_admin_api_upload_remote_jobId_cancel",
         "summary": "Cancel Remote Upload",
         "tags": [
           "Library"
@@ -7314,70 +7314,6 @@
         }
       }
     },
-    "/admin/api/jobs/nightly/status": {
-      "get": {
-        "operationId": "get_admin_api_jobs_nightly_status",
-        "summary": "Nightly Job Status",
-        "tags": [
-          "Management"
-        ],
-        "x-role": "admin",
-        "deprecated": true,
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NightlyJobStatus"
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/Forbidden"
-          }
-        }
-      }
-    },
-    "/admin/api/jobs/nightly/run": {
-      "post": {
-        "operationId": "post_admin_api_jobs_nightly_run",
-        "summary": "Run Nightly Job",
-        "tags": [
-          "Management"
-        ],
-        "x-role": "admin",
-        "deprecated": true,
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/Forbidden"
-          }
-        }
-      }
-    },
     "/admin/api/tasks/stop": {
       "post": {
         "operationId": "post_admin_api_tasks_stop",
@@ -7564,183 +7500,6 @@
         ],
         "security": [],
         "x-role": "public",
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Session"
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        }
-      }
-    },
-    "/admin/api/setup": {
-      "get": {
-        "operationId": "get_admin_api_setup",
-        "summary": "Setup Status",
-        "tags": [
-          "Library"
-        ],
-        "security": [],
-        "x-role": "public",
-        "deprecated": true,
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "required": {
-                      "type": "boolean"
-                    }
-                  },
-                  "required": [
-                    "required"
-                  ]
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        }
-      },
-      "post": {
-        "operationId": "post_admin_api_setup",
-        "summary": "Setup",
-        "tags": [
-          "Library"
-        ],
-        "security": [],
-        "x-role": "public",
-        "deprecated": true,
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/setupReq"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "ok": {
-                      "type": "boolean"
-                    }
-                  },
-                  "required": [
-                    "ok"
-                  ]
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        }
-      }
-    },
-    "/admin/api/login": {
-      "post": {
-        "operationId": "post_admin_api_login",
-        "summary": "Login",
-        "tags": [
-          "Library"
-        ],
-        "security": [],
-        "x-role": "public",
-        "deprecated": true,
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/loginReq"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LoginResult"
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        }
-      }
-    },
-    "/admin/api/logout": {
-      "post": {
-        "operationId": "post_admin_api_logout",
-        "summary": "Logout",
-        "tags": [
-          "Library"
-        ],
-        "security": [],
-        "x-role": "public",
-        "deprecated": true,
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "ok": {
-                      "type": "boolean"
-                    }
-                  },
-                  "required": [
-                    "ok"
-                  ]
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        }
-      }
-    },
-    "/admin/api/me": {
-      "get": {
-        "operationId": "get_admin_api_me",
-        "summary": "Me",
-        "tags": [
-          "Library"
-        ],
-        "security": [],
-        "x-role": "public",
-        "deprecated": true,
         "responses": {
           "200": {
             "description": "Success",

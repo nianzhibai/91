@@ -1,4 +1,4 @@
-import { responseError, type Transport } from "./http.js";
+import type { Transport } from "./http.js";
 
 export type PlaybackSource = {
   id: string;
@@ -29,11 +29,9 @@ export function createPlaybackClient(http: Transport) {
     const parsed = new URL(http.backendPath(url), "http://localhost");
     if (options.source) parsed.searchParams.set("source", options.source);
     if (options.refresh) parsed.searchParams.set("refresh", "1");
-    const response = await http.fetch(parsed.pathname + parsed.search, {
-      method: prepare ? "POST" : "GET", signal: options.signal, cache: "no-store",
-      headers: { Accept: "application/json" },
+    const response = await http.send(parsed.pathname + parsed.search, {
+      method: prepare ? "POST" : "GET", signal: options.signal,
     });
-    if (!response.ok) throw await responseError(response);
     const manifest = await response.json() as PlaybackManifest;
     if (!manifest || !Array.isArray(manifest.sources) || !manifest.sources.length || manifest.sources.some(source =>
       !source || typeof source.id !== "string" || !source.id || typeof source.label !== "string" ||

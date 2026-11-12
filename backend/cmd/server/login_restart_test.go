@@ -81,7 +81,7 @@ func TestServerRestartClearsLoginProtection(t *testing.T) {
 		}
 		a := &auth.Authenticator{Catalog: cat}
 		for _, ip := range []string{bannedIP, pendingIP} {
-			request := httptest.NewRequest("POST", "/admin/api/login", nil)
+			request := httptest.NewRequest("POST", "/api/auth/login", nil)
 			request.RemoteAddr = ip + ":12345"
 			if role, err := a.UserLogin(httptest.NewRecorder(), request, "owner", "wrong"); err != nil || role != "" {
 				t.Fatalf("first attempt after startup role=%q err=%v", role, err)

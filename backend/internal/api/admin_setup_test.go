@@ -29,7 +29,7 @@ func TestSetupPersistsOnlyInDatabaseAndSurvivesRestart(t *testing.T) {
 	server.Auth = &auth.Authenticator{Catalog: cat}
 	assertSetupStatus(t, server, true)
 	res := httptest.NewRecorder()
-	server.handleSetup(res, httptest.NewRequest(http.MethodPost, "/admin/api/setup", strings.NewReader(`{"username":"owner","password":"secret123"}`)))
+	server.handleSetup(res, httptest.NewRequest(http.MethodPost, "/api/auth/setup", strings.NewReader(`{"username":"owner","password":"secret123"}`)))
 	if res.Code != http.StatusOK {
 		t.Fatalf("setup status=%d body=%s", res.Code, res.Body.String())
 	}
@@ -55,12 +55,12 @@ func TestSetupPersistsOnlyInDatabaseAndSurvivesRestart(t *testing.T) {
 	server.Auth = &auth.Authenticator{Catalog: cat}
 	assertSetupStatus(t, server, false)
 	res = httptest.NewRecorder()
-	server.handleLogin(res, httptest.NewRequest(http.MethodPost, "/admin/api/login", strings.NewReader(`{"username":"owner","password":"secret123"}`)))
+	server.handleLogin(res, httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"username":"owner","password":"secret123"}`)))
 	if res.Code != http.StatusOK {
 		t.Fatalf("restarted login status=%d body=%s", res.Code, res.Body.String())
 	}
 	res = httptest.NewRecorder()
-	server.handleSetup(res, httptest.NewRequest(http.MethodPost, "/admin/api/setup", strings.NewReader(`{"username":"other","password":"different"}`)))
+	server.handleSetup(res, httptest.NewRequest(http.MethodPost, "/api/auth/setup", strings.NewReader(`{"username":"other","password":"different"}`)))
 	if res.Code != http.StatusConflict {
 		t.Fatalf("repeated setup status=%d", res.Code)
 	}
@@ -76,7 +76,7 @@ func TestSetupPersistsOnlyInDatabaseAndSurvivesRestart(t *testing.T) {
 	}
 	assertSetupStatus(t, server, false)
 	res = httptest.NewRecorder()
-	server.handleSetup(res, httptest.NewRequest(http.MethodPost, "/admin/api/setup", strings.NewReader(`{"username":"other","password":"different"}`)))
+	server.handleSetup(res, httptest.NewRequest(http.MethodPost, "/api/auth/setup", strings.NewReader(`{"username":"other","password":"different"}`)))
 	if res.Code != http.StatusConflict {
 		t.Fatalf("setup after admin deletion status=%d", res.Code)
 	}
@@ -85,7 +85,7 @@ func TestSetupPersistsOnlyInDatabaseAndSurvivesRestart(t *testing.T) {
 func assertSetupStatus(t *testing.T, server *AdminServer, want bool) {
 	t.Helper()
 	res := httptest.NewRecorder()
-	server.handleSetupStatus(res, httptest.NewRequest(http.MethodGet, "/admin/api/setup/status", nil))
+	server.handleSetupStatus(res, httptest.NewRequest(http.MethodGet, "/api/auth/setup/status", nil))
 	if res.Code != http.StatusOK {
 		t.Fatalf("setup status=%d body=%s", res.Code, res.Body.String())
 	}
@@ -111,7 +111,7 @@ func TestSetupFailsClosedWhenDatabaseIsUnavailable(t *testing.T) {
 	server := &AdminServer{Catalog: cat, Auth: &auth.Authenticator{Catalog: cat}}
 	for _, handler := range []http.HandlerFunc{server.handleSetupStatus, server.handleSetup, server.handleLogin} {
 		res := httptest.NewRecorder()
-		handler(res, httptest.NewRequest(http.MethodPost, "/admin/api/setup", strings.NewReader(`{"username":"owner","password":"secret123"}`)))
+		handler(res, httptest.NewRequest(http.MethodPost, "/api/auth/setup", strings.NewReader(`{"username":"owner","password":"secret123"}`)))
 		if res.Code != http.StatusServiceUnavailable {
 			t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
 		}
@@ -127,7 +127,7 @@ func TestSetupRejectsInvalidPasswordWithoutInitializing(t *testing.T) {
 	server := &AdminServer{Catalog: cat, Auth: &auth.Authenticator{Catalog: cat}}
 	for _, password := range []string{"short", strings.Repeat("x", 73)} {
 		res := httptest.NewRecorder()
-		server.handleSetup(res, httptest.NewRequest(http.MethodPost, "/admin/api/setup", strings.NewReader(`{"username":"owner","password":"`+password+`"}`)))
+		server.handleSetup(res, httptest.NewRequest(http.MethodPost, "/api/auth/setup", strings.NewReader(`{"username":"owner","password":"`+password+`"}`)))
 		if res.Code != http.StatusBadRequest {
 			t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
 		}
@@ -151,7 +151,7 @@ func TestConcurrentSetupRequestsReturnOneSuccess(t *testing.T) {
 		go func(res *httptest.ResponseRecorder, username string) {
 			defer workers.Done()
 			<-start
-			server.handleSetup(res, httptest.NewRequest(http.MethodPost, "/admin/api/setup", strings.NewReader(`{"username":"`+username+`","password":"secret123"}`)))
+			server.handleSetup(res, httptest.NewRequest(http.MethodPost, "/api/auth/setup", strings.NewReader(`{"username":"`+username+`","password":"secret123"}`)))
 		}(responses[i], username)
 	}
 	close(start)

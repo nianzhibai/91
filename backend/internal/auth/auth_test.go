@@ -517,7 +517,7 @@ func TestLegacyAdminSessionsAreRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	authr := &Authenticator{Catalog: cat}
-	req := httptest.NewRequest(http.MethodGet, "/admin/api/me", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/me", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: "legacy-token"})
 	if ok, _, err := authr.ValidateRequest(httptest.NewRecorder(), req); err != nil || ok {
 		t.Fatalf("legacy session accepted: ok=%v err=%v", ok, err)
@@ -584,7 +584,7 @@ func TestLoginUsesForwardedClientIPFromTrustedProxy(t *testing.T) {
 }
 
 func loginRequest(ip string) *http.Request {
-	req := httptest.NewRequest(http.MethodPost, "/admin/api/login", strings.NewReader(`{}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{}`))
 	req.RemoteAddr = ip + ":12345"
 	return req
 }

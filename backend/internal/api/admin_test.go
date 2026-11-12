@@ -106,7 +106,7 @@ func TestHandleLoginReturnsForbiddenForBannedIP(t *testing.T) {
 		t.Fatalf("ban ip: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/admin/api/login", strings.NewReader(`{"username":"admin","password":"secret"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"username":"admin","password":"secret"}`))
 	req.RemoteAddr = "203.0.113.20:12345"
 	rr := httptest.NewRecorder()
 
@@ -141,13 +141,13 @@ func TestAuthenticationEndpointsReturnServiceUnavailableWhenCatalogFails(t *test
 		{
 			name:   "login",
 			handle: server.handleLogin,
-			req:    httptest.NewRequest(http.MethodPost, "/admin/api/login", strings.NewReader(`{"username":"admin","password":"secret"}`)),
+			req:    httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"username":"admin","password":"secret"}`)),
 		},
 		{
 			name:   "me",
 			handle: server.handleMe,
 			req: func() *http.Request {
-				req := httptest.NewRequest(http.MethodGet, "/admin/api/me", nil)
+				req := httptest.NewRequest(http.MethodGet, "/api/auth/me", nil)
 				req.AddCookie(&http.Cookie{Name: "vs_admin", Value: "valid-looking-token"})
 				return req
 			}(),
@@ -179,7 +179,7 @@ func TestHandleLoginRequiresSetupBeforeDefaultLogin(t *testing.T) {
 		}
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "/admin/api/login", strings.NewReader(`{"username":"admin","password":"admin123"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"username":"admin","password":"admin123"}`))
 	rr := httptest.NewRecorder()
 	(&AdminServer{
 		Catalog: cat,
@@ -202,7 +202,7 @@ func TestHandleSetupStoresCredentialsAndCreatesSession(t *testing.T) {
 		}
 	})
 	authr := &auth.Authenticator{Catalog: cat}
-	req := httptest.NewRequest(http.MethodPost, "/admin/api/setup", strings.NewReader(`{"username":"owner","password":"secret123"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/setup", strings.NewReader(`{"username":"owner","password":"secret123"}`))
 	rr := httptest.NewRecorder()
 
 	(&AdminServer{

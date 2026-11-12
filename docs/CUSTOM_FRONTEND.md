@@ -130,17 +130,19 @@ if (source?.url) video.src = client.resourceURL(source.url);
 await client.admin.updateSettings({ theme: "light" });
 ```
 
-`client.auth` 提供初始化和会话接口，`client.videos` 提供视频、feed、标签、互动、分享和上传，`client.admin` 提供管理方法及数据类型，`client.playback` 提供播放源获取、解析和准备。也可以用 `client.http.request<T>(path, init)` 调用完整 HTTP 契约中的任意接口。
+`client.auth` 提供初始化和会话接口，`client.videos` 提供视频、feed、标签、互动和分享，`client.admin` 提供上传、视频编辑等全部管理方法及数据类型，`client.playback` 提供播放源获取、解析和准备。也可以用 `client.http.request<T>(path, options)` 调用完整 HTTP 契约中的任意接口。
+
+所有请求经过同一个传输层：`options.retry` 只对读取开启，遇到网络错误、超时、408、425、429 或 5xx 时重试一次；`options.timeoutMs` 超时后以 `TimeoutError` 结束。SDK 中视频读取默认重试并在 10 秒后超时，写操作从不自动重试。
 
 前端收到资源路径后用 `client.resourceURL(path)` 解析；同源媒体请求继续使用 Cookie。独立前端自行生成详情页、管理页路由。`href`、格式化 `duration` 和分享 `url` 是官方前端的便利字段；业务计算用 `durationSeconds`，自定义分享页用返回的 `token` 构建 URL fragment，然后 POST 到分享领取接口。
 
-普通 JSON 请求错误抛出 `APIResponseError`，包含 `status`、可用时的 `code` 和原始 `body`；401 是其子类 `UnauthorizedError`。配置版本冲突为 `ConfigConflictError`。服务故障与未登录应分别处理。SDK 不替你跳转页面或修改主题、DOM、localStorage。Node 环境需要自己注入管理 Cookie 的 `fetch`。
+普通 JSON 请求错误抛出 `APIResponseError`，包含 `status`、可用时的 `code` 和原始 `body`；401 是其子类 `UnauthorizedError`。配置版本冲突为其子类 `ConfigConflictError`（409）。服务故障与未登录应分别处理。SDK 不替你跳转页面或修改主题、DOM、localStorage。Node 环境需要自己注入管理 Cookie 的 `fetch`。
 
 ## 接口契约与流程
 
 `GET /api/server` 返回应用版本、API 版本和入口；`GET /api/openapi.json` 提供 OpenAPI 3.1 文档。源文件为 [`openapi.json`](../backend/internal/api/openapi.json)，测试覆盖路由、SDK 列表及日志请求参数、核心响应 DTO 的字段、类型与可选性。服务间 `/peer` 协议使用单独的接收令牌，不属于浏览器管理会话接口。
 
-当前契约版本为 `1.0.0`，由 [`httpapi.Version`](../backend/internal/httpapi/version.go) 定义，独立于前端包版本。认证入口为 `/api/auth/*`，视频和设置为 `/api/*`，管理为 `/admin/api/*`，媒体为 `/p/*`。保留的 `/admin/api/login` 等旧认证入口已标记弃用。破坏性契约变化需要更新 API 主版本、文档及 SDK；新增可选字段不要求客户端升级。
+当前契约版本为 `1.0.0`，由 [`httpapi.Version`](../backend/internal/httpapi/version.go) 定义，独立于前端包版本。认证入口为 `/api/auth/*`，视频和设置为 `/api/*`，媒体为 `/p/*`；需要管理员的接口全部位于 `/admin/api/*`，`/api/*` 只包含公开和普通用户接口。`1.0.0` 在首个包含独立前端的应用版本发布时冻结，之后破坏性契约变化需要更新 API 主版本、文档及 SDK；新增可选字段不要求客户端升级。
 
 | 流程 | 约定 |
 | --- | --- |

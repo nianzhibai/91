@@ -50,19 +50,19 @@ func TestAuthenticationInitializesTelegramAvailabilityForAdmins(t *testing.T) {
 					}
 				}
 				login := httptest.NewRecorder()
-				server.handleLogin(login, httptest.NewRequest(http.MethodPost, "/admin/api/login",
+				server.handleLogin(login, httptest.NewRequest(http.MethodPost, "/api/auth/login",
 					strings.NewReader(`{"username":"`+username+`","password":"secret123"}`)))
 				if login.Code != http.StatusOK {
 					t.Fatalf("login = %d %s", login.Code, login.Body.String())
 				}
-				request := httptest.NewRequest(http.MethodGet, "/admin/api/me", nil)
+				request := httptest.NewRequest(http.MethodGet, "/api/auth/me", nil)
 				for _, cookie := range login.Result().Cookies() {
 					request.AddCookie(cookie)
 				}
 				me := httptest.NewRecorder()
 				server.handleMe(me, request)
 				guest := httptest.NewRecorder()
-				server.handleMe(guest, httptest.NewRequest(http.MethodGet, "/admin/api/me", nil))
+				server.handleMe(guest, httptest.NewRequest(http.MethodGet, "/api/auth/me", nil))
 				for name, response := range map[string]*httptest.ResponseRecorder{"login": login, "me": me, "guest": guest} {
 					if response.Code != http.StatusOK {
 						t.Fatalf("%s = %d %s", name, response.Code, response.Body.String())

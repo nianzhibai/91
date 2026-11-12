@@ -429,7 +429,7 @@ func main() {
 		log.Fatalf("retain bundled frontend: %v", err)
 	}
 	adminServer.Frontend = frontendManager
-	adminServer.Register(r)
+	adminServer.Register(r, apiServer.RegisterAdminRoutes)
 	if err := mountFrontend(r, frontendManager); err != nil {
 		log.Fatal(err)
 	}

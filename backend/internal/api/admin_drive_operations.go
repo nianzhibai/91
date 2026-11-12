@@ -577,17 +577,8 @@ func (a *AdminServer) handleRunScanAllJob(w http.ResponseWriter, r *http.Request
 }
 
 // handleRunNightlyJob 保留旧接口路径的兼容性；其行为与扫描所有网盘一致。
-func (a *AdminServer) handleRunNightlyJob(w http.ResponseWriter, r *http.Request) {
-	a.handleRunScanAllJob(w, r)
-}
-
 func (a *AdminServer) handleScanAllJobStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a.nightlyJobStatus())
-}
-
-// handleNightlyJobStatus 保留旧接口路径的兼容性。
-func (a *AdminServer) handleNightlyJobStatus(w http.ResponseWriter, r *http.Request) {
-	a.handleScanAllJobStatus(w, r)
 }
 
 func (a *AdminServer) handleStopAllTasks(w http.ResponseWriter, r *http.Request) {

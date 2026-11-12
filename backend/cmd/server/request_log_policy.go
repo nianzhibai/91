@@ -15,8 +15,8 @@ const slowQueryLogThreshold = time.Second
 // public requests retain their access records, even when they share a path.
 var routineQueryLogRoutes = map[string]struct{}{
 	"GET /api/settings/preview":                     {},
-	"GET /api/upload/remote":                        {},
-	"GET /admin/api/me":                             {},
+	"GET /admin/api/upload/remote":                  {},
+	"GET /api/auth/me":                              {},
 	"GET /admin/api/drives":                         {},
 	"GET /admin/api/drives/storage":                 {},
 	"GET /admin/api/drives/{id}":                    {},
@@ -51,7 +51,6 @@ var routineQueryLogRoutes = map[string]struct{}{
 	"GET /admin/api/backup-transfers":               {},
 	"GET /admin/api/backup-receives":                {},
 	"GET /admin/api/jobs/scan-all/status":           {},
-	"GET /admin/api/jobs/nightly/status":            {},
 }
 
 func requestLogRoute(r *http.Request) string {

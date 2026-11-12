@@ -94,7 +94,7 @@ func TestMigrateLegacyAdmin(t *testing.T) {
 					role = test.role
 				}
 				a := &auth.Authenticator{Catalog: cat}
-				got, err := a.UserLogin(httptest.NewRecorder(), httptest.NewRequest("POST", "/admin/api/login", nil), test.wantUser, password)
+				got, err := a.UserLogin(httptest.NewRecorder(), httptest.NewRequest("POST", "/api/auth/login", nil), test.wantUser, password)
 				if err != nil || got != role {
 					t.Fatalf("role=%q err=%v", got, err)
 				}

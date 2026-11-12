@@ -617,8 +617,8 @@ func TestPublicWriteRoutesRequireAdminRole(t *testing.T) {
 	}
 
 	router := chi.NewRouter()
-	(&Server{Catalog: cat}).RegisterRoutes(router, &auth.Authenticator{Catalog: cat})
-	req := httptest.NewRequest(http.MethodPut, "/api/video/video-1/tags", strings.NewReader(`{"tags":[]}`))
+	(&AdminServer{Auth: &auth.Authenticator{Catalog: cat}}).Register(router, (&Server{Catalog: cat}).RegisterAdminRoutes)
+	req := httptest.NewRequest(http.MethodPut, "/admin/api/videos/video-1/tags", strings.NewReader(`{"tags":[]}`))
 	req.AddCookie(&http.Cookie{Name: "vs_admin", Value: "viewer-token"})
 	rr := httptest.NewRecorder()
 
@@ -1915,7 +1915,7 @@ func TestHandleUploadTagsReturnsManagedUserChoices(t *testing.T) {
 	rr := httptest.NewRecorder()
 	(&Server{Catalog: cat}).handleUploadTags(
 		rr,
-		httptest.NewRequest(http.MethodGet, "/api/upload/tags", nil),
+		httptest.NewRequest(http.MethodGet, "/admin/api/upload/tags", nil),
 	)
 
 	if rr.Code != http.StatusOK {
@@ -2504,7 +2504,7 @@ func TestHandleUpdateVideoTagsRejectsUnknownTags(t *testing.T) {
 		t.Fatalf("seed video: %v", err)
 	}
 
-	req := requestWithVideoID(http.MethodPut, "/api/video/video-1/tags", "video-1", strings.NewReader(`{"tags":["不存在"]}`))
+	req := requestWithVideoID(http.MethodPut, "/admin/api/videos/video-1/tags", "video-1", strings.NewReader(`{"tags":["不存在"]}`))
 	rr := httptest.NewRecorder()
 	(&Server{Catalog: cat}).handleUpdateVideoTags(rr, req)
 
@@ -2540,7 +2540,7 @@ func TestHandleUpdateVideoTagsSavesExistingTags(t *testing.T) {
 		t.Fatalf("create tag: %v", err)
 	}
 
-	req := requestWithVideoID(http.MethodPut, "/api/video/video-1/tags", "video-1", strings.NewReader(`{"tags":["清纯"]}`))
+	req := requestWithVideoID(http.MethodPut, "/admin/api/videos/video-1/tags", "video-1", strings.NewReader(`{"tags":["清纯"]}`))
 	rr := httptest.NewRecorder()
 	(&Server{Catalog: cat}).handleUpdateVideoTags(rr, req)
 
@@ -2800,7 +2800,7 @@ func TestHandleHideVideoRemovesVideoFromPublicListAndDetail(t *testing.T) {
 	}
 
 	server := &Server{Catalog: cat}
-	hideReq := requestWithVideoID(http.MethodPost, "/api/video/video-hidden/hide", "video-hidden", strings.NewReader(``))
+	hideReq := requestWithVideoID(http.MethodPost, "/admin/api/videos/video-hidden/hide", "video-hidden", strings.NewReader(``))
 	hideRR := httptest.NewRecorder()
 	server.handleHideVideo(hideRR, hideReq)
 
@@ -2993,7 +2993,7 @@ func multipartUploadRequest(t *testing.T, fields map[string]string, fileName, fi
 	if err := writer.Close(); err != nil {
 		t.Fatalf("close multipart writer: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/api/upload", &body)
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/upload", &body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	return req
 }

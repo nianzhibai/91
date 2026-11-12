@@ -478,7 +478,7 @@ confirm_uninstall_app() {
 }
 
 service_health_url() {
-  printf 'http://127.0.0.1:%s/admin/api/setup' "$(listen_port_from_config)"
+  printf 'http://127.0.0.1:%s/api/settings/theme' "$(listen_port_from_config)"
 }
 
 local_service_curl() {
