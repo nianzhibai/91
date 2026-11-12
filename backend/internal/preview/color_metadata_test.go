@@ -2,6 +2,7 @@ package preview
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"net/http"
 	"os"
@@ -184,7 +185,9 @@ func TestUnrecoverableColorErrorUsesBoundedPreviewRetries(t *testing.T) {
 }
 
 // Exercise an audio-first MP4 with reserved H.264 VUI. FFmpeg versions that
-// reject it must repair the input before decode/filter negotiation.
+// reject it must repair the input before decode/filter negotiation; newer
+// versions read the reserved values as unspecified and need no repair. Either
+// way, generation must leave the source file untouched.
 func TestGenerateMediaWithReservedColorMetadata(t *testing.T) {
 	ffmpeg, err := exec.LookPath("ffmpeg")
 	if err != nil {
@@ -200,14 +203,23 @@ func TestGenerateMediaWithReservedColorMetadata(t *testing.T) {
 	_, source := prepareColorMetadataMedia(t, ctx, ffmpeg, dir)
 	gen := New(Config{FFmpegPath: ffmpeg, FFprobePath: ffprobe, Width: 160, LocalDir: filepath.Join(dir, "output")})
 	link := &drives.StreamLink{URL: source}
+	original := fileDigest(t, source)
+	needsRepair := false
 	if out, err := exec.CommandContext(ctx, ffmpeg, "-v", "error", "-i", source, "-frames:v", "1", "-an", "-f", "null", "-").CombinedOutput(); err != nil {
 		if !invalidColorMetadataText(string(out)) {
 			t.Fatalf("source failed for a reason other than color metadata: %v: %s", err, out)
 		}
+		needsRepair = true
 	} else {
-		// Older FFmpeg versions accept these values. Exercise successful
-		// generation there too, without requiring a repair-only failure mode.
+		// This FFmpeg accepts the values. Exercise successful generation
+		// there too, without requiring a repair-only failure mode.
 		t.Log("FFmpeg accepts reserved metadata without repair")
+	}
+	if needsRepair {
+		// A rejected source must be detected so generation repairs its input.
+		if options, err := gen.probeColorRepair(ctx, link); err != nil || len(options) == 0 {
+			t.Fatalf("rejected source has no color repair: options=%v err=%v", options, err)
+		}
 	}
 	cover, err := gen.GenerateThumbnail(ctx, link, "video", 8)
 	if err != nil {
@@ -223,8 +235,8 @@ func TestGenerateMediaWithReservedColorMetadata(t *testing.T) {
 	if err := gen.validateGeneratedTeaser(ctx, preview); err != nil {
 		t.Fatalf("validate preview: %v", err)
 	}
-	if options, err := gen.probeColorRepair(ctx, link); err != nil || len(options) == 0 {
-		t.Fatalf("source metadata was changed: options=%v err=%v", options, err)
+	if fileDigest(t, source) != original {
+		t.Fatal("generation changed the source file")
 	}
 }
 
@@ -295,6 +307,15 @@ func prepareColorMetadataMedia(t *testing.T, ctx context.Context, ffmpeg, dir st
 	run("-hide_banner", "-loglevel", "error", "-i", valid, "-map", "0", "-c", "copy",
 		"-bsf:v", "h264_metadata=colour_primaries=0:matrix_coefficients=3", "-y", reserved)
 	return valid, reserved
+}
+
+func fileDigest(t *testing.T, path string) [sha256.Size]byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sha256.Sum256(data)
 }
 
 func writeExecutable(t *testing.T, path, body string) {
