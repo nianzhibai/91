@@ -13,8 +13,7 @@ import (
 	"github.com/nianzhibai/91/backend/internal/backuptransfer"
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/config"
-	"github.com/nianzhibai/91/backend/internal/drives/quark"
-	"github.com/nianzhibai/91/backend/internal/drives/yun139"
+	"github.com/nianzhibai/91/backend/internal/drivelogin"
 	"github.com/nianzhibai/91/backend/internal/driveview"
 	"github.com/nianzhibai/91/backend/internal/frontend"
 	"github.com/nianzhibai/91/backend/internal/mediaimport"
@@ -130,27 +129,20 @@ type AdminServer struct {
 	// 用于"设置跳过目录"弹窗按需展开浏览网盘目录树；只返回目录条目，文件忽略。
 	// 调用方应当处理 error 并以 5xx 返回前端。
 	ListDriveDirChildren func(ctx context.Context, driveID, parentID string) ([]DriveDirEntry, error)
-	// 123网盘扫码登录接口测试注入；生产留空走官方 user.123pan.cn。
-	P123UserAPIBaseURL string
-	P123HTTPClient     *http.Client
-	// 115网盘扫码登录接口测试注入；生产留空使用带超时的默认客户端。
-	P115QRHTTPClient *http.Client
-	// 夸克网盘扫码登录接口测试注入；生产留空走官方 uop.quark.cn 和 pan.quark.cn。
-	QuarkQRUOPBaseURL string
-	QuarkQRPanBaseURL string
-	QuarkQRHTTPClient *http.Client
-	quarkQRMu         sync.Mutex
-	quarkQRClient     *quark.QRClient
-	// 移动网盘扫码会话保留在同一个客户端中，直到成功、取消或过期。
-	Yun139QRHTTPClient *http.Client
-	yun139QRMu         sync.Mutex
-	yun139QRClient     *yun139.QRClient
-	// 联通网盘扫码登录接口测试注入；生产留空走官方 panservice.mail.wo.cn。
-	WopanQRAPIBaseURL string
-	WopanQRHTTPClient *http.Client
-	// 光鸭网盘扫码登录接口测试注入；生产留空走官方 account.guangyapan.com。
+	// 扫码登录的上游地址与 HTTP 客户端只供测试注入；生产留空使用各网盘官方接口。
+	P123UserAPIBaseURL       string
+	P123HTTPClient           *http.Client
+	P115QRHTTPClient         *http.Client
+	QuarkQRUOPBaseURL        string
+	QuarkQRPanBaseURL        string
+	QuarkQRHTTPClient        *http.Client
+	Yun139QRHTTPClient       *http.Client
+	WopanQRAPIBaseURL        string
+	WopanQRHTTPClient        *http.Client
 	GuangYaPanAccountBaseURL string
 	GuangYaPanHTTPClient     *http.Client
+	driveLoginOnce           sync.Once
+	driveLoginManager        *drivelogin.Manager
 }
 
 const (
@@ -260,18 +252,9 @@ func (a *AdminServer) Register(r chi.Router, adminRoutes ...func(chi.Router)) {
 			r.Get("/drives", a.handleListDrives)
 			r.Get("/drives/storage", a.handleDriveStorage)
 			r.Post("/drives", a.handleUpsertDrive)
-			r.Post("/drives/quark/qr", a.handleQuarkQRStart)
-			r.Post("/drives/quark/qr/status", a.handleQuarkQRStatus)
-			r.Post("/drives/p115/qr", a.handleP115QRStart)
-			r.Post("/drives/p115/qr/status", a.handleP115QRStatus)
-			r.Post("/drives/yun139/qr", a.handleYun139QRStart)
-			r.Post("/drives/yun139/qr/status", a.handleYun139QRStatus)
-			r.Post("/drives/p123/qr", a.handleP123QRStart)
-			r.Get("/drives/p123/qr/{uniID}", a.handleP123QRStatus)
-			r.Post("/drives/wopan/qr", a.handleWopanQRStart)
-			r.Get("/drives/wopan/qr/{uuid}", a.handleWopanQRStatus)
-			r.Post("/drives/guangyapan/qr", a.handleGuangYaPanQRStart)
-			r.Get("/drives/guangyapan/qr/status", a.handleGuangYaPanQRStatus)
+			r.Post("/drive-logins", a.handleStartDriveLogin)
+			r.Get("/drive-logins/{id}", a.handleDriveLoginStatus)
+			r.Delete("/drive-logins/{id}", a.handleCancelDriveLogin)
 			r.Get("/drives/{id}", a.handleDriveConfigSnapshot)
 			r.Get("/drives/{id}/config", a.handleDriveConfigSnapshot)
 			r.Get("/drives/{id}/runtime", a.handleDriveRuntimeSnapshot)

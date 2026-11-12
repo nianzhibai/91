@@ -30,8 +30,7 @@ func TestRequestLogPolicyFiltersBothOutputs(t *testing.T) {
 		{name: "public settings query", method: "GET", target: "/api/settings/preview", status: 200},
 		{name: "import list query", method: "GET", target: "/admin/api/import-jobs?source=telegram", status: 200},
 		{name: "backup list query", method: "GET", target: "/admin/api/backups", status: 200},
-		{name: "POST scan status query", method: "POST", target: "/admin/api/drives/quark/qr/status", status: 200},
-		{name: "mobile QR status query", method: "POST", target: "/admin/api/drives/yun139/qr/status", status: 200},
+		{name: "drive login poll", method: "GET", target: "/admin/api/drive-logins/one", pattern: "/admin/api/drive-logins/{id}", status: 200},
 		{name: "viewer query", method: "GET", target: "/admin/api/logs?q=error", status: 200},
 		{name: "query below slow threshold", method: "GET", target: "/admin/api/drives", status: 200, elapsed: time.Second - time.Nanosecond},
 		{name: "slow query", method: "GET", target: "/admin/api/drives", status: 200, elapsed: time.Second, level: applog.LevelWarning},
@@ -39,7 +38,7 @@ func TestRequestLogPolicyFiltersBothOutputs(t *testing.T) {
 		{name: "unauthorized viewer", method: "GET", target: "/admin/api/logs", status: 401, level: applog.LevelWarning},
 		{name: "invalid query", method: "GET", target: "/admin/api/backups?limit=bad", status: 400, level: applog.LevelWarning},
 		{name: "failed viewer", method: "GET", target: "/admin/api/logs", status: 503, level: applog.LevelError},
-		{name: "failed POST query", method: "POST", target: "/admin/api/drives/p115/qr/status", status: 502, level: applog.LevelError},
+		{name: "failed drive login poll", method: "GET", target: "/admin/api/drive-logins/one", pattern: "/admin/api/drive-logins/{id}", status: 502, level: applog.LevelError},
 		{name: "backup creation", method: "POST", target: "/admin/api/backups", status: 202, level: applog.LevelInfo},
 		{name: "log deletion", method: "DELETE", target: "/admin/api/logs", status: 200, level: applog.LevelInfo},
 		{name: "log download", method: "GET", target: "/admin/api/logs?download=1", status: 200, level: applog.LevelInfo},
@@ -103,7 +102,7 @@ func TestRequestLogMiddlewareUsesMatchedNestedRoutes(t *testing.T) {
 		router.Get("/drives/{id}/runtime", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})
-		router.Get("/drives/wopan/qr/{uuid}", func(w http.ResponseWriter, r *http.Request) {
+		router.Get("/drive-logins/{id}", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})
 		router.Post("/drives/{id}/tasks/stop", func(w http.ResponseWriter, r *http.Request) {
@@ -113,7 +112,7 @@ func TestRequestLogMiddlewareUsesMatchedNestedRoutes(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 		})
 	})
-	for _, target := range []string{"/admin/api/drives/one/runtime", "/admin/api/drives/wopan/qr/session"} {
+	for _, target := range []string{"/admin/api/drives/one/runtime", "/admin/api/drive-logins/session"} {
 		router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, target, nil))
 	}
 	if output.Len() != 0 {

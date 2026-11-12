@@ -169,6 +169,22 @@ test("drive event streams use the configured backend and request cookies", (t) =
   assert.deepEqual(calls, [{ url: "https://api.example/admin/api/drives/drive%2Fone/events", init: { withCredentials: true } }]);
 });
 
+test("drive QR logins use one protocol for every provider", async () => {
+  const calls: { url: string; method: string; body: unknown }[] = [];
+  const client = createClient({ baseURL: "https://api.example", fetch: async (url, init) => {
+    calls.push({ url: String(url), method: init?.method || "GET", body: init?.body });
+    return init?.method === "DELETE" ? new Response(null, { status: 204 }) : Response.json({ state: "waiting", intervalMs: 2000 });
+  } });
+  await client.admin.startDriveLogin("p115");
+  assert.deepEqual(await client.admin.pollDriveLogin("login/1"), { state: "waiting", intervalMs: 2000 });
+  assert.equal(await client.admin.cancelDriveLogin("login/1"), undefined);
+  assert.deepEqual(calls, [
+    { url: "https://api.example/admin/api/drive-logins", method: "POST", body: '{"kind":"p115"}' },
+    { url: "https://api.example/admin/api/drive-logins/login%2F1", method: "GET", body: undefined },
+    { url: "https://api.example/admin/api/drive-logins/login%2F1", method: "DELETE", body: undefined },
+  ]);
+});
+
 test("frontend management sends one request per explicit action", async () => {
   const calls: { path: string; method: string; body: unknown; type: string | null }[] = [];
   const client = createClient({ baseURL: "https://api.example", fetch: async (input, init) => {

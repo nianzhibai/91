@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nianzhibai/91/backend/internal/drivelogin"
 	"github.com/nianzhibai/91/backend/internal/frontend"
 )
 
@@ -30,6 +31,8 @@ func TestOpenAPIMatchesClientDTOs(t *testing.T) {
 		"PlaybackManifestDTO": PlaybackManifestDTO{}, "createVideoShareResponse": createVideoShareResponse{},
 		"Frontend": frontend.Frontend{}, "FrontendList": FrontendList{},
 		"FrontendUpdate": frontend.Update{}, "FrontendUpdates": FrontendUpdates{},
+		"DriveLoginSession": drivelogin.Session{}, "DriveLoginResult": drivelogin.Result{},
+		"startDriveLoginRequest": startDriveLoginRequest{},
 	} {
 		t.Run(name, func(t *testing.T) {
 			schema, ok := document.Components.Schemas[name]
@@ -48,6 +51,8 @@ type contractSchema struct {
 	Required   []string                  `json:"required"`
 	Items      *contractSchema           `json:"items"`
 	AllOf      []contractSchema          `json:"allOf"`
+	// Additional is a schema object or a boolean, so it is decoded on use.
+	Additional json.RawMessage `json:"additionalProperties"`
 }
 
 func resolveContractSchema(t *testing.T, schema contractSchema, schemas map[string]contractSchema) contractSchema {
@@ -95,6 +100,13 @@ func checkContractType(t *testing.T, path string, typ reflect.Type, schema contr
 			t.Fatalf("%s has no array item schema", path)
 		}
 		checkContractType(t, path+"[]", typ.Elem(), *schema.Items, schemas)
+	case reflect.Map:
+		wantType = "object"
+		var values contractSchema
+		if typ.Key().Kind() != reflect.String || json.Unmarshal(schema.Additional, &values) != nil {
+			t.Fatalf("%s needs string keys and an additionalProperties schema", path)
+		}
+		checkContractType(t, path+"{}", typ.Elem(), values, schemas)
 	case reflect.Struct:
 		wantType = "object"
 		if typ == reflect.TypeOf(time.Time{}) {

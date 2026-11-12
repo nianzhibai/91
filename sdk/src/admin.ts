@@ -507,94 +507,31 @@ export type CrawlerDryRunResult = {
   durationMs: number;
 };
 
-export type QuarkQRSession = {
-  token: string;
-  qrCodeUrl: string;
+/** Drive kinds that support QR login. */
+export type DriveLoginKind = "guangyapan" | "p115" | "p123" | "quark" | "wopan" | "yun139";
+
+export type DriveLoginSession = {
+  id: string;
+  kind: DriveLoginKind;
+  /** Link encoded in the QR code, when the provider exposes one. */
+  qrCodeUrl?: string;
   qrImageDataUrl: string;
   expiresAt: string;
+  /** Delay between polls; each poll result may raise it. */
+  intervalMs: number;
 };
 
-export type QuarkQRStatus = {
-  state: "waiting" | "success" | "expired" | "error";
-  status: number;
-  statusText: string;
-  cookie?: string;
-};
+/** `waiting` and `scanned` continue; every other state ends the login. */
+export type DriveLoginState = "waiting" | "scanned" | "success" | "expired" | "rejected" | "failed";
 
-export type P115QRSession = {
-  uid: string;
-  time: number;
-  sign: string;
-  qrCodeUrl: string;
-  qrImageDataUrl: string;
-};
-
-export type P115QRStatus = {
-  state: "waiting" | "scanned" | "success" | "expired" | "canceled" | "error";
-  status: number;
-  statusText: string;
-  cookie?: string;
-};
-
-export type P123QRSession = {
-  loginUuid: string;
-  uniID: string;
-  qrCodeUrl: string;
-  qrImageDataUrl: string;
-  expiresAt?: string;
-};
-
-export type P123QRStatus = {
-  loginStatus: number;
-  statusText: string;
-  scanPlatform?: number;
-  platformText?: string;
-  accessToken?: string;
-};
-
-export type Yun139QRSession = {
-  sessionId: string;
-  qrCodeUrl: string;
-  qrImageDataUrl: string;
-  expiresAt: string;
-};
-
-export type Yun139QRStatus = {
-  state: "waiting" | "scanned" | "success" | "expired" | "canceled" | "error";
-  statusText: string;
-  authorization?: string;
-};
-
-export type WopanQRSession = {
-  uuid: string;
-  qrImageDataUrl: string;
-  expiresAt?: string;
-};
-
-export type WopanQRStatus = {
-  state: number;
-  statusText: string;
-  accessToken?: string;
-  refreshToken?: string;
-  familyID?: string;
-};
-
-export type GuangYaPanQRSession = {
-  deviceCode: string;
-  qrCodeUrl: string;
-  qrImageDataUrl: string;
-  intervalSeconds: number;
-  expiresAt?: string;
-};
-
-export type GuangYaPanQRStatus = {
-  state: "pending" | "success" | "expired" | "denied" | "error";
-  statusText: string;
-  intervalSeconds?: number;
-  accessToken?: string;
-  refreshToken?: string;
-  tokenType?: string;
-  expiresIn?: number;
+export type DriveLoginResult = {
+  state: DriveLoginState;
+  /** Provider status text for display. */
+  message?: string;
+  /** Present only on success, keyed by the drive's credential fields (`cookie`, `access_token`, ...). */
+  credentials?: Record<string, string>;
+  /** Delay before the next poll; the provider may raise it. */
+  intervalMs: number;
 };
 
 export type DriveDirEntry = {
@@ -1161,73 +1098,20 @@ export function createAdminClient(http: Transport) {
     });
   }
 
-  function startQuarkQRLogin() {
-    return request<QuarkQRSession>("/drives/quark/qr", { method: "POST" });
+  // ---------- Drive QR login ----------
+
+  function startDriveLogin(kind: DriveLoginKind, signal?: AbortSignal) {
+    return request<DriveLoginSession>("/drive-logins", { method: "POST", body: JSON.stringify({ kind }), signal });
   }
 
-  function getQuarkQRStatus(token: string) {
-    return request<QuarkQRStatus>("/drives/quark/qr/status", {
-      method: "POST",
-      body: JSON.stringify({ token }),
-    });
+  /** Checks the provider once. After a final state the login is gone and polling it returns 404. */
+  function pollDriveLogin(id: string, signal?: AbortSignal) {
+    return request<DriveLoginResult>(`/drive-logins/${encodeURIComponent(id)}`, { signal });
   }
 
-  function startP115QRLogin(signal?: AbortSignal) {
-    return request<P115QRSession>("/drives/p115/qr", { method: "POST", signal });
+  function cancelDriveLogin(id: string) {
+    return request<void>(`/drive-logins/${encodeURIComponent(id)}`, { method: "DELETE" });
   }
-
-  function getP115QRStatus(session: Pick<P115QRSession, "uid" | "time" | "sign">, signal?: AbortSignal) {
-    return request<P115QRStatus>("/drives/p115/qr/status", {
-      method: "POST",
-      signal,
-      body: JSON.stringify({
-        uid: session.uid,
-        time: session.time,
-        sign: session.sign,
-      }),
-    });
-  }
-
-  function startP123QRLogin() {
-    return request<P123QRSession>("/drives/p123/qr", { method: "POST" });
-  }
-
-  function getP123QRStatus(uniID: string, loginUuid: string) {
-    const qs = new URLSearchParams({ loginUuid });
-    return request<P123QRStatus>(
-      `/drives/p123/qr/${encodeURIComponent(uniID)}?${qs.toString()}`
-    );
-  }
-
-  function startYun139QRLogin(signal?: AbortSignal) {
-    return request<Yun139QRSession>("/drives/yun139/qr", { method: "POST", signal });
-  }
-
-  function getYun139QRStatus(sessionId: string, signal?: AbortSignal) {
-    return request<Yun139QRStatus>("/drives/yun139/qr/status", {
-      method: "POST",
-      signal,
-      body: JSON.stringify({ sessionId }),
-    });
-  }
-
-  function startWopanQRLogin() {
-    return request<WopanQRSession>("/drives/wopan/qr", { method: "POST" });
-  }
-
-  function getWopanQRStatus(uuid: string) {
-    return request<WopanQRStatus>(`/drives/wopan/qr/${encodeURIComponent(uuid)}`);
-  }
-
-  function startGuangYaPanQRLogin() {
-    return request<GuangYaPanQRSession>("/drives/guangyapan/qr", { method: "POST" });
-  }
-
-  function getGuangYaPanQRStatus(deviceCode: string) {
-    const qs = new URLSearchParams({ deviceCode });
-    return request<GuangYaPanQRStatus>(`/drives/guangyapan/qr/status?${qs.toString()}`);
-  }
-
 
   /**
    * dirtree 接口的一个目录条目。前端构建按需展开的树时用。
@@ -1637,18 +1521,9 @@ export function createAdminClient(http: Transport) {
     stopCrawlerTasks,
     setCrawlerPaused,
     deleteCrawler,
-    startQuarkQRLogin,
-    getQuarkQRStatus,
-    startP115QRLogin,
-    getP115QRStatus,
-    startP123QRLogin,
-    getP123QRStatus,
-    startYun139QRLogin,
-    getYun139QRStatus,
-    startWopanQRLogin,
-    getWopanQRStatus,
-    startGuangYaPanQRLogin,
-    getGuangYaPanQRStatus,
+    startDriveLogin,
+    pollDriveLogin,
+    cancelDriveLogin,
     listDriveDirChildren,
     setDriveSkipDirIds,
     generateDrivePreviews,

@@ -2821,62 +2821,32 @@
         }
       }
     },
-    "/admin/api/drives/quark/qr": {
+    "/admin/api/drive-logins": {
       "post": {
-        "operationId": "post_admin_api_drives_quark_qr",
-        "summary": "Quark QRStart",
+        "operationId": "post_admin_api_drive_logins",
+        "summary": "Start a drive QR login",
         "tags": [
           "Management"
         ],
         "x-role": "admin",
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/quarkQRCodeSession"
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/Forbidden"
-          }
-        }
-      }
-    },
-    "/admin/api/drives/quark/qr/status": {
-      "post": {
-        "operationId": "post_admin_api_drives_quark_qr_status",
-        "summary": "Quark QRStatus",
-        "tags": [
-          "Management"
-        ],
-        "x-role": "admin",
+        "description": "Starts a QR login for a drive kind. Poll the returned session, waiting intervalMs between polls, until its state is final. Sessions live in server memory and are lost on restart.",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/quarkQRStatusRequest"
+                "$ref": "#/components/schemas/startDriveLoginRequest"
               }
             }
           }
         },
         "responses": {
-          "200": {
-            "description": "Success",
+          "201": {
+            "description": "Login started",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/quarkQRCodeStatus"
+                  "$ref": "#/components/schemas/DriveLoginSession"
                 }
               }
             }
@@ -2893,279 +2863,18 @@
         }
       }
     },
-    "/admin/api/drives/p115/qr": {
-      "post": {
-        "operationId": "post_admin_api_drives_p115_qr",
-        "summary": "P115QRStart",
-        "tags": [
-          "Management"
-        ],
-        "x-role": "admin",
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/p115QRCodeSession"
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/Forbidden"
-          }
-        }
-      }
-    },
-    "/admin/api/drives/p115/qr/status": {
-      "post": {
-        "operationId": "post_admin_api_drives_p115_qr_status",
-        "summary": "P115QRStatus",
-        "tags": [
-          "Management"
-        ],
-        "x-role": "admin",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/p115QRStatusRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/p115QRCodeStatus"
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/Forbidden"
-          }
-        }
-      }
-    },
-    "/admin/api/drives/yun139/qr": {
-      "post": {
-        "operationId": "post_admin_api_drives_yun139_qr",
-        "summary": "Yun139QRStart",
-        "tags": [
-          "Management"
-        ],
-        "x-role": "admin",
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/yun139QRCodeSession"
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/Forbidden"
-          }
-        }
-      }
-    },
-    "/admin/api/drives/yun139/qr/status": {
-      "post": {
-        "operationId": "post_admin_api_drives_yun139_qr_status",
-        "summary": "Yun139QRStatus",
-        "tags": [
-          "Management"
-        ],
-        "x-role": "admin",
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/yun139QRCodeStatus"
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/Forbidden"
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "sessionId": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "sessionId"
-                ]
-              }
-            }
-          }
-        }
-      }
-    },
-    "/admin/api/drives/p123/qr": {
-      "post": {
-        "operationId": "post_admin_api_drives_p123_qr",
-        "summary": "P123QRStart",
-        "tags": [
-          "Management"
-        ],
-        "x-role": "admin",
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/p123QRCodeSession"
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/Forbidden"
-          }
-        }
-      }
-    },
-    "/admin/api/drives/p123/qr/{uniID}": {
+    "/admin/api/drive-logins/{id}": {
       "get": {
-        "operationId": "get_admin_api_drives_p123_qr_uniID",
-        "summary": "P123QRStatus",
+        "operationId": "get_admin_api_drive_logins_id",
+        "summary": "Poll a drive QR login",
         "tags": [
           "Management"
         ],
         "x-role": "admin",
+        "description": "Checks the provider once. A final state (success, expired, rejected or failed) ends the login; later polls return 404. On success, credentials use the drive's configuration field names.",
         "parameters": [
           {
-            "name": "uniID",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "loginUuid",
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/p123QRCodeStatus"
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/Forbidden"
-          }
-        }
-      }
-    },
-    "/admin/api/drives/wopan/qr": {
-      "post": {
-        "operationId": "post_admin_api_drives_wopan_qr",
-        "summary": "Wopan QRStart",
-        "tags": [
-          "Management"
-        ],
-        "x-role": "admin",
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/wopanQRCodeSession"
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/Forbidden"
-          }
-        }
-      }
-    },
-    "/admin/api/drives/wopan/qr/{uuid}": {
-      "get": {
-        "operationId": "get_admin_api_drives_wopan_qr_uuid",
-        "summary": "Wopan QRStatus",
-        "tags": [
-          "Management"
-        ],
-        "x-role": "admin",
-        "parameters": [
-          {
-            "name": "uuid",
+            "name": "id",
             "in": "path",
             "required": true,
             "schema": {
@@ -3179,7 +2888,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/wopanQRCodeStatus"
+                  "$ref": "#/components/schemas/DriveLoginResult"
                 }
               }
             }
@@ -3194,66 +2903,27 @@
             "$ref": "#/components/responses/Forbidden"
           }
         }
-      }
-    },
-    "/admin/api/drives/guangyapan/qr": {
-      "post": {
-        "operationId": "post_admin_api_drives_guangyapan_qr",
-        "summary": "Guang Ya Pan QRStart",
-        "tags": [
-          "Management"
-        ],
-        "x-role": "admin",
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/guangyapanQRCodeSession"
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/Forbidden"
-          }
-        }
-      }
-    },
-    "/admin/api/drives/guangyapan/qr/status": {
-      "get": {
-        "operationId": "get_admin_api_drives_guangyapan_qr_status",
-        "summary": "Guang Ya Pan QRStatus",
+      },
+      "delete": {
+        "operationId": "delete_admin_api_drive_logins_id",
+        "summary": "Cancel a drive QR login",
         "tags": [
           "Management"
         ],
         "x-role": "admin",
         "parameters": [
           {
-            "name": "deviceCode",
-            "in": "query",
+            "name": "id",
+            "in": "path",
+            "required": true,
             "schema": {
               "type": "string"
             }
           }
         ],
         "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/guangyapanQRCodeStatus"
-                }
-              }
-            }
+          "204": {
+            "description": "Canceled; unknown IDs are ignored"
           },
           "default": {
             "$ref": "#/components/responses/Error"
@@ -10605,62 +10275,6 @@
         ],
         "type": "object"
       },
-      "guangyapanQRCodeSession": {
-        "properties": {
-          "deviceCode": {
-            "type": "string"
-          },
-          "expiresAt": {
-            "type": "string"
-          },
-          "intervalSeconds": {
-            "type": "integer"
-          },
-          "qrCodeUrl": {
-            "type": "string"
-          },
-          "qrImageDataUrl": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "deviceCode",
-          "qrCodeUrl",
-          "qrImageDataUrl",
-          "intervalSeconds"
-        ],
-        "type": "object"
-      },
-      "guangyapanQRCodeStatus": {
-        "properties": {
-          "accessToken": {
-            "type": "string"
-          },
-          "expiresIn": {
-            "type": "integer"
-          },
-          "intervalSeconds": {
-            "type": "integer"
-          },
-          "refreshToken": {
-            "type": "string"
-          },
-          "state": {
-            "type": "string"
-          },
-          "statusText": {
-            "type": "string"
-          },
-          "tokenType": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "state",
-          "statusText"
-        ],
-        "type": "object"
-      },
       "importCrawlerScriptURLReq": {
         "properties": {
           "fileName": {
@@ -10686,119 +10300,6 @@
           "username",
           "password"
         ]
-      },
-      "p115QRCodeSession": {
-        "properties": {
-          "qrCodeUrl": {
-            "type": "string"
-          },
-          "qrImageDataUrl": {
-            "type": "string"
-          },
-          "sign": {
-            "type": "string"
-          },
-          "time": {
-            "type": "integer"
-          },
-          "uid": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "uid",
-          "time",
-          "sign",
-          "qrCodeUrl",
-          "qrImageDataUrl"
-        ],
-        "type": "object"
-      },
-      "p115QRCodeStatus": {
-        "properties": {
-          "cookie": {
-            "type": "string"
-          },
-          "state": {
-            "type": "string"
-          },
-          "status": {
-            "type": "integer"
-          },
-          "statusText": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "state",
-          "status",
-          "statusText"
-        ],
-        "type": "object"
-      },
-      "p115QRStatusRequest": {
-        "properties": {
-          "sign": {
-            "type": "string"
-          },
-          "time": {
-            "type": "integer"
-          },
-          "uid": {
-            "type": "string"
-          }
-        },
-        "type": "object"
-      },
-      "p123QRCodeSession": {
-        "properties": {
-          "expiresAt": {
-            "type": "string"
-          },
-          "loginUuid": {
-            "type": "string"
-          },
-          "qrCodeUrl": {
-            "type": "string"
-          },
-          "qrImageDataUrl": {
-            "type": "string"
-          },
-          "uniID": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "loginUuid",
-          "uniID",
-          "qrCodeUrl",
-          "qrImageDataUrl"
-        ],
-        "type": "object"
-      },
-      "p123QRCodeStatus": {
-        "properties": {
-          "accessToken": {
-            "type": "string"
-          },
-          "loginStatus": {
-            "type": "integer"
-          },
-          "platformText": {
-            "type": "string"
-          },
-          "scanPlatform": {
-            "type": "integer"
-          },
-          "statusText": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "loginStatus",
-          "statusText"
-        ],
-        "type": "object"
       },
       "previewHardwareStatus": {
         "properties": {
@@ -10833,59 +10334,6 @@
           "available",
           "fallbackCount"
         ],
-        "type": "object"
-      },
-      "quarkQRCodeSession": {
-        "properties": {
-          "expiresAt": {
-            "type": "string"
-          },
-          "qrCodeUrl": {
-            "type": "string"
-          },
-          "qrImageDataUrl": {
-            "type": "string"
-          },
-          "token": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "token",
-          "qrCodeUrl",
-          "qrImageDataUrl",
-          "expiresAt"
-        ],
-        "type": "object"
-      },
-      "quarkQRCodeStatus": {
-        "properties": {
-          "cookie": {
-            "type": "string"
-          },
-          "state": {
-            "type": "string"
-          },
-          "status": {
-            "type": "integer"
-          },
-          "statusText": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "state",
-          "status",
-          "statusText"
-        ],
-        "type": "object"
-      },
-      "quarkQRStatusRequest": {
-        "properties": {
-          "token": {
-            "type": "string"
-          }
-        },
         "type": "object"
       },
       "remoteUploadRequest": {
@@ -11628,89 +11076,6 @@
         ],
         "type": "object"
       },
-      "wopanQRCodeSession": {
-        "properties": {
-          "expiresAt": {
-            "type": "string"
-          },
-          "qrImageDataUrl": {
-            "type": "string"
-          },
-          "uuid": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "uuid",
-          "qrImageDataUrl"
-        ],
-        "type": "object"
-      },
-      "wopanQRCodeStatus": {
-        "properties": {
-          "accessToken": {
-            "type": "string"
-          },
-          "familyID": {
-            "type": "string"
-          },
-          "refreshToken": {
-            "type": "string"
-          },
-          "state": {
-            "type": "integer"
-          },
-          "statusText": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "state",
-          "statusText"
-        ],
-        "type": "object"
-      },
-      "yun139QRCodeSession": {
-        "properties": {
-          "expiresAt": {
-            "type": "string"
-          },
-          "qrCodeUrl": {
-            "type": "string"
-          },
-          "qrImageDataUrl": {
-            "type": "string"
-          },
-          "sessionId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "sessionId",
-          "qrCodeUrl",
-          "qrImageDataUrl",
-          "expiresAt"
-        ],
-        "type": "object"
-      },
-      "yun139QRCodeStatus": {
-        "properties": {
-          "authorization": {
-            "type": "string"
-          },
-          "state": {
-            "type": "string"
-          },
-          "statusText": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "state",
-          "statusText"
-        ],
-        "type": "object"
-      },
       "Error": {
         "type": "object",
         "properties": {
@@ -12106,6 +11471,103 @@
             "items": {
               "$ref": "#/components/schemas/FrontendUpdate"
             }
+          }
+        }
+      },
+      "startDriveLoginRequest": {
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "guangyapan",
+              "p115",
+              "p123",
+              "quark",
+              "wopan",
+              "yun139"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "DriveLoginSession": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "qrImageDataUrl",
+          "expiresAt",
+          "intervalMs"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "guangyapan",
+              "p115",
+              "p123",
+              "quark",
+              "wopan",
+              "yun139"
+            ]
+          },
+          "qrCodeUrl": {
+            "type": "string",
+            "description": "Link encoded in the QR code, when the provider exposes one"
+          },
+          "qrImageDataUrl": {
+            "type": "string",
+            "description": "PNG data URL of the QR code"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "intervalMs": {
+            "type": "integer",
+            "description": "Delay between polls; each poll result may raise it"
+          }
+        }
+      },
+      "DriveLoginResult": {
+        "type": "object",
+        "required": [
+          "state",
+          "intervalMs"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "waiting",
+              "scanned",
+              "success",
+              "expired",
+              "rejected",
+              "failed"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "description": "Provider status text for display"
+          },
+          "credentials": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Present only on success; keys are the drive's credential fields, such as cookie or access_token"
+          },
+          "intervalMs": {
+            "type": "integer",
+            "description": "Delay before the next poll; the provider may raise it"
           }
         }
       }
