@@ -82,14 +82,14 @@ export function publishRelease() {
   const commit = (refs.find(line => line.endsWith('^{}')) ?? refs[0]).split(/\s+/)[0];
   if (commit !== sha) throw new Error(`Release tag ${tag} moved after this run started`);
 
-  const endpoint = `repos/${repository}/releases/tags/${tag}`;
-  const api = path => JSON.parse(command('gh', ['api', path]));
-  let release;
-  try {
-    release = api(endpoint);
-  } catch (error) {
-    if (!String(error.stderr).includes('(HTTP 404)')) throw error;
-  }
+  const listReleases = () => JSON.parse(command('gh', ['api', '--paginate', '--slurp', `repos/${repository}/releases?per_page=100`])).flat();
+  // The by-tag endpoint only returns published releases; the list includes drafts.
+  const findRelease = () => {
+    const matches = listReleases().filter(release => release.tag_name === tag);
+    if (matches.length > 1) throw new Error(`Several releases use tag ${tag}; delete the extra drafts`);
+    return matches[0];
+  };
+  let release = findRelease();
 
   if (release && (release.target_commitish !== sha || release.prerelease !== version.prerelease)) {
     throw new Error('Existing release belongs to a different commit or release channel');
@@ -114,7 +114,8 @@ export function publishRelease() {
         '--title', tag, '--notes-file', notesPath, ...(version.prerelease ? ['--prerelease'] : [])]);
     }
     command('gh', ['release', 'upload', tag, '--repo', repository, '--clobber', ...Object.keys(expected).map(name => join(directory, name))]);
-    release = api(endpoint);
+    release = findRelease();
+    if (!release) throw new Error(`Release ${tag} is missing after upload`);
     verifyAssets(release, expected);
     // Version tags are prepared before the release or any shared channel goes live.
     publishImages([tag, version.version]);
@@ -136,8 +137,7 @@ export function publishRelease() {
 
   // Serialization prevents concurrent promotion; comparison also protects an old
   // tag retried after a newer release. Older minor lines may still advance themselves.
-  const releases = JSON.parse(command('gh', ['api', '--paginate', '--slurp', `repos/${repository}/releases?per_page=100`])).flat();
-  const channels = promotionTags(version, releases);
+  const channels = promotionTags(version, listReleases());
   if (channels.length) publishImages(channels, tag);
   if (channels.includes('latest')) command('gh', ['release', 'edit', tag, '--repo', repository, '--latest=true']);
   const summary = `Published ${tag} from ${sha}. Image channels: ${channels.join(', ') || 'version only'}.\n`;

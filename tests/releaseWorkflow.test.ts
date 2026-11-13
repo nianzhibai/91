@@ -40,7 +40,8 @@ if (program === 'gh') {
   if (args[0] === 'api') {
     if (env.FAIL === 'api') finish('gh: unavailable (HTTP 503)', 1);
     if (args.includes('--paginate')) finish(JSON.stringify([[...state.releases, state.release].filter(Boolean)]));
-    if (!state.release) finish('gh: Not Found (HTTP 404)', 1);
+    // Like GitHub, the by-tag endpoint never returns drafts.
+    if (!state.release || state.release.draft) finish('gh: Not Found (HTTP 404)', 1);
     finish(JSON.stringify(state.release));
   }
   if (args[0] === 'release') {
@@ -188,6 +189,16 @@ test("missing archives, moved tags and API failures cannot create a release", (t
   const unavailable = fixture(t);
   assert.notEqual(unavailable.run({ FAIL: "api" }).status, 0);
   assert.equal(unavailable.state().release, null);
+});
+
+test("several drafts for one tag stop publication instead of choosing one", (t) => {
+  const duplicate = fixture(t, "v1.2.3", [release("v1.2.3", { draft: true, target_commitish: sha, assets: [] })]);
+  const state = duplicate.state();
+  writeFileSync(join(duplicate.directory, "state.json"), JSON.stringify({ ...state, release: release("v1.2.3", { draft: true, target_commitish: sha, assets: [] }) }));
+  const result = duplicate.run();
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Several releases use tag v1.2.3/);
+  assert.ok(!duplicate.state().calls.some(call => call.program === "docker" || ["create", "upload", "edit"].includes(call.args[1])));
 });
 
 test("publishing an older tag does not update latest or stable", (t) => {
