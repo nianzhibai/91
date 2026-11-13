@@ -4,14 +4,14 @@
     {
       "repository": "https://github.com/nianzhibai/91-web",
       "name": "91-web",
-      "version": "v1.0.0",
-      "sha256": "1fc370085928eac0f7628eb486dc07e7296867991078a1c0c4ea0f90395f94df"
+      "version": "v1.0.1",
+      "sha256": "f474a1d10b5abfc54e148f67453826efeea3828926ec0d737504fcbd6023c8cd"
     },
     {
       "repository": "https://github.com/nianzhibai/91-web-nostalgic",
       "name": "91-web-nostalgic",
-      "version": "v1.0.0",
-      "sha256": "e09651668406ea054983acdb16da5b8a2331ca600ef45003f99c90b2ff2b466a"
+      "version": "v1.0.1",
+      "sha256": "f97bdafe0298ceca6075ec1519b010214326928ed5386544c70038b9db083e72"
     }
   ]
 }
