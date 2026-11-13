@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -31,6 +31,16 @@ if [ "$1" = restart ] && [ "$2" = 91.service ] && [ "\${TEST_FAIL_READY:-}" = 1 
 exit 0
 `;
   for (const name of ["systemctl", "curl", "journalctl"]) writeFileSync(join(bin, name), command, { mode: 0o755 });
+  // Exit 127 stands in for a missing Docker CLI.
+  writeFileSync(join(bin, "docker"), `#!/bin/sh
+printf 'docker %s\\n' "$*" >> "$TEST_CALLS"
+if [ "\${TEST_FAIL_DOCKER:-}" = 1 ]; then exit 127; fi
+if [ "$1" = context ]; then printf 'unix:///var/run/docker.sock\\n'; fi
+if [ "$1" = info ]; then printf 'Debian GNU/Linux 12 (bookworm)\\n'; fi
+if [ "$1" = ps ]; then printf '%s' "\${TEST_DOCKER_PS:-}"; fi
+if [ "$1" = network ] && [ "$2" = ls ]; then printf 'bot-network\\n'; fi
+exit 0
+`, { mode: 0o755 });
   const source = join(root, "package/91-linux-amd64");
   mkdirSync(join(source, "dist"), { recursive: true });
   writeFileSync(join(source, "server"), "new binary");
@@ -38,8 +48,9 @@ exit 0
   writeFileSync(join(source, "config.example.yaml"), "server: {listen: 0.0.0.0:9191}\n");
   const archive = join(root, "release.tar.gz");
   assert.equal(spawnSync("tar", ["-C", join(root, "package"), "-czf", archive, "91-linux-amd64"]).status, 0);
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !["INSTALL_PATH", "SERVICE_NAME", "APP_NAME", "VIDEO_SKIP_SELF_UPDATE"].includes(key)));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !["INSTALL_PATH", "SERVICE_NAME", "APP_NAME", "VIDEO_SKIP_SELF_UPDATE", "DOCKER_HOST", "DOCKER_CONTEXT"].includes(key)));
   const environment = { ...env, PATH: `${bin}:${process.env.PATH}`, MANAGER_PATH: manager, SYSTEMD_UNIT_DIR: units, LEGACY_INSTALL_PATH: installation,
+    LEGACY_MANAGER_PATH: join(bin, "video-site-91-manager"), LEGACY_COMMAND_LINK: join(bin, "video-site-91"),
     TEST_CALLS: calls, INSTALL_DEPS: "0", CONFIGURE_UFW: "0", SERVICE_READY_TIMEOUT: "0" };
   return {
     root, installation, bin, units, manager, archive, environment,
@@ -124,6 +135,82 @@ exit 0
   assert.equal(retry.status, 0, retry.stdout + retry.stderr);
   assert.equal(existsSync(join(f.installation, ".version")), true);
   assert.equal(readFileSync(join(f.installation, "data/91.db"), "utf8"), "existing database");
+});
+
+function present(path: string) {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+test("native migration retires the legacy command and only this installation's Bot API once 91 runs", (t) => {
+  const f = nativeFixture(t);
+  const { LEGACY_MANAGER_PATH: legacyManager, LEGACY_COMMAND_LINK: legacyLink } = f.environment;
+  writeFileSync(legacyManager, "previous manager");
+  symlinkSync(legacyManager, legacyLink);
+  writeFileSync(join(f.installation, "telegram.example.yml"), "template\n");
+  writeFileSync(join(f.installation, "telegram.yml"), "configured credentials\n");
+  // Compose project names are shared, so ownership comes from the creating directory and file.
+  const containers = [
+    ["owned", f.installation, `${f.installation}/./telegram.yml`, "video-site-telegram"],
+    ["other-installation", join(f.root, "other"), join(f.root, "other/telegram.yml"), "video-site-telegram"],
+    ["same-directory", f.installation, join(f.installation, "other.yml"), "video-site-telegram"],
+  ].map(fields => fields.join("\t") + "\n").join("");
+  const result = f.run({ TEST_DOCKER_PS: containers });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(present(legacyManager), false);
+  assert.equal(present(legacyLink), false);
+  const removals = f.calls().filter(call => call.startsWith("docker rm"));
+  assert.deepEqual(removals, ["docker rm -f -v owned"]);
+  assert.ok(f.calls().indexOf("systemctl restart 91.service") < f.calls().indexOf(removals[0]));
+  assert.ok(f.calls().includes("docker network ls -q --filter label=com.docker.compose.project=video-site-telegram --filter dangling=true"));
+  assert.ok(f.calls().includes("docker network rm bot-network"));
+  assert.equal(readFileSync(join(f.installation, "telegram.yml.retired"), "utf8"), "configured credentials\n");
+  assert.equal(present(join(f.installation, "telegram.yml")), false);
+  assert.equal(present(join(f.installation, "telegram.example.yml")), false);
+  assert.match(result.stdout, /TELEGRAM_API_ID and TELEGRAM_API_HASH/);
+});
+
+test("native migration removes an unused Telegram template without Docker", (t) => {
+  const f = nativeFixture(t);
+  writeFileSync(join(f.installation, "telegram.example.yml"), "template\n");
+  writeFileSync(join(f.installation, "telegram.yml"), "template\n");
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(!f.calls().some(call => call.startsWith("docker")));
+  assert.equal(present(join(f.installation, "telegram.yml")), false);
+  assert.equal(present(join(f.installation, "telegram.yml.retired")), false);
+  assert.equal(present(join(f.installation, "telegram.example.yml")), false);
+});
+
+test("an unavailable Docker CLI keeps the Bot API settings for the next update", (t) => {
+  const f = nativeFixture(t);
+  writeFileSync(join(f.installation, "telegram.yml"), "configured credentials\n");
+  const result = f.run({ TEST_FAIL_DOCKER: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stderr, /could not remove the retired Telegram Bot API container/);
+  assert.equal(readFileSync(join(f.installation, "telegram.yml"), "utf8"), "configured credentials\n");
+  const retry = f.run();
+  assert.equal(retry.status, 0, retry.stdout + retry.stderr);
+  assert.match(retry.stdout, /already up to date/);
+  assert.equal(present(join(f.installation, "telegram.yml")), false);
+  assert.equal(readFileSync(join(f.installation, "telegram.yml.retired"), "utf8"), "configured credentials\n");
+});
+
+test("Bot API cleanup never queries a Docker engine on another host", (t) => {
+  const f = nativeFixture(t);
+  writeFileSync(join(f.installation, "telegram.yml"), "configured credentials\n");
+  // The other host has a v0.3.7 installation at the same path.
+  const containers = `remote\t${f.installation}\t${f.installation}/telegram.yml\tvideo-site-telegram\n`;
+  const result = f.run({ DOCKER_HOST: "tcp://other-host:2375", TEST_DOCKER_PS: containers });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stderr, /local Docker Engine/);
+  assert.ok(!f.calls().some(call => call.startsWith("docker ps") || call.startsWith("docker rm")));
+  assert.equal(readFileSync(join(f.installation, "telegram.yml"), "utf8"), "configured credentials\n");
+  assert.equal(present(join(f.installation, "telegram.yml.retired")), false);
 });
 
 test("native migration refuses to replace an existing 91 service", (t) => {

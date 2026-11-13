@@ -19,6 +19,10 @@ appendFileSync(process.env.CLI_CALLS, JSON.stringify({ command, args }) + "\\n")
 if (command === "systemctl" && args.includes(process.env.CLI_FAIL_ACTION)) {
   process.exit(Number(process.env.CLI_FAIL_CODE || 1));
 }
+if (command === "docker" && process.env.CLI_FAIL_DOCKER === "1") process.exit(127);
+if (command === "docker" && args[0] === "context") process.stdout.write("unix:///var/run/docker.sock\\n");
+if (command === "docker" && args[0] === "info") process.stdout.write("Ubuntu 24.04 LTS\\n");
+if (command === "docker" && args[0] === "ps") process.stdout.write(process.env.CLI_DOCKER_PS || "");
 `;
 
 function fixture(t: TestContext) {
@@ -46,6 +50,8 @@ function fixture(t: TestContext) {
     SERVICE_READY_TIMEOUT: "1",
     UNINSTALL_DELETE_FILES: "0",
     TERM: "dumb",
+    DOCKER_HOST: "",
+    DOCKER_CONTEXT: "",
   };
   return {
     root,
@@ -104,6 +110,21 @@ test("native uninstall preserves files and commands if systemd cleanup fails", (
     { command: "systemctl", args: ["disable", "--now", "91-native-test.service"] },
   ]);
   assert.ok(!f.calls().some(call => call.command === "rm" && call.args.includes("--one-file-system")));
+});
+
+test("native uninstall removes a legacy Telegram Bot API container before deleting data", (t) => {
+  const f = fixture(t);
+  writeFileSync(join(f.root, "telegram.yml"), "configured credentials\n");
+  const remove = { command: "docker", args: ["rm", "-f", "-v", "owned"] };
+  const failed = f.run(["uninstall"], { CLI_FAIL_DOCKER: "1" });
+  assert.notEqual(failed.status, 0);
+  assert.match(failed.stderr, /installation kept/);
+  assert.ok(!f.calls().some(call => call.command === "systemctl" || call.args.includes("--one-file-system")));
+  const result = f.run(["uninstall"], { CLI_DOCKER_PS: `owned\t${f.root}\t${join(f.root, "telegram.yml")}\tvideo-site-telegram\n` });
+  assert.equal(result.status, 0, result.stderr);
+  const calls = f.calls().map(call => JSON.stringify(call));
+  const disable = calls.indexOf(JSON.stringify({ command: "systemctl", args: ["disable", "--now", "91-native-test.service"] }));
+  assert.ok(calls.indexOf(JSON.stringify(remove)) >= 0 && calls.indexOf(JSON.stringify(remove)) < disable);
 });
 
 test("native uninstall refuses to run while another deployment holds the directory lock", (t) => {

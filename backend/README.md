@@ -116,6 +116,17 @@ Docker 继续使用旧数据挂载。匿名数据卷需先改为显式挂载；�
 
 停用旧服务后首次启动新版，会将 `video-site.db` 迁移为 `91.db`；新旧两个独立数据库同时存在时拒绝启动。已有待恢复备份会先按原文件名完成恢复，再迁移数据库名。
 
+一键安装的更新成功后，会移除旧的 `video-site-91` 命令。
+
+### Telegram Bot API 部署
+
+新版不再使用 Bot API 服务。旧配置中已启用的 Telegram 会在首次启动时自动关闭，Bot Token 和允许的用户 ID 保留；在「配置面板 → Telegram」填写 API ID / API Hash 后重新启用。
+
+| 部署方式 | 旧 Bot API 的处理 |
+| --- | --- |
+| 一键安装 | 更新成功后移除 Bot API 容器。原 `telegram.yml` 改名为 `telegram.yml.retired`，其中的 `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` 即需填写的凭据，填写后可删除该文件 |
+| Docker | 凭据位于 Compose 文件中 `telegram-bot-api` 服务的环境变量。更新后手动删除该服务，以及网站服务中对它的 `depends_on`、`VIDEO_TELEGRAM_COMPOSE` 环境变量和该变量指向的只读挂载，保留 Telegram 数据挂载，再执行 `docker compose up -d --remove-orphans` |
+
 ### 更新失败时
 
 管理脚本按以下规则处理失败，**不会回滚数据库或应用数据**：

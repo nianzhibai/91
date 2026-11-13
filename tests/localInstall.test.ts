@@ -62,7 +62,8 @@ ${name === "curl" ? "exit 93" : "exit 0"}
       `, "bash", installer, ...args], {
         encoding: "utf8", timeout: 10_000,
         env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, INSTALL_PATH: installation,
-          CLI_CALLS: calls, CLI_BIN: bin, SELF_UPDATE: "1", VERSION: "latest", ...overrides },
+          CLI_CALLS: calls, CLI_BIN: bin, SELF_UPDATE: "1", VERSION: "latest",
+          LEGACY_MANAGER_PATH: join(bin, "video-site-91-manager"), LEGACY_COMMAND_LINK: join(bin, "video-site-91"), ...overrides },
       });
     },
   };

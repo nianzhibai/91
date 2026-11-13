@@ -7,6 +7,8 @@ GITHUB_REPO="${GITHUB_REPO:-nianzhibai/91}"
 MANAGER_PATH="${MANAGER_PATH:-/usr/local/sbin/${APP_NAME}-manager}"
 SYSTEMD_UNIT_DIR="${SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
 LEGACY_INSTALL_PATH="${LEGACY_INSTALL_PATH:-/opt/video-site-91}"
+LEGACY_MANAGER_PATH="${LEGACY_MANAGER_PATH:-/usr/local/sbin/video-site-91-manager}"
+LEGACY_COMMAND_LINK="${LEGACY_COMMAND_LINK:-/usr/local/bin/video-site-91}"
 INSTALL_PATH_WAS_SET="${INSTALL_PATH+x}"
 SERVICE_NAME_WAS_SET="${SERVICE_NAME+x}"
 if [[ -r "${MANAGER_PATH}.conf" ]]; then
@@ -130,7 +132,8 @@ EOF
       cat <<EOF
 Usage: 91 uninstall
 
-Remove the native service, Bot API resources and management commands.
+Remove the native service, management commands and any container left by
+the retired Telegram Bot API setup.
 Permanently delete the installation, configured application data and database,
 including Telegram videos and sessions stored in the application data directory.
 EOF
@@ -379,6 +382,80 @@ install_cli_from_file() {
   printf '%s\n%s\n' "$INSTALL_PATH" "$SERVICE_NAME" > "${MANAGER_PATH}.conf.tmp.$$" || return
   chmod 644 "${MANAGER_PATH}.conf.tmp.$$" || return
   mv "${MANAGER_PATH}.conf.tmp.$$" "${MANAGER_PATH}.conf"
+}
+
+# Releases up to v0.3.7 installed the manager under the old application name.
+retire_legacy_commands() {
+  [[ "$LEGACY_MANAGER_PATH" != "$MANAGER_PATH" ]] || return 0
+  if [[ -L "$LEGACY_COMMAND_LINK" && "$(readlink -- "$LEGACY_COMMAND_LINK")" == "$LEGACY_MANAGER_PATH" ]]; then
+    rm -f -- "$LEGACY_COMMAND_LINK"
+  fi
+  rm -f -- "$LEGACY_MANAGER_PATH"
+}
+
+# Releases up to v0.3.7 ran Telegram through a local Bot API container created
+# from telegram.yml; the server now connects to Telegram itself. An unchanged
+# template has no credentials and was never deployed.
+legacy_bot_api_configured() {
+  [[ -f "$INSTALL_PATH/telegram.yml" ]] && ! cmp -s -- "$INSTALL_PATH/telegram.yml" "$INSTALL_PATH/telegram.example.yml"
+}
+
+# The Bot API setup only ran on a local Linux Docker Engine. Another engine
+# cannot hold this installation's container, but may hold one with the same
+# installation path from another host.
+local_docker_engine() {
+  local endpoint="${DOCKER_HOST:-}" operating_system
+  if [[ -n "${DOCKER_CONTEXT:-}" || -z "$endpoint" ]]; then
+    endpoint=$(docker context inspect --format '{{.Endpoints.docker.Host}}') || return
+  fi
+  operating_system=$(docker info --format '{{.OperatingSystem}}') || return
+  [[ "$endpoint" == unix://* && "${operating_system,,}" != *"docker desktop"* ]]
+}
+
+# Compose project names are shared between installations, so only remove
+# containers whose labels show they were created from this telegram.yml.
+# Without a working local Docker Engine the container cannot be ruled out.
+stop_legacy_bot_api() {
+  legacy_bot_api_configured || return 0
+  local listing id directory files project file installation compose_file
+  local -a containers=() projects=() config_files=()
+  installation=$(realpath -m -- "$INSTALL_PATH")
+  compose_file=$(realpath -m -- "$INSTALL_PATH/telegram.yml")
+  if local_docker_engine && listing=$(docker ps -a --filter label=com.docker.compose.project.config_files --format \
+      '{{.ID}}	{{.Label "com.docker.compose.project.working_dir"}}	{{.Label "com.docker.compose.project.config_files"}}	{{.Label "com.docker.compose.project"}}'); then
+    while IFS=$'\t' read -r id directory files project; do
+      [[ -n "$id" && -n "$directory" && "$(realpath -m -- "$directory")" == "$installation" ]] || continue
+      IFS=, read -r -a config_files <<< "$files"
+      for file in "${config_files[@]}"; do
+        if [[ -n "$file" && "$(realpath -m -- "$file")" == "$compose_file" ]]; then
+          containers+=("$id")
+          projects+=("$project")
+          break
+        fi
+      done
+    done <<< "$listing"
+    if (( ${#containers[@]} == 0 )) || docker rm -f -v "${containers[@]}" >/dev/null; then
+      # Networks still used by another installation's containers are not dangling.
+      for project in "${projects[@]}"; do
+        docker network ls -q --filter "label=com.docker.compose.project=$project" --filter dangling=true |
+          xargs -r docker network rm >/dev/null || true
+      done
+      return 0
+    fi
+  fi
+  warn "could not remove the retired Telegram Bot API container. Make sure the local Docker Engine is running and DOCKER_HOST or the Docker context points to it, or delete $INSTALL_PATH/telegram.yml if the container no longer exists, then rerun this command"
+  return 1
+}
+
+retire_legacy_telegram() {
+  local compose_file="$INSTALL_PATH/telegram.yml"
+  stop_legacy_bot_api || return 0
+  if legacy_bot_api_configured; then
+    # Keep the old API credentials until the administrator has re-entered them.
+    mv -f -- "$compose_file" "$compose_file.retired" || return 0
+    log "Telegram now connects without the Bot API container. Enter TELEGRAM_API_ID and TELEGRAM_API_HASH from $compose_file.retired in the admin panel, then delete that file"
+  fi
+  rm -f -- "$compose_file" "$INSTALL_PATH/telegram.example.yml"
 }
 
 self_update_manager() {
@@ -720,6 +797,8 @@ update_app() {
 
   if should_skip_update && [[ "$SERVICE_NAME" != video-site-91 ]]; then
     install_cli
+    retire_legacy_commands
+    retire_legacy_telegram
     log "already up to date; skipped app update"
     return 0
   fi
@@ -774,6 +853,8 @@ update_app() {
     die "new version failed its readiness check; new files and data kept, service stopped. Fix the startup error and retry update"
   fi
   record_version
+  retire_legacy_commands
+  retire_legacy_telegram
   log "updated"
 }
 
@@ -870,6 +951,7 @@ uninstall_app() (
       die "Could not resolve storage paths; check the configuration and server storage-paths support"
   fi
   validate_uninstall_paths "$work_dir/paths.json" "$storage_report"
+  stop_legacy_bot_api || die "installation kept; retry uninstall after Docker is available"
 
   # Stop the service before removing its managed data.
   systemctl disable --now "${SERVICE_NAME}.service" || die "could not stop and disable ${SERVICE_NAME}.service; installation has been kept"
@@ -889,6 +971,7 @@ PY
   rm -f "$SYSTEMD_UNIT_DIR/${SERVICE_NAME}.service"
   systemctl daemon-reload
   rm -f "$COMMAND_LINK" "$APP_COMMAND_LINK" "$MANAGER_PATH" "${MANAGER_PATH}.conf"
+  retire_legacy_commands
   log "Uninstall complete: 91 and its application data removed"
 )
 

@@ -1,6 +1,6 @@
 # 配置 Telegram
 
-原生和 Docker 部署均在网站后台配置，无需额外部署 Bot API 服务。
+原生和 Docker 部署均在网站后台配置，无需额外部署 Bot API 服务。从使用 Bot API 服务的旧版本升级时，Telegram 会先自动关闭，补填 API ID / API Hash 后重新启用，见 [旧部署升级](../backend/README.md#telegram-bot-api-部署)。
 
 ## 启用 Telegram
 
