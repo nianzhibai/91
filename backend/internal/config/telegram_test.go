@@ -108,3 +108,17 @@ func TestTelegramConnectionProxyValidationAndRedaction(t *testing.T) {
 		}
 	}
 }
+
+func TestLegacyBotAPITelegramLoadsDisabled(t *testing.T) {
+	cfg, err := Parse([]byte("telegram:\n  enabled: true\n  bot_token: 123:legacy_token\n  allowed_user_ids: [42]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Telegram.Enabled || cfg.Telegram.BotToken != "123:legacy_token" || len(cfg.Telegram.AllowedUserIDs) != 1 {
+		t.Fatalf("legacy Telegram settings: %+v", cfg.Telegram)
+	}
+	// Current configurations always contain the credential fields and stay strict.
+	if _, err := Parse([]byte("telegram:\n  enabled: true\n  api_id: 0\n  api_hash: \"\"\n  bot_token: 123:token\n")); err == nil {
+		t.Fatal("accepted enabled Telegram without credentials")
+	}
+}

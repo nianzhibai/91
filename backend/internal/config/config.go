@@ -276,6 +276,9 @@ func Parse(data []byte) (*Config, error) {
 	if err := c.importLegacyDataDirectory(data); err != nil {
 		return nil, err
 	}
+	if err := c.importLegacyTelegram(data); err != nil {
+		return nil, err
+	}
 	if err := c.applyDefaults(); err != nil {
 		return nil, err
 	}

@@ -54,6 +54,36 @@ func (t *Telegram) UnmarshalYAML(node *yaml.Node) error {
 	return node.Decode((*plain)(t))
 }
 
+// IsLegacyBotAPITelegram reports whether data enables Telegram with settings
+// written for the retired Bot API service, which predates api_id and api_hash.
+func IsLegacyBotAPITelegram(data []byte) (bool, error) {
+	var legacy struct {
+		Telegram struct {
+			Enabled  bool      `yaml:"enabled"`
+			BotToken string    `yaml:"bot_token"`
+			APIID    yaml.Node `yaml:"api_id"`
+			APIHash  yaml.Node `yaml:"api_hash"`
+		} `yaml:"telegram"`
+	}
+	if err := yaml.Unmarshal(data, &legacy); err != nil {
+		return false, err
+	}
+	section := legacy.Telegram
+	return section.Enabled && strings.TrimSpace(section.BotToken) != "" &&
+		section.APIID.Kind == 0 && section.APIHash.Kind == 0, nil
+}
+
+// A Bot API section cannot connect without MTProto credentials. Load it as
+// disabled instead of blocking startup; the token and other settings remain
+// for the administrator to complete in the panel.
+func (c *Config) importLegacyTelegram(data []byte) error {
+	legacy, err := IsLegacyBotAPITelegram(data)
+	if legacy {
+		c.Telegram.Enabled = false
+	}
+	return err
+}
+
 func (t *Telegram) Validate() error {
 	t.APIHash = strings.TrimSpace(t.APIHash)
 	if t.APIID < 0 || int64(t.APIID) > 2147483647 {

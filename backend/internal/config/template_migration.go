@@ -48,6 +48,14 @@ func (m *Manager) SyncTemplate() (bool, error) {
 	// Old layouts are validated and converted by Parse before their retired
 	// fields are removed. Preserve that root instead of taking the default.
 	setScalarValue(ensureMappingValue(template.Content[0], "storage"), "data_dir", parsed.Storage.DataDir)
+	// Parse also disables Telegram sections left by the retired Bot API service.
+	// Keep that state: the template's empty credentials would fail validation.
+	if !parsed.Telegram.Enabled {
+		telegram, _ := mappingValue(template.Content[0], "telegram")
+		if enabled, ok := mappingValue(telegram, "enabled"); ok {
+			enabled.Kind, enabled.Tag, enabled.Value = yaml.ScalarNode, "!!bool", "false"
+		}
+	}
 	var out bytes.Buffer
 	encoder := yaml.NewEncoder(&out)
 	encoder.SetIndent(2)

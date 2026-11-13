@@ -28,12 +28,23 @@ func migrateApplicationConfig(ctx context.Context, cat *catalog.Catalog, manager
 	if err := migrateTelegramConfig(ctx, cat, manager); err != nil {
 		return fmt.Errorf("migrate Telegram settings: %w", err)
 	}
+	data, _, err := manager.ReadYAML()
+	if err != nil {
+		return err
+	}
+	legacyTelegram, err := config.IsLegacyBotAPITelegram(data)
+	if err != nil {
+		return err
+	}
 	changed, err := manager.SyncTemplate()
 	if err != nil {
 		return fmt.Errorf("update configuration from template: %w", err)
 	}
 	if changed {
 		log.Printf("[config] updated config.yaml from the release template, preserving existing settings")
+	}
+	if legacyTelegram {
+		log.Printf("[config] Telegram now connects without the Bot API service and was disabled; enter the API ID and API Hash in the admin panel, then enable it again")
 	}
 	return nil
 }

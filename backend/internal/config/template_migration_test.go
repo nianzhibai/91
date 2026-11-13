@@ -257,3 +257,38 @@ func TestTemplateMigrationRollsBackWhenLiveApplyFails(t *testing.T) {
 		t.Fatal("failed live apply did not restore the file and snapshot")
 	}
 }
+
+func TestTemplateMigrationPersistsDisabledLegacyBotAPITelegram(t *testing.T) {
+	manager, path := newManagerForTest(t, "telegram:\n  enabled: true\n  bot_token: \"123:legacy_token\"\n  allowed_user_ids: [42]\n")
+	if manager.LiveSettings().TelegramEnabled {
+		t.Fatal("legacy Bot API Telegram settings loaded as enabled")
+	}
+	if changed, err := manager.SyncTemplate(); err != nil || !changed {
+		t.Fatalf("migration changed=%v err=%v", changed, err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy, err := IsLegacyBotAPITelegram(data); err != nil || legacy {
+		t.Fatalf("migrated file still has legacy Telegram settings: %v", err)
+	}
+	var migrated struct {
+		Telegram struct {
+			Enabled        bool    `yaml:"enabled"`
+			APIID          *int    `yaml:"api_id"`
+			BotToken       string  `yaml:"bot_token"`
+			AllowedUserIDs []int64 `yaml:"allowed_user_ids"`
+		} `yaml:"telegram"`
+	}
+	if err := yaml.Unmarshal(data, &migrated); err != nil {
+		t.Fatal(err)
+	}
+	section := migrated.Telegram
+	if section.Enabled || section.APIID == nil || section.BotToken != "123:legacy_token" || !reflect.DeepEqual(section.AllowedUserIDs, []int64{42}) {
+		t.Fatalf("migrated Telegram section: %s", data)
+	}
+	if _, err := Parse(data); err != nil {
+		t.Fatal(err)
+	}
+}
