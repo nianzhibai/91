@@ -9,6 +9,7 @@ import (
 
 	"github.com/gotd/td/bin"
 	mt "github.com/gotd/td/telegram"
+	"github.com/gotd/td/tg"
 )
 
 type testDownloadPool struct{ closed atomic.Int32 }
@@ -90,5 +91,16 @@ func TestDownloadPoolsCancelCreationWithoutLeakingConnection(t *testing.T) {
 	})
 	if !errors.Is(err, context.Canceled) || created.closed.Load() != 1 || len(pools.pools) != 0 {
 		t.Fatal("canceled creation retained a pool", err)
+	}
+}
+
+func TestDownloadRouteReusesHomeAuthorization(t *testing.T) {
+	cfg := tg.Config{ThisDC: 2, DCOptions: []tg.DCOption{
+		{ID: 2, MediaOnly: true}, {ID: 4, MediaOnly: true}, {ID: 5},
+	}}
+	for dc, want := range map[int]downloadRoute{2: routeHome, 4: routeMedia, 5: routeData} {
+		if got := downloadRouteFor(cfg, dc); got != want {
+			t.Errorf("DC %d route = %d, want %d", dc, got, want)
+		}
 	}
 }

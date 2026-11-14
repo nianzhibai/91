@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	mt "github.com/gotd/td/telegram"
+	"github.com/gotd/td/tg"
 )
 
 // Pools belong to one receiver session, whose download concurrency is fixed.
@@ -54,13 +55,37 @@ func (p *downloadPools) close() {
 	}
 }
 
-func (c *mtprotoClient) openDownloadPool(ctx context.Context, dc int, threads int64) (mt.CloseInvoker, error) {
-	for _, option := range c.client.Config().DCOptions {
+type downloadRoute int
+
+const (
+	routeHome downloadRoute = iota
+	routeMedia
+	routeData
+)
+
+// The session is already authorized on its home DC. gotd's DC and media pools
+// always transfer authorization, which Telegram rejects there with DC_ID_INVALID.
+func downloadRouteFor(cfg tg.Config, dc int) downloadRoute {
+	if dc == cfg.ThisDC {
+		return routeHome
+	}
+	for _, option := range cfg.DCOptions {
 		if option.ID == dc && option.MediaOnly {
-			return c.client.MediaOnly(ctx, dc, threads)
+			return routeMedia
 		}
 	}
 	// Some DCs advertise no media-only address. Keep their file connections
 	// separate from the update receiver, using the regular DC entry points.
-	return c.client.DC(ctx, dc, threads)
+	return routeData
+}
+
+func (c *mtprotoClient) openDownloadPool(ctx context.Context, dc int, threads int64) (mt.CloseInvoker, error) {
+	switch downloadRouteFor(c.client.Config(), dc) {
+	case routeHome:
+		return c.client.Pool(threads)
+	case routeMedia:
+		return c.client.MediaOnly(ctx, dc, threads)
+	default:
+		return c.client.DC(ctx, dc, threads)
+	}
 }
