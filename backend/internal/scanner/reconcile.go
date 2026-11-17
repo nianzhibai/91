@@ -153,6 +153,14 @@ func (s *Scanner) reconcileExisting(
 		}
 	}
 
+	// The row stays live even when it matches another row, so its automatic
+	// tags are refreshed before the match is recorded.
+	if _, err := s.Catalog.ReplaceAutoVideoTags(ctx, existing.ID, assignments); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		result.addIssue(ctx, file, IssueTags, err)
+	}
 	source := &catalog.Video{
 		ID: existing.ID, DriveID: s.Drive.ID(), ContentHash: entry.Hash,
 		FileID: entry.ID, FileName: entry.Name, Title: displayTitle, Size: entry.Size,
@@ -178,12 +186,6 @@ func (s *Scanner) reconcileExisting(
 		}
 		result.Duplicates++
 		return nil
-	}
-	if _, err := s.Catalog.ReplaceAutoVideoTags(ctx, existing.ID, assignments); err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
-		}
-		result.addIssue(ctx, file, IssueTags, err)
 	}
 	return ctx.Err()
 }
