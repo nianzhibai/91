@@ -19,8 +19,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/skip2/go-qrcode"
 	"github.com/nianzhibai/91/backend/internal/scopedproxy"
+	"github.com/skip2/go-qrcode"
 )
 
 const (
