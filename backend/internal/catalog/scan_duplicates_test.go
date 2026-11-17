@@ -2,9 +2,11 @@ package catalog
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -226,4 +228,79 @@ func TestInsertScannedVideoCancellationReleasesConnection(t *testing.T) {
 	if inserted, err := cat.InsertScannedVideo(context.Background(), v, nil); err != nil || !inserted {
 		t.Fatalf("admission after cancellation: inserted=%t error=%v", inserted, err)
 	}
+}
+
+func TestInsertScannedVideoIgnoresHiddenDuplicatePartners(t *testing.T) {
+	ctx := context.Background()
+	cat, err := Open(filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+	if err := cat.UpsertVideo(ctx, &Video{ID: "hidden", DriveID: "other", FileID: "old", FileName: "a.mp4", ContentHash: "hash", Size: 10, Hidden: true}); err != nil {
+		t.Fatal(err)
+	}
+	inserted, err := cat.InsertScannedVideo(ctx, &Video{ID: "new", DriveID: "drive", FileID: "new", FileName: "a.mp4", ContentHash: "hash", Size: 10}, nil)
+	if err != nil || !inserted {
+		t.Fatalf("hidden row blocked admission: inserted=%v err=%v", inserted, err)
+	}
+	inserted, err = cat.InsertScannedVideo(ctx, &Video{ID: "copy", DriveID: "third", FileID: "copy", FileName: "b.mp4", ContentHash: "HASH", Size: 10}, nil)
+	if err != nil || inserted {
+		t.Fatalf("visible hash match admitted: inserted=%v err=%v", inserted, err)
+	}
+}
+
+func TestFindScannedVideoDuplicateUsesIndexes(t *testing.T) {
+	cat, err := Open(filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+	cases := map[string]*Video{
+		"name and size":        {ID: "v", FileName: "a.mp4", Size: 10},
+		"hash":                 {ID: "v", ContentHash: "hash"},
+		"hash, name and size":  {ID: "v", ContentHash: "hash", FileName: "a.mp4", Size: 10},
+		"fingerprint":          {ID: "v", SampledSHA256: "sampled", Size: 10},
+		"hash and fingerprint": {ID: "v", ContentHash: "hash", SampledSHA256: "sampled", Size: 10},
+	}
+	for name, video := range cases {
+		t.Run(name, func(t *testing.T) {
+			plan := &queryPlanRecorder{db: cat.db}
+			if _, err := findScannedVideoDuplicate(context.Background(), plan, video, nil); err != nil {
+				t.Fatal(err)
+			}
+			for _, detail := range plan.details {
+				if strings.HasPrefix(detail, "SCAN videos") {
+					t.Fatalf("lookup scans the table: %q", plan.details)
+				}
+			}
+		})
+	}
+}
+
+// queryPlanRecorder runs EXPLAIN QUERY PLAN for the lookup's exact SQL.
+type queryPlanRecorder struct {
+	db      *sql.DB
+	details []string
+}
+
+func (r *queryPlanRecorder) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	rows, err := r.db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+query, args...)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		r.details = append(r.details, detail)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	// The lookup itself only needs an empty result.
+	return r.db.QueryContext(ctx, "SELECT "+allVideoCols+" FROM videos WHERE 0")
 }

@@ -92,15 +92,16 @@ func contentCandidates(localDir string, videos []*catalog.Video) ([]dedupe.Candi
 			continue
 		}
 		candidates = append(candidates, dedupe.Candidate{
-			ID:                video.ID,
-			Title:             video.Title,
-			DurationSeconds:   video.DurationSeconds,
-			Size:              video.Size,
-			SampledSHA256:     video.SampledSHA256,
-			AssetScore:        assetScore(localDir, video),
-			CreatedAt:         video.CreatedAt,
-			ExpectedUpdatedAt: video.UpdatedAt.UnixMilli(),
-			TeaserPath:        teaserPath,
+			ID:              video.ID,
+			Title:           video.Title,
+			DurationSeconds: video.DurationSeconds,
+			Size:            video.Size,
+			ContentHash:     video.ContentHash,
+			SampledSHA256:   video.SampledSHA256,
+			AssetScore:      assetScore(localDir, video),
+			CreatedAt:       video.CreatedAt,
+			Revision:        catalog.DuplicateRevision(video),
+			TeaserPath:      teaserPath,
 		})
 		videosByID[video.ID] = video
 	}
@@ -225,12 +226,12 @@ func applyPlan(ctx context.Context, cat *catalog.Catalog, localDir string, plan 
 	deletions := make([]catalog.DuplicateVideoDeletion, 0, len(plan.Actions))
 	for _, action := range plan.Actions {
 		deletions = append(deletions, catalog.DuplicateVideoDeletion{
-			VideoID:                    action.VideoID,
-			CanonicalVideoID:           action.CanonicalVideoID,
-			ExpectedUpdatedAt:          action.ExpectedUpdatedAt,
-			CanonicalExpectedUpdatedAt: action.CanonicalExpectedUpdatedAt,
-			Origin:                     catalog.DuplicateOriginCommand,
-			Evidence:                   action.Evidence,
+			VideoID:                   action.VideoID,
+			CanonicalVideoID:          action.CanonicalVideoID,
+			ExpectedRevision:          action.ExpectedRevision,
+			CanonicalExpectedRevision: action.CanonicalExpectedRevision,
+			Origin:                    catalog.DuplicateOriginCommand,
+			Evidence:                  action.Evidence,
 		})
 	}
 	var applyErr error
@@ -242,7 +243,11 @@ func applyPlan(ctx context.Context, cat *catalog.Catalog, localDir string, plan 
 		if applyErr == nil || !sqliteBusy(applyErr) {
 			break
 		}
-		time.Sleep(time.Duration(attempt+1) * 250 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * 250 * time.Millisecond):
+		}
 	}
 	if applyErr != nil {
 		return applyErr
@@ -276,6 +281,10 @@ func deleteDuplicateWithAssets(ctx context.Context, cat *catalog.Catalog, localD
 	if video == nil {
 		return nil
 	}
+	stored, err := cat.GetVideo(ctx, video.ID)
+	if err != nil {
+		return err
+	}
 	canonical, err := cat.GetVideo(ctx, canonicalID)
 	if err != nil {
 		return err
@@ -283,7 +292,7 @@ func deleteDuplicateWithAssets(ctx context.Context, cat *catalog.Catalog, localD
 	return applyPlan(ctx, cat, localDir, dedupe.Plan{
 		Actions: []dedupe.DeleteAction{{
 			Stage: dedupe.StageContent, VideoID: video.ID, CanonicalVideoID: canonicalID,
-			ExpectedUpdatedAt: video.UpdatedAt.UnixMilli(), CanonicalExpectedUpdatedAt: canonical.UpdatedAt.UnixMilli(),
+			ExpectedRevision: catalog.DuplicateRevision(stored), CanonicalExpectedRevision: catalog.DuplicateRevision(canonical),
 		}},
 		Redirects: map[string]string{video.ID: canonicalID},
 	})

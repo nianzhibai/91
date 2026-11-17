@@ -83,13 +83,12 @@ func Build(ctx context.Context, candidates []Candidate, options Options) (Plan, 
 	return state.plan, nil
 }
 
-type exactKey struct {
-	size    int64
-	sampled string
-}
-
+// planExact connects candidates sharing any exact identity key. Each recorded
+// edge names the key that matched, so evidence never claims a signal that a
+// transitively connected pair does not share.
 func (s *plannerState) planExact(ctx context.Context, candidates []Candidate) error {
-	groups := make(map[exactKey][]Candidate)
+	exact := make([]Candidate, 0, len(candidates))
+	buckets := make(map[ExactKey][]int)
 	for _, candidate := range candidates {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -97,27 +96,49 @@ func (s *plannerState) planExact(ctx context.Context, candidates []Candidate) er
 		if !s.alive[candidate.ID] {
 			continue
 		}
-		sampled := strings.ToLower(strings.TrimSpace(candidate.SampledSHA256))
-		if candidate.Size <= 0 || sampled == "" {
+		keys := ExactKeys(candidate)
+		if len(keys) == 0 {
 			continue
 		}
-		key := exactKey{size: candidate.Size, sampled: sampled}
-		groups[key] = append(groups[key], candidate)
+		index := len(exact)
+		exact = append(exact, candidate)
+		for _, key := range keys {
+			buckets[key] = append(buckets[key], index)
+		}
 	}
-	keys := make([]exactKey, 0, len(groups))
-	for key, group := range groups {
-		if len(group) > 1 {
+	s.plan.Stats.Exact.Candidates = len(exact)
+	keys := make([]ExactKey, 0, len(buckets))
+	for key, members := range buckets {
+		if len(members) > 1 {
 			keys = append(keys, key)
 		}
 	}
+	// content_hash sorts before sampled_sha256, so a pair sharing both keys
+	// records the stronger provider hash.
 	sort.Slice(keys, func(i, j int) bool {
-		if keys[i].size != keys[j].size {
-			return keys[i].size < keys[j].size
+		if keys[i].Reason != keys[j].Reason {
+			return keys[i].Reason < keys[j].Reason
 		}
-		return keys[i].sampled < keys[j].sampled
+		return keys[i].Value < keys[j].Value
 	})
+	sets := newDisjointSet(len(exact))
+	linked := make(map[uint64]struct{})
 	for _, key := range keys {
-		group := groups[key]
+		members := buckets[key]
+		first := members[0]
+		for _, member := range members[1:] {
+			pair := pairKey(first, member)
+			if _, exists := linked[pair]; exists {
+				continue
+			}
+			linked[pair] = struct{}{}
+			sets.union(first, member)
+			s.plan.Matches = append(s.plan.Matches, Match{
+				Stage: StageExact, Reason: key.Reason, LeftID: exact[member].ID, RightID: exact[first].ID,
+			})
+		}
+	}
+	for _, group := range groupedCandidates(exact, sets) {
 		canonical := selectCanonical(group, betterExactCanonical)
 		if canonical.ID == "" {
 			continue
@@ -167,6 +188,10 @@ func (s *plannerState) planNear(ctx context.Context, candidates []Candidate, com
 		return nil
 	}
 
+	countedCompare := func(leftPath, rightPath string) (float64, error) {
+		s.plan.Stats.Near.Comparisons++
+		return compare(leftPath, rightPath)
+	}
 	sets := newDisjointSet(len(near))
 	bucketIndex := make(map[int]map[string][]int)
 	seenPairs := make(map[uint64]struct{})
@@ -190,19 +215,14 @@ func (s *plannerState) planNear(ctx context.Context, candidates []Candidate, com
 					if !nearTitlePrefilter(left, right) {
 						continue
 					}
-					titleScore := mediasim.TitleSimilarity(left.Title, right.Title)
-					if titleScore < mediasim.NearDuplicateTitleThreshold {
-						continue
-					}
-					s.plan.Stats.Near.Comparisons++
-					ssim, err := compare(left.ThumbnailPath, right.ThumbnailPath)
+					match, matched, err := MatchNear(left.Candidate, right.Candidate, countedCompare)
 					if err != nil {
 						s.plan.Issues = append(s.plan.Issues, Issue{Stage: StageNear, LeftID: left.ID, RightID: right.ID, Err: err})
 						continue
 					}
-					if ssim >= mediasim.NearDuplicateThumbSSIMThreshold {
+					if matched {
 						sets.union(i, j)
-						s.plan.Matches = append(s.plan.Matches, Match{Stage: StageNear, LeftID: left.ID, RightID: right.ID, Score: ssim, TitleScore: titleScore})
+						s.plan.Matches = append(s.plan.Matches, match)
 					}
 				}
 			}
@@ -236,7 +256,7 @@ func (s *plannerState) planNear(ctx context.Context, candidates []Candidate, com
 func (s *plannerState) planContent(ctx context.Context, candidates []Candidate, load SignatureLoader) error {
 	content := make([]Candidate, 0, len(candidates))
 	for _, candidate := range candidates {
-		if !s.alive[candidate.ID] || candidate.DurationSeconds < mediasim.ContentDuplicateMinDurationSeconds || strings.TrimSpace(candidate.TeaserPath) == "" {
+		if !s.alive[candidate.ID] || !ContentEligible(candidate) || strings.TrimSpace(candidate.TeaserPath) == "" {
 			continue
 		}
 		content = append(content, candidate)
@@ -301,30 +321,16 @@ func (s *plannerState) planContent(ctx context.Context, candidates []Candidate, 
 			if leftSignature == nil {
 				continue
 			}
-			comparison := mediasim.CompareFrameSignatures(leftSignature, rightSignature)
 			s.plan.Stats.Content.Comparisons++
-			if comparison.IsContentDuplicate() {
-				sets.union(i, j)
-				s.plan.Matches = append(s.plan.Matches, Match{
-					Stage: StageContent, LeftID: content[j].ID, RightID: content[i].ID,
-					Score: comparison.MedianSSIM, Comparisons: comparison.Comparisons,
-				})
-				continue
-			}
-			if content[j].DurationSeconds != content[i].DurationSeconds {
-				continue
-			}
-			cross := mediasim.CompareFrameSignaturesCross(leftSignature, rightSignature)
-			if !cross.IsContentDuplicate() {
+			match, matched := MatchContent(content[j], content[i], leftSignature, rightSignature)
+			if !matched {
 				continue
 			}
 			sets.union(i, j)
-			s.plan.Stats.Content.CrossMatched++
-			s.plan.Matches = append(s.plan.Matches, Match{
-				Stage: StageContent, LeftID: content[j].ID, RightID: content[i].ID,
-				Score: cross.MedianBest, Comparisons: min(cross.LeftFrames, cross.RightFrames), Cross: true,
-				CrossDetails: &cross,
-			})
+			if match.Cross {
+				s.plan.Stats.Content.CrossMatched++
+			}
+			s.plan.Matches = append(s.plan.Matches, match)
 		}
 	}
 
@@ -357,15 +363,12 @@ func (s *plannerState) markGroup(stage Stage, group []Candidate, canonical Candi
 		if candidate.ID == canonical.ID || !s.alive[candidate.ID] {
 			continue
 		}
-		if stage == StageExact {
-			s.plan.Matches = append(s.plan.Matches, Match{Stage: StageExact, LeftID: candidate.ID, RightID: canonical.ID})
-		}
 		s.alive[candidate.ID] = false
 		s.redirects[candidate.ID] = canonical.ID
 		s.plan.Actions = append(s.plan.Actions, DeleteAction{
 			Stage: stage, VideoID: candidate.ID, CanonicalVideoID: canonical.ID,
-			ExpectedUpdatedAt: candidate.ExpectedUpdatedAt,
-			Evidence:          NewEvidence(ReasonUnknown, "", canonical.ID, canonicalSelectionReason(stage, canonical, candidate)),
+			ExpectedRevision: candidate.Revision,
+			Evidence:         NewEvidence(ReasonUnknown, "", canonical.ID, canonicalSelectionReason(stage, canonical, candidate)),
 		})
 		deleted++
 	}
@@ -396,7 +399,7 @@ func (s *plannerState) finalize() error {
 			return err
 		}
 		s.plan.Actions[i].CanonicalVideoID = canonical
-		s.plan.Actions[i].CanonicalExpectedUpdatedAt = s.candidates[canonical].ExpectedUpdatedAt
+		s.plan.Actions[i].CanonicalExpectedRevision = s.candidates[canonical].Revision
 	}
 	for i := range s.plan.Groups {
 		canonical, err := resolve(s.plan.Groups[i].CanonicalVideoID)

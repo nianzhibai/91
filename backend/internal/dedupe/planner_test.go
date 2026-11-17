@@ -12,9 +12,9 @@ func TestBuildCompressesIntermediateCanonicalToFinalSurvivor(t *testing.T) {
 	now := time.Date(2026, 8, 23, 0, 0, 0, 0, time.UTC)
 	shared := &mediasim.FrameSignature{Frames: syntheticFrames(7)}
 	candidates := []Candidate{
-		{ID: "exact-loser", Size: 100, SampledSHA256: "same", AssetScore: 0, CreatedAt: now, DurationSeconds: 300, TeaserPath: "loser", ExpectedUpdatedAt: 1},
-		{ID: "exact-winner", Size: 100, SampledSHA256: "same", AssetScore: 1, CreatedAt: now.Add(time.Second), DurationSeconds: 300, TeaserPath: "winner", ExpectedUpdatedAt: 2},
-		{ID: "content-winner", Size: 200, SampledSHA256: "different", AssetScore: 0, CreatedAt: now.Add(2 * time.Second), DurationSeconds: 300, TeaserPath: "content", ExpectedUpdatedAt: 3},
+		{ID: "exact-loser", Size: 100, SampledSHA256: "same", AssetScore: 0, CreatedAt: now, DurationSeconds: 300, TeaserPath: "loser", Revision: "1"},
+		{ID: "exact-winner", Size: 100, SampledSHA256: "same", AssetScore: 1, CreatedAt: now.Add(time.Second), DurationSeconds: 300, TeaserPath: "winner", Revision: "2"},
+		{ID: "content-winner", Size: 200, SampledSHA256: "different", AssetScore: 0, CreatedAt: now.Add(2 * time.Second), DurationSeconds: 300, TeaserPath: "content", Revision: "3"},
 	}
 
 	plan, err := Build(context.Background(), candidates, Options{
@@ -123,4 +123,45 @@ func syntheticFrames(seed byte) [][]byte {
 		frames[i] = frame
 	}
 	return frames
+}
+
+func TestBuildExactJoinsProviderHashAndSampledFingerprint(t *testing.T) {
+	now := time.Date(2026, 8, 23, 0, 0, 0, 0, time.UTC)
+	plan, err := Build(context.Background(), []Candidate{
+		{ID: "a", ContentHash: "ABC", Size: 100, CreatedAt: now},
+		{ID: "b", ContentHash: "abc", Size: 100, SampledSHA256: "s", CreatedAt: now.Add(time.Second)},
+		{ID: "c", Size: 100, SampledSHA256: "S", CreatedAt: now.Add(2 * time.Second)},
+		{ID: "other-size", Size: 101, SampledSHA256: "s", CreatedAt: now.Add(3 * time.Second)},
+	}, Options{Channels: ChannelExact})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Actions) != 2 || plan.Stats.Exact.Groups != 1 {
+		t.Fatalf("actions=%#v stats=%#v, want a, b and c in one group", plan.Actions, plan.Stats.Exact)
+	}
+	reasons := map[string]string{}
+	for _, action := range plan.Actions {
+		if action.CanonicalVideoID != "a" {
+			t.Fatalf("action = %#v, want earliest a", action)
+		}
+		reasons[action.VideoID] = action.Evidence.Reason + ":" + action.Evidence.MatchedVideoID
+	}
+	// c shares only the sampled fingerprint with b, so its evidence must not
+	// claim the provider hash that links b to a.
+	if reasons["b"] != ReasonContentHash+":a" || reasons["c"] != ReasonSampledSHA256+":b" {
+		t.Fatalf("evidence = %#v", reasons)
+	}
+}
+
+func TestMatchNearRequiresDurationWithinTolerance(t *testing.T) {
+	compare := func(string, string) (float64, error) { return 1, nil }
+	left := Candidate{ID: "a", Title: "same title", DurationSeconds: 300, ThumbnailPath: "a"}
+	right := Candidate{ID: "b", Title: "same title", DurationSeconds: 302, ThumbnailPath: "b"}
+	if match, ok, err := MatchNear(left, right, compare); err != nil || !ok || match.Reason != ReasonTitleThumb {
+		t.Fatalf("within tolerance: match=%#v ok=%v err=%v", match, ok, err)
+	}
+	right.DurationSeconds = 303
+	if _, ok, _ := MatchNear(left, right, compare); ok {
+		t.Fatal("durations 3 seconds apart must not match")
+	}
 }

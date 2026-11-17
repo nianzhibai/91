@@ -2628,10 +2628,8 @@ func TestHandleVideoDetailResolvesDuplicatePublicID(t *testing.T) {
 		}
 	}
 	if err := cat.ApplyDuplicateVideoDeletions(ctx, []catalog.DuplicateVideoDeletion{{
-		VideoID:                    duplicate.ID,
-		CanonicalVideoID:           canonical.ID,
-		ExpectedUpdatedAt:          duplicate.UpdatedAt.UnixMilli(),
-		CanonicalExpectedUpdatedAt: canonical.UpdatedAt.UnixMilli(),
+		VideoID:          duplicate.ID,
+		CanonicalVideoID: canonical.ID,
 	}}); err != nil {
 		t.Fatalf("merge duplicate: %v", err)
 	}

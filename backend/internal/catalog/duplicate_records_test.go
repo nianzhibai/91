@@ -267,33 +267,6 @@ func TestCrawlerDuplicateRecordCommitsWithSeenState(t *testing.T) {
 	}
 }
 
-func TestReplacementFailureRollsBackDuplicateRecord(t *testing.T) {
-	cat := duplicateRecordTestCatalog(t)
-	ctx := context.Background()
-	if err := cat.UpsertVideo(ctx, &Video{ID: "old", DriveID: "drive", FileID: "old", Size: 100}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := cat.db.Exec(`CREATE TRIGGER reject_replacement BEFORE DELETE ON videos WHEN OLD.id='old' BEGIN SELECT RAISE(ABORT, 'retire failed'); END`); err != nil {
-		t.Fatal(err)
-	}
-	evidence := dedupe.NewEvidence(dedupe.ReasonTitleThumb, "new", "new", "larger_file")
-	evidence.Match = &dedupe.Match{Stage: dedupe.StageNear, LeftID: "new", RightID: "old", Score: 0.96, TitleScore: 1}
-	err := cat.ReplaceDuplicateVideo(ctx, DuplicateVideoReplacement{
-		NewVideo:        &Video{ID: "new", DriveID: "drive", FileID: "new", Size: 200},
-		ReplacedVideoID: "old", Evidence: evidence,
-	})
-	if err == nil {
-		t.Fatal("expected replacement failure")
-	}
-	assertDuplicateRecordCount(t, cat, 0)
-	if _, err := cat.GetVideo(ctx, "old"); err != nil {
-		t.Fatalf("old row lost: %v", err)
-	}
-	if _, err := cat.GetVideo(ctx, "new"); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("replacement was partially published: %v", err)
-	}
-}
-
 func TestDuplicateRecordSchemaUpgradeDoesNotBackfillHistory(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "catalog.db")
 	cat, err := Open(path)

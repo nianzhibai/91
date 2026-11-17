@@ -28,16 +28,17 @@ func (a *App) buildDuplicateMaintenancePlan(ctx context.Context, localDir string
 		thumbnailPath, _ := localGeneratedThumbnailPath(localDir, video)
 		teaserPath, _ := localGeneratedPreviewPath(localDir, video)
 		candidates = append(candidates, dedupe.Candidate{
-			ID:                video.ID,
-			Title:             video.Title,
-			DurationSeconds:   video.DurationSeconds,
-			Size:              video.Size,
-			SampledSHA256:     video.SampledSHA256,
-			AssetScore:        videoAssetCompletenessScore(localDir, video),
-			CreatedAt:         video.CreatedAt,
-			ExpectedUpdatedAt: video.UpdatedAt.UnixMilli(),
-			ThumbnailPath:     thumbnailPath,
-			TeaserPath:        teaserPath,
+			ID:              video.ID,
+			Title:           video.Title,
+			DurationSeconds: video.DurationSeconds,
+			Size:            video.Size,
+			ContentHash:     video.ContentHash,
+			SampledSHA256:   video.SampledSHA256,
+			AssetScore:      videoAssetCompletenessScore(localDir, video),
+			CreatedAt:       video.CreatedAt,
+			Revision:        catalog.DuplicateRevision(video),
+			ThumbnailPath:   thumbnailPath,
+			TeaserPath:      teaserPath,
 		})
 	}
 
@@ -97,12 +98,12 @@ func (a *App) applyDuplicateMaintenancePlan(ctx context.Context, localDir string
 	deletions := make([]catalog.DuplicateVideoDeletion, 0, len(plan.Actions))
 	for _, action := range plan.Actions {
 		deletions = append(deletions, catalog.DuplicateVideoDeletion{
-			VideoID:                    action.VideoID,
-			CanonicalVideoID:           action.CanonicalVideoID,
-			ExpectedUpdatedAt:          action.ExpectedUpdatedAt,
-			CanonicalExpectedUpdatedAt: action.CanonicalExpectedUpdatedAt,
-			Origin:                     catalog.DuplicateOriginMaintenance,
-			Evidence:                   action.Evidence,
+			VideoID:                   action.VideoID,
+			CanonicalVideoID:          action.CanonicalVideoID,
+			ExpectedRevision:          action.ExpectedRevision,
+			CanonicalExpectedRevision: action.CanonicalExpectedRevision,
+			Origin:                    catalog.DuplicateOriginMaintenance,
+			Evidence:                  action.Evidence,
 		})
 	}
 	if err := persistence.RLockContext(ctx); err != nil {
@@ -122,7 +123,11 @@ func (a *App) applyDuplicateMaintenancePlan(ctx context.Context, localDir string
 		if !isSQLiteBusyError(applyErr) {
 			return applyErr
 		}
-		time.Sleep(time.Duration(attempt+1) * 250 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * 250 * time.Millisecond):
+		}
 	}
 	if applyErr != nil {
 		return fmt.Errorf("apply duplicate plan after retries: %w", applyErr)

@@ -22,7 +22,6 @@ from its tombstones or crawler seen entries.
 | `scan` | `skipped_import` | A new source was rejected as a live duplicate |
 | `scan` | `matched_existing` | A scanned, already admitted row matched another row |
 | `crawler` | `skipped_import` | An exact or perceptual match prevented import |
-| `crawler` | `replaced` | A larger incoming video replaced a previous row |
 | `maintenance` | `merged` | Server maintenance committed its merge plan |
 | `command` | `merged` | `dedupe-dryrun -apply` committed its merge plan |
 
@@ -34,10 +33,21 @@ necessarily the number of newly created records.
 
 `reason` is one of `content_hash`, `file_name_size`, `sampled_sha256`,
 `title_duration_thumbnail`, `content_frames`, or `unknown`. `content_hash`
-means the provider hash strings matched under the current scanner policy; no
-algorithm is inferred from hash length. `size_bytes` and snapshot `sizeBytes`
-retain the reported value, without claiming independent size verification.
-`unknown` is used when an internal caller supplies no matching evidence.
+means the provider hash strings matched; no algorithm is inferred from hash
+length. `size_bytes` and snapshot `sizeBytes` retain the reported value,
+without claiming independent size verification. `unknown` is used when an
+internal caller supplies no matching evidence.
+
+All entry points share one policy. Exact identity is a matching provider hash
+or a matching size plus sampled fingerprint (`dedupe.ExactKeys`); perceptual
+pairs use `dedupe.MatchNear` and `dedupe.MatchContent`. Hidden rows and rows
+without a file never act as duplicate partners. Scan alone also uses
+`file_name_size` before a fingerprint exists. It only skips the new file,
+which is admitted once the matched row disappears. Crawler ingress always
+keeps the admitted copy; only maintenance retires existing rows, where the
+larger file wins a perceptual match. Merge plans are guarded by
+`catalog.DuplicateRevision`, which covers matching inputs and asset state but
+not counters, so views and reactions during planning do not invalidate them.
 
 Each row keeps source, canonical, matched and selected video snapshots and
 versioned JSON `evidence`. File names, titles, durations and hashes remain

@@ -16,14 +16,15 @@ var ErrDuplicatePlanStale = errors.New("catalog: duplicate plan is stale")
 
 // DuplicateVideoDeletion is one finalized action from the read-only dedupe
 // planner. CanonicalVideoID must identify a surviving videos row, never another
-// deletion in the same plan.
+// deletion in the same plan. Expected revisions come from DuplicateRevision;
+// an empty revision skips that row's staleness check.
 type DuplicateVideoDeletion struct {
-	VideoID                    string
-	CanonicalVideoID           string
-	ExpectedUpdatedAt          int64
-	CanonicalExpectedUpdatedAt int64
-	Origin                     string
-	Evidence                   dedupe.Evidence
+	VideoID                   string
+	CanonicalVideoID          string
+	ExpectedRevision          string
+	CanonicalExpectedRevision string
+	Origin                    string
+	Evidence                  dedupe.Evidence
 }
 
 type DuplicateAssetCleanupJob struct {
@@ -41,14 +42,6 @@ type CrawlerSourceSeen struct {
 	Status        string
 	SampledSHA256 string
 	Size          int64
-}
-
-type DuplicateVideoReplacement struct {
-	NewVideo                  *Video
-	ReplacedVideoID           string
-	ExpectedReplacedUpdatedAt int64
-	CrawlerSource             *CrawlerSourceSeen
-	Evidence                  dedupe.Evidence
 }
 
 // ApplyDuplicateVideoDeletions atomically applies a finalized hard-dedupe plan.
@@ -90,34 +83,21 @@ func (c *Catalog) ApplyDuplicateVideoDeletions(ctx context.Context, deletions []
 	defer tx.Rollback()
 
 	videos := make(map[string]*Video, len(normalized))
-	canonicalRevisions := make(map[string]int64)
+	canonicalRevisions := make(map[string]string)
 	for _, deletion := range normalized {
-		video, err := scanVideo(tx.QueryRowContext(ctx,
-			`SELECT `+allVideoCols+` FROM videos WHERE id = ?`, deletion.VideoID))
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("%w: duplicate video %s no longer exists", ErrDuplicatePlanStale, deletion.VideoID)
-		}
+		video, err := loadDuplicateRevisionTx(ctx, tx, "duplicate", deletion.VideoID, deletion.ExpectedRevision)
 		if err != nil {
 			return err
 		}
-		if deletion.ExpectedUpdatedAt > 0 && video.UpdatedAt.UnixMilli() != deletion.ExpectedUpdatedAt {
-			return fmt.Errorf("%w: duplicate video %s changed from revision %d to %d", ErrDuplicatePlanStale, deletion.VideoID, deletion.ExpectedUpdatedAt, video.UpdatedAt.UnixMilli())
-		}
 		videos[deletion.VideoID] = video
-		if expected, exists := canonicalRevisions[deletion.CanonicalVideoID]; exists && expected != deletion.CanonicalExpectedUpdatedAt {
+		if expected, exists := canonicalRevisions[deletion.CanonicalVideoID]; exists && expected != deletion.CanonicalExpectedRevision {
 			return fmt.Errorf("catalog: canonical video %s has conflicting expected revisions", deletion.CanonicalVideoID)
 		}
-		canonicalRevisions[deletion.CanonicalVideoID] = deletion.CanonicalExpectedUpdatedAt
+		canonicalRevisions[deletion.CanonicalVideoID] = deletion.CanonicalExpectedRevision
 	}
-	for canonicalID, expectedUpdatedAt := range canonicalRevisions {
-		var updatedAt int64
-		if err := tx.QueryRowContext(ctx, `SELECT updated_at FROM videos WHERE id = ?`, canonicalID).Scan(&updatedAt); errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("%w: canonical video %s no longer exists", ErrDuplicatePlanStale, canonicalID)
-		} else if err != nil {
+	for canonicalID, expectedRevision := range canonicalRevisions {
+		if _, err := loadDuplicateRevisionTx(ctx, tx, "canonical", canonicalID, expectedRevision); err != nil {
 			return err
-		}
-		if expectedUpdatedAt > 0 && updatedAt != expectedUpdatedAt {
-			return fmt.Errorf("%w: canonical video %s changed from revision %d to %d", ErrDuplicatePlanStale, canonicalID, expectedUpdatedAt, updatedAt)
 		}
 	}
 
@@ -140,61 +120,20 @@ func (c *Catalog) ApplyDuplicateVideoDeletions(ctx context.Context, deletions []
 	return tx.Commit()
 }
 
-// ReplaceDuplicateVideo atomically publishes a new canonical row and
-// tombstones the smaller row it supersedes. It is used by crawler ingress,
-// where deleting the old row before inserting the downloaded replacement
-// would otherwise leave the library without either video on failure.
-func (c *Catalog) ReplaceDuplicateVideo(ctx context.Context, replacement DuplicateVideoReplacement) (resultErr error) {
-	defer c.notifyDriveWrite(&resultErr, "", driveevents.MediaChanged)
-	if replacement.NewVideo == nil {
-		return errors.New("catalog: duplicate replacement requires a new video")
-	}
-	newID := strings.TrimSpace(replacement.NewVideo.ID)
-	oldID := strings.TrimSpace(replacement.ReplacedVideoID)
-	if newID == "" || oldID == "" || newID == oldID {
-		return errors.New("catalog: duplicate replacement requires distinct video IDs")
-	}
-	if len(replacement.NewVideo.Tags) > 0 {
-		return errors.New("catalog: duplicate replacement tags must be attached after the row transaction")
-	}
-
-	tx, err := c.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	oldVideo, err := scanVideo(tx.QueryRowContext(ctx,
-		`SELECT `+allVideoCols+` FROM videos WHERE id = ?`, oldID))
+// loadDuplicateRevisionTx reads a row a duplicate decision depends on and
+// rejects the plan when that row is gone or its DuplicateRevision changed.
+func loadDuplicateRevisionTx(ctx context.Context, tx *sql.Tx, role, id, expectedRevision string) (*Video, error) {
+	video, err := scanVideo(tx.QueryRowContext(ctx, `SELECT `+allVideoCols+` FROM videos WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("%w: replaced video %s no longer exists", ErrDuplicatePlanStale, oldID)
+		return nil, fmt.Errorf("%w: %s video %s no longer exists", ErrDuplicatePlanStale, role, id)
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if replacement.ExpectedReplacedUpdatedAt > 0 && oldVideo.UpdatedAt.UnixMilli() != replacement.ExpectedReplacedUpdatedAt {
-		return fmt.Errorf("%w: replaced video %s changed from revision %d to %d", ErrDuplicatePlanStale, oldID, replacement.ExpectedReplacedUpdatedAt, oldVideo.UpdatedAt.UnixMilli())
+	if expectedRevision != "" && DuplicateRevision(video) != expectedRevision {
+		return nil, fmt.Errorf("%w: %s video %s changed since planning", ErrDuplicatePlanStale, role, id)
 	}
-	var existing int
-	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM videos WHERE id = ?`, newID).Scan(&existing); err == nil {
-		return fmt.Errorf("catalog: replacement video %s already exists", newID)
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	if _, err := upsertVideoRow(ctx, tx, replacement.NewVideo); err != nil {
-		return err
-	}
-	if err := recordDuplicateMerge(ctx, tx, DuplicateOriginCrawler, DuplicateOutcomeReplaced, oldVideo, newID, replacement.Evidence); err != nil {
-		return err
-	}
-	if err := mergeAndRetireDuplicateVideoTx(ctx, tx, oldVideo, newID); err != nil {
-		return err
-	}
-	if source := replacement.CrawlerSource; source != nil {
-		if err := markCrawlerSourceSeen(ctx, tx, source.Kind, source.DriveID, source.SourceID, source.Status, newID, source.SampledSHA256, source.Size); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
+	return video, nil
 }
 
 // ResolveVideoID maps a public video ID through duplicate tombstones to the

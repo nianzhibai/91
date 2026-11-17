@@ -18,15 +18,12 @@ import (
 const nearDuplicateCandidateLimit = 200
 
 type nearDuplicateMatch struct {
-	video           *catalog.Video
-	titleSimilarity float64
-	thumbnailSSIM   float64
-	contentSSIM     float64 // >0 时表示由内容通道命中
-	match           dedupe.Match
+	video *catalog.Video
+	match dedupe.Match
 }
 
 func (m *nearDuplicateMatch) evidence(matchedID, selectedID, selectionReason string) dedupe.Evidence {
-	evidence := dedupe.NewEvidence(m.match.Reason(), matchedID, selectedID, selectionReason)
+	evidence := dedupe.NewEvidence(m.match.Reason, matchedID, selectedID, selectionReason)
 	evidence.Match = &m.match
 	return evidence
 }
@@ -73,39 +70,32 @@ func (c *Importer) findTitleThumbDuplicate(source *catalog.Video, sourceThumbPat
 	if _, err := os.Stat(sourceThumbPath); err != nil {
 		return nil
 	}
+	left := dedupe.Candidate{ID: source.ID, Title: source.Title, DurationSeconds: source.DurationSeconds, ThumbnailPath: sourceThumbPath}
 	for _, candidate := range candidates {
 		if candidate == nil || candidate.ID == source.ID {
-			continue
-		}
-		titleScore := mediasim.TitleSimilarity(source.Title, candidate.Title)
-		if titleScore < mediasim.NearDuplicateTitleThreshold {
 			continue
 		}
 		candidateThumbPath := mediaasset.ThumbnailPathInDir(commonThumbDir, candidate.ID)
 		if _, err := os.Stat(candidateThumbPath); err != nil {
 			continue
 		}
-		ssimScore, err := mediasim.ImageSSIM(sourceThumbPath, candidateThumbPath)
+		right := dedupe.Candidate{ID: candidate.ID, Title: candidate.Title, DurationSeconds: candidate.DurationSeconds, ThumbnailPath: candidateThumbPath}
+		match, matched, err := dedupe.MatchNear(left, right, mediasim.ImageSSIM)
 		if err != nil {
 			log.Printf("[scriptcrawler] drive=%s source_id=%s candidate=%s thumbnail ssim failed: %v", c.cfg.Driver.ID(), source.ID, candidate.ID, err)
 			continue
 		}
-		if ssimScore >= mediasim.NearDuplicateThumbSSIMThreshold {
-			return &nearDuplicateMatch{
-				video:           candidate,
-				titleSimilarity: titleScore,
-				thumbnailSSIM:   ssimScore,
-				match: dedupe.Match{Stage: dedupe.StageNear, LeftID: source.ID, RightID: candidate.ID,
-					Score: ssimScore, TitleScore: titleScore},
-			}
+		if matched {
+			return &nearDuplicateMatch{video: candidate, match: match}
 		}
 	}
 	return nil
 }
 
 func (c *Importer) findContentDuplicate(ctx context.Context, source *catalog.Video, sourceVideoPath string, candidates []*catalog.Video) (*nearDuplicateMatch, error) {
+	left := dedupe.Candidate{ID: source.ID, DurationSeconds: source.DurationSeconds}
 	sourceVideoPath = strings.TrimSpace(sourceVideoPath)
-	if sourceVideoPath == "" || source.DurationSeconds < mediasim.ContentDuplicateMinDurationSeconds {
+	if sourceVideoPath == "" || !dedupe.ContentEligible(left) {
 		return nil, nil
 	}
 
@@ -117,7 +107,8 @@ func (c *Importer) findContentDuplicate(ctx context.Context, source *catalog.Vid
 		if candidate == nil || candidate.ID == source.ID {
 			continue
 		}
-		if candidate.DurationSeconds < mediasim.ContentDuplicateMinDurationSeconds {
+		right := dedupe.Candidate{ID: candidate.ID, DurationSeconds: candidate.DurationSeconds}
+		if !dedupe.ContentEligible(right) {
 			continue
 		}
 		teaserPath, validPath := localpath.Managed(c.cfg.LocalPreviewDir, candidate.PreviewLocal)
@@ -146,28 +137,12 @@ func (c *Importer) findContentDuplicate(ctx context.Context, source *catalog.Vid
 			log.Printf("[scriptcrawler] drive=%s source_id=%s candidate=%s teaser signature failed: %v", c.cfg.Driver.ID(), source.ID, candidate.ID, err)
 			continue
 		}
-		cmp := mediasim.CompareFrameSignatures(sourceSig, candidateSig)
-		if cmp.IsContentDuplicate() {
-			return &nearDuplicateMatch{
-				video:       candidate,
-				contentSSIM: cmp.MedianSSIM,
-				match: dedupe.Match{Stage: dedupe.StageContent, LeftID: source.ID, RightID: candidate.ID,
-					Score: cmp.MedianSSIM, Comparisons: cmp.Comparisons},
-			}, nil
-		}
-		// 候选 teaser 含兜底段时对齐帧整段错位，时长精确相等时用交叉匹配兜底。
-		if candidate.DurationSeconds == source.DurationSeconds {
-			if cross := mediasim.CompareFrameSignaturesCross(sourceSig, candidateSig); cross.IsContentDuplicate() {
+		if match, matched := dedupe.MatchContent(left, right, sourceSig, candidateSig); matched {
+			if cross := match.CrossDetails; cross != nil {
 				log.Printf("[scriptcrawler] drive=%s source_id=%s content duplicate (cross) candidate=%s strong=%d/%d,%d/%d median_best=%.3f",
 					c.cfg.Driver.ID(), source.ID, candidate.ID, cross.LeftStrong, cross.LeftFrames, cross.RightStrong, cross.RightFrames, cross.MedianBest)
-				return &nearDuplicateMatch{
-					video:       candidate,
-					contentSSIM: cross.MedianBest,
-					match: dedupe.Match{Stage: dedupe.StageContent, LeftID: source.ID, RightID: candidate.ID,
-						Score: cross.MedianBest, Comparisons: min(cross.LeftFrames, cross.RightFrames),
-						Cross: true, CrossDetails: &cross},
-				}, nil
 			}
+			return &nearDuplicateMatch{video: candidate, match: match}, nil
 		}
 	}
 	return nil, nil

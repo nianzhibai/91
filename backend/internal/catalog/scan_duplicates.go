@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 
 	"github.com/nianzhibai/91/backend/internal/dedupe"
 	"github.com/nianzhibai/91/backend/internal/driveevents"
@@ -79,9 +80,9 @@ func (c *Catalog) FindScannedVideoDuplicate(ctx context.Context, v *Video, seenF
 }
 
 // RecordScannedDuplicate records the observed match for an already admitted
-// row. It does not tombstone the file or change later admission decisions.
-func (c *Catalog) RecordScannedDuplicate(ctx context.Context, source, duplicate *Video) (resultErr error) {
-	defer c.notifyDriveWrite(&resultErr, "", driveevents.MediaChanged)
+// row. It does not tombstone the file or change later admission decisions,
+// so it writes only audit history and publishes no media change.
+func (c *Catalog) RecordScannedDuplicate(ctx context.Context, source, duplicate *Video) error {
 	return recordScannedDuplicate(ctx, c.db, source, duplicate, DuplicateOutcomeExisting)
 }
 
@@ -89,12 +90,11 @@ func recordScannedDuplicate(ctx context.Context, exec videoRowExecer, source, du
 	if source == nil || duplicate == nil {
 		return errors.New("catalog: scan duplicate requires both videos")
 	}
-	reason := ""
-	if hash := normalizeContentHash(source.ContentHash); hash != "" && hash == normalizeContentHash(duplicate.ContentHash) {
-		reason = dedupe.ReasonContentHash
-	} else if source.FileName != "" && source.FileName == duplicate.FileName && source.Size > 0 && source.Size == duplicate.Size {
+	reason := exactDuplicateReason(source, duplicate)
+	if reason == "" && sameFileNameAndSize(source, duplicate) {
 		reason = dedupe.ReasonFileNameSize
-	} else {
+	}
+	if reason == "" {
 		return errors.New("catalog: scan duplicate snapshots do not match the scan policy")
 	}
 	evidence := dedupe.NewEvidence(reason, duplicate.ID, duplicate.ID, "earliest_matching_candidate")
@@ -105,13 +105,38 @@ type scanDuplicateQuerier interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
+// findScannedVideoDuplicate applies the exact identity rule shared with crawler
+// ingress and maintenance. Scan additionally treats a matching file name and
+// size as a provisional signal before a fingerprint exists: the file is only
+// skipped, never tombstoned, and is admitted once the matched row disappears.
 func findScannedVideoDuplicate(ctx context.Context, query scanDuplicateQuerier, v *Video, seenFileIDs map[string]struct{}) (*Video, error) {
-	hash := normalizeContentHash(v.ContentHash)
+	// Only active conditions enter the predicate: a constant branch in the OR
+	// stops SQLite from using the hash, fingerprint and name/size indexes.
+	var clauses []string
+	var args []any
+	exactWhere, exactArgs, hasExact := equivalentVideoLookupWhere(v)
+	if hasExact {
+		clauses = append(clauses, exactWhere)
+		args = append(args, exactArgs...)
+	}
+	hasName := v.FileName != "" && v.Size > 0
+	if hasName {
+		clauses = append(clauses, "(file_name = ? AND size_bytes = ?)")
+		args = append(args, v.FileName, v.Size)
+	}
+	if len(clauses) == 0 {
+		return nil, nil
+	}
+	order := "created_at ASC, id ASC"
+	if hasExact && hasName {
+		// Exact matches sort before provisional name/size matches.
+		order = "CASE WHEN " + exactWhere + " THEN 0 ELSE 1 END, " + order
+		args = append(args, exactArgs...)
+	}
 	rows, err := query.QueryContext(ctx, `SELECT `+allVideoCols+` FROM videos
-WHERE (? != '' AND content_hash = ?)
-   OR (? != '' AND ? > 0 AND file_name = ? AND size_bytes = ?)
-ORDER BY CASE WHEN ? != '' AND content_hash = ? THEN 0 ELSE 1 END, created_at ASC, id ASC`,
-		hash, hash, v.FileName, v.Size, v.FileName, v.Size, hash, hash)
+WHERE `+duplicateLookupScope+`
+  AND (`+strings.Join(clauses, " OR ")+`)
+ORDER BY `+order, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -133,4 +158,8 @@ ORDER BY CASE WHEN ? != '' AND content_hash = ? THEN 0 ELSE 1 END, created_at AS
 		return candidate, nil
 	}
 	return nil, rows.Err()
+}
+
+func sameFileNameAndSize(left, right *Video) bool {
+	return left.FileName != "" && left.FileName == right.FileName && left.Size > 0 && left.Size == right.Size
 }

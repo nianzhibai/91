@@ -35,19 +35,6 @@ func NewEvidence(reason, matchedID, selectedID, selectionReason string) Evidence
 	}
 }
 
-func (m Match) Reason() string {
-	switch m.Stage {
-	case StageExact:
-		return ReasonSampledSHA256
-	case StageNear:
-		return ReasonTitleThumb
-	case StageContent:
-		return ReasonContent
-	default:
-		return ReasonUnknown
-	}
-}
-
 func canonicalSelectionReason(stage Stage, winner, other Candidate) string {
 	if stage != StageExact && winner.Size != other.Size {
 		return "larger_file"
@@ -102,7 +89,7 @@ func (s *plannerState) attachEvidence() error {
 			return fmt.Errorf("dedupe: no matching evidence for %s", action.VideoID)
 		}
 		action.Evidence.MatchedVideoID = next[action.VideoID]
-		action.Evidence.Reason = match.Reason()
+		action.Evidence.Reason = match.Reason
 		action.Evidence.Match = &match
 	}
 	return nil

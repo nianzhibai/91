@@ -35,30 +35,33 @@ func (c Channels) includes(channel Channels) bool {
 
 // Candidate is the dedupe-owned projection of a catalog video. Paths and
 // AssetScore are prepared by the caller because only the application knows
-// which configured local directory owns generated assets.
+// which configured local directory owns generated assets. Revision is an
+// opaque token of the catalog state the decision depends on; the catalog
+// rejects a plan when it no longer matches.
 type Candidate struct {
-	ID                string
-	Title             string
-	DurationSeconds   int
-	Size              int64
-	SampledSHA256     string
-	AssetScore        int
-	CreatedAt         time.Time
-	ExpectedUpdatedAt int64
-	ThumbnailPath     string
-	TeaserPath        string
+	ID              string
+	Title           string
+	DurationSeconds int
+	Size            int64
+	ContentHash     string
+	SampledSHA256   string
+	AssetScore      int
+	CreatedAt       time.Time
+	Revision        string
+	ThumbnailPath   string
+	TeaserPath      string
 }
 
 // DeleteAction removes VideoID in favor of CanonicalVideoID. CanonicalVideoID
 // is finalized after all selected channels have run, so it always points at a
 // survivor rather than an intermediate winner from an earlier channel.
 type DeleteAction struct {
-	Stage                      Stage
-	VideoID                    string
-	CanonicalVideoID           string
-	ExpectedUpdatedAt          int64
-	CanonicalExpectedUpdatedAt int64
-	Evidence                   Evidence
+	Stage                     Stage
+	VideoID                   string
+	CanonicalVideoID          string
+	ExpectedRevision          string
+	CanonicalExpectedRevision string
+	Evidence                  Evidence
 }
 
 // Group is one connected component produced by a channel before later-channel
@@ -70,11 +73,12 @@ type Group struct {
 	MemberIDs        []string
 }
 
-// Match records a perceptual edge used by the disjoint-set grouping. It is
-// returned for operational logging; group membership remains transitive even
-// when two members do not have a direct edge.
+// Match records an observed duplicate edge used by the disjoint-set grouping.
+// Group membership remains transitive even when two members do not have a
+// direct edge. Reason names the rule that accepted the pair.
 type Match struct {
 	Stage       Stage   `json:"stage"`
+	Reason      string  `json:"reason"`
 	LeftID      string  `json:"leftId"`
 	RightID     string  `json:"rightId"`
 	Score       float64 `json:"score,omitempty"`

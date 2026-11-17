@@ -22,7 +22,6 @@ const (
 	DuplicateOutcomeSkipped  = "skipped_import"
 	DuplicateOutcomeExisting = "matched_existing"
 	DuplicateOutcomeMerged   = "merged"
-	DuplicateOutcomeReplaced = "replaced"
 )
 
 // duplicateSnapshot intentionally excludes counters, generated paths and

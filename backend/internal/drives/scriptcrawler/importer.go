@@ -144,7 +144,9 @@ func (c *Importer) Import(downloadCtx, ctx context.Context, item Item) (ImportOu
 	}
 	v.SampledSHA256 = sampled
 	v.FingerprintStatus = "ready"
-	if duplicate, err := c.cfg.Catalog.FindVideoBySampledFingerprint(ctx, v); err == nil && duplicate != nil {
+	// A crawled file has no provider hash, so its only exact key is the
+	// size-qualified sampled fingerprint.
+	if duplicate, err := c.cfg.Catalog.FindEquivalentVideo(ctx, v); err == nil && duplicate != nil {
 		_ = os.Remove(videoPath)
 		evidence := dedupe.NewEvidence(dedupe.ReasonSampledSHA256, duplicate.ID, duplicate.ID, "existing_match")
 		if err := c.recordSkippedDuplicate(ctx, v, duplicate, sourceID, item.DiscoveryKey, evidence); err != nil {
@@ -215,6 +217,9 @@ func (c *Importer) Import(downloadCtx, ctx context.Context, item Item) (ImportOu
 		if commonThumbPath != "" {
 			_ = os.Remove(commonThumbPath)
 		}
+		// Ingress keeps the admitted copy even when the new file is larger: it
+		// may already be uploaded, shared or referenced. Only maintenance merges
+		// existing rows, where the larger file survives.
 		evidence := duplicate.evidence(duplicate.video.ID, duplicate.video.ID, "keep_existing")
 		if err := c.recordSkippedDuplicate(ctx, v, duplicate.video, sourceID, item.DiscoveryKey, evidence); err != nil {
 			return ImportFailed, fmt.Errorf("record near duplicate: %w", err)

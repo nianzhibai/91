@@ -72,8 +72,8 @@ VALUES ('upload-a', 'completed', 'old-a', 1, 1)`); err != nil {
 	}
 
 	if err := cat.ApplyDuplicateVideoDeletions(ctx, []DuplicateVideoDeletion{
-		{VideoID: "old-a", CanonicalVideoID: "final", ExpectedUpdatedAt: videos[0].UpdatedAt.UnixMilli()},
-		{VideoID: "old-b", CanonicalVideoID: "final", ExpectedUpdatedAt: videos[1].UpdatedAt.UnixMilli()},
+		{VideoID: "old-a", CanonicalVideoID: "final", ExpectedRevision: DuplicateRevision(videos[0]), CanonicalExpectedRevision: DuplicateRevision(videos[2])},
+		{VideoID: "old-b", CanonicalVideoID: "final", ExpectedRevision: DuplicateRevision(videos[1]), CanonicalExpectedRevision: DuplicateRevision(videos[2])},
 	}); err != nil {
 		t.Fatalf("ApplyDuplicateVideoDeletions: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestApplyDuplicateVideoDeletionsRejectsStalePlanWithoutPartialWrites(t *tes
 		}
 	}
 	err = cat.ApplyDuplicateVideoDeletions(ctx, []DuplicateVideoDeletion{{
-		VideoID: "duplicate", CanonicalVideoID: "canonical", ExpectedUpdatedAt: 1,
+		VideoID: "duplicate", CanonicalVideoID: "canonical", ExpectedRevision: "stale",
 	}})
 	if !errors.Is(err, ErrDuplicatePlanStale) {
 		t.Fatalf("error = %v, want ErrDuplicatePlanStale", err)
@@ -192,52 +192,105 @@ func TestApplyDuplicateVideoDeletionsRejectsStalePlanWithoutPartialWrites(t *tes
 	}
 }
 
-func TestReplaceDuplicateVideoPublishesNewCanonicalAtomically(t *testing.T) {
+func TestApplyDuplicateVideoDeletionsIgnoresEngagementButRejectsMatchingChanges(t *testing.T) {
 	ctx := context.Background()
 	cat, err := Open(filepath.Join(t.TempDir(), "catalog.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = cat.Close() })
+
 	now := time.Date(2026, 8, 23, 0, 0, 0, 0, time.UTC)
-	old := &Video{ID: "old", DriveID: "crawler-a", FileID: "old.mp4", Size: 100, PreviewLocal: "/previews/old.mp4", Tags: []string{"old-tag"}, Views: 4, Likes: 2, PublishedAt: now, CreatedAt: now}
-	if err := cat.UpsertVideo(ctx, old); err != nil {
-		t.Fatalf("seed old: %v", err)
+	revisions := map[string]string{}
+	for _, video := range []*Video{
+		{ID: "duplicate", DriveID: "drive", FileID: "a", Title: "same", Size: 100, PublishedAt: now, CreatedAt: now},
+		{ID: "canonical", DriveID: "drive", FileID: "b", Title: "same", Size: 200, PublishedAt: now, CreatedAt: now},
+		{ID: "edited", DriveID: "drive", FileID: "c", Title: "same", Size: 100, PublishedAt: now, CreatedAt: now},
+	} {
+		if err := cat.UpsertVideo(ctx, video); err != nil {
+			t.Fatalf("seed %s: %v", video.ID, err)
+		}
+		stored, err := cat.GetVideo(ctx, video.ID)
+		if err != nil {
+			t.Fatalf("reload %s: %v", video.ID, err)
+		}
+		revisions[video.ID] = DuplicateRevision(stored)
 	}
-	old, err = cat.GetVideo(ctx, old.ID)
-	if err != nil {
-		t.Fatalf("reload old: %v", err)
+	// Engagement after planning bumps updated_at but not the decision inputs.
+	for _, id := range []string{"duplicate", "canonical"} {
+		if _, err := cat.IncrementView(ctx, id); err != nil {
+			t.Fatalf("view %s: %v", id, err)
+		}
 	}
-	newVideo := &Video{ID: "new", DriveID: "crawler-a", FileID: "new.mp4", Size: 200, PublishedAt: now, CreatedAt: now.Add(time.Second)}
-	if err := cat.ReplaceDuplicateVideo(ctx, DuplicateVideoReplacement{
-		NewVideo:                  newVideo,
-		ReplacedVideoID:           old.ID,
-		ExpectedReplacedUpdatedAt: old.UpdatedAt.UnixMilli(),
-		CrawlerSource: &CrawlerSourceSeen{
-			Kind: "scriptcrawler", DriveID: "crawler-a", SourceID: "source-new", Status: "imported", Size: 200,
+	if _, err := cat.db.ExecContext(ctx, `UPDATE videos SET title = 'renamed' WHERE id = 'edited'`); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	err = cat.ApplyDuplicateVideoDeletions(ctx, []DuplicateVideoDeletion{{
+		VideoID: "edited", CanonicalVideoID: "canonical",
+		ExpectedRevision: revisions["edited"], CanonicalExpectedRevision: revisions["canonical"],
+	}})
+	if !errors.Is(err, ErrDuplicatePlanStale) {
+		t.Fatalf("renamed duplicate error = %v, want ErrDuplicatePlanStale", err)
+	}
+	if err := cat.ApplyDuplicateVideoDeletions(ctx, []DuplicateVideoDeletion{{
+		VideoID: "duplicate", CanonicalVideoID: "canonical",
+		ExpectedRevision: revisions["duplicate"], CanonicalExpectedRevision: revisions["canonical"],
+	}}); err != nil {
+		t.Fatalf("viewed rows must still merge: %v", err)
+	}
+	if got, err := cat.GetVideo(ctx, "canonical"); err != nil || got.Views != 2 {
+		t.Fatalf("canonical = %#v, err=%v; want both views merged", got, err)
+	}
+}
+
+func TestApplyDuplicateVideoDeletionsRejectsRegeneratedAssets(t *testing.T) {
+	now := time.Date(2026, 8, 23, 0, 0, 0, 0, time.UTC)
+	regenerate := map[string]func(*Catalog, string) error{
+		"thumbnail": func(cat *Catalog, id string) error {
+			return cat.UpdateVideoMeta(context.Background(), id, VideoMetaPatch{ThumbnailURL: "/p/thumb/" + id})
 		},
-	}); err != nil {
-		t.Fatalf("ReplaceDuplicateVideo: %v", err)
+		"preview": func(cat *Catalog, id string) error {
+			return cat.UpdatePreview(context.Background(), id, id+".mp4", "ready")
+		},
 	}
-	if _, err := cat.GetVideo(ctx, old.ID); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("old video still exists: %v", err)
-	}
-	if got, err := cat.GetVideo(ctx, newVideo.ID); err != nil || got.Size != 200 || got.Views != 4 || got.Likes != 2 || !containsString(got.Tags, "old-tag") {
-		t.Fatalf("new canonical = %#v, err=%v", got, err)
-	}
-	if resolved, err := cat.ResolveVideoID(ctx, old.ID); err != nil || resolved != newVideo.ID {
-		t.Fatalf("old public ID resolves to %q, %v; want %q", resolved, err, newVideo.ID)
-	}
-	deleted, _, err := cat.ListDeletedVideos(ctx, ListParams{Page: 1, PageSize: 10})
-	if err != nil || len(deleted) != 1 || deleted[0].ID != old.ID || deleted[0].CanonicalVideoID != newVideo.ID {
-		t.Fatalf("deleted = %#v, err=%v", deleted, err)
-	}
-	var seenCanonical, status string
-	if err := cat.db.QueryRowContext(ctx, `SELECT canonical_video_id, status FROM crawler_seen_sources WHERE source_id = 'source-new'`).Scan(&seenCanonical, &status); err != nil {
-		t.Fatalf("read crawler seen: %v", err)
-	}
-	if seenCanonical != newVideo.ID || status != "imported" {
-		t.Fatalf("crawler seen canonical=%q status=%q", seenCanonical, status)
+	for asset, regen := range regenerate {
+		for _, role := range []string{"duplicate", "canonical"} {
+			t.Run(asset+"/"+role, func(t *testing.T) {
+				ctx := context.Background()
+				cat, err := Open(filepath.Join(t.TempDir(), "catalog.db"))
+				if err != nil {
+					t.Fatalf("Open: %v", err)
+				}
+				t.Cleanup(func() { _ = cat.Close() })
+				revisions := map[string]string{}
+				for _, id := range []string{"duplicate", "canonical"} {
+					if err := cat.UpsertVideo(ctx, &Video{
+						ID: id, DriveID: "drive", FileID: id, Size: 100,
+						ThumbnailURL: "/p/thumb/" + id, PreviewLocal: id + ".mp4", PreviewStatus: "ready",
+						PublishedAt: now, CreatedAt: now,
+					}); err != nil {
+						t.Fatalf("seed %s: %v", id, err)
+					}
+					stored, err := cat.GetVideo(ctx, id)
+					if err != nil {
+						t.Fatalf("reload %s: %v", id, err)
+					}
+					revisions[id] = DuplicateRevision(stored)
+				}
+				// Regeneration keeps the path, so only the asset version changes.
+				if err := regen(cat, role); err != nil {
+					t.Fatalf("regenerate %s: %v", asset, err)
+				}
+				err = cat.ApplyDuplicateVideoDeletions(ctx, []DuplicateVideoDeletion{{
+					VideoID: "duplicate", CanonicalVideoID: "canonical",
+					ExpectedRevision: revisions["duplicate"], CanonicalExpectedRevision: revisions["canonical"],
+				}})
+				if !errors.Is(err, ErrDuplicatePlanStale) {
+					t.Fatalf("error = %v, want ErrDuplicatePlanStale", err)
+				}
+			})
+		}
 	}
 }
 
