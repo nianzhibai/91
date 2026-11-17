@@ -2,8 +2,6 @@ package backup
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -11,10 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nianzhibai/91/backend/internal/catalog"
-	"github.com/nianzhibai/91/backend/internal/config"
-	"github.com/nianzhibai/91/backend/internal/localpath"
-	"github.com/nianzhibai/91/backend/internal/mediaasset"
+	"github.com/nianzhibai/91/backend/internal/atomicfile"
 )
 
 type restoreMarker struct {
@@ -39,37 +34,21 @@ type restoreSwitch struct {
 	HadTarget bool   `json:"hadTarget"`
 }
 
+// PrepareRestore verifies and stages a backup for restore. The staged catalog
+// is merged into a snapshot of the current catalog, every live path the
+// restore changes is staged next to its target, and a pending marker is
+// written. Catalog writes stay paused until a restart applies the restore.
 func (m *Manager) PrepareRestore(ctx context.Context, id string) (ValidationReport, error) {
 	if m == nil {
 		return ValidationReport{}, errors.New("backup: manager is nil")
 	}
-	m.mu.Lock()
-	running := m.current != nil &&
-		(m.current.State == "queued" || m.current.State == "running" || m.current.State == "canceling")
-	if m.restoreBusy {
-		m.mu.Unlock()
-		return ValidationReport{}, ErrRestorePending
-	}
-	m.restoreBusy = true
-	m.mu.Unlock()
-	m.setRestoreProgress(OperationProgress{Phase: "inspecting"})
-	keepRestoreProgress := false
-	defer func() {
-		m.mu.Lock()
-		m.restoreBusy = false
-		m.mu.Unlock()
-		if !keepRestoreProgress {
-			m.clearRestoreProgress()
-		}
-	}()
-	if running {
-		return ValidationReport{}, ErrTaskRunning
-	}
-	if _, err := os.Stat(m.pendingPath); err == nil {
-		return ValidationReport{}, ErrRestorePending
-	} else if !os.IsNotExist(err) {
+	finish, err := m.beginRestorePreparation()
+	if err != nil {
 		return ValidationReport{}, err
 	}
+	prepared := false
+	defer func() { finish(prepared) }()
+
 	archivePath, _, err := m.resolveBackup(id)
 	if err != nil {
 		return ValidationReport{}, err
@@ -82,295 +61,294 @@ func (m *Manager) PrepareRestore(ctx context.Context, id string) (ValidationRepo
 	if err != nil {
 		return ValidationReport{}, err
 	}
-	stageRoot := filepath.Join(m.restoreDir, stageID)
-	if err := os.MkdirAll(stageRoot, 0o700); err != nil {
+	p := &restorePreparation{backupID: id, stageID: stageID, stageRoot: filepath.Join(m.restoreDir, stageID)}
+	if err := os.MkdirAll(p.stageRoot, 0o700); err != nil {
 		return ValidationReport{}, err
 	}
-	prepared := false
-	maintenanceAcquired := false
+	maintenance := false
 	defer func() {
 		if !prepared {
-			if maintenanceAcquired {
+			if maintenance {
 				m.releaseRestoreMaintenance()
 			}
-			_ = os.RemoveAll(stageRoot)
+			_ = os.RemoveAll(p.stageRoot)
 		}
 	}()
-	report, err := VerifyAndExtractArchive(ctx, archivePath, stageRoot, VerifyOptions{
+
+	if err := m.extractRestoreArchive(ctx, p, archivePath, available); err != nil {
+		return ValidationReport{}, err
+	}
+	if err := m.rewriteStagedCatalog(ctx, p); err != nil {
+		return ValidationReport{}, err
+	}
+	// The merge snapshots the live catalog, so writers stay paused from here
+	// until the restart applies the restore.
+	if err := m.beginRestoreMaintenance(ctx); err != nil {
+		return ValidationReport{}, err
+	}
+	maintenance = true
+	if err := m.mergeStagedCatalog(ctx, p); err != nil {
+		return ValidationReport{}, err
+	}
+	targets, err := m.planRestoreTargets(ctx, p)
+	if err != nil {
+		return ValidationReport{}, err
+	}
+	if err := m.writeRestoreMarker(p, targets); err != nil {
+		return ValidationReport{}, err
+	}
+	prepared = true
+	m.setRestoreProgress(p.completedProgress("ready"))
+	return p.report, nil
+}
+
+// restorePreparation is the state PrepareRestore passes between its stages.
+type restorePreparation struct {
+	backupID   string
+	stageID    string
+	stageRoot  string
+	report     ValidationReport
+	selection  BackupSelection
+	localPlans []isolatedLocalStorageRestore
+	// Preview assets owned by the archive's replacing resources and by the
+	// target's merged resources, read before the catalogs are merged.
+	sourcePreviewPaths []string
+	targetPreviewPaths []string
+}
+
+// restoreTarget is one live path a restore replaces or removes.
+type restoreTarget struct {
+	name   string
+	kind   string
+	source string
+	target string
+}
+
+func (p *restorePreparation) payloadPath(name string) string {
+	return filepath.Join(p.stageRoot, "payload", name)
+}
+
+// completedProgress reports the whole archive as processed in a later phase.
+func (p *restorePreparation) completedProgress(phase string) OperationProgress {
+	return OperationProgress{
+		Phase:          phase,
+		ProcessedBytes: p.report.Manifest.TotalSize,
+		TotalBytes:     p.report.Manifest.TotalSize,
+		ProcessedFiles: p.report.Manifest.FileCount,
+		TotalFiles:     p.report.Manifest.FileCount,
+	}
+}
+
+// beginRestorePreparation claims the single restore slot. The returned
+// function releases it; restore progress is kept only for a staged restore.
+func (m *Manager) beginRestorePreparation() (func(prepared bool), error) {
+	m.mu.Lock()
+	if m.restoreBusy {
+		m.mu.Unlock()
+		return nil, ErrRestorePending
+	}
+	if m.current != nil &&
+		(m.current.State == "queued" || m.current.State == "running" || m.current.State == "canceling") {
+		m.mu.Unlock()
+		return nil, ErrTaskRunning
+	}
+	m.restoreBusy = true
+	m.mu.Unlock()
+	finish := func(prepared bool) {
+		m.mu.Lock()
+		m.restoreBusy = false
+		m.mu.Unlock()
+		if !prepared {
+			m.clearRestoreProgress()
+		}
+	}
+	if _, err := os.Stat(m.pendingPath); err == nil {
+		finish(false)
+		return nil, ErrRestorePending
+	} else if !os.IsNotExist(err) {
+		finish(false)
+		return nil, err
+	}
+	m.setRestoreProgress(OperationProgress{Phase: "inspecting"})
+	return finish, nil
+}
+
+// extractRestoreArchive verifies the archive while extracting it into the
+// stage root.
+func (m *Manager) extractRestoreArchive(ctx context.Context, p *restorePreparation, archivePath string, available int64) error {
+	report, err := VerifyAndExtractArchive(ctx, archivePath, p.stageRoot, VerifyOptions{
 		CurrentVersion: m.appVersion,
 		AvailableBytes: available,
 		Progress: func(progress OperationProgress) {
-			switch progress.Phase {
-			case "database":
+			if progress.Phase == "database" {
 				progress.Phase = "checking-database"
-			default:
+			} else {
 				progress.Phase = "extracting"
 			}
 			m.setRestoreProgress(progress)
 		},
 	})
 	if err != nil {
-		return ValidationReport{}, err
+		return err
 	}
-	selection := *report.Manifest.Selection
-
-	m.setRestoreProgress(OperationProgress{
-		Phase:          "rewriting",
-		ProcessedBytes: report.Manifest.TotalSize,
-		TotalBytes:     report.Manifest.TotalSize,
-		ProcessedFiles: report.Manifest.FileCount,
-		TotalFiles:     report.Manifest.FileCount,
-	})
-	targetConfig := *m.appConfig
-	targetRuntimeConfig := targetConfig
-	targetRuntimeConfig.Storage = config.Storage{
-		DataDir:         m.dataRoot,
-		DBDir:           filepath.Dir(m.dbPath),
-		DBPath:          m.dbPath,
-		LocalPreviewDir: m.previewPath,
-	}
-
-	stageDatabase := filepath.Join(stageRoot, "payload", "database.sqlite")
-	stagePreview := filepath.Join(stageRoot, "payload", "previews")
-	for _, dir := range []string{
-		stagePreview,
-		filepath.Join(stageRoot, "payload", "uploads"),
-		filepath.Join(stageRoot, "payload", "crawler-scripts"),
-		filepath.Join(stageRoot, "payload", "scriptcrawlers"),
-		filepath.Join(stageRoot, "payload", "spider91"),
-	} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return ValidationReport{}, err
+	p.report = report
+	p.selection = *report.Manifest.Selection
+	// ZIP directory entries are not extracted, so empty asset roots are
+	// created here.
+	for _, source := range assetSources {
+		if err := os.MkdirAll(p.payloadPath(source.name), 0o755); err != nil {
+			return err
 		}
 	}
-	var localStoragePlans []isolatedLocalStorageRestore
-	if selection.LocalStorage {
-		localStoragePlans, err = m.planIsolatedLocalStorageRestore(ctx, stageID, report.Manifest.LocalStorage)
+	return nil
+}
+
+// rewriteStagedCatalog adapts the extracted catalog to this deployment.
+func (m *Manager) rewriteStagedCatalog(ctx context.Context, p *restorePreparation) error {
+	m.setRestoreProgress(p.completedProgress("rewriting"))
+	if p.selection.LocalStorage {
+		plans, err := m.planIsolatedLocalStorageRestore(ctx, p.stageID, p.report.Manifest.LocalStorage)
 		if err != nil {
-			return ValidationReport{}, err
+			return err
 		}
+		p.localPlans = plans
 	}
-	rewriteReport, err := rewriteRestoredDatabase(
-		ctx,
-		stageDatabase,
-		selection,
-		stagePreview,
-		report.Manifest.SourceDataRoot,
-		targetRuntimeConfig,
-		m.dataRoot,
-		m.assetRoot,
-		report.Manifest.SourcePreview,
-		localStoragePlans,
-	)
+	rewritten, err := rewriteRestoredDatabase(ctx, p.payloadPath("database.sqlite"), catalogRewrite{
+		selection:         p.selection,
+		stagePreviewDir:   p.payloadPath("previews"),
+		sourceDataRoot:    p.report.Manifest.SourceDataRoot,
+		sourcePreviewRoot: p.report.Manifest.SourcePreview,
+		targetDataRoot:    m.dataRoot,
+		targetAssetRoot:   m.assetRoot,
+		targetPreviewRoot: m.previewPath,
+		localStoragePlans: p.localPlans,
+	})
 	if err != nil {
-		return ValidationReport{}, err
+		return err
 	}
-	report.PathRewrites = append(report.PathRewrites, rewriteReport.PathRewrites...)
-	report.LocalStorageWarnings = append(report.LocalStorageWarnings, rewriteReport.LocalStorageWarnings...)
-	report.MissingAssets = append(report.MissingAssets, rewriteReport.MissingAssets...)
-	report.Warnings = append(report.Warnings, rewriteReport.Warnings...)
-	mergedDatabase := filepath.Join(stageRoot, "payload", "database-merged.sqlite")
-	if err := m.beginRestoreMaintenance(ctx); err != nil {
-		return ValidationReport{}, err
+	p.report.PathRewrites = append(p.report.PathRewrites, rewritten.PathRewrites...)
+	p.report.LocalStorageWarnings = append(p.report.LocalStorageWarnings, rewritten.LocalStorageWarnings...)
+	p.report.MissingAssets = append(p.report.MissingAssets, rewritten.MissingAssets...)
+	p.report.Warnings = append(p.report.Warnings, rewritten.Warnings...)
+	return nil
+}
+
+// mergeStagedCatalog overlays the staged catalog on a snapshot of the live
+// catalog; the result replaces the staged database as the restored catalog.
+func (m *Manager) mergeStagedCatalog(ctx context.Context, p *restorePreparation) error {
+	stageDatabase := p.payloadPath("database.sqlite")
+	mergedDatabase := p.payloadPath("database-merged.sqlite")
+	if err := m.catalog.BackupTo(ctx, mergedDatabase); err != nil {
+		return fmt.Errorf("backup: snapshot current database for selective restore: %w", err)
 	}
-	maintenanceAcquired = true
-	mergeErr := m.catalog.BackupTo(ctx, mergedDatabase)
-	if mergeErr != nil {
-		return ValidationReport{}, fmt.Errorf("backup: snapshot current database for selective restore: %w", mergeErr)
-	}
-	sourceReplacementPreviewPaths, err := collectPreviewAssetPaths(ctx, stageDatabase, stagePreview, false)
+	var err error
+	p.sourcePreviewPaths, err = collectPreviewAssetPaths(ctx, stageDatabase, p.payloadPath("previews"), false)
 	if err != nil {
-		return ValidationReport{}, fmt.Errorf("backup: inspect restored preview ownership: %w", err)
+		return fmt.Errorf("backup: inspect restored preview ownership: %w", err)
 	}
-	targetMergedPreviewPaths, err := collectPreviewAssetPaths(
-		ctx,
-		mergedDatabase,
-		targetRuntimeConfig.Storage.LocalPreviewDir,
-		true,
-	)
+	p.targetPreviewPaths, err = collectPreviewAssetPaths(ctx, mergedDatabase, m.previewPath, true)
 	if err != nil {
-		return ValidationReport{}, fmt.Errorf("backup: inspect target preview ownership: %w", err)
+		return fmt.Errorf("backup: inspect target preview ownership: %w", err)
 	}
-	if err := mergeSelectiveRestoreDatabase(ctx, mergedDatabase, stageDatabase, selection); err != nil {
-		return ValidationReport{}, err
+	if err := mergeSelectiveRestoreDatabase(ctx, mergedDatabase, stageDatabase, p.selection); err != nil {
+		return err
 	}
 	if err := os.Remove(stageDatabase); err != nil {
-		return ValidationReport{}, err
+		return err
 	}
-	if err := os.Rename(mergedDatabase, stageDatabase); err != nil {
-		return ValidationReport{}, err
-	}
+	return os.Rename(mergedDatabase, stageDatabase)
+}
 
-	m.setRestoreProgress(OperationProgress{
-		Phase:          "preparing-switch",
-		ProcessedBytes: report.Manifest.TotalSize,
-		TotalBytes:     report.Manifest.TotalSize,
-		ProcessedFiles: report.Manifest.FileCount,
-		TotalFiles:     report.Manifest.FileCount,
-	})
-	previewSource := stagePreview
-	resourceSelection := selection.CloudDrives || selection.CrawlerScripts || selection.UploadStorage || selection.LocalStorage
-	allResourceSelections := selection.CloudDrives && selection.CrawlerScripts && selection.UploadStorage && selection.LocalStorage
-	if resourceSelection && manifestIncludes(report.Manifest, "previews") {
-		previewSource, err = prepareMergedPreview(
-			ctx,
-			stageRoot,
-			stagePreview,
-			targetRuntimeConfig.Storage.LocalPreviewDir,
-			targetMergedPreviewPaths,
-			!allResourceSelections,
-			sourceReplacementPreviewPaths,
-		)
-		if err != nil {
-			return ValidationReport{}, err
+// planRestoreTargets prepares the replacement of every live path the restore
+// changes: each included asset directory, each restored local storage root,
+// and finally the database with its WAL and shared-memory files.
+func (m *Manager) planRestoreTargets(ctx context.Context, p *restorePreparation) ([]restoreTarget, error) {
+	m.setRestoreProgress(p.completedProgress("preparing-switch"))
+	var targets []restoreTarget
+	for _, section := range p.report.Manifest.Included {
+		if section == "database" || section == localStorageSection {
+			continue
 		}
-	}
-	uploadSource := filepath.Join(stageRoot, "payload", "uploads")
-	if selection.UploadStorage && manifestIncludes(report.Manifest, "uploads") {
-		uploadSource, err = prepareMergedUploadStorage(
-			ctx,
-			stageRoot,
-			uploadSource,
-			filepath.Join(m.assetRoot, "uploads"),
-		)
-		if err != nil {
-			return ValidationReport{}, err
+		source := p.payloadPath(section)
+		var err error
+		switch section {
+		case "previews":
+			source, err = prepareMergedPreview(
+				ctx,
+				p.stageRoot,
+				source,
+				m.previewPath,
+				p.targetPreviewPaths,
+				!p.selection.AllResources(),
+				p.sourcePreviewPaths,
+			)
+		case "uploads":
+			source, err = prepareMergedUploadStorage(ctx, p.stageRoot, source, m.assetPath(section))
 		}
-	}
-	localStorageSources := []preparedLocalStorage(nil)
-	if selection.LocalStorage && len(localStoragePlans) > 0 {
-		localStorageSources, err = prepareIsolatedLocalStorage(
-			ctx,
-			stageRoot,
-			report.Manifest.LocalStorage,
-			localStoragePlans,
-		)
 		if err != nil {
-			return ValidationReport{}, err
+			return nil, err
 		}
+		targets = append(targets, restoreTarget{name: section, kind: "dir", source: source, target: m.assetPath(section)})
 	}
-	targets := []struct {
-		name   string
-		kind   string
-		source string
-		target string
-	}{}
-	if resourceSelection && manifestIncludes(report.Manifest, "previews") {
-		targets = append(targets, struct {
-			name   string
-			kind   string
-			source string
-			target string
-		}{name: "previews", kind: "dir", source: previewSource, target: targetRuntimeConfig.Storage.LocalPreviewDir})
-	}
-	if selection.UploadStorage && manifestIncludes(report.Manifest, "uploads") {
-		targets = append(targets, struct {
-			name   string
-			kind   string
-			source string
-			target string
-		}{name: "uploads", kind: "dir", source: uploadSource, target: filepath.Join(m.assetRoot, "uploads")})
-	}
-	if selection.CrawlerScripts {
-		for _, item := range []struct {
-			name string
-		}{
-			{name: "crawler-scripts"},
-			{name: "scriptcrawlers"},
-			{name: "spider91"},
-		} {
-			if !manifestIncludes(report.Manifest, item.name) {
-				continue
-			}
-			targets = append(targets, struct {
-				name   string
-				kind   string
-				source string
-				target string
-			}{
-				name:   item.name,
+	if p.selection.LocalStorage {
+		localStorage, err := prepareIsolatedLocalStorage(ctx, p.stageRoot, p.report.Manifest.LocalStorage, p.localPlans)
+		if err != nil {
+			return nil, err
+		}
+		for _, prepared := range localStorage {
+			targets = append(targets, restoreTarget{
+				name:   "localstorage-" + archiveDriveComponent(prepared.DriveID),
 				kind:   "dir",
-				source: filepath.Join(stageRoot, "payload", item.name),
-				target: filepath.Join(m.assetRoot, item.name),
+				source: prepared.Source,
+				target: prepared.Target,
 			})
 		}
 	}
-	for _, localStorage := range localStorageSources {
-		targets = append(targets, struct {
-			name   string
-			kind   string
-			source string
-			target string
-		}{
-			name:   "localstorage-" + archiveDriveComponent(localStorage.DriveID),
-			kind:   "dir",
-			source: localStorage.Source,
-			target: localStorage.Target,
-		})
-	}
 	targets = append(targets,
-		struct {
-			name   string
-			kind   string
-			source string
-			target string
-		}{name: "database-wal", kind: "remove", target: targetRuntimeConfig.Storage.DBPath + "-wal"},
-		struct {
-			name   string
-			kind   string
-			source string
-			target string
-		}{name: "database-shm", kind: "remove", target: targetRuntimeConfig.Storage.DBPath + "-shm"},
-		struct {
-			name   string
-			kind   string
-			source string
-			target string
-		}{name: "database", kind: "file", source: stageDatabase, target: targetRuntimeConfig.Storage.DBPath},
+		restoreTarget{name: "database-wal", kind: "remove", target: m.dbPath + "-wal"},
+		restoreTarget{name: "database-shm", kind: "remove", target: m.dbPath + "-shm"},
+		restoreTarget{name: "database", kind: "file", source: p.payloadPath("database.sqlite"), target: m.dbPath},
 	)
 	if err := validateRestoreOperationCount(len(targets)); err != nil {
-		return ValidationReport{}, err
+		return nil, err
 	}
 	for index := range targets {
 		for prior := 0; prior < index; prior++ {
 			if restoreTargetPathsOverlap(targets[index].target, targets[prior].target) {
-				return ValidationReport{}, fmt.Errorf("backup: restore targets overlap: %s and %s", targets[prior].name, targets[index].name)
+				return nil, fmt.Errorf("backup: restore targets overlap: %s and %s", targets[prior].name, targets[index].name)
 			}
 		}
 	}
-	markerReport := report
+	return targets, nil
+}
+
+// writeRestoreMarker stages every target next to its live path and records
+// the switch plan that the next start applies.
+func (m *Manager) writeRestoreMarker(p *restorePreparation, targets []restoreTarget) error {
+	markerReport := p.report
 	markerReport.Manifest.Files = nil
 	marker := restoreMarker{
 		MarkerVersion: 1,
-		BackupID:      id,
+		BackupID:      p.backupID,
 		DataRoot:      m.dataRoot,
-		StageRoot:     stageRoot,
+		StageRoot:     p.stageRoot,
 		CreatedAt:     m.nowTime(),
 		State:         "pending",
 		Report:        markerReport,
 	}
 	for _, target := range targets {
-		operation, err := prepareRestoreSwitch(stageID, target.name, target.kind, target.source, target.target)
+		operation, err := prepareRestoreSwitch(p.stageID, target.name, target.kind, target.source, target.target)
 		if err != nil {
 			cleanupPreparedSwitches(marker.Operations)
-			return ValidationReport{}, err
+			return err
 		}
 		marker.Operations = append(marker.Operations, operation)
 	}
-	if err := writeJSONAtomic(m.pendingPath, marker, 0o600); err != nil {
+	if err := atomicfile.WriteJSON(m.pendingPath, marker, 0o600); err != nil {
 		cleanupPreparedSwitches(marker.Operations)
-		return ValidationReport{}, err
+		return err
 	}
-	prepared = true
-	keepRestoreProgress = true
-	m.setRestoreProgress(OperationProgress{
-		Phase:          "ready",
-		ProcessedBytes: report.Manifest.TotalSize,
-		TotalBytes:     report.Manifest.TotalSize,
-		ProcessedFiles: report.Manifest.FileCount,
-		TotalFiles:     report.Manifest.FileCount,
-	})
-	return report, nil
+	return nil
 }
 
 func prepareRestoreSwitch(stageID, name, kind, source, target string) (restoreSwitch, error) {
@@ -492,397 +470,4 @@ func cleanupPreparedSwitches(operations []restoreSwitch) {
 	for _, operation := range operations {
 		_ = os.RemoveAll(operation.Staged)
 	}
-}
-
-func rewriteRestoredDatabase(
-	ctx context.Context,
-	databasePath string,
-	selection BackupSelection,
-	stagePreviewDir string,
-	sourceDataRoot string,
-	targetConfig config.Config,
-	targetDataRoot string,
-	targetAssetRoot string,
-	sourcePreviewOverride string,
-	localStoragePlans []isolatedLocalStorageRestore,
-) (ValidationReport, error) {
-	dsn := databasePath + "?_pragma=busy_timeout(5000)"
-	database, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return ValidationReport{}, err
-	}
-	defer database.Close()
-	if err := catalog.MigrateImportDatabase(ctx, database); err != nil {
-		return ValidationReport{}, err
-	}
-	tx, err := database.BeginTx(ctx, nil)
-	if err != nil {
-		return ValidationReport{}, err
-	}
-	defer tx.Rollback()
-
-	report := ValidationReport{VerificationStatus: "verified"}
-	sourceDataRoot = cleanNonEmptyPath(sourceDataRoot)
-	sourcePreviewRoot := cleanNonEmptyPath(sourcePreviewOverride)
-	if sourcePreviewRoot == "" {
-		return ValidationReport{}, errors.New("backup: source preview root is missing")
-	}
-	sourceAssetRoot := cleanNonEmptyPath(filepath.Dir(sourcePreviewRoot))
-	targetPreviewRoot := cleanNonEmptyPath(targetConfig.Storage.LocalPreviewDir)
-	targetDataRoot = cleanNonEmptyPath(targetDataRoot)
-	targetAssetRoot = cleanNonEmptyPath(targetAssetRoot)
-	rewrite := func(value string) string {
-		return rewriteRestoredPath(value, []pathRewrite{
-			{from: sourcePreviewRoot, to: targetPreviewRoot},
-			{from: sourceAssetRoot, to: targetAssetRoot},
-			{from: sourceDataRoot, to: targetDataRoot},
-		})
-	}
-	localVideoIDs := make(map[string]string)
-	if selection.LocalStorage {
-		localVideoIDs, err = rewriteLocalStorageCatalog(ctx, tx, localStoragePlans, stagePreviewDir)
-		if err != nil {
-			return ValidationReport{}, err
-		}
-		for _, plan := range localStoragePlans {
-			report.PathRewrites = appendLimited(report.PathRewrites, fmt.Sprintf(
-				"本地存储已恢复为新的独立存储 %s",
-				plan.Name,
-			))
-		}
-	}
-	previousLocalVideoIDs := make(map[string]string, len(localVideoIDs))
-	for oldID, newID := range localVideoIDs {
-		previousLocalVideoIDs[newID] = oldID
-	}
-
-	rows, err := tx.QueryContext(ctx, `
-SELECT id, COALESCE(preview_local, ''), COALESCE(preview_status, ''),
-       COALESCE(thumbnail_url, ''), COALESCE(thumbnail_status, ''),
-       COALESCE(fingerprint_status, '')
-  FROM videos`)
-	if err != nil {
-		return ValidationReport{}, err
-	}
-	type videoAsset struct {
-		id, previewLocal, previewStatus, thumbnailURL, thumbnailStatus, fingerprintStatus string
-	}
-	var videos []videoAsset
-	for rows.Next() {
-		var video videoAsset
-		if err := rows.Scan(
-			&video.id,
-			&video.previewLocal,
-			&video.previewStatus,
-			&video.thumbnailURL,
-			&video.thumbnailStatus,
-			&video.fingerprintStatus,
-		); err != nil {
-			rows.Close()
-			return ValidationReport{}, err
-		}
-		videos = append(videos, video)
-	}
-	if err := rows.Close(); err != nil {
-		return ValidationReport{}, err
-	}
-	missingCount := 0
-	for _, video := range videos {
-		rewrittenPreview := rewrite(video.previewLocal)
-		if previousID := previousLocalVideoIDs[video.id]; previousID != "" {
-			rewrittenPreview = remapLocalPreviewPath(
-				video.previewLocal,
-				rewrittenPreview,
-				previousID,
-				video.id,
-				sourcePreviewRoot,
-				targetPreviewRoot,
-			)
-			if strings.HasPrefix(video.thumbnailURL, "/p/thumb/") {
-				video.thumbnailURL = "/p/thumb/" + video.id
-			}
-		}
-		if rewrittenPreview != video.previewLocal && video.previewLocal != "" {
-			report.PathRewrites = appendLimited(report.PathRewrites, fmt.Sprintf(
-				"视频 %s 的预览路径已改写到目标数据目录",
-				video.id,
-			))
-		}
-		previewMissing := false
-		if strings.EqualFold(video.previewStatus, "ready") {
-			if video.previewLocal == "" {
-				previewMissing = true
-			} else {
-				relative, ok := localpath.ManagedRelative(targetPreviewRoot, rewrittenPreview)
-				if !ok {
-					relative, ok = localpath.ManagedRelative(sourcePreviewRoot, video.previewLocal)
-				}
-				if !ok {
-					previewMissing = true
-				} else if info, statErr := os.Stat(filepath.Join(stagePreviewDir, relative)); statErr != nil ||
-					!info.Mode().IsRegular() || info.Size() <= 0 {
-					previewMissing = true
-				}
-			}
-		}
-		if previewMissing {
-			rewrittenPreview = ""
-			video.previewStatus = "pending"
-			missingCount++
-			report.MissingAssets = appendLimited(report.MissingAssets, fmt.Sprintf("视频 %s 的预览文件在源备份中不存在，已标记待生成", video.id))
-		}
-		thumbnailMissing := false
-		if strings.EqualFold(video.thumbnailStatus, "ready") &&
-			strings.HasPrefix(video.thumbnailURL, "/p/thumb/") {
-			info, statErr := os.Stat(mediaasset.ThumbnailPath(stagePreviewDir, video.id))
-			thumbnailMissing = statErr != nil || !info.Mode().IsRegular() || info.Size() <= 0
-		}
-		if thumbnailMissing {
-			video.thumbnailURL = ""
-			video.thumbnailStatus = "pending"
-			missingCount++
-			report.MissingAssets = appendLimited(report.MissingAssets, fmt.Sprintf("视频 %s 的封面在源备份中不存在，已标记待生成", video.id))
-		}
-		if relative, ok := localpath.ManagedRelative(targetPreviewRoot, rewrittenPreview); ok {
-			rewrittenPreview = relative
-		}
-		if _, err := tx.ExecContext(ctx, `
-UPDATE videos
-   SET preview_local = ?, preview_status = ?,
-       thumbnail_url = ?, thumbnail_status = ?
- WHERE id = ?`,
-			rewrittenPreview,
-			video.previewStatus,
-			video.thumbnailURL,
-			video.thumbnailStatus,
-			video.id,
-		); err != nil {
-			return ValidationReport{}, err
-		}
-	}
-	if missingCount > len(report.MissingAssets) {
-		report.Warnings = append(report.Warnings, fmt.Sprintf("另有 %d 项缺失资源已标记待生成", missingCount-len(report.MissingAssets)))
-	}
-
-	driveRows, err := tx.QueryContext(ctx, `SELECT id, kind, COALESCE(credentials, '{}') FROM drives`)
-	if err != nil {
-		return ValidationReport{}, err
-	}
-	type driveState struct {
-		id, kind string
-		creds    map[string]string
-	}
-	var drives []driveState
-	for driveRows.Next() {
-		var drive driveState
-		var credentialsJSON string
-		if err := driveRows.Scan(&drive.id, &drive.kind, &credentialsJSON); err != nil {
-			driveRows.Close()
-			return ValidationReport{}, err
-		}
-		if err := json.Unmarshal([]byte(credentialsJSON), &drive.creds); err != nil {
-			driveRows.Close()
-			return ValidationReport{}, fmt.Errorf("backup: invalid drive credentials for %s: %w", drive.id, err)
-		}
-		if drive.creds == nil {
-			drive.creds = make(map[string]string)
-		}
-		drives = append(drives, drive)
-	}
-	if err := driveRows.Close(); err != nil {
-		return ValidationReport{}, err
-	}
-	localStorageTargets := make(map[string]string, len(localStoragePlans))
-	for _, plan := range localStoragePlans {
-		localStorageTargets[plan.DriveID] = plan.TargetPath
-	}
-	for _, drive := range drives {
-		if scriptPath := drive.creds["script_path"]; scriptPath != "" {
-			rewritten := rewrite(scriptPath)
-			if rewritten != scriptPath {
-				drive.creds["script_path"] = rewritten
-				report.PathRewrites = appendLimited(report.PathRewrites, fmt.Sprintf("爬虫 %s 的脚本路径已改写", drive.id))
-			}
-		}
-		status := ""
-		lastError := ""
-		if strings.EqualFold(drive.kind, "localstorage") {
-			localPath := strings.TrimSpace(drive.creds["path"])
-			if targetPath, restored := localStorageTargets[drive.id]; restored {
-				drive.creds["path"] = targetPath
-				localPath = targetPath
-				status = "ok"
-			} else if localPath != "" {
-				if info, statErr := os.Stat(localPath); statErr != nil || !info.IsDir() {
-					status = "disconnected"
-					lastError = "恢复后目标服务器找不到本地存储路径：" + localPath
-					report.LocalStorageWarnings = appendLimited(report.LocalStorageWarnings, fmt.Sprintf("本地存储 %s：目标路径 %s 不存在，已标记未连接", drive.id, localPath))
-				}
-			}
-		}
-		credentialsJSON, err := json.Marshal(drive.creds)
-		if err != nil {
-			return ValidationReport{}, err
-		}
-		if status != "" {
-			_, err = tx.ExecContext(ctx, `
-UPDATE drives SET credentials = ?, status = ?, last_error = ? WHERE id = ?`,
-				string(credentialsJSON), status, lastError, drive.id)
-		} else {
-			_, err = tx.ExecContext(ctx, `UPDATE drives SET credentials = ? WHERE id = ?`, string(credentialsJSON), drive.id)
-		}
-		if err != nil {
-			return ValidationReport{}, err
-		}
-	}
-
-	deletedRows, err := tx.QueryContext(ctx, `
-SELECT id, COALESCE(restore_payload, '') FROM deleted_videos WHERE COALESCE(restore_payload, '') != ''`)
-	if err != nil {
-		return ValidationReport{}, err
-	}
-	type deletedPayload struct{ id, payload string }
-	var deleted []deletedPayload
-	for deletedRows.Next() {
-		var item deletedPayload
-		if err := deletedRows.Scan(&item.id, &item.payload); err != nil {
-			deletedRows.Close()
-			return ValidationReport{}, err
-		}
-		deleted = append(deleted, item)
-	}
-	if err := deletedRows.Close(); err != nil {
-		return ValidationReport{}, err
-	}
-	for _, item := range deleted {
-		var payload any
-		if err := json.Unmarshal([]byte(item.payload), &payload); err != nil {
-			continue
-		}
-		rewritePayloadValue := func(value string) string {
-			if mapped, ok := localVideoIDs[value]; ok {
-				return mapped
-			}
-			return rewrite(value)
-		}
-		changed := rewriteJSONStrings(&payload, rewritePayloadValue)
-		if !changed {
-			continue
-		}
-		encoded, err := json.Marshal(payload)
-		if err != nil {
-			return ValidationReport{}, err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE deleted_videos SET restore_payload = ? WHERE id = ?`, string(encoded), item.id); err != nil {
-			return ValidationReport{}, err
-		}
-		report.PathRewrites = appendLimited(report.PathRewrites, fmt.Sprintf("删除记录 %s 的恢复载荷路径已改写", item.id))
-	}
-
-	now := time.Now().UnixMilli()
-	for _, statement := range []string{
-		`DELETE FROM video_shares`,
-		`DELETE FROM telegram_receipts`,
-		`DELETE FROM telegram_media_group_updates`,
-		`DELETE FROM telegram_connections`,
-		`INSERT INTO telegram_connections(bot_id,needs_reconnect) VALUES(0,1)`,
-		`DELETE FROM shorts_feed_sessions`,
-	} {
-		if _, err := tx.ExecContext(ctx, statement); err != nil {
-			return ValidationReport{}, err
-		}
-	}
-	if _, err := tx.ExecContext(ctx, `
-UPDATE remote_upload_jobs
-   SET state = 'canceled', source_url = '', cancel_requested = 1,
-       temp_file = '', final_file = '', error_message = '恢复时已取消',
-       updated_at = ?, finished_at = ?
- WHERE state IN ('queued', 'downloading', 'validating', 'saving')`, now, now); err != nil {
-		return ValidationReport{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return ValidationReport{}, err
-	}
-	if err := verifySQLite(databasePath); err != nil {
-		return ValidationReport{}, err
-	}
-	return report, nil
-}
-
-type pathRewrite struct{ from, to string }
-
-func rewriteRestoredPath(value string, rewrites []pathRewrite) string {
-	value = strings.TrimSpace(value)
-	if value == "" || !filepath.IsAbs(value) {
-		// Portable file references and other relative strings have no host
-		// directory to rewrite. In particular, never resolve them against CWD.
-		return value
-	}
-	clean := filepath.Clean(value)
-	for _, rewrite := range rewrites {
-		if rewrite.from == "" || rewrite.to == "" {
-			continue
-		}
-		relative, ok := relativeWithin(rewrite.from, clean)
-		if !ok {
-			continue
-		}
-		return filepath.Join(rewrite.to, relative)
-	}
-	return value
-}
-
-func relativeWithin(root, candidate string) (string, bool) {
-	return localpath.RelativeWithin(root, candidate)
-}
-
-func cleanNonEmptyPath(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	absolute, err := filepath.Abs(value)
-	if err != nil {
-		return filepath.Clean(value)
-	}
-	return filepath.Clean(absolute)
-}
-
-func rewriteJSONStrings(value *any, rewrite func(string) string) bool {
-	if value == nil {
-		return false
-	}
-	switch typed := (*value).(type) {
-	case string:
-		rewritten := rewrite(typed)
-		if rewritten != typed {
-			*value = rewritten
-			return true
-		}
-	case []any:
-		changed := false
-		for index := range typed {
-			if rewriteJSONStrings(&typed[index], rewrite) {
-				changed = true
-			}
-		}
-		return changed
-	case map[string]any:
-		changed := false
-		for key, child := range typed {
-			if rewriteJSONStrings(&child, rewrite) {
-				typed[key] = child
-				changed = true
-			}
-		}
-		return changed
-	}
-	return false
-}
-
-func appendLimited(values []string, value string) []string {
-	if len(values) >= 100 {
-		return values
-	}
-	return append(values, value)
 }

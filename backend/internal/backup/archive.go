@@ -44,10 +44,10 @@ func writeArchive(
 	snapshotRoot string,
 	manifest Manifest,
 	progress func(bytes int64, fileDone bool),
-) error {
+) (string, int64, error) {
 	file, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
-		return fmt.Errorf("backup: create archive: %w", err)
+		return "", 0, fmt.Errorf("backup: create archive: %w", err)
 	}
 	success := false
 	defer func() {
@@ -56,11 +56,15 @@ func writeArchive(
 			_ = os.Remove(destination)
 		}
 	}()
-	writer := zip.NewWriter(file)
+	// The archive digest is computed from the bytes as they are written, so
+	// publishing does not need another full read of the archive.
+	digest := sha256.New()
+	output := &countingWriter{writer: io.MultiWriter(file, digest)}
+	writer := zip.NewWriter(output)
 	manifestBytes, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		_ = writer.Close()
-		return err
+		return "", 0, err
 	}
 	manifestBytes = append(manifestBytes, '\n')
 	header := &zip.FileHeader{
@@ -72,27 +76,17 @@ func writeArchive(
 	manifestWriter, err := writer.CreateHeader(header)
 	if err != nil {
 		_ = writer.Close()
-		return err
+		return "", 0, err
 	}
 	if _, err := manifestWriter.Write(manifestBytes); err != nil {
 		_ = writer.Close()
-		return err
+		return "", 0, err
 	}
 
-	directories := make([]string, 0, 6+len(manifest.LocalStorage))
-	for _, item := range []struct {
-		name string
-		ok   bool
-	}{
-		{name: "previews", ok: manifestIncludes(manifest, "previews")},
-		{name: "uploads", ok: manifestIncludes(manifest, "uploads")},
-		{name: "crawler-scripts", ok: manifestIncludes(manifest, "crawler-scripts")},
-		{name: "scriptcrawlers", ok: manifestIncludes(manifest, "scriptcrawlers")},
-		{name: "spider91", ok: manifestIncludes(manifest, "spider91")},
-		{name: "localstorage", ok: manifestIncludes(manifest, "localstorage")},
-	} {
-		if item.ok {
-			directories = append(directories, "payload/"+item.name+"/")
+	directories := make([]string, 0, len(manifest.Included)+len(manifest.LocalStorage))
+	for _, section := range manifest.Included {
+		if section != "database" {
+			directories = append(directories, "payload/"+section+"/")
 		}
 	}
 	for _, root := range manifest.LocalStorage {
@@ -106,25 +100,25 @@ func writeArchive(
 		dirHeader.SetMode(os.ModeDir | 0o755)
 		if _, err := writer.CreateHeader(dirHeader); err != nil {
 			_ = writer.Close()
-			return err
+			return "", 0, err
 		}
 	}
 
 	for _, entry := range manifest.Files {
 		if err := ctx.Err(); err != nil {
 			_ = writer.Close()
-			return err
+			return "", 0, err
 		}
 		clean, ok := cleanArchivePath(entry.Path)
 		if !ok || !strings.HasPrefix(clean, "payload/") {
 			_ = writer.Close()
-			return fmt.Errorf("backup: invalid snapshot path %q", entry.Path)
+			return "", 0, fmt.Errorf("backup: invalid snapshot path %q", entry.Path)
 		}
 		source := filepath.Join(snapshotRoot, filepath.FromSlash(clean))
 		input, err := os.Open(source)
 		if err != nil {
 			_ = writer.Close()
-			return err
+			return "", 0, err
 		}
 		entryHeader := &zip.FileHeader{
 			Name:     clean,
@@ -140,7 +134,7 @@ func writeArchive(
 		if err != nil {
 			_ = input.Close()
 			_ = writer.Close()
-			return err
+			return "", 0, err
 		}
 		written, err := copyWithContext(ctx, output, input, func(n int64) {
 			if progress != nil {
@@ -150,31 +144,42 @@ func writeArchive(
 		closeErr := input.Close()
 		if err != nil {
 			_ = writer.Close()
-			return err
+			return "", 0, err
 		}
 		if closeErr != nil {
 			_ = writer.Close()
-			return closeErr
+			return "", 0, closeErr
 		}
 		if written != entry.Size {
 			_ = writer.Close()
-			return fmt.Errorf("backup: snapshot file %s changed while archiving", clean)
+			return "", 0, fmt.Errorf("backup: snapshot file %s changed while archiving", clean)
 		}
 		if progress != nil {
 			progress(0, true)
 		}
 	}
 	if err := writer.Close(); err != nil {
-		return fmt.Errorf("backup: finalize ZIP: %w", err)
+		return "", 0, fmt.Errorf("backup: finalize ZIP: %w", err)
 	}
 	if err := file.Sync(); err != nil {
-		return fmt.Errorf("backup: sync ZIP: %w", err)
+		return "", 0, fmt.Errorf("backup: sync ZIP: %w", err)
 	}
 	if err := file.Close(); err != nil {
-		return err
+		return "", 0, err
 	}
 	success = true
-	return nil
+	return hex.EncodeToString(digest.Sum(nil)), output.written, nil
+}
+
+type countingWriter struct {
+	writer  io.Writer
+	written int64
+}
+
+func (w *countingWriter) Write(data []byte) (int, error) {
+	n, err := w.writer.Write(data)
+	w.written += int64(n)
+	return n, err
 }
 
 func manifestIncludes(manifest Manifest, name string) bool {
@@ -184,23 +189,6 @@ func manifestIncludes(manifest Manifest, name string) bool {
 		}
 	}
 	return false
-}
-
-func includedForSelection(selection BackupSelection, hasLocalStorageRoots bool) []string {
-	included := []string{"database"}
-	if selection.CloudDrives || selection.CrawlerScripts || selection.UploadStorage || selection.LocalStorage {
-		included = append(included, "previews")
-	}
-	if selection.UploadStorage {
-		included = append(included, "uploads")
-	}
-	if selection.CrawlerScripts {
-		included = append(included, "crawler-scripts", "scriptcrawlers", "spider91")
-	}
-	if selection.LocalStorage && hasLocalStorageRoots {
-		included = append(included, "localstorage")
-	}
-	return included
 }
 
 func validateManifestIncluded(manifest Manifest, selection BackupSelection) error {
@@ -277,17 +265,9 @@ func InspectArchive(archivePath string) (Manifest, error) {
 	return manifest, err
 }
 
+// VerifyArchive checks every entry against the manifest and validates the
+// archived catalog scope without keeping the payload.
 func VerifyArchive(ctx context.Context, archivePath string, options VerifyOptions) (ValidationReport, error) {
-	reader, err := zip.OpenReader(archivePath)
-	if err != nil {
-		return ValidationReport{}, fmt.Errorf("backup: open ZIP: %w", err)
-	}
-	defer reader.Close()
-	manifest, filesByName, expected, names, err := validateArchiveMetadata(&reader.Reader, options)
-	if err != nil {
-		return ValidationReport{}, err
-	}
-
 	tempDir := strings.TrimSpace(options.TempDir)
 	if tempDir == "" {
 		tempDir = os.TempDir()
@@ -301,61 +281,15 @@ func VerifyArchive(ctx context.Context, archivePath string, options VerifyOption
 	}
 	databasePath := databaseFile.Name()
 	defer os.Remove(databasePath)
-	databaseWritten := false
-	progress := OperationProgress{
-		Phase:      "files",
-		TotalBytes: manifest.TotalSize,
-		TotalFiles: manifest.FileCount,
-	}
-	emitArchiveProgress(options, progress)
-
-	for _, name := range names {
-		if err := ctx.Err(); err != nil {
-			_ = databaseFile.Close()
-			return ValidationReport{}, err
-		}
-		var output io.Writer
-		if name == "payload/database.sqlite" {
-			output = databaseFile
-			databaseWritten = true
-		}
-		if err := verifyArchiveEntry(
-			ctx,
-			name,
-			filesByName[name],
-			expected[name],
-			output,
-			func(bytes int64) {
-				progress.ProcessedBytes += bytes
-				emitArchiveProgress(options, progress)
-			},
-		); err != nil {
-			_ = databaseFile.Close()
-			return ValidationReport{}, err
-		}
-		progress.ProcessedFiles++
-		emitArchiveProgress(options, progress)
-	}
-	if err := databaseFile.Sync(); err != nil {
-		_ = databaseFile.Close()
-		return ValidationReport{}, err
-	}
 	if err := databaseFile.Close(); err != nil {
 		return ValidationReport{}, err
 	}
-	if !databaseWritten {
-		return ValidationReport{}, errors.New("backup: database entry was not verified")
-	}
-	progress.Phase = "database"
-	emitArchiveProgress(options, progress)
-	if err := verifySQLite(databasePath); err != nil {
-		return ValidationReport{}, err
-	}
-	if err := validateArchiveDatabaseScope(ctx, databasePath, manifest); err != nil {
-		return ValidationReport{}, err
-	}
-
-	return archiveValidationReport(manifest, options), nil
+	return verifyArchive(ctx, archivePath, options, databasePath, func(name string, _ os.FileMode) (*os.File, error) {
+		if name != databaseArchivePath {
+			return nil, nil
+		}
+		return os.OpenFile(databasePath, os.O_WRONLY|os.O_TRUNC, 0)
+	})
 }
 
 // VerifyAndExtractArchive validates the archive while writing the exact bytes
@@ -366,6 +300,30 @@ func VerifyAndExtractArchive(
 	archivePath string,
 	stageRoot string,
 	options VerifyOptions,
+) (ValidationReport, error) {
+	databasePath := filepath.Join(stageRoot, filepath.FromSlash(databaseArchivePath))
+	return verifyArchive(ctx, archivePath, options, databasePath, func(name string, mode os.FileMode) (*os.File, error) {
+		target := filepath.Join(stageRoot, filepath.FromSlash(name))
+		relative, err := filepath.Rel(stageRoot, target)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("backup: restore path escapes staging directory: %q", name)
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			return nil, err
+		}
+		return os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+	})
+}
+
+// verifyArchive streams every manifest entry through its SHA-256 check. open
+// returns where an entry's verified bytes are written, or nil to discard them;
+// the database entry must be written to databasePath.
+func verifyArchive(
+	ctx context.Context,
+	archivePath string,
+	options VerifyOptions,
+	databasePath string,
+	open func(name string, mode os.FileMode) (*os.File, error),
 ) (ValidationReport, error) {
 	reader, err := zip.OpenReader(archivePath)
 	if err != nil {
@@ -386,56 +344,44 @@ func VerifyAndExtractArchive(
 		if err := ctx.Err(); err != nil {
 			return ValidationReport{}, err
 		}
-		target := filepath.Join(stageRoot, filepath.FromSlash(name))
-		relative, err := filepath.Rel(stageRoot, target)
-		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-			return ValidationReport{}, fmt.Errorf("backup: restore path escapes staging directory: %q", name)
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-			return ValidationReport{}, err
-		}
 		mode := os.FileMode(expected[name].Mode).Perm()
 		if mode == 0 {
 			mode = 0o600
 		}
-		output, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+		output, err := open(name, mode)
 		if err != nil {
 			return ValidationReport{}, err
 		}
-		verifyErr := verifyArchiveEntry(
-			ctx,
-			name,
-			filesByName[name],
-			expected[name],
-			output,
-			func(bytes int64) {
-				progress.ProcessedBytes += bytes
-				emitArchiveProgress(options, progress)
-			},
-		)
-		syncErr := output.Sync()
-		closeErr := output.Close()
-		if verifyErr != nil || syncErr != nil || closeErr != nil {
-			_ = os.Remove(target)
-			for _, candidate := range []error{verifyErr, syncErr, closeErr} {
-				if candidate != nil {
-					return ValidationReport{}, candidate
+		var destination io.Writer
+		if output != nil {
+			destination = output
+		}
+		verifyErr := verifyArchiveEntry(ctx, name, filesByName[name], expected[name], destination, func(bytes int64) {
+			progress.ProcessedBytes += bytes
+			emitArchiveProgress(options, progress)
+		})
+		if output != nil {
+			syncErr := output.Sync()
+			closeErr := output.Close()
+			if err := errors.Join(verifyErr, syncErr, closeErr); err != nil {
+				_ = os.Remove(output.Name())
+				if verifyErr != nil {
+					return ValidationReport{}, verifyErr
 				}
+				return ValidationReport{}, err
 			}
+		} else if verifyErr != nil {
+			return ValidationReport{}, verifyErr
 		}
 		progress.ProcessedFiles++
 		emitArchiveProgress(options, progress)
 	}
 	progress.Phase = "database"
 	emitArchiveProgress(options, progress)
-	if err := verifySQLite(filepath.Join(stageRoot, "payload", "database.sqlite")); err != nil {
+	if err := verifySQLite(databasePath); err != nil {
 		return ValidationReport{}, err
 	}
-	if err := validateArchiveDatabaseScope(
-		ctx,
-		filepath.Join(stageRoot, "payload", "database.sqlite"),
-		manifest,
-	); err != nil {
+	if err := validateArchiveDatabaseScope(ctx, databasePath, manifest); err != nil {
 		return ValidationReport{}, err
 	}
 	return archiveValidationReport(manifest, options), nil
@@ -496,7 +442,7 @@ func validateArchiveMetadata(
 		if _, exists := expected[clean]; exists {
 			return Manifest{}, nil, nil, nil, fmt.Errorf("backup: manifest contains duplicate path %q", clean)
 		}
-		if entry.Size < 0 || !validSHA256(entry.SHA256) {
+		if entry.Size < 0 || !ValidSHA256(entry.SHA256) {
 			return Manifest{}, nil, nil, nil, fmt.Errorf("backup: invalid manifest metadata for %q", clean)
 		}
 		expected[clean] = entry
@@ -504,26 +450,10 @@ func validateArchiveMetadata(
 			return Manifest{}, nil, nil, nil, errors.New("backup: expanded size overflow")
 		}
 		declaredTotal += entry.Size
-		databaseDeclared = databaseDeclared || clean == "payload/database.sqlite"
-		switch {
-		case strings.HasPrefix(clean, "payload/previews/"):
-			if !(selection.CloudDrives || selection.CrawlerScripts || selection.UploadStorage || selection.LocalStorage) {
-				return Manifest{}, nil, nil, nil, errors.New("backup: preview assets are present without a selected video resource")
-			}
-		case strings.HasPrefix(clean, "payload/uploads/"):
-			if !selection.UploadStorage {
-				return Manifest{}, nil, nil, nil, errors.New("backup: upload assets are present although upload storage was not selected")
-			}
-		case strings.HasPrefix(clean, "payload/crawler-scripts/") ||
-			strings.HasPrefix(clean, "payload/scriptcrawlers/") ||
-			strings.HasPrefix(clean, "payload/spider91/"):
-			if !selection.CrawlerScripts {
-				return Manifest{}, nil, nil, nil, errors.New("backup: crawler assets are present although crawler scripts were not selected")
-			}
-		case strings.HasPrefix(clean, "payload/localstorage/"):
-			if !selection.LocalStorage {
-				return Manifest{}, nil, nil, nil, errors.New("backup: local storage assets are present although local storage was not selected")
-			}
+		if clean == databaseArchivePath {
+			databaseDeclared = true
+		} else if section, _, _ := payloadSection(clean); !payloadSectionSelected(section, selection) {
+			return Manifest{}, nil, nil, nil, fmt.Errorf("backup: %s assets are present although they were not selected", section)
 		}
 	}
 	if !databaseDeclared {
@@ -574,12 +504,11 @@ func validateArchiveMetadata(
 }
 
 func manifestRestoreOperationCount(manifest Manifest) int {
-	// WAL, shared-memory, and the database are always switched together.
+	// WAL, shared-memory, and the database are always switched together, and
+	// every included asset directory and local storage root is one switch.
 	count := 3 + len(manifest.LocalStorage)
-	for _, name := range []string{
-		"previews", "uploads", "crawler-scripts", "scriptcrawlers", "spider91",
-	} {
-		if manifestIncludes(manifest, name) {
+	for _, section := range manifest.Included {
+		if section != "database" && section != localStorageSection {
 			count++
 		}
 	}
@@ -756,33 +685,23 @@ func validateArchiveEntryCounts(regularFiles, directories int) error {
 }
 
 func validPayloadDirectory(name string) bool {
-	switch name {
-	case "payload", "payload/previews", "payload/uploads", "payload/crawler-scripts",
-		"payload/scriptcrawlers", "payload/spider91", "payload/localstorage":
+	if name == "payload" {
 		return true
-	default:
-		return strings.HasPrefix(name, "payload/previews/") ||
-			strings.HasPrefix(name, "payload/uploads/") ||
-			strings.HasPrefix(name, "payload/crawler-scripts/") ||
-			strings.HasPrefix(name, "payload/scriptcrawlers/") ||
-			strings.HasPrefix(name, "payload/spider91/") ||
-			strings.HasPrefix(name, "payload/localstorage/")
 	}
+	_, _, ok := payloadSection(name)
+	return ok
 }
 
 func validPayloadPath(name string) bool {
-	if name == "payload/database.sqlite" {
+	if name == databaseArchivePath {
 		return true
 	}
-	return strings.HasPrefix(name, "payload/previews/") ||
-		strings.HasPrefix(name, "payload/uploads/") ||
-		strings.HasPrefix(name, "payload/crawler-scripts/") ||
-		strings.HasPrefix(name, "payload/scriptcrawlers/") ||
-		strings.HasPrefix(name, "payload/spider91/") ||
-		strings.HasPrefix(name, "payload/localstorage/")
+	_, rest, ok := payloadSection(name)
+	return ok && rest != ""
 }
 
-func validSHA256(value string) bool {
+// ValidSHA256 reports whether value is a hex-encoded SHA-256 digest.
+func ValidSHA256(value string) bool {
 	if len(value) != sha256.Size*2 {
 		return false
 	}

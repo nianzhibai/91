@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -58,17 +57,13 @@ type Manager struct {
 	availableBytes func(string) (int64, error)
 
 	telegramFilesRoot func() string
+	uploads           *uploadRuntime
 
 	mu              sync.Mutex
 	current         *TaskStatus
 	currentCancel   context.CancelFunc
 	estimate        Estimate
 	estimateUntil   time.Time
-	uploadBusy      map[string]bool
-	uploadWriters   map[string]map[int]context.CancelFunc
-	uploadCanceling map[string]bool
-	uploadLocks     map[string]*uploadSessionLock
-	uploadProgress  map[string]OperationProgress
 	restoreBusy     bool
 	restoreProgress *OperationProgress
 	restoreBarrier  *catalog.WriteBarrier
@@ -78,12 +73,6 @@ type Manager struct {
 	runCtx    context.Context
 	runCancel context.CancelFunc
 	restart   chan struct{}
-}
-
-type sourceSpec struct {
-	name   string
-	source string
-	prefix string
 }
 
 func NewManager(cfg Config) (*Manager, error) {
@@ -113,26 +102,22 @@ func NewManager(cfg Config) (*Manager, error) {
 	dataRoot := runtimeStorage.DataDir
 	assetRoot := filepath.Dir(previewPath)
 	m := &Manager{
-		catalog:         cfg.Catalog,
-		appConfig:       cfg.AppConfig,
-		configPath:      configPath,
-		appVersion:      normalizedVersion(cfg.AppVersion),
-		dbPath:          dbPath,
-		previewPath:     previewPath,
-		dataRoot:        dataRoot,
-		assetRoot:       assetRoot,
-		backupDir:       filepath.Join(dataRoot, "backups"),
-		snapshotDir:     filepath.Join(dataRoot, ".backup-snapshots"),
-		restoreDir:      filepath.Join(dataRoot, restoreStageDirName),
-		restartManaged:  cfg.RestartManaged,
-		now:             cfg.Now,
-		availableBytes:  cfg.AvailableBytes,
-		uploadBusy:      make(map[string]bool),
-		uploadWriters:   make(map[string]map[int]context.CancelFunc),
-		uploadCanceling: make(map[string]bool),
-		uploadLocks:     make(map[string]*uploadSessionLock),
-		uploadProgress:  make(map[string]OperationProgress),
-		restart:         make(chan struct{}, 1),
+		catalog:        cfg.Catalog,
+		appConfig:      cfg.AppConfig,
+		configPath:     configPath,
+		appVersion:     normalizedVersion(cfg.AppVersion),
+		dbPath:         dbPath,
+		previewPath:    previewPath,
+		dataRoot:       dataRoot,
+		assetRoot:      assetRoot,
+		backupDir:      filepath.Join(dataRoot, "backups"),
+		snapshotDir:    filepath.Join(dataRoot, ".backup-snapshots"),
+		restoreDir:     filepath.Join(dataRoot, restoreStageDirName),
+		restartManaged: cfg.RestartManaged,
+		now:            cfg.Now,
+		availableBytes: cfg.AvailableBytes,
+		uploads:        newUploadRuntime(),
+		restart:        make(chan struct{}, 1),
 	}
 	m.telegramFilesRoot = cfg.TelegramFilesRoot
 	m.uploadRoot = filepath.Join(m.backupDir, ".uploads")
@@ -263,16 +248,8 @@ func (m *Manager) nowTime() time.Time {
 	return time.Now().UTC()
 }
 
-func (m *Manager) sourceSpecs() []sourceSpec {
-	return []sourceSpec{
-		{name: "previews", source: m.previewPath, prefix: "payload/previews"},
-		{name: "uploads", source: filepath.Join(m.assetRoot, "uploads"), prefix: "payload/uploads"},
-		{name: "crawler-scripts", source: filepath.Join(m.assetRoot, "crawler-scripts"), prefix: "payload/crawler-scripts"},
-		{name: "scriptcrawlers", source: filepath.Join(m.assetRoot, "scriptcrawlers"), prefix: "payload/scriptcrawlers"},
-		{name: "spider91", source: filepath.Join(m.assetRoot, "spider91"), prefix: "payload/spider91"},
-	}
-}
-
+// Estimate reports the size of a full backup for the overview page. Local
+// storage problems are ignored here and reported when a backup is created.
 func (m *Manager) Estimate(ctx context.Context) (Estimate, error) {
 	if m == nil {
 		return Estimate{}, errors.New("backup: manager is nil")
@@ -285,52 +262,10 @@ func (m *Manager) Estimate(ctx context.Context) (Estimate, error) {
 		return cached, nil
 	}
 	m.mu.Unlock()
-
-	var estimate Estimate
-	dbPaths := []string{
-		m.dbPath,
-		m.dbPath + "-wal",
-	}
-	for _, dbPath := range dbPaths {
-		info, err := os.Lstat(dbPath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return Estimate{}, err
-		}
-		if info.Mode().IsRegular() {
-			estimate.TotalBytes += info.Size()
-		}
-	}
-	// The archive contains one SQLite snapshot regardless of WAL presence.
-	estimate.FileCount = 1
-	for _, spec := range m.sourceSpecs() {
-		count, size, err := scanSource(ctx, spec.source)
-		if err != nil {
-			return Estimate{}, fmt.Errorf("backup: estimate %s: %w", spec.name, err)
-		}
-		estimate.FileCount += count
-		estimate.TotalBytes += size
-	}
-	tgCount, tgSize, err := m.catalog.TelegramLocalStorageSize(ctx)
+	estimate, err := m.estimateSelection(ctx, FullBackupSelection(), false)
 	if err != nil {
 		return Estimate{}, err
 	}
-	estimate.FileCount += tgCount
-	estimate.TotalBytes += tgSize
-	count, size, err := m.estimateLocalStorageResources(ctx, false)
-	if err != nil {
-		return Estimate{}, err
-	}
-	estimate.FileCount += count
-	estimate.TotalBytes += size
-	available, err := m.availableBytes(m.dataRoot)
-	if err != nil {
-		return Estimate{}, fmt.Errorf("backup: inspect available space: %w", err)
-	}
-	estimate.AvailableBytes = available
-	estimate.RequiredBytes = requiredBackupBytes(estimate.TotalBytes)
 	m.mu.Lock()
 	m.estimate = estimate
 	m.estimateUntil = now.Add(30 * time.Second)
@@ -338,14 +273,19 @@ func (m *Manager) Estimate(ctx context.Context) (Estimate, error) {
 	return estimate, nil
 }
 
-// EstimateForSelection keeps the preflight check conservative while avoiding
-// charging a partial backup for unrelated application asset roots. The final
-// task size is always replaced with the manifest size after snapshotting.
+// EstimateForSelection is the conservative preflight check for a backup. It
+// charges whole selected directories; the final task size is replaced with
+// the manifest size after snapshotting.
 func (m *Manager) EstimateForSelection(ctx context.Context, selection BackupSelection) (Estimate, error) {
 	if !selection.Any() {
 		return Estimate{}, ErrNoBackupContent
 	}
-	var estimate Estimate
+	return m.estimateSelection(ctx, selection, true)
+}
+
+func (m *Manager) estimateSelection(ctx context.Context, selection BackupSelection, strict bool) (Estimate, error) {
+	// The archive contains one SQLite snapshot regardless of WAL presence.
+	estimate := Estimate{FileCount: 1}
 	for _, databasePath := range []string{m.dbPath, m.dbPath + "-wal"} {
 		info, err := os.Lstat(databasePath)
 		if err != nil {
@@ -358,51 +298,30 @@ func (m *Manager) EstimateForSelection(ctx context.Context, selection BackupSele
 			estimate.TotalBytes += info.Size()
 		}
 	}
-	estimate.FileCount = 1
-	addSource := func(name, source string) error {
-		count, size, err := scanSource(ctx, source)
-		if err != nil {
-			return fmt.Errorf("backup: estimate %s: %w", name, err)
-		}
+	add := func(count int, size int64) {
 		estimate.FileCount += count
 		estimate.TotalBytes += size
-		return nil
 	}
-	if selection.CloudDrives || selection.CrawlerScripts || selection.UploadStorage || selection.LocalStorage {
-		if err := addSource("previews", m.previewPath); err != nil {
-			return Estimate{}, err
+	for _, source := range selectedAssetSources(selection) {
+		count, size, err := scanSource(ctx, m.assetPath(source.name))
+		if err != nil {
+			return Estimate{}, fmt.Errorf("backup: estimate %s: %w", source.name, err)
 		}
+		add(count, size)
 	}
 	if selection.UploadStorage {
 		count, size, err := m.catalog.TelegramLocalStorageSize(ctx)
 		if err != nil {
 			return Estimate{}, err
 		}
-		estimate.FileCount += count
-		estimate.TotalBytes += size
-
-		if err := addSource("uploads", filepath.Join(m.assetRoot, "uploads")); err != nil {
-			return Estimate{}, err
-		}
-	}
-	if selection.CrawlerScripts {
-		for _, spec := range []sourceSpec{
-			{name: "crawler-scripts", source: filepath.Join(m.assetRoot, "crawler-scripts")},
-			{name: "scriptcrawlers", source: filepath.Join(m.assetRoot, "scriptcrawlers")},
-			{name: "spider91", source: filepath.Join(m.assetRoot, "spider91")},
-		} {
-			if err := addSource(spec.name, spec.source); err != nil {
-				return Estimate{}, err
-			}
-		}
+		add(count, size)
 	}
 	if selection.LocalStorage {
-		count, size, err := m.estimateLocalStorageResources(ctx, true)
+		count, size, err := m.estimateLocalStorageResources(ctx, strict)
 		if err != nil {
 			return Estimate{}, err
 		}
-		estimate.FileCount += count
-		estimate.TotalBytes += size
+		add(count, size)
 	}
 	available, err := m.availableBytes(m.dataRoot)
 	if err != nil {
@@ -750,14 +669,15 @@ func (m *Manager) runBackup(ctx context.Context, id string, createdAt time.Time,
 	}
 	partPath := finalPath + ".part"
 	_ = os.Remove(partPath)
-	if err := writeArchive(ctx, partPath, snapshotRoot, manifest, func(fileBytes int64, fileDone bool) {
+	archiveHash, archiveSize, err := writeArchive(ctx, partPath, snapshotRoot, manifest, func(fileBytes int64, fileDone bool) {
 		m.updateTask(id, func(status *TaskStatus) {
 			status.ProcessedBytes += fileBytes
 			if fileDone {
 				status.ProcessedFiles++
 			}
 		})
-	}); err != nil {
+	})
+	if err != nil {
 		_ = os.Remove(partPath)
 		m.finishTask(id, taskEndState(ctx, "failed"), err)
 		return
@@ -769,12 +689,6 @@ func (m *Manager) runBackup(ctx context.Context, id string, createdAt time.Time,
 		TempDir:        m.snapshotDir,
 		AvailableBytes: estimate.AvailableBytes,
 	})
-	if err != nil {
-		_ = os.Remove(partPath)
-		m.finishTask(id, taskEndState(ctx, "failed"), err)
-		return
-	}
-	archiveHash, archiveSize, err := hashFile(ctx, partPath)
 	if err != nil {
 		_ = os.Remove(partPath)
 		m.finishTask(id, taskEndState(ctx, "failed"), err)
@@ -799,7 +713,7 @@ func (m *Manager) runBackup(ctx context.Context, id string, createdAt time.Time,
 		VerifiedAt: m.nowTime(),
 		Manifest:   report.Manifest,
 	}
-	_ = writeJSONAtomic(metaPath(finalPath), meta, 0o600)
+	_ = atomicfile.WriteJSON(metaPath(finalPath), meta, 0o600)
 	m.updateTask(id, func(status *TaskStatus) {
 		status.Name = name
 		status.ProcessedFiles = manifest.FileCount
@@ -829,9 +743,6 @@ func (m *Manager) createSnapshot(
 	if err := m.catalog.BackupTo(ctx, dbDestination); err != nil {
 		return snapshotSelectionState{}, err
 	}
-	if err := redactSnapshotDatabase(ctx, dbDestination, selection.UserInfo); err != nil {
-		return snapshotSelectionState{}, err
-	}
 	state, err := filterSnapshotDatabase(ctx, dbDestination, selection)
 	if err != nil {
 		return snapshotSelectionState{}, err
@@ -840,46 +751,25 @@ func (m *Manager) createSnapshot(
 		return snapshotSelectionState{}, err
 	}
 	selection = state.Selection
-	if selection.AllResources() {
-		for _, spec := range m.sourceSpecs() {
-			destination := filepath.Join(snapshotRoot, filepath.FromSlash(spec.prefix))
-			if err := snapshotSource(ctx, spec.source, destination); err != nil {
-				return snapshotSelectionState{}, fmt.Errorf("backup: snapshot %s: %w", spec.name, err)
-			}
-		}
-		if selection.LocalStorage {
-			if err := m.snapshotSelectedLocalStorage(ctx, snapshotRoot, state); err != nil {
+	// A backup of every resource keeps whole asset directories, so files that
+	// no live catalog row references, such as assets of soft-deleted videos,
+	// are preserved as well.
+	wholeDirectories := selection.AllResources()
+	for _, source := range selectedAssetSources(selection) {
+		if !wholeDirectories && source.snapshotSelected != nil {
+			if err := source.snapshotSelected(m, ctx, snapshotRoot, state); err != nil {
 				return snapshotSelectionState{}, err
 			}
+			continue
 		}
-	} else {
-		if selection.CloudDrives || selection.CrawlerScripts || selection.UploadStorage || selection.LocalStorage {
-			if err := m.snapshotSelectedPreviews(ctx, snapshotRoot, state); err != nil {
-				return snapshotSelectionState{}, err
-			}
+		destination := filepath.Join(snapshotRoot, "payload", source.name)
+		if err := snapshotSource(ctx, m.assetPath(source.name), destination); err != nil {
+			return snapshotSelectionState{}, fmt.Errorf("backup: snapshot %s: %w", source.name, err)
 		}
-		if selection.UploadStorage {
-			if err := m.snapshotSelectedUploads(ctx, snapshotRoot, state); err != nil {
-				return snapshotSelectionState{}, err
-			}
-		}
-		if selection.CrawlerScripts {
-			for _, spec := range []sourceSpec{
-				{name: "crawler-scripts", source: filepath.Join(m.assetRoot, "crawler-scripts"), prefix: "payload/crawler-scripts"},
-				{name: "spider91", source: filepath.Join(m.assetRoot, "spider91"), prefix: "payload/spider91"},
-			} {
-				if err := snapshotSource(ctx, spec.source, filepath.Join(snapshotRoot, filepath.FromSlash(spec.prefix))); err != nil {
-					return snapshotSelectionState{}, fmt.Errorf("backup: snapshot %s: %w", spec.name, err)
-				}
-			}
-			if err := m.snapshotSelectedCrawlerVideos(ctx, snapshotRoot, state); err != nil {
-				return snapshotSelectionState{}, err
-			}
-		}
-		if selection.LocalStorage {
-			if err := m.snapshotSelectedLocalStorage(ctx, snapshotRoot, state); err != nil {
-				return snapshotSelectionState{}, err
-			}
+	}
+	if selection.LocalStorage {
+		if err := m.snapshotSelectedLocalStorage(ctx, snapshotRoot, state); err != nil {
+			return snapshotSelectionState{}, err
 		}
 	}
 	if selection.UploadStorage {
@@ -1105,46 +995,6 @@ func randomID() (string, error) {
 	return hex.EncodeToString(bytes), nil
 }
 
-func writeJSONAtomic(filePath string, value any, mode os.FileMode) error {
-	data, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(filePath), 0o700); err != nil {
-		return err
-	}
-	directory := filepath.Dir(filePath)
-	temporary, err := os.CreateTemp(directory, "."+filepath.Base(filePath)+"-*.part")
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	removeTemporary := true
-	defer func() {
-		_ = temporary.Close()
-		if removeTemporary {
-			_ = os.Remove(temporaryPath)
-		}
-	}()
-	if err := temporary.Chmod(mode.Perm()); err != nil {
-		return err
-	}
-	if _, err := temporary.Write(append(data, '\n')); err != nil {
-		return err
-	}
-	if err := temporary.Sync(); err != nil {
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(temporaryPath, filePath); err != nil {
-		return err
-	}
-	removeTemporary = false
-	return atomicfile.SyncDirectory(directory)
-}
-
 func metaPath(archivePath string) string {
 	return archivePath + ".meta.json"
 }
@@ -1180,7 +1030,10 @@ func (m *Manager) cleanupInterrupted() error {
 		if entry.IsDir() {
 			continue
 		}
-		if strings.HasSuffix(strings.ToLower(entry.Name()), ".part") {
+		// Interrupted archive writes leave .part files and interrupted sidecar
+		// writes leave .tmp files.
+		name := strings.ToLower(entry.Name())
+		if strings.HasSuffix(name, ".part") || strings.HasSuffix(name, ".tmp") {
 			_ = os.Remove(filepath.Join(m.backupDir, entry.Name()))
 		}
 	}

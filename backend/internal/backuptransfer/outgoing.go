@@ -2,8 +2,6 @@ package backuptransfer
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"io"
 	"net/url"
@@ -53,7 +51,7 @@ func (m *Manager) CreateTransfer(ctx context.Context, input CreateTransferInput)
 	if err != nil {
 		return TransferJob{}, err
 	}
-	if record.VerificationStatus != "verified" || !validSHA256(record.SHA256) {
+	if record.VerificationStatus != "verified" || !backup.ValidSHA256(record.SHA256) {
 		return TransferJob{}, errors.New("只能发送已经完整校验的备份包")
 	}
 	id, err := randomOpaqueID()
@@ -855,9 +853,4 @@ func containsInt(values []int, expected int) bool {
 		}
 	}
 	return false
-}
-
-func validSHA256(value string) bool {
-	decoded, err := hex.DecodeString(strings.TrimSpace(value))
-	return err == nil && len(decoded) == sha256.Size
 }

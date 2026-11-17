@@ -42,15 +42,28 @@ func mergeSelectiveRestoreDatabase(
 		}
 	}()
 
+	if err := mergeArchivedTables(ctx, database, selection); err != nil {
+		return err
+	}
+	if _, err := database.ExecContext(ctx, `DETACH DATABASE backup_source`); err != nil {
+		return fmt.Errorf("backup: detach filtered backup database: %w", err)
+	}
+	detached = true
+	return verifySQLite(targetPath)
+}
+
+// mergeArchivedTables applies the catalogTables policy in one transaction:
+// target rows owned by the drives the archive replaces are cleared, archived
+// rows are imported, and secret target state is reset.
+func mergeArchivedTables(ctx context.Context, database *sql.DB, selection BackupSelection) error {
 	tx, err := database.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("backup: begin selective restore merge: %w", err)
 	}
-	rollback := func() { _ = tx.Rollback() }
+	defer tx.Rollback()
 
 	replacedDriveIDs, mergedDriveIDs, err := restoreTargetDriveSets(ctx, tx, selection)
 	if err != nil {
-		rollback()
 		return err
 	}
 	if selection.UploadStorage {
@@ -58,62 +71,54 @@ func mergeSelectiveRestoreDatabase(
 		mergedDriveIDs[catalog.TelegramLocalDriveID] = struct{}{}
 	}
 	if err := createTextSet(ctx, tx, "restore_replaced_drives", replacedDriveIDs); err != nil {
-		rollback()
 		return err
 	}
 	if err := createTextSet(ctx, tx, "restore_merged_drives", mergedDriveIDs); err != nil {
-		rollback()
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE restore_replaced_videos (id TEXT PRIMARY KEY)`); err != nil {
-		rollback()
-		return err
+	replaced := func(column string) string {
+		return quoteIdentifier(column) + ` IN (SELECT id FROM restore_replaced_drives)`
 	}
-	videoSelection := `drive_id IN (SELECT id FROM restore_replaced_drives)`
-	driveSelection := `drive_id IN (SELECT id FROM restore_replaced_drives)`
-	driveIDSelection := `id IN (SELECT id FROM restore_replaced_drives)`
 	if selection.AllResources() {
 		// A complete resource restore still replaces cloud and crawler resources,
 		// including orphan rows whose drive metadata disappeared. Upload storage is
 		// merged, while existing local storage stays target-owned; restored local
 		// content already has a newly generated drive identity.
-		videoSelection = `drive_id NOT IN (SELECT id FROM restore_merged_drives)`
-		driveSelection = `drive_id NOT IN (SELECT id FROM restore_merged_drives)`
-		driveIDSelection = `id NOT IN (SELECT id FROM restore_merged_drives)`
+		replaced = func(column string) string {
+			return quoteIdentifier(column) + ` NOT IN (SELECT id FROM restore_merged_drives)`
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE restore_replaced_videos (id TEXT PRIMARY KEY)`); err != nil {
+		return err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO restore_replaced_videos (id)
-		SELECT id FROM main.videos WHERE `+videoSelection); err != nil {
-		rollback()
+		SELECT id FROM main.videos WHERE `+replaced("drive_id")); err != nil {
 		return err
 	}
 
-	clearStatements := []string{
-		`DELETE FROM main.video_reaction_visits WHERE video_id IN (SELECT id FROM restore_replaced_videos)`,
-		`DELETE FROM main.video_shares WHERE video_id IN (SELECT id FROM restore_replaced_videos)`,
-		`DELETE FROM main.video_tags WHERE video_id IN (SELECT id FROM restore_replaced_videos)`,
-		`DELETE FROM main.videos WHERE id IN (SELECT id FROM restore_replaced_videos)`,
-		`DELETE FROM main.scans WHERE ` + driveSelection,
-		`DELETE FROM main.deleted_videos WHERE ` + driveSelection,
-		`DELETE FROM main.crawler_seen_sources WHERE ` + driveSelection,
-		`DELETE FROM main.crawler_discoveries WHERE ` + driveSelection,
-		`DELETE FROM main.crawler_tasks WHERE ` + driveSelection,
-		`DELETE FROM main.crawler_upload_tasks WHERE ` + driveSelection,
-		`DELETE FROM main.crawler_upload_results WHERE ` + driveSelection,
-
-		`DELETE FROM main.drives WHERE ` + driveIDSelection,
+	// Rows owned by replaced videos go first, the drives themselves last.
+	var clear []string
+	for _, table := range catalogTables {
+		if table.kind == videoRows {
+			clear = append(clear, `DELETE FROM main.`+quoteIdentifier(table.name)+
+				` WHERE video_id IN (SELECT id FROM restore_replaced_videos)`)
+		}
 	}
-	for _, statement := range clearStatements {
+	for _, table := range catalogTables {
+		if (table.kind == driveRows || table.kind == driveState) && table.name != "drives" {
+			clear = append(clear, `DELETE FROM main.`+quoteIdentifier(table.name)+` WHERE `+replaced(table.ownerColumn))
+		}
+	}
+	clear = append(clear, `DELETE FROM main.drives WHERE `+replaced("id"))
+	for _, statement := range clear {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
-			rollback()
 			return fmt.Errorf("backup: clear selected target rows: %w", err)
 		}
 	}
 	if err := validateRestoreDriveIdentityConflicts(ctx, tx); err != nil {
-		rollback()
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE restore_imported_videos (id TEXT PRIMARY KEY)`); err != nil {
-		rollback()
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -121,79 +126,43 @@ func mergeSelectiveRestoreDatabase(
 		SELECT source.id
 		  FROM backup_source.videos AS source
 		 WHERE NOT EXISTS (SELECT 1 FROM main.videos AS target WHERE target.id = source.id)`); err != nil {
-		rollback()
 		return fmt.Errorf("backup: identify imported videos: %w", err)
 	}
 
-	if err := copyCommonTableRows(ctx, tx, "drives", nil); err != nil {
-		rollback()
+	sourceTables, err := schemaTables(ctx, tx, "backup_source")
+	if err != nil {
 		return err
 	}
-	if err := copyCommonTableRows(ctx, tx, "videos", nil); err != nil {
-		rollback()
-		return err
-	}
-	if err := mergeVideoReactionVisits(ctx, tx); err != nil {
-		rollback()
-		return err
-	}
-	for _, table := range []string{"scans", "deleted_videos", "crawler_seen_sources", "crawler_discoveries", "crawler_tasks", "crawler_upload_tasks", "crawler_upload_results"} {
-		if err := copyCommonTableRows(ctx, tx, table, nil); err != nil {
-			rollback()
+	for _, table := range catalogTables {
+		if !table.includedIn(selection) {
+			continue
+		}
+		// Older archives predate some optional tables.
+		if _, ok := sourceTables[table.name]; !ok {
+			continue
+		}
+		merge := table.merge
+		if merge == nil {
+			name := table.name
+			merge = func(ctx context.Context, tx *sql.Tx) error {
+				return copyCommonTableRows(ctx, tx, name, nil)
+			}
+		}
+		if err := merge(ctx, tx); err != nil {
 			return err
 		}
 	}
-	if selection.AllResources() {
-		if err := mergeDuplicateRecords(ctx, tx); err != nil {
-			rollback()
-			return err
-		}
-	}
-	if err := mergeTags(ctx, tx); err != nil {
-		rollback()
-		return err
-	}
-	if err := mergeVideoTags(ctx, tx); err != nil {
-		rollback()
-		return err
-	}
-
-	if selection.UserInfo {
-		if err := mergeUsersByUsername(ctx, tx); err != nil {
-			rollback()
-			return err
-		}
-	}
-	if selection.UploadStorage {
-		if err := mergeRemoteUploadJobs(ctx, tx); err != nil {
-			rollback()
-			return err
-		}
-	}
-
-	// Sessions and shares are runtime state and are never imported.
-	for _, statement := range []string{
-		`DELETE FROM main.admin_sessions`,
-		`DELETE FROM main.telegram_receipts`,
-		`DELETE FROM main.telegram_media_group_updates`,
-		`UPDATE main.telegram_connections SET needs_reconnect=1`,
-		`INSERT INTO main.telegram_connections(bot_id,needs_reconnect) VALUES(0,1) ON CONFLICT(bot_id) DO UPDATE SET needs_reconnect=1`,
-		`DELETE FROM main.video_shares`,
-		`DELETE FROM main.shorts_feed_sessions`,
-	} {
-		if _, err := tx.ExecContext(ctx, statement); err != nil {
-			rollback()
-			return err
+	for _, table := range catalogTables {
+		for _, statement := range table.restoreReset {
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("backup: reset %s: %w", table.name, err)
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("backup: commit selective restore merge: %w", err)
 	}
-	if _, err := database.ExecContext(ctx, `DETACH DATABASE backup_source`); err != nil {
-		return fmt.Errorf("backup: detach filtered backup database: %w", err)
-	}
-	detached = true
-	return verifySQLite(targetPath)
+	return nil
 }
 
 func validateRestoreDriveIdentityConflicts(ctx context.Context, tx *sql.Tx) error {
@@ -343,6 +312,9 @@ UPDATE main.duplicate_records AS target
 	return err
 }
 
+// mergeRemoteUploadJobs imports upload history. The target assigns its own
+// sequence numbers, and jobs that were still in flight in the source cannot
+// resume on the target.
 func mergeRemoteUploadJobs(ctx context.Context, tx *sql.Tx) error {
 	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE restore_imported_upload_jobs (id TEXT PRIMARY KEY)`); err != nil {
 		return err
@@ -359,19 +331,25 @@ func mergeRemoteUploadJobs(ctx context.Context, tx *sql.Tx) error {
 	if err := copyCommonTableRows(ctx, tx, "remote_upload_jobs", map[string]struct{}{"sequence": {}}); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO main.telegram_files(bot_id,file_unique_id,file_id,job_id,video_id) SELECT bot_id,file_unique_id,'',job_id,video_id FROM backup_source.telegram_files WHERE video_id!='' AND video_id IN (SELECT id FROM main.videos)`); err != nil {
-		return err
-	}
 	now := timeNowMillis()
-	if _, err := tx.ExecContext(ctx, `UPDATE main.remote_upload_jobs
+	_, err := tx.ExecContext(ctx, `UPDATE main.remote_upload_jobs
 		 SET state = 'canceled', source_url = '', cancel_requested = 1,
 		     temp_file = '', final_file = '', error_message = '恢复时已取消',
 		     updated_at = ?, finished_at = ?
 		 WHERE id IN (SELECT id FROM restore_imported_upload_jobs)
-		   AND state IN ('queued', 'downloading', 'validating', 'saving')`, now, now); err != nil {
-		return err
-	}
-	return nil
+		   AND state IN ('queued', 'downloading', 'validating', 'saving')`, now, now)
+	return err
+}
+
+// mergeTelegramFiles imports the permanent Telegram file deduplication
+// anchors of restored videos. Downloadable file IDs are never archived.
+func mergeTelegramFiles(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT OR IGNORE INTO main.telegram_files (bot_id, file_unique_id, file_id, job_id, video_id)
+		SELECT bot_id, file_unique_id, '', job_id, video_id
+		  FROM backup_source.telegram_files
+		 WHERE video_id != '' AND video_id IN (SELECT id FROM main.videos)`)
+	return err
 }
 
 // mergeUsersByUsername imports only source accounts that do not already exist

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/nianzhibai/91/backend/internal/atomicfile"
 )
 
 // AppliedRestore is returned during startup after all restored paths have been
@@ -72,7 +74,7 @@ func ApplyPendingRestore(dataRoot string) (*AppliedRestore, error) {
 	for index := range marker.Operations {
 		if err := applyRestoreOperation(markerPath, &marker, index); err != nil {
 			marker.LastError = err.Error()
-			_ = writeJSONAtomic(markerPath, marker, 0o600)
+			_ = atomicfile.WriteJSON(markerPath, marker, 0o600)
 			if rollbackErr := rollbackRestoreMarker(markerPath, &marker, err); rollbackErr != nil {
 				return nil, fmt.Errorf("backup: apply restore: %v; rollback also failed: %w", err, rollbackErr)
 			}
@@ -80,7 +82,7 @@ func ApplyPendingRestore(dataRoot string) (*AppliedRestore, error) {
 		}
 	}
 	marker.State = "applied"
-	if err := writeJSONAtomic(markerPath, marker, 0o600); err != nil {
+	if err := atomicfile.WriteJSON(markerPath, marker, 0o600); err != nil {
 		if rollbackErr := rollbackRestoreMarker(markerPath, &marker, err); rollbackErr != nil {
 			return nil, fmt.Errorf("backup: persist applied restore: %v; rollback also failed: %w", err, rollbackErr)
 		}
@@ -116,7 +118,7 @@ func CommitAppliedRestore(applied *AppliedRestore) error {
 		RestoredAt: time.Now().UTC(),
 		Report:     marker.Report,
 	}
-	if err := writeJSONAtomic(reportPath, result, 0o600); err != nil {
+	if err := atomicfile.WriteJSON(reportPath, result, 0o600); err != nil {
 		return err
 	}
 	if err := os.Remove(applied.markerPath); err != nil && !os.IsNotExist(err) {
@@ -232,12 +234,12 @@ func applyRestoreOperation(markerPath string, marker *restoreMarker, index int) 
 		if operation.Kind == "remove" && !targetExists {
 			operation.HadTarget = rollbackExists
 			operation.State = "applied"
-			return writeJSONAtomic(markerPath, marker, 0o600)
+			return atomicfile.WriteJSON(markerPath, marker, 0o600)
 		}
 		if targetExists {
 			operation.HadTarget = rollbackExists
 			operation.State = "applied"
-			return writeJSONAtomic(markerPath, marker, 0o600)
+			return atomicfile.WriteJSON(markerPath, marker, 0o600)
 		}
 		return fmt.Errorf("backup: staged %s is missing", operation.Name)
 	}
@@ -250,7 +252,7 @@ func applyRestoreOperation(markerPath string, marker *restoreMarker, index int) 
 		}
 		operation.HadTarget = true
 		operation.State = "target-moved"
-		if err := writeJSONAtomic(markerPath, marker, 0o600); err != nil {
+		if err := atomicfile.WriteJSON(markerPath, marker, 0o600); err != nil {
 			return err
 		}
 	} else if rollbackExists {
@@ -264,13 +266,13 @@ func applyRestoreOperation(markerPath string, marker *restoreMarker, index int) 
 			return fmt.Errorf("backup: remove %s staging marker: %w", operation.Name, err)
 		}
 		operation.State = "applied"
-		return writeJSONAtomic(markerPath, marker, 0o600)
+		return atomicfile.WriteJSON(markerPath, marker, 0o600)
 	}
 	if err := os.Rename(operation.Staged, operation.Target); err != nil {
 		return fmt.Errorf("backup: activate restored %s: %w", operation.Name, err)
 	}
 	operation.State = "applied"
-	return writeJSONAtomic(markerPath, marker, 0o600)
+	return atomicfile.WriteJSON(markerPath, marker, 0o600)
 }
 
 func rollbackRestoreMarker(markerPath string, marker *restoreMarker, cause error) error {
@@ -278,7 +280,7 @@ func rollbackRestoreMarker(markerPath string, marker *restoreMarker, cause error
 		marker.LastError = cause.Error()
 	}
 	marker.State = "rolling-back"
-	if err := writeJSONAtomic(markerPath, marker, 0o600); err != nil {
+	if err := atomicfile.WriteJSON(markerPath, marker, 0o600); err != nil {
 		return fmt.Errorf("backup: persist rollback intent: %w", err)
 	}
 
@@ -293,23 +295,23 @@ func rollbackRestoreMarker(markerPath string, marker *restoreMarker, cause error
 			continue
 		}
 		operation.State = "rolledback"
-		if err := writeJSONAtomic(markerPath, marker, 0o600); err != nil {
+		if err := atomicfile.WriteJSON(markerPath, marker, 0o600); err != nil {
 			rollbackErrors = append(rollbackErrors, operation.Name+": persist state: "+err.Error())
 			break
 		}
 	}
 	if len(rollbackErrors) > 0 {
 		marker.State = "rollback-failed"
-		_ = writeJSONAtomic(markerPath, marker, 0o600)
+		_ = atomicfile.WriteJSON(markerPath, marker, 0o600)
 		return errors.New(strings.Join(rollbackErrors, "; "))
 	}
 	marker.State = "rolledback"
-	_ = writeJSONAtomic(markerPath, marker, 0o600)
+	_ = atomicfile.WriteJSON(markerPath, marker, 0o600)
 	failurePath := filepath.Join(
 		filepath.Dir(markerPath),
 		"last-restore-failure.json",
 	)
-	_ = writeJSONAtomic(failurePath, marker, 0o600)
+	_ = atomicfile.WriteJSON(failurePath, marker, 0o600)
 	if err := cleanupRolledBackRestore(*marker); err != nil {
 		return fmt.Errorf("backup: cleanup rejected restored data: %w", err)
 	}

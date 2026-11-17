@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nianzhibai/91/backend/internal/atomicfile"
 	"github.com/nianzhibai/91/backend/internal/backup"
 )
 
@@ -195,7 +196,7 @@ func (m *Manager) loadIdentity() error {
 			return err
 		}
 		identity = serverIdentity{ID: id, CreatedAt: m.nowTime()}
-		if err := writeJSONAtomic(m.identityPath, identity); err != nil {
+		if err := atomicfile.WriteJSON(m.identityPath, identity, 0o600); err != nil {
 			return fmt.Errorf("backup transfer: write server identity: %w", err)
 		}
 	}
@@ -223,7 +224,7 @@ func (m *Manager) loadReceiver() error {
 	now := m.nowTime()
 	changed := false
 	for id, token := range state.Tokens {
-		if !validOpaqueID(id) || token.ID != id || !validSHA256(token.Hash) ||
+		if !validOpaqueID(id) || token.ID != id || !backup.ValidSHA256(token.Hash) ||
 			token.CreatedAt.IsZero() || token.ExpiresAt.IsZero() ||
 			token.ExpiresAt.Before(token.CreatedAt) ||
 			!token.boundTransferIDIsValid() {
@@ -371,7 +372,7 @@ func (m *Manager) loadJobs() error {
 
 func (m *Manager) validateStoredJob(id string, job *storedTransferJob) error {
 	if job == nil || job.ID != id || !validOpaqueID(job.ID) || strings.TrimSpace(job.BackupID) == "" ||
-		strings.TrimSpace(job.BackupName) == "" || job.Size <= 0 || !validSHA256(job.SHA256) ||
+		strings.TrimSpace(job.BackupName) == "" || job.Size <= 0 || !backup.ValidSHA256(job.SHA256) ||
 		job.CreatedAt.IsZero() || job.UpdatedAt.IsZero() || job.UpdatedAt.Before(job.CreatedAt) ||
 		job.ProcessedBytes < 0 || job.ProcessedBytes > job.Size || job.TotalRanges < 0 ||
 		job.ProcessedRanges < 0 || job.ProcessedRanges > job.TotalRanges ||

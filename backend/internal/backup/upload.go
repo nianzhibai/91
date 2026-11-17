@@ -13,20 +13,19 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/nianzhibai/91/backend/internal/atomicfile"
 )
 
+// Upload sessions write into one preallocated part file. Browser sessions use
+// fixed ChunkSize chunks; server-to-server sessions use negotiated ranges and
+// declare the whole-archive hash up front.
 const (
-	uploadStoragePartV1  = "part-v1"
-	uploadStoragePartV2  = "part-v2"
-	uploadStorageRangeV2 = "range-v2"
-	minUploadRangeSize   = int64(16 << 20)
-	maxUploadRangeSize   = int64(1 << 30)
+	uploadStoragePart  = "part-v2"
+	uploadStorageRange = "range-v2"
+	minUploadRangeSize = int64(16 << 20)
+	maxUploadRangeSize = int64(1 << 30)
 )
-
-type uploadSessionLock struct {
-	mu   sync.Mutex
-	refs int
-}
 
 type storedUploadSession struct {
 	ID            string              `json:"id"`
@@ -47,7 +46,7 @@ func (m *Manager) BeginUpload(ctx context.Context, input BeginUploadInput) (Uplo
 	// durability checkpoints are present. SHA256 on BeginUploadInput is reserved
 	// for BeginRangeUpload's trusted server-transfer contract.
 	input.SHA256 = ""
-	return m.beginUpload(ctx, input, ChunkSize, uploadStoragePartV2)
+	return m.beginUpload(ctx, input, ChunkSize, uploadStoragePart)
 }
 
 // BeginRangeUpload creates the preallocated staging file used by trusted
@@ -65,7 +64,7 @@ func (m *Manager) BeginRangeUpload(
 	if strings.TrimSpace(input.SHA256) == "" {
 		return UploadSession{}, errors.New("服务器直传必须提供完整备份 SHA-256")
 	}
-	return m.beginUpload(ctx, input, rangeSize, uploadStorageRangeV2)
+	return m.beginUpload(ctx, input, rangeSize, uploadStorageRange)
 }
 
 func (m *Manager) beginUpload(
@@ -86,7 +85,7 @@ func (m *Manager) beginUpload(
 		return UploadSession{}, errors.New("备份文件大小无效")
 	}
 	input.SHA256 = strings.ToLower(strings.TrimSpace(input.SHA256))
-	if input.SHA256 != "" && !validSHA256(input.SHA256) {
+	if input.SHA256 != "" && !ValidSHA256(input.SHA256) {
 		return UploadSession{}, errors.New("备份文件 SHA-256 无效")
 	}
 	available, err := m.availableBytes(m.dataRoot)
@@ -122,7 +121,7 @@ func (m *Manager) beginUpload(
 		CreatedAt:     created,
 		ExpiresAt:     created.Add(UploadTTL),
 	}
-	unlock := m.lockUpload(id)
+	unlock := m.uploads.lock(id)
 	defer unlock()
 	dir := m.uploadDir(id)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -144,7 +143,7 @@ func (m *Manager) beginUpload(
 			}
 		}
 	}
-	if err := writeJSONAtomic(m.uploadSidecar(id), stored, 0o600); err != nil {
+	if err := atomicfile.WriteJSON(m.uploadSidecar(id), stored, 0o600); err != nil {
 		_ = os.RemoveAll(dir)
 		return UploadSession{}, err
 	}
@@ -168,7 +167,7 @@ func (m *Manager) UploadStatus(id string) (UploadSession, error) {
 		return UploadSession{}, ErrUploadNotFound
 	}
 	session := publicUploadSession(stored)
-	session.Progress = m.uploadProgressSnapshot(id)
+	session.Progress = m.uploads.progressSnapshot(id)
 	return session, nil
 }
 
@@ -208,17 +207,21 @@ func (m *Manager) putUploadChunk(
 		return UploadSession{}, false, ErrUploadNotFound
 	}
 
-	unlock := m.lockUpload(id)
+	storageFormat := uploadStoragePart
+	if serverRange {
+		storageFormat = uploadStorageRange
+	}
+	unlock := m.uploads.lock(id)
 	stored, err := m.loadUpload(id)
 	if err != nil {
 		unlock()
 		return UploadSession{}, false, err
 	}
-	if serverRange && stored.StorageFormat != uploadStorageRangeV2 {
+	if serverRange && stored.StorageFormat != uploadStorageRange {
 		unlock()
 		return UploadSession{}, false, errors.New("该上传会话不支持服务器区间直传")
 	}
-	if !serverRange && stored.StorageFormat == uploadStorageRangeV2 {
+	if !serverRange && stored.StorageFormat != uploadStoragePart {
 		unlock()
 		return UploadSession{}, false, errors.New("服务器直传会话不能使用浏览器分片接口")
 	}
@@ -231,16 +234,9 @@ func (m *Manager) putUploadChunk(
 		_ = m.CancelUpload(id)
 		return UploadSession{}, false, ErrUploadNotFound
 	}
-	if err := m.ensureAssembledUpload(ctx, id, &stored); err != nil {
+	if err := m.checkUploadPart(&stored); err != nil {
 		unlock()
 		return UploadSession{}, false, err
-	}
-	if !serverRange && stored.StorageFormat == uploadStoragePartV1 {
-		stored.StorageFormat = uploadStoragePartV2
-		if err := writeJSONAtomic(m.uploadSidecar(id), stored, 0o600); err != nil {
-			unlock()
-			return UploadSession{}, false, err
-		}
 	}
 	expectedSize, ok := uploadChunkSize(stored, index)
 	if !ok {
@@ -249,7 +245,7 @@ func (m *Manager) putUploadChunk(
 	}
 	if _, committed := stored.Received[index]; committed {
 		stored.ExpiresAt = m.nowTime().Add(UploadTTL)
-		if err := writeJSONAtomic(m.uploadSidecar(id), stored, 0o600); err != nil {
+		if err := atomicfile.WriteJSON(m.uploadSidecar(id), stored, 0o600); err != nil {
 			unlock()
 			return UploadSession{}, false, err
 		}
@@ -258,22 +254,6 @@ func (m *Manager) putUploadChunk(
 		return result, false, nil
 	}
 
-	m.mu.Lock()
-	if m.uploadBusy[id] || m.uploadCanceling[id] {
-		m.mu.Unlock()
-		unlock()
-		return UploadSession{}, false, ErrUploadNotFound
-	}
-	writers := m.uploadWriters[id]
-	if writers == nil {
-		writers = make(map[int]context.CancelFunc)
-		m.uploadWriters[id] = writers
-	}
-	if _, active := writers[index]; active {
-		m.mu.Unlock()
-		unlock()
-		return UploadSession{}, false, ErrUploadRangeBusy
-	}
 	writeCtx, cancelContext := context.WithCancel(ctx)
 	var cancelOnce sync.Once
 	cancelWrite := context.CancelFunc(func() {
@@ -284,8 +264,11 @@ func (m *Manager) putUploadChunk(
 			}
 		})
 	})
-	writers[index] = cancelWrite
-	m.mu.Unlock()
+	if err := m.uploads.beginWrite(id, index, cancelWrite); err != nil {
+		cancelContext()
+		unlock()
+		return UploadSession{}, false, err
+	}
 	unlock()
 	defer cancelContext()
 	defer m.finishRangeWrite(id, index)
@@ -328,23 +311,16 @@ func (m *Manager) putUploadChunk(
 		return UploadSession{}, false, closeErr
 	}
 
-	unlock = m.lockUpload(id)
+	unlock = m.uploads.lock(id)
 	defer unlock()
-	m.mu.Lock()
-	canceling := m.uploadCanceling[id]
-	m.mu.Unlock()
-	if canceling {
+	if m.uploads.isCanceling(id) {
 		return UploadSession{}, false, ErrUploadNotFound
 	}
 	latest, err := m.loadUpload(id)
 	if err != nil {
 		return UploadSession{}, false, err
 	}
-	validStorage := latest.StorageFormat == uploadStorageRangeV2
-	if !serverRange {
-		validStorage = latest.StorageFormat == uploadStoragePartV2
-	}
-	if !validStorage || latest.State != "uploading" {
+	if latest.StorageFormat != storageFormat || latest.State != "uploading" {
 		return UploadSession{}, false, ErrUploadFinalizing
 	}
 	if existing, committed := latest.Received[index]; committed {
@@ -355,23 +331,14 @@ func (m *Manager) putUploadChunk(
 	}
 	latest.Received[index] = UploadChunk{Index: index, Size: expectedSize}
 	latest.ExpiresAt = m.nowTime().Add(UploadTTL)
-	if err := writeJSONAtomic(m.uploadSidecar(id), latest, 0o600); err != nil {
+	if err := atomicfile.WriteJSON(m.uploadSidecar(id), latest, 0o600); err != nil {
 		return UploadSession{}, false, err
 	}
 	return publicUploadSession(latest), true, nil
 }
 
 func (m *Manager) finishRangeWrite(id string, index int) {
-	m.mu.Lock()
-	writers := m.uploadWriters[id]
-	delete(writers, index)
-	cleanup := false
-	if len(writers) == 0 {
-		delete(m.uploadWriters, id)
-		cleanup = m.uploadCanceling[id]
-	}
-	m.mu.Unlock()
-	if cleanup {
+	if m.uploads.endWrite(id, index) {
 		_ = m.finishCanceledUpload(id)
 	}
 }
@@ -386,141 +353,23 @@ func (m *Manager) FindImportedUpload(ctx context.Context, id string) (BackupReco
 	return m.recoverFinalizedUpload(ctx, id)
 }
 
-func (m *Manager) ensureAssembledUpload(
-	ctx context.Context,
-	id string,
-	stored *storedUploadSession,
-) error {
-	partPath := m.uploadPartPath(id)
-	switch stored.StorageFormat {
-	case uploadStoragePartV1, uploadStoragePartV2, uploadStorageRangeV2:
-		info, err := os.Stat(partPath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return errors.New("迁移上传暂存文件缺失")
-			}
-			return err
-		}
-		if !info.Mode().IsRegular() {
-			return errors.New("迁移上传暂存文件大小异常")
-		}
-		if info.Size() != stored.Size {
-			return m.resetAssembledUpload(stored)
-		}
-		return nil
-	case "":
-		// Legacy sessions stored one file per received chunk.
-		// Convert them once, keeping the old chunks authoritative until the new
-		// part file and sidecar have both been published.
-	default:
-		return errors.New("迁移上传存储格式不受支持")
-	}
-
-	migrationPath := partPath + ".migrating"
-	_ = os.Remove(migrationPath)
-	output, err := os.OpenFile(migrationPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+// checkUploadPart verifies that the preallocated part file still has its
+// declared size. A truncated or replaced file invalidates every checkpoint.
+func (m *Manager) checkUploadPart(stored *storedUploadSession) error {
+	info, err := os.Stat(m.uploadPartPath(stored.ID))
 	if err != nil {
+		if os.IsNotExist(err) {
+			return errors.New("迁移上传暂存文件缺失")
+		}
 		return err
 	}
-	completed := false
-	defer func() {
-		_ = output.Close()
-		if !completed {
-			_ = os.Remove(migrationPath)
-		}
-	}()
-	if err := output.Truncate(stored.Size); err != nil {
-		return err
+	if !info.Mode().IsRegular() {
+		return errors.New("迁移上传暂存文件大小异常")
 	}
-	indexes := make([]int, 0, len(stored.Received))
-	for index := range stored.Received {
-		indexes = append(indexes, index)
+	if info.Size() != stored.Size {
+		return m.resetAssembledUpload(stored)
 	}
-	sort.Ints(indexes)
-	for _, index := range indexes {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		expected := stored.Received[index]
-		chunk, err := os.Open(m.uploadChunkPath(id, index))
-		if err != nil {
-			if os.IsNotExist(err) {
-				return m.invalidateLegacyChunk(stored, index, "分片文件缺失")
-			}
-			return err
-		}
-		if _, err := output.Seek(int64(index)*stored.ChunkSize, io.SeekStart); err != nil {
-			_ = chunk.Close()
-			return err
-		}
-		written, copyErr := copyWithContext(ctx, output, chunk, nil)
-		closeErr := chunk.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		if closeErr != nil {
-			return closeErr
-		}
-		if written != expected.Size {
-			return m.invalidateLegacyChunk(stored, index, "大小不匹配")
-		}
-	}
-	if err := output.Sync(); err != nil {
-		return err
-	}
-	if err := output.Close(); err != nil {
-		return err
-	}
-	if err := os.Remove(partPath); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	if err := os.Rename(migrationPath, partPath); err != nil {
-		return err
-	}
-	oldFormat := stored.StorageFormat
-	stored.StorageFormat = uploadStoragePartV2
-	if err := writeJSONAtomic(m.uploadSidecar(id), stored, 0o600); err != nil {
-		stored.StorageFormat = oldFormat
-		return err
-	}
-	completed = true
-	m.removeLegacyChunkFiles(id)
 	return nil
-}
-
-func (m *Manager) invalidateLegacyChunk(stored *storedUploadSession, index int, reason string) error {
-	delete(stored.Received, index)
-	stored.State = "uploading"
-	if err := writeJSONAtomic(m.uploadSidecar(stored.ID), stored, 0o600); err != nil {
-		return fmt.Errorf("迁移上传分片 %d %s，且更新续传状态失败: %w", index, reason, err)
-	}
-	return fmt.Errorf("迁移上传分片 %d %s，请重新上传", index, reason)
-}
-
-func (m *Manager) removeLegacyChunkFiles(id string) {
-	entries, err := os.ReadDir(m.uploadDir(id))
-	if err != nil {
-		return
-	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".chunk") {
-			continue
-		}
-		base := strings.TrimSuffix(entry.Name(), ".chunk")
-		if len(base) != 8 {
-			continue
-		}
-		valid := true
-		for _, character := range base {
-			if character < '0' || character > '9' {
-				valid = false
-				break
-			}
-		}
-		if valid {
-			_ = os.Remove(filepath.Join(m.uploadDir(id), entry.Name()))
-		}
-	}
 }
 
 func (m *Manager) verifyAssembledUpload(
@@ -570,7 +419,7 @@ func (m *Manager) resetAssembledUpload(stored *storedUploadSession) error {
 	}
 	stored.Received = make(map[int]UploadChunk)
 	stored.State = "uploading"
-	if err := writeJSONAtomic(m.uploadSidecar(stored.ID), stored, 0o600); err != nil {
+	if err := atomicfile.WriteJSON(m.uploadSidecar(stored.ID), stored, 0o600); err != nil {
 		return err
 	}
 	return errors.New("迁移上传暂存文件大小异常，请重新上传")
@@ -584,24 +433,18 @@ func (m *Manager) FinalizeUpload(
 	if !validUploadID(id) {
 		return BackupRecord{}, ErrUploadNotFound
 	}
-	unlock := m.lockUpload(id)
+	unlock := m.uploads.lock(id)
 	defer unlock()
-	m.mu.Lock()
-	if m.uploadBusy[id] || m.uploadCanceling[id] || len(m.uploadWriters[id]) > 0 {
-		m.mu.Unlock()
-		return BackupRecord{}, ErrUploadFinalizing
+	if err := m.uploads.beginFinalize(id); err != nil {
+		return BackupRecord{}, err
 	}
-	m.uploadBusy[id] = true
-	m.mu.Unlock()
 	defer func() {
-		m.mu.Lock()
-		delete(m.uploadBusy, id)
-		m.mu.Unlock()
+		m.uploads.endFinalize(id)
 		if returnErr != nil {
 			latest, err := m.loadUpload(id)
 			if err == nil {
 				latest.State = "uploading"
-				_ = writeJSONAtomic(m.uploadSidecar(id), latest, 0o600)
+				_ = atomicfile.WriteJSON(m.uploadSidecar(id), latest, 0o600)
 			}
 		}
 	}()
@@ -609,12 +452,12 @@ func (m *Manager) FinalizeUpload(
 	if err != nil {
 		return BackupRecord{}, err
 	}
-	m.setUploadProgress(id, OperationProgress{
+	m.uploads.setProgress(id, OperationProgress{
 		Phase:      "preparing",
 		TotalBytes: stored.Size,
 		TotalFiles: stored.TotalChunks,
 	})
-	defer m.clearUploadProgress(id)
+	defer m.uploads.clearProgress(id)
 	if len(stored.Received) != stored.TotalChunks {
 		return BackupRecord{}, ErrUploadIncomplete
 	}
@@ -624,18 +467,15 @@ func (m *Manager) FinalizeUpload(
 		}
 	}
 	expectedSHA256 = strings.ToLower(strings.TrimSpace(expectedSHA256))
-	if !validSHA256(expectedSHA256) {
+	if !ValidSHA256(expectedSHA256) {
 		return BackupRecord{}, errors.New("必须提供完整备份包的 SHA-256")
 	}
 	if stored.SHA256 != "" && !strings.EqualFold(stored.SHA256, expectedSHA256) {
 		return BackupRecord{}, errors.New("完整备份包 SHA-256 与上传会话不一致")
 	}
 	stored.SHA256 = expectedSHA256
-	if stored.StorageFormat == uploadStoragePartV1 {
-		stored.StorageFormat = uploadStoragePartV2
-	}
 	stored.State = "finalizing"
-	if err := writeJSONAtomic(m.uploadSidecar(id), stored, 0o600); err != nil {
+	if err := atomicfile.WriteJSON(m.uploadSidecar(id), stored, 0o600); err != nil {
 		return BackupRecord{}, err
 	}
 	if recovered, ok, err := m.recoverFinalizedUpload(ctx, id); err != nil {
@@ -644,7 +484,7 @@ func (m *Manager) FinalizeUpload(
 		if !strings.EqualFold(recovered.SHA256, expectedSHA256) {
 			return BackupRecord{}, errors.New("已入库备份的 SHA-256 与上传文件不一致")
 		}
-		m.setUploadProgress(id, OperationProgress{
+		m.uploads.setProgress(id, OperationProgress{
 			Phase:          "publishing",
 			ProcessedBytes: stored.Size,
 			TotalBytes:     stored.Size,
@@ -654,16 +494,16 @@ func (m *Manager) FinalizeUpload(
 		_ = os.RemoveAll(m.uploadDir(id))
 		return recovered, nil
 	}
-	if err := m.ensureAssembledUpload(ctx, id, &stored); err != nil {
+	if err := m.checkUploadPart(&stored); err != nil {
 		return BackupRecord{}, err
 	}
-	m.setUploadProgress(id, OperationProgress{
+	m.uploads.setProgress(id, OperationProgress{
 		Phase:      "hashing",
 		TotalBytes: stored.Size,
 		TotalFiles: stored.TotalChunks,
 	})
 	archiveHash, err := m.verifyAssembledUpload(ctx, id, &stored, func(processed int64) {
-		m.setUploadProgress(id, OperationProgress{
+		m.uploads.setProgress(id, OperationProgress{
 			Phase:          "hashing",
 			ProcessedBytes: processed,
 			TotalBytes:     stored.Size,
@@ -691,7 +531,7 @@ func (m *Manager) FinalizeUpload(
 	if err != nil {
 		return BackupRecord{}, err
 	}
-	m.setUploadProgress(id, OperationProgress{
+	m.uploads.setProgress(id, OperationProgress{
 		Phase:          "inspecting-archive",
 		ProcessedBytes: stored.Size,
 		TotalBytes:     stored.Size,
@@ -709,13 +549,13 @@ func (m *Manager) FinalizeUpload(
 			default:
 				progress.Phase = "verifying-archive"
 			}
-			m.setUploadProgress(id, progress)
+			m.uploads.setProgress(id, progress)
 		},
 	})
 	if err != nil {
 		return BackupRecord{}, err
 	}
-	m.setUploadProgress(id, OperationProgress{
+	m.uploads.setProgress(id, OperationProgress{
 		Phase:          "publishing",
 		ProcessedBytes: report.Manifest.TotalSize,
 		TotalBytes:     report.Manifest.TotalSize,
@@ -741,7 +581,7 @@ func (m *Manager) FinalizeUpload(
 		UploadID:   id,
 		Manifest:   report.Manifest,
 	}
-	if err := writeJSONAtomic(metaPath(finalPath), meta, 0o600); err != nil {
+	if err := atomicfile.WriteJSON(metaPath(finalPath), meta, 0o600); err != nil {
 		_ = os.Rename(finalPath, partPath)
 		return BackupRecord{}, err
 	}
@@ -765,10 +605,7 @@ func (m *Manager) FinalizeUpload(
 func (m *Manager) invalidateUploadCheckpoints(stored *storedUploadSession, message string) error {
 	stored.Received = make(map[int]UploadChunk)
 	stored.State = "uploading"
-	if stored.StorageFormat == uploadStoragePartV1 {
-		stored.StorageFormat = uploadStoragePartV2
-	}
-	if err := writeJSONAtomic(m.uploadSidecar(stored.ID), stored, 0o600); err != nil {
+	if err := atomicfile.WriteJSON(m.uploadSidecar(stored.ID), stored, 0o600); err != nil {
 		return errors.Join(errors.New(message), err)
 	}
 	return errors.New(message)
@@ -778,71 +615,49 @@ func (m *Manager) CancelUpload(id string) error {
 	if !validUploadID(id) {
 		return ErrUploadNotFound
 	}
-	m.mu.Lock()
-	if m.uploadBusy[id] {
-		m.mu.Unlock()
+	// Finalization holds the session lock for the whole verification, so
+	// report it before waiting for the lock.
+	if m.uploads.isFinalizing(id) {
 		return fmt.Errorf("%w，暂不能取消", ErrUploadFinalizing)
 	}
-	m.mu.Unlock()
-	unlock := m.lockUpload(id)
-	m.mu.Lock()
-	if m.uploadBusy[id] {
-		m.mu.Unlock()
-		unlock()
-		return fmt.Errorf("%w，暂不能取消", ErrUploadFinalizing)
-	}
-	m.uploadCanceling[id] = true
-	writers := make([]context.CancelFunc, 0, len(m.uploadWriters[id]))
-	for _, cancel := range m.uploadWriters[id] {
-		writers = append(writers, cancel)
-	}
-	m.mu.Unlock()
-	for _, cancel := range writers {
-		cancel()
+	unlock := m.uploads.lock(id)
+	defer unlock()
+	writers, err := m.uploads.beginCancel(id)
+	if err != nil {
+		return fmt.Errorf("%w，暂不能取消", err)
 	}
 	if len(writers) > 0 {
-		unlock()
+		// The last writer to exit removes the session.
+		for _, cancel := range writers {
+			cancel()
+		}
 		return nil
 	}
 	dir := m.uploadDir(id)
 	if _, err := os.Stat(dir); err != nil {
-		m.mu.Lock()
-		delete(m.uploadCanceling, id)
-		m.mu.Unlock()
-		unlock()
+		m.uploads.endCancel(id, false)
 		if os.IsNotExist(err) {
 			return ErrUploadNotFound
 		}
 		return err
 	}
-	err := os.RemoveAll(dir)
-	if err == nil {
-		m.clearUploadProgress(id)
-		m.mu.Lock()
-		delete(m.uploadCanceling, id)
-		m.mu.Unlock()
+	if err := os.RemoveAll(dir); err != nil {
+		return err
 	}
-	unlock()
-	return err
+	m.uploads.endCancel(id, true)
+	return nil
 }
 
 func (m *Manager) finishCanceledUpload(id string) error {
-	unlock := m.lockUpload(id)
+	unlock := m.uploads.lock(id)
 	defer unlock()
-	m.mu.Lock()
-	ready := m.uploadCanceling[id] && !m.uploadBusy[id] && len(m.uploadWriters[id]) == 0
-	m.mu.Unlock()
-	if !ready {
+	if !m.uploads.cancelReady(id) {
 		return nil
 	}
-	err := os.RemoveAll(m.uploadDir(id))
-	if err != nil {
+	if err := os.RemoveAll(m.uploadDir(id)); err != nil {
 		return err
 	}
-	m.clearUploadProgress(id)
-	m.mu.Lock()
-	delete(m.uploadCanceling, id)
-	m.mu.Unlock()
+	m.uploads.endCancel(id, true)
 	return nil
 }
 
@@ -899,7 +714,7 @@ func (m *Manager) recoverFinalizedUpload(ctx context.Context, id string) (Backup
 			UploadID:   id,
 			Manifest:   report.Manifest,
 		}
-		if err := writeJSONAtomic(metaPath(archivePath), meta, 0o600); err != nil {
+		if err := atomicfile.WriteJSON(metaPath(archivePath), meta, 0o600); err != nil {
 			return BackupRecord{}, false, err
 		}
 		record := BackupRecord{
@@ -917,16 +732,13 @@ func (m *Manager) recoverFinalizedUpload(ctx context.Context, id string) (Backup
 	return BackupRecord{}, false, nil
 }
 
+// loadUpload reads and validates a session sidecar. Sidecars are replaced
+// atomically, so reads need no lock; read-modify-write callers hold the
+// session lock.
 func (m *Manager) loadUpload(id string) (storedUploadSession, error) {
 	if !validUploadID(id) {
 		return storedUploadSession{}, ErrUploadNotFound
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.loadUploadUnlocked(id)
-}
-
-func (m *Manager) loadUploadUnlocked(id string) (storedUploadSession, error) {
 	var stored storedUploadSession
 	if err := readJSONFile(m.uploadSidecar(id), &stored); err != nil {
 		if os.IsNotExist(err) {
@@ -934,31 +746,30 @@ func (m *Manager) loadUploadUnlocked(id string) (storedUploadSession, error) {
 		}
 		return storedUploadSession{}, err
 	}
-	if stored.Size <= 0 || stored.Size > maxExpandedBytes {
-		return storedUploadSession{}, errors.New("迁移上传状态文件已损坏")
+	corrupted := errors.New("迁移上传状态文件已损坏")
+	if stored.Size <= 0 || stored.Size > maxExpandedBytes || stored.ChunkSize <= 0 {
+		return storedUploadSession{}, corrupted
 	}
-	if stored.ChunkSize <= 0 {
-		return storedUploadSession{}, errors.New("迁移上传状态文件已损坏")
+	var validStorage bool
+	switch stored.StorageFormat {
+	case uploadStoragePart:
+		validStorage = stored.ChunkSize == ChunkSize &&
+			(stored.SHA256 == "" || ValidSHA256(stored.SHA256))
+	case uploadStorageRange:
+		validStorage = stored.ChunkSize >= minUploadRangeSize &&
+			stored.ChunkSize <= maxUploadRangeSize && stored.ChunkSize%(1<<20) == 0 &&
+			ValidSHA256(stored.SHA256)
 	}
 	expectedChunks := (stored.Size-1)/stored.ChunkSize + 1
-	validStorage := (stored.StorageFormat == "" || stored.StorageFormat == uploadStoragePartV1 ||
-		stored.StorageFormat == uploadStoragePartV2) &&
-		stored.ChunkSize == ChunkSize
-	if stored.StorageFormat == uploadStorageRangeV2 {
-		validStorage = stored.ChunkSize >= minUploadRangeSize &&
-			stored.ChunkSize <= maxUploadRangeSize && stored.ChunkSize%(1<<20) == 0
-	}
 	if stored.ID != id || !validStorage || stored.TotalChunks <= 0 ||
 		int64(stored.TotalChunks) != expectedChunks || stored.Received == nil ||
-		(stored.State != "uploading" && stored.State != "finalizing") ||
-		(stored.SHA256 != "" && !validSHA256(stored.SHA256)) ||
-		(stored.StorageFormat == uploadStorageRangeV2 && !validSHA256(stored.SHA256)) {
-		return storedUploadSession{}, errors.New("迁移上传状态文件已损坏")
+		(stored.State != "uploading" && stored.State != "finalizing") {
+		return storedUploadSession{}, corrupted
 	}
 	for index, chunk := range stored.Received {
 		expectedSize, ok := uploadChunkSize(stored, index)
 		if !ok || chunk.Index != index || chunk.Size != expectedSize {
-			return storedUploadSession{}, errors.New("迁移上传状态文件已损坏")
+			return storedUploadSession{}, corrupted
 		}
 	}
 	return stored, nil
@@ -997,17 +808,11 @@ func (m *Manager) cleanupExpiredUploads() error {
 		if !entry.IsDir() || !validUploadID(entry.Name()) {
 			continue
 		}
-		m.mu.Lock()
-		busy := m.uploadBusy[entry.Name()] || len(m.uploadWriters[entry.Name()]) > 0
-		m.mu.Unlock()
-		if busy {
+		if m.uploads.active(entry.Name()) {
 			continue
 		}
-		unlock := m.lockUpload(entry.Name())
-		m.mu.Lock()
-		busy = m.uploadBusy[entry.Name()] || len(m.uploadWriters[entry.Name()]) > 0
-		m.mu.Unlock()
-		if busy {
+		unlock := m.uploads.lock(entry.Name())
+		if m.uploads.active(entry.Name()) {
 			unlock()
 			continue
 		}
@@ -1019,27 +824,6 @@ func (m *Manager) cleanupExpiredUploads() error {
 		unlock()
 	}
 	return nil
-}
-
-func (m *Manager) lockUpload(id string) func() {
-	m.mu.Lock()
-	lock := m.uploadLocks[id]
-	if lock == nil {
-		lock = &uploadSessionLock{}
-		m.uploadLocks[id] = lock
-	}
-	lock.refs++
-	m.mu.Unlock()
-	lock.mu.Lock()
-	return func() {
-		lock.mu.Unlock()
-		m.mu.Lock()
-		lock.refs--
-		if lock.refs == 0 && m.uploadLocks[id] == lock {
-			delete(m.uploadLocks, id)
-		}
-		m.mu.Unlock()
-	}
 }
 
 func uploadChunkSize(stored storedUploadSession, index int) (int64, bool) {
@@ -1071,8 +855,4 @@ func (m *Manager) uploadSidecar(id string) string {
 
 func (m *Manager) uploadPartPath(id string) string {
 	return filepath.Join(m.uploadDir(id), "archive.part")
-}
-
-func (m *Manager) uploadChunkPath(id string, index int) string {
-	return filepath.Join(m.uploadDir(id), fmt.Sprintf("%08d.chunk", index))
 }

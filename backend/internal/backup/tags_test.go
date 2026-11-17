@@ -204,11 +204,11 @@ func TestArchiveScopeAcceptsEmptyTagsButRejectsDanglingAssignments(t *testing.T)
 	}
 	defer db.Close()
 	for _, assignment := range []struct {
-		name, videoID string
-		tagID         int64
+		name, videoID, want string
+		tagID               int64
 	}{
-		{name: "missing video", videoID: "missing-video", tagID: tag.ID},
-		{name: "missing tag", videoID: "cloud-video", tagID: tag.ID + 1000},
+		{name: "missing video", videoID: "missing-video", tagID: tag.ID, want: "video_tags rows reference videos outside the archive"},
+		{name: "missing tag", videoID: "cloud-video", tagID: tag.ID + 1000, want: "invalid video tag assignments"},
 	} {
 		t.Run(assignment.name, func(t *testing.T) {
 			if _, err := db.Exec(`DELETE FROM video_tags`); err != nil {
@@ -217,7 +217,7 @@ func TestArchiveScopeAcceptsEmptyTagsButRejectsDanglingAssignments(t *testing.T)
 			if _, err := db.Exec(`INSERT INTO video_tags(video_id, tag_id, source, created_at) VALUES (?, ?, 'auto', 1)`, assignment.videoID, assignment.tagID); err != nil {
 				t.Fatal(err)
 			}
-			if err := validateArchiveDatabaseScope(ctx, snapshot, manifest); err == nil || !strings.Contains(err.Error(), "video tag assignments") {
+			if err := validateArchiveDatabaseScope(ctx, snapshot, manifest); err == nil || !strings.Contains(err.Error(), assignment.want) {
 				t.Fatalf("archive with dangling tag assignment: %v", err)
 			}
 		})

@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nianzhibai/91/backend/internal/atomicfile"
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/config"
 	"github.com/nianzhibai/91/backend/internal/mediaasset"
@@ -123,7 +124,19 @@ func createAndWaitForBackup(t *testing.T, manager *Manager, selection ...BackupS
 			if len(result.Backups) == 0 {
 				t.Fatal("backup task completed without an archive")
 			}
-			return result.Backups[0]
+			record := result.Backups[0]
+			archivePath, _, err := manager.resolveBackup(record.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sum, size, err := hashFile(context.Background(), archivePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sum != record.SHA256 || size != record.Size {
+				t.Fatalf("recorded archive digest %s/%d, file has %s/%d", record.SHA256, record.Size, sum, size)
+			}
+			return record
 		}
 		if status != nil && (status.State == "failed" || status.State == "canceled") {
 			t.Fatalf("backup task ended as %s: %s", status.State, status.Error)
@@ -355,7 +368,7 @@ func TestFullBackupContainsPersistentFilesAndExcludesTemporaryData(t *testing.T)
 			t.Errorf("archive unexpectedly contains %s", excluded)
 		}
 	}
-	if record.VerificationStatus != "verified" || !validSHA256(record.SHA256) {
+	if record.VerificationStatus != "verified" || !ValidSHA256(record.SHA256) {
 		t.Fatalf("record verification = %q sha=%q", record.VerificationStatus, record.SHA256)
 	}
 
@@ -378,15 +391,15 @@ func TestFullBackupContainsPersistentFilesAndExcludesTemporaryData(t *testing.T)
 	if err := database.QueryRow(`SELECT COUNT(*) FROM admin_sessions`).Scan(&sessionCount); err != nil {
 		t.Fatal(err)
 	}
-	var loginFailuresTable, loginBans int
-	if err := database.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'login_failures'`).Scan(&loginFailuresTable); err != nil {
+	var loginFailures, loginBans int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM login_failures`).Scan(&loginFailures); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.QueryRow(`SELECT COUNT(*) FROM banned_login_ips`).Scan(&loginBans); err != nil {
 		t.Fatal(err)
 	}
-	if loginFailuresTable != 0 || loginBans != 0 {
-		t.Fatalf("backup retained login protection: failures table=%d bans=%d", loginFailuresTable, loginBans)
+	if loginFailures != 0 || loginBans != 0 {
+		t.Fatalf("backup retained login protection: failures=%d bans=%d", loginFailures, loginBans)
 	}
 	if banned, err := env.cat.IsLoginIPBanned(ctx, "203.0.113.31"); err != nil || !banned {
 		t.Fatalf("backup changed live login protection: banned=%v err=%v", banned, err)
@@ -1909,15 +1922,6 @@ func TestChunkUploadStreamsWithoutDigestsAndSupportsOutOfOrderRestartResume(t *t
 	if err := put(0); err != nil {
 		t.Fatalf("idempotent repeated chunk failed: %v", err)
 	}
-	uploadEntries, err := os.ReadDir(env.manager.uploadDir(session.ID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range uploadEntries {
-		if strings.HasSuffix(entry.Name(), ".chunk") {
-			t.Fatalf("new upload wrote legacy chunk file %q", entry.Name())
-		}
-	}
 	part, err := os.Open(env.manager.uploadPartPath(session.ID))
 	if err != nil {
 		t.Fatal(err)
@@ -1932,37 +1936,6 @@ func TestChunkUploadStreamsWithoutDigestsAndSupportsOutOfOrderRestartResume(t *t
 	}
 	if !bytes.Equal(lastOnDisk, archiveBytes[lastStart:]) {
 		t.Fatal("out-of-order chunk was not written at its fixed offset")
-	}
-
-	// A deployment can be upgraded while a part-v1 browser upload is still in
-	// progress. Keep accepting its obsolete per-chunk digest fields, but never
-	// use them as validation inputs or expose them again.
-	stored, err := env.manager.loadUpload(session.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacyJSON, err := json.Marshal(stored)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var legacySidecar map[string]any
-	if err := json.Unmarshal(legacyJSON, &legacySidecar); err != nil {
-		t.Fatal(err)
-	}
-	legacySidecar["storageFormat"] = uploadStoragePartV1
-	received, ok := legacySidecar["received"].(map[string]any)
-	if !ok {
-		t.Fatalf("legacy received sidecar = %#v", legacySidecar["received"])
-	}
-	for key, value := range received {
-		chunk, ok := value.(map[string]any)
-		if !ok {
-			t.Fatalf("legacy chunk %s = %#v", key, value)
-		}
-		chunk["sha256"] = strings.Repeat("a", 64)
-	}
-	if err := writeJSONAtomic(env.manager.uploadSidecar(session.ID), legacySidecar, 0o600); err != nil {
-		t.Fatal(err)
 	}
 
 	env.manager.Close()
@@ -1984,7 +1957,7 @@ func TestChunkUploadStreamsWithoutDigestsAndSupportsOutOfOrderRestartResume(t *t
 	if len(status.Received) != 2 {
 		t.Fatalf("received after restart = %d, want 2", len(status.Received))
 	}
-	resumed.setUploadProgress(status.ID, OperationProgress{
+	resumed.uploads.setProgress(status.ID, OperationProgress{
 		Phase:          "hashing",
 		ProcessedBytes: 1024,
 		TotalBytes:     status.Size,
@@ -1997,7 +1970,7 @@ func TestChunkUploadStreamsWithoutDigestsAndSupportsOutOfOrderRestartResume(t *t
 		status.Progress.ProcessedBytes != 1024 {
 		t.Fatalf("upload progress snapshot = %+v", status.Progress)
 	}
-	resumed.clearUploadProgress(status.ID)
+	resumed.uploads.clearProgress(status.ID)
 	for index := 1; index < lastIndex; index++ {
 		start := int64(index) * status.ChunkSize
 		end := min(start+status.ChunkSize, int64(len(archiveBytes)))
@@ -2019,69 +1992,6 @@ func TestChunkUploadStreamsWithoutDigestsAndSupportsOutOfOrderRestartResume(t *t
 	}
 	if !imported.Imported || imported.VerificationStatus != "verified" {
 		t.Fatalf("imported record = %+v", imported)
-	}
-}
-
-func TestChunkUploadMigratesLegacySessionToSinglePart(t *testing.T) {
-	env := newTestBackupEnv(t)
-	writeTestFile(t, filepath.Join(env.root, "uploads", "legacy.mp4"), []byte("legacy-upload"))
-	record := createAndWaitForBackup(t, env.manager)
-	sourcePath, _, err := env.manager.resolveBackup(record.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	archiveBytes, err := os.ReadFile(sourcePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	session, err := env.manager.BeginUpload(context.Background(), BeginUploadInput{
-		FileName: "legacy.zip",
-		Size:     int64(len(archiveBytes)),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	stored, err := env.manager.loadUpload(session.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(env.manager.uploadPartPath(session.ID)); err != nil {
-		t.Fatal(err)
-	}
-	stored.StorageFormat = ""
-	for index := 0; index < stored.TotalChunks; index++ {
-		start := int64(index) * stored.ChunkSize
-		end := min(start+stored.ChunkSize, int64(len(archiveBytes)))
-		chunk := archiveBytes[start:end]
-		writeTestFile(t, env.manager.uploadChunkPath(session.ID, index), chunk)
-		stored.Received[index] = UploadChunk{
-			Index: index,
-			Size:  int64(len(chunk)),
-		}
-	}
-	if err := writeJSONAtomic(env.manager.uploadSidecar(session.ID), stored, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	imported, err := env.manager.FinalizeUpload(
-		context.Background(), session.ID, sha256Hex(archiveBytes),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	importedPath, _, err := env.manager.resolveBackup(imported.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	importedBytes, err := os.ReadFile(importedPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(importedBytes, archiveBytes) {
-		t.Fatal("legacy chunks changed while migrating to the part file")
-	}
-	if _, err := os.Stat(env.manager.uploadDir(session.ID)); !os.IsNotExist(err) {
-		t.Fatalf("completed legacy upload session still exists: %v", err)
 	}
 }
 
@@ -2655,7 +2565,7 @@ func TestInterruptedRestoreRollbackResumesWithoutMixingData(t *testing.T) {
 	}
 	interrupted.State = "rolling-back"
 	interrupted.LastError = "injected crash during rollback"
-	if err := writeJSONAtomic(applied.markerPath, interrupted, 0o600); err != nil {
+	if err := atomicfile.WriteJSON(applied.markerPath, interrupted, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2752,13 +2662,13 @@ func TestRestoreMarkerLimitsAndStagingRootAreValidated(t *testing.T) {
 	}
 }
 
-func TestWriteJSONAtomicLeavesDurableReplacementWithoutTemporaryFiles(t *testing.T) {
+func TestJSONSidecarRoundTripAndSizeLimit(t *testing.T) {
 	directory := t.TempDir()
 	filePath := filepath.Join(directory, "state.json")
-	if err := writeJSONAtomic(filePath, map[string]int{"generation": 1}, 0o600); err != nil {
+	if err := atomicfile.WriteJSON(filePath, map[string]int{"generation": 1}, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeJSONAtomic(filePath, map[string]int{"generation": 2}, 0o600); err != nil {
+	if err := atomicfile.WriteJSON(filePath, map[string]int{"generation": 2}, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var state map[string]int

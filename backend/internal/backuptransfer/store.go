@@ -85,44 +85,6 @@ func readJSONFile(path string, destination any) error {
 	return nil
 }
 
-func writeJSONAtomic(path string, value any) error {
-	directory := filepath.Dir(path)
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return err
-	}
-	temporary, err := os.CreateTemp(directory, ".transfer-state-*.tmp")
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	removeTemporary := true
-	defer func() {
-		_ = temporary.Close()
-		if removeTemporary {
-			_ = os.Remove(temporaryPath)
-		}
-	}()
-	if err := temporary.Chmod(0o600); err != nil {
-		return err
-	}
-	encoder := json.NewEncoder(temporary)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(value); err != nil {
-		return err
-	}
-	if err := temporary.Sync(); err != nil {
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(temporaryPath, path); err != nil {
-		return err
-	}
-	removeTemporary = false
-	return atomicfile.SyncDirectory(directory)
-}
-
 func validOpaqueID(value string) bool {
 	if len(value) != 32 {
 		return false
@@ -148,12 +110,12 @@ func receiptKey(tokenID, transferID string) string {
 }
 
 func (m *Manager) saveReceiverLocked() error {
-	return writeJSONAtomic(m.receiverPath, m.receiver)
+	return atomicfile.WriteJSON(m.receiverPath, m.receiver, 0o600)
 }
 
 func (m *Manager) saveJobLocked(job *storedTransferJob) error {
 	if job == nil || !validOpaqueID(job.ID) {
 		return fmt.Errorf("backup transfer: invalid outgoing job")
 	}
-	return writeJSONAtomic(filepath.Join(m.outgoingDir, job.ID+".json"), job)
+	return atomicfile.WriteJSON(filepath.Join(m.outgoingDir, job.ID+".json"), job, 0o600)
 }

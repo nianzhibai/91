@@ -36,6 +36,12 @@ func (s BackupSelection) AllResources() bool {
 	return s.CloudDrives && s.CrawlerScripts && s.UploadStorage && s.LocalStorage
 }
 
+// anyResource reports whether any video resource is selected. User
+// information alone archives no videos or assets.
+func (s BackupSelection) anyResource() bool {
+	return s.CloudDrives || s.CrawlerScripts || s.UploadStorage || s.LocalStorage
+}
+
 func driveKindSelected(kind string, selection BackupSelection) bool {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case "scriptcrawler":
@@ -92,21 +98,29 @@ func decodeLocalStorageFileID(id string) (string, error) {
 	return relative, nil
 }
 
+// filterSnapshotDatabase reduces a catalog snapshot to the selection. It
+// removes rows outside the selected drives, every table the archive must not
+// carry, and returns the state needed to select file assets.
 func filterSnapshotDatabase(
 	ctx context.Context,
 	databasePath string,
 	selection BackupSelection,
 ) (snapshotSelectionState, error) {
-	// Resource filtering is independent of restore ownership. The current
-	// protocol always merges user accounts into the target catalog during restore.
-	allResourcesSelected := selection.AllResources()
-	dsn := databasePath + "?_pragma=busy_timeout(5000)"
-	database, err := sql.Open("sqlite", dsn)
+	database, err := sql.Open("sqlite", databasePath+"?_pragma=busy_timeout(5000)")
 	if err != nil {
 		return snapshotSelectionState{}, fmt.Errorf("backup: open filtered SQLite snapshot: %w", err)
 	}
 	database.SetMaxOpenConns(1)
 	defer database.Close()
+	// The archive carries a single database file, so the snapshot must not
+	// keep committed pages in a WAL.
+	var journalMode string
+	if err := database.QueryRowContext(ctx, `PRAGMA journal_mode = DELETE`).Scan(&journalMode); err != nil {
+		return snapshotSelectionState{}, fmt.Errorf("backup: configure SQLite snapshot journal: %w", err)
+	}
+	if !strings.EqualFold(strings.TrimSpace(journalMode), "delete") {
+		return snapshotSelectionState{}, fmt.Errorf("backup: SQLite snapshot journal mode is %q, want delete", journalMode)
+	}
 	if err := catalog.MigrateImportDatabase(ctx, database); err != nil {
 		return snapshotSelectionState{}, err
 	}
@@ -115,10 +129,36 @@ func filterSnapshotDatabase(
 	if err != nil {
 		return snapshotSelectionState{}, fmt.Errorf("backup: begin filtered snapshot: %w", err)
 	}
-	rollback := func() {
-		_ = tx.Rollback()
+	defer tx.Rollback()
+	tables, err := schemaTables(ctx, tx, "main")
+	if err != nil {
+		return snapshotSelectionState{}, err
 	}
+	if err := requireRegisteredTables(tables); err != nil {
+		return snapshotSelectionState{}, err
+	}
+	state, err := selectSnapshotDrives(ctx, tx, selection)
+	if err != nil {
+		return snapshotSelectionState{}, err
+	}
+	if err := normalizeTelegramSnapshot(ctx, tx, &state); err != nil {
+		return snapshotSelectionState{}, err
+	}
+	if err := pruneSnapshotTables(ctx, tx, selection, tables); err != nil {
+		return snapshotSelectionState{}, err
+	}
+	if err := collectSnapshotAssets(ctx, tx, &state); err != nil {
+		return snapshotSelectionState{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return snapshotSelectionState{}, fmt.Errorf("backup: commit filtered snapshot: %w", err)
+	}
+	return state, nil
+}
 
+// selectSnapshotDrives records the selected drives in the temporary
+// backup_selected_drives table and prepares the per-drive asset state.
+func selectSnapshotDrives(ctx context.Context, tx *sql.Tx, selection BackupSelection) (snapshotSelectionState, error) {
 	type driveInfo struct {
 		id        string
 		kind      string
@@ -127,40 +167,26 @@ func filterSnapshotDatabase(
 	var drives []driveInfo
 	rows, err := tx.QueryContext(ctx, `SELECT id, kind, COALESCE(credentials, '{}') FROM drives`)
 	if err != nil {
-		rollback()
 		return snapshotSelectionState{}, err
 	}
 	for rows.Next() {
 		var id, kind, credentialsJSON string
 		if err := rows.Scan(&id, &kind, &credentialsJSON); err != nil {
 			_ = rows.Close()
-			rollback()
 			return snapshotSelectionState{}, err
 		}
 		var credentials map[string]string
 		if err := json.Unmarshal([]byte(credentialsJSON), &credentials); err != nil {
 			_ = rows.Close()
-			rollback()
 			return snapshotSelectionState{}, fmt.Errorf("backup: decode credentials for drive %s: %w", id, err)
 		}
-		drives = append(drives, driveInfo{
-			id:        id,
-			kind:      kind,
-			localPath: strings.TrimSpace(credentials["path"]),
-		})
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		rollback()
-		return snapshotSelectionState{}, err
+		drives = append(drives, driveInfo{id: id, kind: kind, localPath: strings.TrimSpace(credentials["path"])})
 	}
 	if err := rows.Close(); err != nil {
-		rollback()
 		return snapshotSelectionState{}, err
 	}
 
 	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE backup_selected_drives (id TEXT PRIMARY KEY)`); err != nil {
-		rollback()
 		return snapshotSelectionState{}, err
 	}
 	state := snapshotSelectionState{
@@ -170,29 +196,22 @@ func filterSnapshotDatabase(
 		SelectedUploadFiles:   make(map[string]struct{}),
 		SelectedCrawlerDrives: make(map[string]struct{}),
 	}
-	if err := normalizeTelegramSnapshot(ctx, tx, &state); err != nil {
-		rollback()
-		return snapshotSelectionState{}, err
-	}
 	for _, drive := range drives {
 		if !driveKindSelected(drive.kind, selection) {
 			continue
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO backup_selected_drives (id) VALUES (?)`, drive.id); err != nil {
-			rollback()
 			return snapshotSelectionState{}, err
 		}
-		if strings.EqualFold(strings.TrimSpace(drive.kind), "scriptcrawler") {
+		switch strings.ToLower(strings.TrimSpace(drive.kind)) {
+		case "scriptcrawler":
 			state.SelectedCrawlerDrives[drive.id] = struct{}{}
-		}
-		if strings.EqualFold(strings.TrimSpace(drive.kind), "localstorage") {
+		case "localstorage":
 			if drive.localPath == "" {
-				rollback()
 				return snapshotSelectionState{}, fmt.Errorf("backup: local storage %s has no configured path", drive.id)
 			}
 			resolvedPath, err := resolveLocalStoragePath(drive.localPath)
 			if err != nil {
-				rollback()
 				return snapshotSelectionState{}, fmt.Errorf("backup: resolve local storage %s: %w", drive.id, err)
 			}
 			state.LocalStorageRoots = append(state.LocalStorageRoots, snapshotLocalStorageRoot{
@@ -209,126 +228,77 @@ func filterSnapshotDatabase(
 	// on every deployment, but its videos still belong to the upload selection.
 	if selection.UploadStorage {
 		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO backup_selected_drives (id) VALUES ('local-upload')`); err != nil {
-			rollback()
 			return snapshotSelectionState{}, err
 		}
 	}
+	return state, nil
+}
 
-	if !allResourcesSelected {
-		// A decision can contain snapshots from several resource types. Export
-		// this history only with all resources, so a partial backup cannot carry
-		// file metadata from an unselected storage through comparison evidence.
-		if _, err := tx.ExecContext(ctx, `DELETE FROM duplicate_records`); err != nil {
-			rollback()
-			return snapshotSelectionState{}, err
-		}
-		if _, err := tx.ExecContext(ctx, `
-DELETE FROM video_reaction_visits
- WHERE video_id NOT IN (SELECT id FROM videos WHERE drive_id IN (SELECT id FROM backup_selected_drives))`); err != nil {
-			rollback()
-			return snapshotSelectionState{}, err
-		}
-		if _, err := tx.ExecContext(ctx, `
-DELETE FROM video_shares
- WHERE video_id NOT IN (SELECT id FROM videos WHERE drive_id IN (SELECT id FROM backup_selected_drives))`); err != nil {
-			rollback()
-			return snapshotSelectionState{}, err
-		}
-		if _, err := tx.ExecContext(ctx, `
-DELETE FROM video_tags
- WHERE video_id NOT IN (SELECT id FROM videos WHERE drive_id IN (SELECT id FROM backup_selected_drives))`); err != nil {
-			rollback()
-			return snapshotSelectionState{}, err
-		}
-		if _, err := tx.ExecContext(ctx, `
-DELETE FROM videos
- WHERE drive_id NOT IN (SELECT id FROM backup_selected_drives)`); err != nil {
-			rollback()
-			return snapshotSelectionState{}, err
-		}
-		for _, statement := range []string{
-			`DELETE FROM drives WHERE id NOT IN (SELECT id FROM backup_selected_drives)`,
-			`DELETE FROM scans WHERE drive_id NOT IN (SELECT id FROM backup_selected_drives)`,
-			`DELETE FROM deleted_videos WHERE drive_id NOT IN (SELECT id FROM backup_selected_drives)`,
-			`DELETE FROM crawler_seen_sources WHERE drive_id NOT IN (SELECT id FROM backup_selected_drives)`,
-			`DELETE FROM crawler_discoveries WHERE drive_id NOT IN (SELECT id FROM backup_selected_drives)`,
-			`DELETE FROM crawler_tasks WHERE drive_id NOT IN (SELECT id FROM backup_selected_drives)`,
-			`DELETE FROM crawler_upload_tasks WHERE drive_id NOT IN (SELECT id FROM backup_selected_drives)`,
-			`DELETE FROM crawler_upload_results WHERE drive_id NOT IN (SELECT id FROM backup_selected_drives)`,
-		} {
-			if _, err := tx.ExecContext(ctx, statement); err != nil {
-				rollback()
-				return snapshotSelectionState{}, err
+// pruneSnapshotTables applies the catalogTables policy to a snapshot: rows of
+// unselected drives, tables outside the selection, rows whose video was
+// removed, and never-archived tables are deleted, then selected tables are
+// sanitized.
+func pruneSnapshotTables(ctx context.Context, tx *sql.Tx, selection BackupSelection, present map[string]struct{}) error {
+	type statement struct{ table, sql string }
+	var statements []statement
+	// A full resource backup deliberately keeps orphan rows whose drive
+	// metadata disappeared before the backup was created.
+	if !selection.AllResources() {
+		for _, table := range catalogTables {
+			if table.kind == driveRows {
+				statements = append(statements, statement{table.name, `DELETE FROM ` + quoteIdentifier(table.name) +
+					` WHERE ` + quoteIdentifier(table.ownerColumn) + ` NOT IN (SELECT id FROM backup_selected_drives)`})
 			}
 		}
 	}
-	// Transient sessions, settings, and login protection are not part of the
-	// backup protocol. The optional failure table is recreated when SQLite opens.
-	for _, statement := range []string{
-		`DELETE FROM banned_login_ips`,
-		`DROP TABLE IF EXISTS login_failures`,
-		`DELETE FROM settings`,
-		`DELETE FROM telegram_settings`,
-		`DELETE FROM telegram_connections`,
-		`DELETE FROM telegram_receipts`,
-		`DELETE FROM telegram_media_group_updates`,
-		`DELETE FROM telegram_files WHERE video_id='' OR video_id NOT IN (SELECT id FROM videos)`,
-		`UPDATE telegram_files SET file_id=''`,
-		`UPDATE remote_upload_jobs SET source_payload='' WHERE source_kind='telegram'`,
-		`DELETE FROM admin_sessions`,
-		`DELETE FROM video_shares`,
-		`DELETE FROM shorts_feed_sessions`,
-	} {
-		if _, err := tx.ExecContext(ctx, statement); err != nil {
-			rollback()
-			return snapshotSelectionState{}, err
+	for _, table := range catalogTables {
+		quoted := quoteIdentifier(table.name)
+		switch {
+		case table.kind == derivedRows:
+		case !table.includedIn(selection):
+			statements = append(statements, statement{table.name, `DELETE FROM ` + quoted})
+		case table.kind == videoRows:
+			statements = append(statements, statement{table.name, `DELETE FROM ` + quoted + ` WHERE video_id NOT IN (SELECT id FROM videos)`})
 		}
 	}
-	if !selection.UserInfo {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM users`); err != nil {
-			rollback()
-			return snapshotSelectionState{}, err
+	for _, table := range catalogTables {
+		if table.includedIn(selection) {
+			for _, sanitize := range table.sanitize {
+				statements = append(statements, statement{table.name, sanitize})
+			}
 		}
 	}
-	if !selection.UploadStorage {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM telegram_files`); err != nil {
-			rollback()
-			return snapshotSelectionState{}, err
+	for _, statement := range statements {
+		if _, ok := present[statement.table]; !ok {
+			continue
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM remote_upload_jobs`); err != nil {
-			rollback()
-			return snapshotSelectionState{}, err
+		if _, err := tx.ExecContext(ctx, statement.sql); err != nil {
+			return fmt.Errorf("backup: filter %s: %w", statement.table, err)
 		}
-	} else if _, err := tx.ExecContext(ctx, `
-DELETE FROM remote_upload_jobs
- WHERE completed_video_id != ''
-   AND completed_video_id NOT IN (SELECT id FROM videos)`); err != nil {
-		rollback()
-		return snapshotSelectionState{}, err
 	}
+	return nil
+}
 
-	rows, err = tx.QueryContext(ctx, `
+// collectSnapshotAssets records the files owned by the archived videos.
+func collectSnapshotAssets(ctx context.Context, tx *sql.Tx, state *snapshotSelectionState) error {
+	rows, err := tx.QueryContext(ctx, `
 SELECT id, drive_id, file_id, COALESCE(preview_local, '')
   FROM videos`)
 	if err != nil {
-		rollback()
-		return snapshotSelectionState{}, err
+		return err
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var id, driveID, fileID, previewPath string
 		if err := rows.Scan(&id, &driveID, &fileID, &previewPath); err != nil {
-			_ = rows.Close()
-			rollback()
-			return snapshotSelectionState{}, err
+			return err
 		}
 		state.SelectedVideoIDs[id] = struct{}{}
 		if previewPath != "" {
 			state.SelectedPreviewPaths[id] = previewPath
 		}
-		if driveID == "local-upload" {
-			if fileID != "" {
-				state.SelectedUploadFiles[filepath.Base(fileID)] = struct{}{}
-			}
+		if driveID == "local-upload" && fileID != "" {
+			state.SelectedUploadFiles[filepath.Base(fileID)] = struct{}{}
 		}
 		for index := range state.LocalStorageRoots {
 			root := &state.LocalStorageRoots[index]
@@ -337,9 +307,7 @@ SELECT id, drive_id, file_id, COALESCE(preview_local, '')
 			}
 			relative, err := decodeLocalStorageFileID(fileID)
 			if err != nil {
-				_ = rows.Close()
-				rollback()
-				return snapshotSelectionState{}, fmt.Errorf("backup: decode local storage file for video %s: %w", id, err)
+				return fmt.Errorf("backup: decode local storage file for video %s: %w", id, err)
 			}
 			if relative != "" {
 				root.Files[relative] = struct{}{}
@@ -347,19 +315,7 @@ SELECT id, drive_id, file_id, COALESCE(preview_local, '')
 			break
 		}
 	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		rollback()
-		return snapshotSelectionState{}, err
-	}
-	if err := rows.Close(); err != nil {
-		rollback()
-		return snapshotSelectionState{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return snapshotSelectionState{}, fmt.Errorf("backup: commit filtered snapshot: %w", err)
-	}
-	return state, nil
+	return rows.Err()
 }
 
 // compactSnapshotDatabase rebuilds the filtered catalog into a new SQLite

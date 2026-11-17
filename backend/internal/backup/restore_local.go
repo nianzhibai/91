@@ -148,47 +148,22 @@ func rewriteLocalStorageCatalog(
 		}
 	}
 
-	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE restore_discarded_local_videos (id TEXT PRIMARY KEY)`); err != nil {
+	// Archive validation guarantees that every archived local storage drive is
+	// declared in the manifest and therefore has a plan.
+	unplanned, err := countRows(ctx, tx, `SELECT COUNT(*) FROM drives
+		WHERE lower(trim(kind)) = 'localstorage' AND id NOT IN (SELECT old_id FROM restore_local_drive_ids)`)
+	if err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, `
-INSERT INTO restore_discarded_local_videos (id)
-SELECT videos.id
-  FROM videos
-  JOIN drives ON drives.id = videos.drive_id
- WHERE lower(trim(drives.kind)) = 'localstorage'
-   AND videos.drive_id NOT IN (SELECT old_id FROM restore_local_drive_ids)`); err != nil {
-		return nil, err
-	}
-	for _, statement := range []string{
-		`DELETE FROM video_reaction_visits WHERE video_id IN (SELECT id FROM restore_discarded_local_videos)`,
-		`DELETE FROM video_shares WHERE video_id IN (SELECT id FROM restore_discarded_local_videos)`,
-		`DELETE FROM video_tags WHERE video_id IN (SELECT id FROM restore_discarded_local_videos)`,
-		`UPDATE remote_upload_jobs SET completed_video_id = '' WHERE completed_video_id IN (SELECT id FROM restore_discarded_local_videos)`,
-		`DELETE FROM telegram_files WHERE video_id IN (SELECT id FROM restore_discarded_local_videos)`,
-		`DELETE FROM videos WHERE id IN (SELECT id FROM restore_discarded_local_videos)`,
-		`DELETE FROM scans WHERE drive_id IN (
-			SELECT id FROM drives WHERE lower(trim(kind)) = 'localstorage'
-			AND id NOT IN (SELECT old_id FROM restore_local_drive_ids)
-		)`,
-		`DELETE FROM deleted_videos WHERE drive_id IN (
-			SELECT id FROM drives WHERE lower(trim(kind)) = 'localstorage'
-			AND id NOT IN (SELECT old_id FROM restore_local_drive_ids)
-		)`,
-		`DELETE FROM crawler_seen_sources WHERE drive_id IN (
-			SELECT id FROM drives WHERE lower(trim(kind)) = 'localstorage'
-			AND id NOT IN (SELECT old_id FROM restore_local_drive_ids)
-		)`,
-	} {
-		if _, err := tx.ExecContext(ctx, statement); err != nil {
-			return nil, err
-		}
+	if unplanned != 0 {
+		return nil, errors.New("backup: archived local storage drives have no restore plan")
 	}
 	if len(plans) == 0 {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM drives WHERE lower(trim(kind)) = 'localstorage'`); err != nil {
-			return nil, err
-		}
 		return nil, nil
+	}
+	present, err := schemaTables(ctx, tx, "main")
+	if err != nil {
+		return nil, err
 	}
 
 	type localVideo struct {
@@ -197,7 +172,7 @@ SELECT videos.id
 		fileID     string
 		newDriveID string
 	}
-	videoRows, err := tx.QueryContext(ctx, `
+	localVideoRows, err := tx.QueryContext(ctx, `
 SELECT id, drive_id, file_id
   FROM videos
  WHERE drive_id IN (SELECT old_id FROM restore_local_drive_ids)
@@ -206,16 +181,16 @@ SELECT id, drive_id, file_id
 		return nil, err
 	}
 	var videos []localVideo
-	for videoRows.Next() {
+	for localVideoRows.Next() {
 		var video localVideo
-		if err := videoRows.Scan(&video.oldID, &video.oldDriveID, &video.fileID); err != nil {
-			_ = videoRows.Close()
+		if err := localVideoRows.Scan(&video.oldID, &video.oldDriveID, &video.fileID); err != nil {
+			_ = localVideoRows.Close()
 			return nil, err
 		}
 		video.newDriveID = planBySource[video.oldDriveID].DriveID
 		videos = append(videos, video)
 	}
-	if err := videoRows.Close(); err != nil {
+	if err := localVideoRows.Close(); err != nil {
 		return nil, err
 	}
 
@@ -282,29 +257,22 @@ SELECT id, drive_id, file_id
 		oldToNew[video.oldID] = newID
 	}
 
-	for _, statement := range []string{
-		`UPDATE video_reaction_visits
-		    SET video_id = (SELECT new_id FROM restore_local_video_ids WHERE old_id = video_reaction_visits.video_id)
-		  WHERE video_id IN (SELECT old_id FROM restore_local_video_ids)`,
-		`UPDATE video_shares
-		    SET video_id = (SELECT new_id FROM restore_local_video_ids WHERE old_id = video_shares.video_id)
-		  WHERE video_id IN (SELECT old_id FROM restore_local_video_ids)`,
-		`UPDATE video_tags
-		    SET video_id = (SELECT new_id FROM restore_local_video_ids WHERE old_id = video_tags.video_id)
-		  WHERE video_id IN (SELECT old_id FROM restore_local_video_ids)`,
-		`UPDATE telegram_files SET video_id = (SELECT new_id FROM restore_local_video_ids WHERE old_id = telegram_files.video_id) WHERE video_id IN (SELECT old_id FROM restore_local_video_ids)`,
-		`UPDATE remote_upload_jobs
-		    SET completed_video_id = (SELECT new_id FROM restore_local_video_ids WHERE old_id = remote_upload_jobs.completed_video_id)
-		  WHERE completed_video_id IN (SELECT old_id FROM restore_local_video_ids)`,
-		`UPDATE deleted_videos
-		    SET canonical_video_id = (SELECT new_id FROM restore_local_video_ids WHERE old_id = deleted_videos.canonical_video_id)
-		  WHERE canonical_video_id IN (SELECT old_id FROM restore_local_video_ids)`,
-		`UPDATE crawler_seen_sources
-		    SET canonical_video_id = (SELECT new_id FROM restore_local_video_ids WHERE old_id = crawler_seen_sources.canonical_video_id)
-		  WHERE canonical_video_id IN (SELECT old_id FROM restore_local_video_ids)`,
-	} {
-		if _, err := tx.ExecContext(ctx, statement); err != nil {
-			return nil, err
+	// Every video reference follows its video to the new identity.
+	for _, table := range catalogTables {
+		if _, ok := present[table.name]; !ok {
+			continue
+		}
+		columns := table.videoRefs
+		if table.kind == videoRows {
+			columns = append([]string{"video_id"}, columns...)
+		}
+		for _, column := range columns {
+			name, column := quoteIdentifier(table.name), quoteIdentifier(column)
+			if _, err := tx.ExecContext(ctx, `UPDATE `+name+`
+				SET `+column+` = (SELECT new_id FROM restore_local_video_ids WHERE old_id = `+name+`.`+column+`)
+				WHERE `+column+` IN (SELECT old_id FROM restore_local_video_ids)`); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -321,10 +289,22 @@ UPDATE deleted_videos
  WHERE drive_id IN (SELECT old_id FROM restore_local_drive_ids)`); err != nil {
 		return nil, err
 	}
-	for _, table := range []string{"scans", "crawler_seen_sources"} {
-		if _, err := tx.ExecContext(ctx, `UPDATE `+quoteIdentifier(table)+`
-			SET drive_id = (SELECT new_id FROM restore_local_drive_ids WHERE old_id = `+quoteIdentifier(table)+`.drive_id)
-			WHERE drive_id IN (SELECT old_id FROM restore_local_drive_ids)`); err != nil {
+	// Videos and tombstones were moved above together with their new IDs.
+	for _, table := range catalogTables {
+		if table.kind != driveRows {
+			continue
+		}
+		switch table.name {
+		case "drives", "videos", "deleted_videos":
+			continue
+		}
+		if _, ok := present[table.name]; !ok {
+			continue
+		}
+		name, column := quoteIdentifier(table.name), quoteIdentifier(table.ownerColumn)
+		if _, err := tx.ExecContext(ctx, `UPDATE `+name+`
+			SET `+column+` = (SELECT new_id FROM restore_local_drive_ids WHERE old_id = `+name+`.`+column+`)
+			WHERE `+column+` IN (SELECT old_id FROM restore_local_drive_ids)`); err != nil {
 			return nil, err
 		}
 	}
@@ -417,7 +397,7 @@ func remapLocalPreviewPath(
 			continue
 		}
 		for _, candidate := range mediaasset.PreviewPathCandidates(root, oldID) {
-			candidateRelative, candidateOK := relativeWithin(root, candidate)
+			candidateRelative, candidateOK := localpath.RelativeWithin(root, candidate)
 			if candidateOK && filepath.Clean(candidateRelative) == filepath.Clean(relative) {
 				return mediaasset.PreviewPath(targetPreviewRoot, newID)
 			}

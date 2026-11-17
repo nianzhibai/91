@@ -313,6 +313,8 @@ go test ./integration -run '^TestGoogleDrivePlaybackLive$' -count=1 -v
 
 恢复前展示校验结果和恢复范围；确认后暂存数据，通过重启应用完成切换，恢复后需重新登录。受支持的 systemd / Docker 部署会自动重启，手动运行需自行重启后端。当前只接受格式版本 3 的备份，旧文件名前缀仍可识别。跨服务器迁移后应核对本机配置及外部存储路径。
 
+数据库每张表的导出、校验和合并规则集中声明在 `internal/backup/tables.go`；新增表未声明时，创建备份会直接失败。
+
 ## 日志与排查
 
 - 一键安装：`journalctl -u 91`；Docker：`docker compose logs -f`；开发脚本：`$LOG_DIR`，默认 `/tmp/91-dev/`。

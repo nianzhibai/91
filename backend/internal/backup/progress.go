@@ -22,38 +22,6 @@ func normalizeOperationProgress(progress OperationProgress) OperationProgress {
 	return progress
 }
 
-func (m *Manager) setUploadProgress(id string, progress OperationProgress) {
-	if m == nil {
-		return
-	}
-	m.mu.Lock()
-	m.uploadProgress[id] = normalizeOperationProgress(progress)
-	m.mu.Unlock()
-}
-
-func (m *Manager) uploadProgressSnapshot(id string) *OperationProgress {
-	if m == nil {
-		return nil
-	}
-	m.mu.Lock()
-	progress, ok := m.uploadProgress[id]
-	m.mu.Unlock()
-	if !ok {
-		return nil
-	}
-	copy := progress
-	return &copy
-}
-
-func (m *Manager) clearUploadProgress(id string) {
-	if m == nil {
-		return
-	}
-	m.mu.Lock()
-	delete(m.uploadProgress, id)
-	m.mu.Unlock()
-}
-
 func (m *Manager) setRestoreProgress(progress OperationProgress) {
 	if m == nil {
 		return
