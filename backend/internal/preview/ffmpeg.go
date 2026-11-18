@@ -468,6 +468,7 @@ func normalizedStoredDuration(ctx context.Context, cat *catalog.Catalog, v *cata
 	log.Printf("[preview] discard implausible duration video=%s size=%d duration=%d", v.ID, v.Size, v.DurationSeconds)
 	if cat != nil {
 		if err := cat.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{
+			ExpectedSource:     v,
 			DurationSeconds:    0,
 			DurationSecondsSet: true,
 		}); err != nil {
@@ -487,7 +488,7 @@ func storeProbedDuration(ctx context.Context, cat *catalog.Catalog, v *catalog.V
 	}
 	seconds := max(1, int(duration))
 	if cat != nil {
-		if err := cat.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{DurationSeconds: seconds}); err != nil {
+		if err := cat.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{ExpectedSource: v, DurationSeconds: seconds}); err != nil {
 			return 0, fmt.Errorf("save duration: %w", err)
 		}
 	}
@@ -1788,7 +1789,7 @@ func (w *Worker) prepareQueued(ctx context.Context, v *catalog.Video) func() {
 		}
 		return nil
 	}
-	if current.Hidden {
+	if current.Hidden || current.DriveID != generationDriveID(w.Drive) {
 		return nil
 	}
 	release, ok := acquireGenerationSlot(ctx, w.Limiter, &w.rateLimit, "preview", w.Drive)
@@ -2021,7 +2022,7 @@ func (w *ThumbWorker) pauseForRecoverableError(ctx context.Context, v *catalog.V
 	}
 	failures := 1
 	if w.Catalog != nil && videoID != "" {
-		count, countErr := w.Catalog.IncrementThumbnailFailures(ctx, videoID)
+		count, countErr := w.Catalog.IncrementThumbnailFailuresForSource(ctx, v)
 		if countErr != nil {
 			log.Printf("[thumb] drive=%s transient media source error count failed step=%s video=%s: %v", w.Drive.ID(), step, title, countErr)
 		} else {
@@ -2065,21 +2066,21 @@ func (w *ThumbWorker) process(ctx context.Context, v *catalog.Video) bool {
 		return false
 	}
 	loaded, err := w.Catalog.GetVideo(ctx, v.ID)
-	if err != nil || loaded.Hidden {
+	if err != nil || loaded.Hidden || loaded.DriveID != generationDriveID(w.Drive) {
 		return false
 	}
 	v = loaded
 	if v.ThumbnailURL != "" {
 		return false
 	}
-	_ = w.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{ThumbnailStatus: "pending"})
+	_ = w.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{ExpectedSource: v, ThumbnailStatus: "pending"})
 	input, err := resolveGenerationInput(ctx, w.Drive, v.FileID)
 	if err != nil {
 		if w.pauseForRecoverableError(ctx, v, err, "streamURL") {
 			return true
 		}
 		applog.Error(ctx, "Thumbnail stream link failed: "+v.Title, err, applog.Fields{Component: "thumb", DriveID: generationDriveID(w.Drive), VideoID: v.ID, FileID: v.FileID, Stage: "streamURL"})
-		_ = w.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{ThumbnailStatus: "failed"})
+		_ = w.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{ExpectedSource: v, ThumbnailStatus: "failed"})
 		return false
 	}
 	defer input.Close()
@@ -2092,7 +2093,7 @@ func (w *ThumbWorker) process(ctx context.Context, v *catalog.Video) bool {
 			return true
 		}
 		applog.Error(ctx, "Thumbnail generation failed: "+v.Title, err, applog.Fields{Component: "thumb", DriveID: generationDriveID(w.Drive), VideoID: v.ID, FileID: v.FileID, Stage: "generate"})
-		_ = w.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{ThumbnailStatus: "failed"})
+		_ = w.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{ExpectedSource: v, ThumbnailStatus: "failed"})
 		return false
 	}
 	return false
@@ -2106,6 +2107,7 @@ func (w *ThumbWorker) generateThumbnailFromLink(ctx context.Context, v *catalog.
 		return err
 	}
 	if err := w.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{
+		ExpectedSource:  v,
 		ThumbnailURL:    "/p/thumb/" + v.ID,
 		ThumbnailStatus: "ready",
 	}); err != nil {
@@ -2152,7 +2154,7 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
 			return true
 		}
 		applog.Error(ctx, "Preview stream link failed: "+v.Title, err, applog.Fields{Component: "preview", DriveID: generationDriveID(w.Drive), VideoID: v.ID, FileID: v.FileID, Stage: "streamURL"})
-		w.Catalog.UpdatePreview(ctx, v.ID, "", "failed")
+		w.Catalog.UpdatePreviewForSource(ctx, v, "", "failed")
 		return false
 	}
 
@@ -2175,7 +2177,7 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
 			return true
 		}
 		applog.Error(ctx, "Preview generation failed: "+v.Title, err, applog.Fields{Component: "preview", DriveID: generationDriveID(w.Drive), VideoID: v.ID, FileID: v.FileID, Stage: "generate"})
-		w.Catalog.UpdatePreview(ctx, v.ID, "", "failed")
+		w.Catalog.UpdatePreviewForSource(ctx, v, "", "failed")
 		return false
 	}
 	persistence.RLock()
@@ -2183,7 +2185,7 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
 	local, err := w.Gen.MoveToLocal(tmp, v.ID)
 	if err != nil {
 		applog.Error(ctx, "Preview file move failed: "+v.Title, err, applog.Fields{Component: "preview", DriveID: generationDriveID(w.Drive), VideoID: v.ID, Stage: "move"})
-		w.Catalog.UpdatePreview(ctx, v.ID, "", "failed")
+		w.Catalog.UpdatePreviewForSource(ctx, v, "", "failed")
 		return false
 	}
 
@@ -2191,7 +2193,7 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
 		removePreviousLocalTeaser(previous, local)
 	}
 	reference := filepath.Base(local)
-	if err := w.Catalog.UpdatePreview(ctx, v.ID, reference, "ready"); err != nil {
+	if err := w.Catalog.UpdatePreviewForSource(ctx, v, reference, "ready"); err != nil {
 		removePreviousLocalTeaser(local, "")
 		applog.Error(ctx, "Save preview metadata failed: "+v.Title, err, applog.Fields{Component: "preview", DriveID: generationDriveID(w.Drive), VideoID: v.ID, Stage: "save"})
 		return false

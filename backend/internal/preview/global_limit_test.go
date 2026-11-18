@@ -65,7 +65,7 @@ func TestPreviewDrivesShareBudgetWithoutBacklogStarvation(t *testing.T) {
 	genA := &blockingTeaserGenerator{started: make(chan struct{}, 3), release: releaseA}
 	genB := &blockingTeaserGenerator{started: make(chan struct{}, 1), release: make(chan struct{})}
 	a := NewWorker(genA, cat, &concurrentPreviewDrive{})
-	b := NewWorker(genB, cat, &concurrentPreviewDrive{})
+	b := NewWorker(genB, cat, &concurrentPreviewDrive{id: "drive-b"})
 	a.Limiter, b.Limiter = limiter, limiter
 	for i := 0; i < 4; i++ {
 		v := *first

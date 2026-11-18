@@ -140,6 +140,9 @@ UPDATE videos
 	if err := c.ensureBaseVideoIndexes(ctx); err != nil {
 		return err
 	}
+	if err := c.ensureSourceRemovalGuards(ctx); err != nil {
+		return err
+	}
 	// Preview generation is now controlled exclusively by config.yaml.
 	if err := c.dropColumnIfExists(ctx, "drives", "teaser_enabled"); err != nil {
 		return err
@@ -543,9 +546,9 @@ func (c *Catalog) ensureBaseVideoIndexes(ctx context.Context) error {
 	return nil
 }
 
-const canonicalMaterializationMarker = "videos.is_canonical.v1"
+const canonicalMaterializationMarker = "videos.is_canonical.v2"
 
-const dedupRepresentativesMarker = "videos.dedup_representatives.v1"
+const dedupRepresentativesMarker = "videos.dedup_representatives.v2"
 
 const canonicalRowsMatchingNewVideoSQL = `(videos.id = NEW.id
 	OR (COALESCE(NEW.content_hash, '') != ''
@@ -593,6 +596,15 @@ CREATE INDEX IF NOT EXISTS idx_video_dedup_representative
 	insertRepresentativeRefreshSQL := refreshInsertedVideoDedupRepresentativesSQL()
 	updateRepresentativeRefreshSQL := refreshUpdatedVideoDedupRepresentativesSQL()
 	deleteRepresentativeRefreshSQL := refreshDeletedVideoDedupRepresentativesSQL()
+	const dedupUpdateSQL = `AFTER UPDATE OF id, hidden, file_id, content_hash, sampled_sha256, size_bytes, file_name, created_at ON videos
+WHEN OLD.id IS NOT NEW.id
+	OR OLD.hidden IS NOT NEW.hidden
+	OR OLD.file_id IS NOT NEW.file_id
+	OR COALESCE(OLD.content_hash, '') IS NOT COALESCE(NEW.content_hash, '')
+	OR COALESCE(OLD.sampled_sha256, '') IS NOT COALESCE(NEW.sampled_sha256, '')
+	OR COALESCE(OLD.size_bytes, 0) IS NOT COALESCE(NEW.size_bytes, 0)
+	OR COALESCE(OLD.file_name, '') IS NOT COALESCE(NEW.file_name, '')
+	OR OLD.created_at IS NOT NEW.created_at`
 	triggerSQL := `
 DROP TRIGGER IF EXISTS maintain_video_canonical_after_insert;
 DROP TRIGGER IF EXISTS maintain_video_canonical_after_update;
@@ -611,13 +623,7 @@ BEGIN
 END;
 
 CREATE TRIGGER maintain_video_canonical_after_update
-AFTER UPDATE OF id, content_hash, sampled_sha256, size_bytes, file_name, created_at ON videos
-WHEN OLD.id IS NOT NEW.id
-	OR COALESCE(OLD.content_hash, '') IS NOT COALESCE(NEW.content_hash, '')
-	OR COALESCE(OLD.sampled_sha256, '') IS NOT COALESCE(NEW.sampled_sha256, '')
-	OR COALESCE(OLD.size_bytes, 0) IS NOT COALESCE(NEW.size_bytes, 0)
-	OR COALESCE(OLD.file_name, '') IS NOT COALESCE(NEW.file_name, '')
-	OR OLD.created_at IS NOT NEW.created_at
+` + dedupUpdateSQL + `
 BEGIN
 	UPDATE videos
 	   SET is_canonical = ` + canonicalValueSQL + `
@@ -641,13 +647,7 @@ BEGIN
 END;
 
 CREATE TRIGGER maintain_video_representatives_after_update
-AFTER UPDATE OF id, content_hash, sampled_sha256, size_bytes, file_name, created_at ON videos
-WHEN OLD.id IS NOT NEW.id
-	OR COALESCE(OLD.content_hash, '') IS NOT COALESCE(NEW.content_hash, '')
-	OR COALESCE(OLD.sampled_sha256, '') IS NOT COALESCE(NEW.sampled_sha256, '')
-	OR COALESCE(OLD.size_bytes, 0) IS NOT COALESCE(NEW.size_bytes, 0)
-	OR COALESCE(OLD.file_name, '') IS NOT COALESCE(NEW.file_name, '')
-	OR OLD.created_at IS NOT NEW.created_at
+` + dedupUpdateSQL + `
 BEGIN
 ` + updateRepresentativeRefreshSQL + `
 END;
@@ -660,6 +660,13 @@ END;
 `
 	if _, err := c.db.ExecContext(ctx, triggerSQL); err != nil {
 		return fmt.Errorf("install canonical video triggers: %w", err)
+	}
+
+	// Older drive transfers and restored archives may contain uppercase
+	// provider hashes. Normalize storage so exact lookups stay indexable.
+	if _, err := c.db.ExecContext(ctx, `UPDATE videos SET content_hash = lower(trim(content_hash))
+		WHERE content_hash != lower(trim(content_hash))`); err != nil {
+		return fmt.Errorf("normalize video content hashes: %w", err)
 	}
 
 	marker, err := c.GetSetting(ctx, canonicalMaterializationMarker, "")
@@ -698,7 +705,7 @@ SELECT COUNT(*)
 			return fmt.Errorf("begin dedup representative backfill: %w", err)
 		}
 		defer tx.Rollback()
-		if _, err := tx.ExecContext(ctx, rebuildVideoDedupRepresentativesSQL("1 = 1", "")); err != nil {
+		if _, err := tx.ExecContext(ctx, rebuildVideoDedupRepresentativesSQL()); err != nil {
 			return fmt.Errorf("backfill dedup representatives: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx, `
@@ -743,65 +750,16 @@ DROP INDEX IF EXISTS idx_videos_canonical_recent_ready;
 	return nil
 }
 
-func rebuildVideoDedupRepresentativesSQL(scopeSQL, removedVideoIDSQL string) string {
-	deleteWhere := `video_id IN (SELECT videos.id FROM videos WHERE ` + scopeSQL + `)`
-	if strings.TrimSpace(removedVideoIDSQL) != "" {
-		deleteWhere = `video_id = ` + removedVideoIDSQL + ` OR ` + deleteWhere
-	}
+func rebuildVideoDedupRepresentativesSQL() string {
 	return `
-	DELETE FROM video_dedup_representatives
-	 WHERE ` + deleteWhere + `;
-
-	INSERT OR REPLACE INTO video_dedup_representatives (video_id, basis, representative_id)
-	SELECT videos.id, 'self', videos.id
-	  FROM videos
-	 WHERE ` + scopeSQL + `;
-
-	INSERT OR REPLACE INTO video_dedup_representatives (video_id, basis, representative_id)
-	SELECT videos.id,
-	       'content_hash',
-	       (SELECT canonical.id
-	          FROM videos canonical
-	         WHERE canonical.content_hash = videos.content_hash
-	           AND COALESCE(canonical.content_hash, '') != ''
-	         ORDER BY canonical.created_at ASC, canonical.id ASC
-	         LIMIT 1)
-	  FROM videos
-	 WHERE ` + scopeSQL + `
-	   AND COALESCE(videos.content_hash, '') != '';
-
-	INSERT OR REPLACE INTO video_dedup_representatives (video_id, basis, representative_id)
-	SELECT videos.id,
-	       'sampled_sha256',
-	       (SELECT canonical.id
-	          FROM videos canonical
-	         WHERE canonical.sampled_sha256 = videos.sampled_sha256
-	           AND canonical.size_bytes = videos.size_bytes
-	           AND COALESCE(canonical.sampled_sha256, '') != ''
-	           AND canonical.size_bytes > 0
-	         ORDER BY canonical.created_at ASC, canonical.id ASC
-	         LIMIT 1)
-	  FROM videos
-	 WHERE ` + scopeSQL + `
-	   AND COALESCE(videos.sampled_sha256, '') != ''
-	   AND videos.size_bytes > 0;
-
-	INSERT OR REPLACE INTO video_dedup_representatives (video_id, basis, representative_id)
-	SELECT videos.id,
-	       'file_name_size',
-	       (SELECT canonical.id
-	          FROM videos canonical
-	         WHERE canonical.file_name = videos.file_name
-	           AND canonical.size_bytes = videos.size_bytes
-	           AND COALESCE(canonical.file_name, '') != ''
-	           AND canonical.size_bytes > 0
-	         ORDER BY canonical.created_at ASC, canonical.id ASC
-	         LIMIT 1)
-	  FROM videos
-	 WHERE ` + scopeSQL + `
-	   AND COALESCE(videos.file_name, '') != ''
-	   AND videos.size_bytes > 0;
-`
+	DELETE FROM video_dedup_representatives;
+	INSERT INTO video_dedup_representatives (video_id, basis, representative_id)
+	SELECT id, 'self', id FROM videos;
+` + writeVideoDedupRepresentativeGroupsSQL(
+		"COALESCE(videos.content_hash, '') != ''",
+		"videos.size_bytes > 0 AND COALESCE(videos.sampled_sha256, '') != ''",
+		"videos.size_bytes > 0 AND COALESCE(videos.file_name, '') != ''",
+	)
 }
 
 func refreshInsertedVideoDedupRepresentativesSQL() string {
@@ -827,49 +785,54 @@ func refreshDeletedVideoDedupRepresentativesSQL() string {
 }
 
 func refreshVideoDedupRepresentativeGroupsSQL(oldRef, newRef string) string {
-	hashScope := dedupRepresentativeHashScopeSQL(oldRef, newRef)
-	sampleScope := dedupRepresentativeSampleScopeSQL(oldRef, newRef)
-	fileScope := dedupRepresentativeFileScopeSQL(oldRef, newRef)
+	return writeVideoDedupRepresentativeGroupsSQL(
+		dedupRepresentativeHashScopeSQL(oldRef, newRef),
+		dedupRepresentativeSampleScopeSQL(oldRef, newRef),
+		dedupRepresentativeFileScopeSQL(oldRef, newRef),
+	)
+}
+
+func writeVideoDedupRepresentativeGroupsSQL(hashScope, sampleScope, fileScope string) string {
 	return `
 	INSERT OR REPLACE INTO video_dedup_representatives (video_id, basis, representative_id)
 	SELECT videos.id,
 	       'content_hash',
 	       (SELECT canonical.id
 	          FROM videos canonical
-	         WHERE canonical.content_hash = videos.content_hash
+	         WHERE ` + duplicateLookupScope + ` AND canonical.content_hash = videos.content_hash
 	           AND COALESCE(canonical.content_hash, '') != ''
 	         ORDER BY canonical.created_at ASC, canonical.id ASC
 	         LIMIT 1)
 	  FROM videos
-	 WHERE ` + hashScope + `;
+	 WHERE ` + duplicateLookupScope + ` AND (` + hashScope + `);
 
 	INSERT OR REPLACE INTO video_dedup_representatives (video_id, basis, representative_id)
 	SELECT videos.id,
 	       'sampled_sha256',
 	       (SELECT canonical.id
 	          FROM videos canonical
-	         WHERE canonical.sampled_sha256 = videos.sampled_sha256
+	         WHERE ` + duplicateLookupScope + ` AND canonical.sampled_sha256 = videos.sampled_sha256
 	           AND canonical.size_bytes = videos.size_bytes
 	           AND COALESCE(canonical.sampled_sha256, '') != ''
 	           AND canonical.size_bytes > 0
 	         ORDER BY canonical.created_at ASC, canonical.id ASC
 	         LIMIT 1)
 	  FROM videos
-	 WHERE ` + sampleScope + `;
+	 WHERE ` + duplicateLookupScope + ` AND (` + sampleScope + `);
 
 	INSERT OR REPLACE INTO video_dedup_representatives (video_id, basis, representative_id)
 	SELECT videos.id,
 	       'file_name_size',
 	       (SELECT canonical.id
 	          FROM videos canonical
-	         WHERE canonical.file_name = videos.file_name
+	         WHERE ` + duplicateLookupScope + ` AND canonical.file_name = videos.file_name
 	           AND canonical.size_bytes = videos.size_bytes
 	           AND COALESCE(canonical.file_name, '') != ''
 	           AND canonical.size_bytes > 0
 	         ORDER BY canonical.created_at ASC, canonical.id ASC
 	         LIMIT 1)
 	  FROM videos
-	 WHERE ` + fileScope + `;
+	 WHERE ` + duplicateLookupScope + ` AND (` + fileScope + `);
 `
 }
 

@@ -14,6 +14,10 @@ import (
 // action now blacklists instead) and rows without a file cannot be played.
 const duplicateLookupScope = `COALESCE(hidden, 0) = 0 AND COALESCE(file_id, '') != ''`
 
+func normalizeContentHash(hash string) string {
+	return dedupe.NormalizeHash(hash)
+}
+
 // equivalentVideoLookupWhere is the SQL form of dedupe.ExactKeys: a provider
 // content hash, or a size-qualified sampled fingerprint.
 func equivalentVideoLookupWhere(source *Video) (string, []any, bool) {

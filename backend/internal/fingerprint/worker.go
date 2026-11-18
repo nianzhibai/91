@@ -206,7 +206,7 @@ func (w *Worker) processQueued(ctx context.Context, v *catalog.Video) {
 		}
 		return
 	}
-	if current.SampledSHA256 != "" || current.FingerprintStatus == "ready" || current.Hidden {
+	if current.DriveID != w.Drive.ID() || current.SampledSHA256 != "" || current.FingerprintStatus == "ready" || current.Hidden {
 		return
 	}
 	release, err := w.Config.Limiter.Acquire(ctx)
@@ -238,10 +238,10 @@ func (w *Worker) processQueued(ctx context.Context, v *catalog.Video) {
 			return
 		}
 		applog.Error(ctx, "Fingerprint computation failed", err, applog.Fields{Stage: "compute"})
-		_ = w.Catalog.UpdateVideoFingerprint(ctx, current.ID, "", "failed", err.Error())
+		_ = w.Catalog.UpdateVideoFingerprintForSource(ctx, current, "", "failed", err.Error())
 		return
 	}
-	if err := w.Catalog.UpdateVideoFingerprint(ctx, current.ID, sum, "ready", ""); err != nil {
+	if err := w.Catalog.UpdateVideoFingerprintForSource(ctx, current, sum, "ready", ""); err != nil {
 		applog.Error(ctx, "Save fingerprint failed", err, applog.Fields{Stage: "save"})
 		return
 	}

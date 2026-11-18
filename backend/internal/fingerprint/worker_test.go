@@ -241,7 +241,7 @@ func TestWorkerP115PersistentRangeForbiddenKeepsFingerprintPending(t *testing.T)
 	t.Cleanup(func() { _ = cat.Close() })
 	video := &catalog.Video{
 		ID:                "p115-worker-403",
-		DriveID:           "drive-id",
+		DriveID:           "fake",
 		FileID:            "remote",
 		Title:             "Clip",
 		Size:              10,

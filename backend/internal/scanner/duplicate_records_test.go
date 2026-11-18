@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"slices"
 	"testing"
 
 	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/dedupe"
 	"github.com/nianzhibai/91/backend/internal/drives"
 )
 
@@ -118,5 +120,196 @@ func TestScanRecordsDuplicatesForNewAndExistingSources(t *testing.T) {
 				t.Fatalf("moved observation has stale directory metadata: %+v", source)
 			}
 		})
+	}
+}
+
+func TestRescanKeepsOnlyCurrentContentEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		size     int64
+		hash     string
+		wantHash string
+		changed  bool
+	}{
+		{"same size and new hash", 100, "UPDATED", "updated", true},
+		{"new size without a hash", 101, "", "", true},
+		{"hash omitted for unchanged file", 100, "", "old", false},
+		{"hash differs only in case", 100, "OLD", "old", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			path := filepath.Join(t.TempDir(), "catalog.db")
+			cat, err := catalog.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cat.Close()
+			before := &catalog.Video{ID: "existing", DriveID: "drive", FileID: "file", FileName: "file.mp4", Size: 100,
+				ContentHash: "old", SampledSHA256: "sample", DurationSeconds: 180,
+				ThumbnailURL: "/p/thumb/existing", PreviewStatus: "ready", PreviewLocal: "existing.mp4"}
+			if err := cat.UpsertVideo(ctx, before); err != nil {
+				t.Fatal(err)
+			}
+			if err := cat.UpsertVideo(ctx, &catalog.Video{ID: "copy", DriveID: "other", FileID: "other-file",
+				FileName: "different.mp4", Size: 100, SampledSHA256: "sample"}); err != nil {
+				t.Fatal(err)
+			}
+
+			drive := &scannerFakeDrive{entries: []drives.Entry{{ID: "file", Name: "file.mp4", Size: tc.size, Hash: tc.hash}}}
+			result, err := New(cat, drive, []string{".mp4"}, nil, nil).Scan(ctx, "root")
+			if err != nil || len(result.Issues) != 0 {
+				t.Fatalf("scan issues=%v err=%v", result.Issues, err)
+			}
+			got, err := cat.GetVideo(ctx, "existing")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.ContentHash != tc.wantHash || got.Size != tc.size {
+				t.Fatalf("observed size/hash = %d/%q", got.Size, got.ContentHash)
+			}
+			if tc.changed {
+				if result.Duplicates != 0 || got.SampledSHA256 != "" || got.FingerprintStatus != "pending" ||
+					got.DurationSeconds != 0 || got.ThumbnailURL != "" || got.PreviewLocal != "" || got.PreviewStatus != "pending" {
+					t.Fatalf("stale evidence after replacement: duplicates=%d row=%+v", result.Duplicates, got)
+				}
+				if err := cat.UpdateVideoFingerprintForSource(ctx, before, "late", "ready", ""); !errors.Is(err, sql.ErrNoRows) {
+					t.Fatalf("late fingerprint from previous file: %v", err)
+				}
+				if err := cat.UpdatePreviewForSource(ctx, before, "late.mp4", "ready"); !errors.Is(err, sql.ErrNoRows) {
+					t.Fatalf("late preview from previous file: %v", err)
+				}
+				if _, err := cat.IncrementThumbnailFailuresForSource(ctx, before); !errors.Is(err, sql.ErrNoRows) {
+					t.Fatalf("late thumbnail failure from previous file: %v", err)
+				}
+				return
+			}
+			if got.SampledSHA256 != "sample" || got.PreviewStatus != "ready" || result.Duplicates != 1 {
+				t.Fatalf("unchanged file: duplicates=%d row=%+v", result.Duplicates, got)
+			}
+			db, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			var reason string
+			if err := db.QueryRow("SELECT reason FROM duplicate_records").Scan(&reason); err != nil || reason != "sampled_sha256" {
+				t.Fatalf("recorded reason=%q err=%v", reason, err)
+			}
+		})
+	}
+}
+
+func TestRescanKeepsTagsOnMatcherFailureAndClearsThemOnNoMatch(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "catalog.db")
+	cat, err := catalog.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cat.Close()
+	if _, err := cat.EnsureTag(ctx, "example", "user"); err != nil {
+		t.Fatal(err)
+	}
+	v := &catalog.Video{ID: "existing", DriveID: "drive", FileID: "file", FileName: "example.mp4", Title: "example", Size: 100, ContentHash: "hash"}
+	if err := cat.UpsertVideo(ctx, v); err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.UpsertVideo(ctx, &catalog.Video{ID: "other", DriveID: "other", FileID: "copy", Size: 100, ContentHash: "hash"}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// Make just the rule-version read fail. The catalog can still persist tags.
+	if _, err := db.Exec("ALTER TABLE settings RENAME TO unavailable_settings"); err != nil {
+		t.Fatal(err)
+	}
+	drive := &scannerFakeDrive{entries: []drives.Entry{{ID: "file", Name: "renamed.mp4", Size: 100, Hash: "hash"}}}
+	scan := New(cat, drive, []string{".mp4"}, nil, nil)
+	first, err := scan.Scan(ctx, "root")
+	if err != nil || len(first.Issues) != 1 || first.Issues[0].Stage != IssueTags || first.Duplicates != 1 {
+		t.Fatalf("scan issues=%v duplicates=%d err=%v", first.Issues, first.Duplicates, err)
+	}
+	got, err := cat.GetVideo(ctx, v.ID)
+	if err != nil || !slices.Equal(got.Tags, []string{"example"}) {
+		t.Fatalf("tags lost on lookup failure: row=%+v err=%v", got, err)
+	}
+	if _, err := db.Exec("ALTER TABLE unavailable_settings RENAME TO settings"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := scan.Scan(ctx, "root")
+	if err != nil || len(second.Issues) != 0 || second.Duplicates != 1 {
+		t.Fatalf("scan issues=%v duplicates=%d err=%v", second.Issues, second.Duplicates, err)
+	}
+	got, err = cat.GetVideo(ctx, v.ID)
+	if err != nil || len(got.Tags) != 0 {
+		t.Fatalf("tags after successful empty match: row=%+v err=%v", got, err)
+	}
+}
+
+func TestRescanReplacesHashBeforeAnotherFileCanMatchIt(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cat.Close()
+	drive := &scannerFakeDrive{entries: []drives.Entry{
+		{ID: "a", Name: "first.mp4", Size: 100, Hash: "first"},
+		{ID: "b", Name: "second.mp4", Size: 101},
+	}}
+	scan := New(cat, drive, []string{".mp4"}, nil, nil)
+	if result, err := scan.Scan(ctx, "root"); err != nil || result.Stats.Added != 2 {
+		t.Fatalf("initial scan: %+v, %v", result, err)
+	}
+	drive.entries[0].Hash = "replacement"
+	drive.entries[1].Hash = "first"
+	drive.entries[1].Size = 100
+	if result, err := scan.Scan(ctx, "root"); err != nil || len(result.Issues) != 0 || result.Duplicates != 0 {
+		t.Fatalf("rescan: %+v, %v", result, err)
+	}
+	videos, err := cat.ListVideoMaintenanceCandidates(ctx)
+	if err != nil || len(videos) != 2 {
+		t.Fatalf("maintenance candidates: %+v, %v", videos, err)
+	}
+	candidates := make([]dedupe.Candidate, 0, len(videos))
+	for _, v := range videos {
+		candidates = append(candidates, dedupe.Candidate{ID: v.ID, Size: v.Size, ContentHash: v.ContentHash, SampledSHA256: v.SampledSHA256})
+	}
+	plan, err := dedupe.Build(ctx, candidates, dedupe.Options{Channels: dedupe.ChannelExact})
+	if err != nil || len(plan.Actions) != 0 {
+		t.Fatalf("maintenance would merge distinct files: %+v, %v", plan.Actions, err)
+	}
+}
+
+func TestRescanRefreshesAllRowsSharingAProviderFile(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cat.Close()
+	for _, id := range []string{"migrated", "scanned"} {
+		if err := cat.UpsertVideo(ctx, &catalog.Video{
+			ID: id, DriveID: "drive", FileID: "file", Size: 100, ContentHash: "old", SampledSHA256: "sample",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	drive := &scannerFakeDrive{entries: []drives.Entry{{ID: "file", Name: "new.mp4", Size: 100, Hash: "new"}}}
+	result, err := New(cat, drive, []string{".mp4"}, nil, nil).Scan(ctx, "root")
+	if err != nil || len(result.Issues) != 0 || result.Updated != 2 {
+		t.Fatalf("shared source rescan: %+v, %v", result, err)
+	}
+	rows, err := cat.ListVideosByDriveFileID(ctx, "drive", "file")
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("shared source rows: %+v, %v", rows, err)
+	}
+	for _, row := range rows {
+		if row.ContentHash != "new" || row.SampledSHA256 != "" {
+			t.Fatalf("row retained stale identity: %+v", row)
+		}
 	}
 }

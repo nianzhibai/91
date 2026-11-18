@@ -1336,6 +1336,14 @@ func (g *blockingTeaserGenerator) MoveToLocal(_ string, videoID string) (string,
 
 type concurrentPreviewDrive struct {
 	previewFakeDrive
+	id string
+}
+
+func (d *concurrentPreviewDrive) ID() string {
+	if d.id != "" {
+		return d.id
+	}
+	return d.previewFakeDrive.ID()
 }
 
 func (d *concurrentPreviewDrive) StreamURL(_ context.Context, fileID string) (*drives.StreamLink, error) {

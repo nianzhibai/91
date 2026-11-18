@@ -59,7 +59,7 @@ func (w *ThumbWorker) processDuration(ctx context.Context, video *catalog.Video)
 		return
 	}
 	current, err := w.Catalog.GetVideo(ctx, video.ID)
-	if err != nil || current.Hidden {
+	if err != nil || current.Hidden || current.DriveID != generationDriveID(w.Drive) {
 		return
 	}
 	duration, err := normalizedStoredDuration(ctx, w.Catalog, current)

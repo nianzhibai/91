@@ -34,8 +34,6 @@ func (c *Catalog) InsertScannedVideo(ctx context.Context, v *Video, seenFileIDs 
 	defer func() {
 		if !committed {
 			_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
-		} else {
-			c.driveEvents.Notify("", false, driveevents.MediaChanged)
 		}
 	}()
 
@@ -69,6 +67,7 @@ SELECT 1 FROM videos WHERE id = ? OR (drive_id = ? AND file_id = ?)
 		return false, err
 	}
 	committed = true
+	c.driveEvents.Notify("", false, driveevents.MediaChanged)
 	return true, nil
 }
 

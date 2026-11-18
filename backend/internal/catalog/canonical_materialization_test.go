@@ -152,7 +152,7 @@ func TestCanonicalMaterializationTracksInsertUpdateAndDelete(t *testing.T) {
 	assertCanonicalMatchesDynamic(t, cat)
 }
 
-func TestCanonicalMaterializationKeepsHiddenRowsInDedupOrdering(t *testing.T) {
+func TestCanonicalMaterializationRequiresEligibleRepresentatives(t *testing.T) {
 	ctx := context.Background()
 	cat := openCanonicalTestCatalog(t)
 	base := time.UnixMilli(1_800_000_000_000)
@@ -165,15 +165,35 @@ func TestCanonicalMaterializationKeepsHiddenRowsInDedupOrdering(t *testing.T) {
 		ID: "visible-late", ContentHash: "same", FileName: "visible.mp4", Size: 100,
 		CreatedAt: base.Add(time.Millisecond),
 	})
-	assertCanonicalFlag(t, cat, "hidden-early", true)
-	assertCanonicalFlag(t, cat, "visible-late", false)
+	assertCanonicalFlag(t, cat, "hidden-early", false)
+	assertCanonicalFlag(t, cat, "visible-late", true)
 
 	videos, total, err := cat.ListVideos(ctx, ListParams{PageSize: 10})
 	if err != nil {
 		t.Fatalf("list visible videos: %v", err)
 	}
-	if total != 0 || len(videos) != 0 {
-		t.Fatalf("visible group = %d/%d, want hidden canonical to suppress later duplicate", len(videos), total)
+	if total != 1 || len(videos) != 1 || videos[0].ID != "visible-late" {
+		t.Fatalf("visible group = %v/%d, want visible-late", videos, total)
+	}
+	for _, change := range []struct {
+		sql                string
+		wantRepresentative string
+	}{
+		{"UPDATE videos SET hidden = 0 WHERE id = 'hidden-early'", "hidden-early"},
+		{"UPDATE videos SET file_id = '' WHERE id = 'hidden-early'", "visible-late"},
+		{"UPDATE videos SET file_id = 'restored-file' WHERE id = 'hidden-early'", "hidden-early"},
+		{"UPDATE videos SET hidden = 1 WHERE id = 'hidden-early'", "visible-late"},
+	} {
+		if _, err := cat.db.ExecContext(ctx, change.sql); err != nil {
+			t.Fatal(err)
+		}
+		assertCanonicalFlag(t, cat, "visible-late", change.wantRepresentative == "visible-late")
+		assertCanonicalMatchesDynamic(t, cat)
+		var representative string
+		if err := cat.db.QueryRowContext(ctx, `SELECT representative_id FROM video_dedup_representatives
+ WHERE video_id = 'visible-late' AND basis = 'content_hash'`).Scan(&representative); err != nil || representative != change.wantRepresentative {
+			t.Fatalf("%s: representative=%q, err=%v", change.sql, representative, err)
+		}
 	}
 }
 
@@ -270,46 +290,48 @@ SELECT COUNT(*)
 	}
 
 	if err := cat.db.QueryRow(`
-WITH expected(video_id, basis, representative_id) AS (
+WITH eligible AS (
+	SELECT * FROM videos WHERE COALESCE(hidden, 0) = 0 AND file_id != ''
+), expected(video_id, basis, representative_id) AS (
 	SELECT videos.id, 'self', videos.id
 	  FROM videos
 	UNION ALL
 	SELECT videos.id,
 	       'content_hash',
 	       (SELECT canonical.id
-	          FROM videos canonical
+	          FROM eligible canonical
 	         WHERE canonical.content_hash = videos.content_hash
 	           AND COALESCE(canonical.content_hash, '') != ''
 	         ORDER BY canonical.created_at ASC, canonical.id ASC
 	         LIMIT 1)
-	  FROM videos
+	  FROM eligible AS videos
 	 WHERE COALESCE(videos.content_hash, '') != ''
 	UNION ALL
 	SELECT videos.id,
 	       'sampled_sha256',
 	       (SELECT canonical.id
-	          FROM videos canonical
+	          FROM eligible canonical
 	         WHERE canonical.sampled_sha256 = videos.sampled_sha256
 	           AND canonical.size_bytes = videos.size_bytes
 	           AND COALESCE(canonical.sampled_sha256, '') != ''
 	           AND canonical.size_bytes > 0
 	         ORDER BY canonical.created_at ASC, canonical.id ASC
 	         LIMIT 1)
-	  FROM videos
+	  FROM eligible AS videos
 	 WHERE COALESCE(videos.sampled_sha256, '') != ''
 	   AND videos.size_bytes > 0
 	UNION ALL
 	SELECT videos.id,
 	       'file_name_size',
 	       (SELECT canonical.id
-	          FROM videos canonical
+	          FROM eligible canonical
 	         WHERE canonical.file_name = videos.file_name
 	           AND canonical.size_bytes = videos.size_bytes
 	           AND COALESCE(canonical.file_name, '') != ''
 	           AND canonical.size_bytes > 0
 	         ORDER BY canonical.created_at ASC, canonical.id ASC
 	         LIMIT 1)
-	  FROM videos
+	  FROM eligible AS videos
 	 WHERE COALESCE(videos.file_name, '') != ''
 	   AND videos.size_bytes > 0
 ),
@@ -329,5 +351,49 @@ SELECT (SELECT COUNT(*) FROM missing) + (SELECT COUNT(*) FROM extra)
 	}
 	if mismatches != 0 {
 		t.Fatalf("dedup representative materialization has %d mismatch(es)", mismatches)
+	}
+}
+
+func TestCanonicalUpgradeNormalizesMigratedProviderHashes(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "catalog.db")
+	cat, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedCanonicalVideo(t, cat, Video{ID: "migrated", Size: 100, CreatedAt: time.Unix(1, 0)})
+	if err := cat.MigrateVideoToDrive(ctx, "migrated", VideoDriveMigration{DriveID: "target", FileID: "remote-file", ContentHash: " ABCDEF "}); err != nil {
+		t.Fatal(err)
+	}
+	copy := &Video{ID: "copy", DriveID: "elsewhere", FileID: "other-file", FileName: "renamed.mp4", ContentHash: "ABCDEF", Size: 100}
+	check := func(cat *Catalog) {
+		t.Helper()
+		found, err := cat.FindEquivalentVideo(ctx, copy)
+		if err != nil || found.ID != "migrated" || found.ContentHash != "abcdef" {
+			t.Fatalf("hash match=%+v err=%v", found, err)
+		}
+	}
+	check(cat)
+	// Simulate a v1 catalog where a hidden row shadowed the migrated copy.
+	seedCanonicalVideo(t, cat, Video{ID: "hidden", Size: 100, ContentHash: "abcdef", Hidden: true, CreatedAt: time.Unix(0, 0)})
+	if _, err := cat.db.Exec(`UPDATE videos SET content_hash = 'ABCDEF' WHERE id = 'migrated';
+		UPDATE videos SET is_canonical = 0 WHERE id = 'migrated';
+		DELETE FROM video_dedup_representatives;
+		DELETE FROM settings WHERE key IN (?, ?)`, canonicalMaterializationMarker, dedupRepresentativesMarker); err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.Close(); err != nil {
+		t.Fatal(err)
+	}
+	upgraded, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upgraded.Close()
+	check(upgraded)
+	assertCanonicalFlag(t, upgraded, "migrated", true)
+	var representative string
+	if err := upgraded.db.QueryRow("SELECT representative_id FROM video_dedup_representatives WHERE video_id = 'migrated' AND basis = 'content_hash'").Scan(&representative); err != nil || representative != "migrated" {
+		t.Fatalf("upgrade representative=%q err=%v", representative, err)
 	}
 }

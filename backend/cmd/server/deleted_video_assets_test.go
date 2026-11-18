@@ -9,11 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nianzhibai/91/backend/internal/api"
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/config"
+	"github.com/nianzhibai/91/backend/internal/drives"
 	"github.com/nianzhibai/91/backend/internal/mediaasset"
 	"github.com/nianzhibai/91/backend/internal/preview"
 	"github.com/nianzhibai/91/backend/internal/proxy"
+	"github.com/nianzhibai/91/backend/internal/scanner"
 )
 
 func seedDeferredVideoAssets(t *testing.T) (*App, *catalog.Video, []string) {
@@ -185,5 +188,84 @@ func TestExplicitBlacklistSourceDeletionBypassesAssetGrace(t *testing.T) {
 	}
 	if deleted, err := app.cat.IsVideoDeleted(ctx, video.ID); err != nil || deleted {
 		t.Fatalf("source-deleted tombstone still present: %v, %v", deleted, err)
+	}
+}
+
+func TestDuplicateMaintenanceProtectsSharedSourceDuringBlacklistCleanup(t *testing.T) {
+	ctx := context.Background()
+	app, crawler, _ := seedDeferredVideoAssets(t)
+	target := &catalog.Video{
+		ID: "on-target", DriveID: "remote", FileID: "remote-file", FileName: "on-target.mp4",
+		ContentHash: "aabbcc", Size: crawler.Size,
+	}
+	if err := app.cat.UpsertVideo(ctx, target); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.cat.MigrateVideoToDrive(ctx, crawler.ID, catalog.VideoDriveMigration{
+		DriveID: target.DriveID, FileID: target.FileID, ContentHash: "AABBCC",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	drv := &serverRemovableFakeDrive{id: target.DriveID}
+	app.registry = proxy.NewRegistry()
+	app.registry.Set(drv.ID(), drv)
+	if _, err := app.deleteVideo(ctx, target.ID, true); !errors.Is(err, catalog.ErrVideoSourceInUse) {
+		t.Fatalf("direct source removal while shared: %v", err)
+	}
+	if err := app.cleanupDuplicateVideoAssets(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := app.cat.CountDeletedVideosPendingSourceDeletion(ctx); err != nil || count != 0 {
+		t.Fatalf("pending sources = %d, %v", count, err)
+	}
+	app.runBlacklistSourceDelete(ctx)
+	app.runBlacklistSourceDelete(ctx, api.BlacklistSourceDeleteRequest{IDs: []string{target.ID}})
+	if drv.removedFileID != "" {
+		t.Fatalf("deleted shared provider file %q", drv.removedFileID)
+	}
+	kept, err := app.cat.ResolveVideoID(ctx, target.ID)
+	if err != nil || kept != crawler.ID {
+		t.Fatalf("old link resolves to %q, want %q, err=%v", kept, crawler.ID, err)
+	}
+	v, err := app.cat.GetVideo(ctx, kept)
+	if err != nil || v.DriveID != target.DriveID || v.FileID != target.FileID {
+		t.Fatalf("survivor source = %+v, %v", v, err)
+	}
+	drive := &serverTreeScanDrive{id: target.DriveID, entries: map[string][]drives.Entry{
+		"root": {{ID: target.FileID, Name: "renamed.mp4", Hash: target.ContentHash, Size: target.Size}},
+	}}
+	result, err := scanner.New(app.cat, drive, []string{".mp4"}, nil, nil).Scan(ctx, "root")
+	if err != nil || len(result.Issues) != 0 || result.Tombstoned != 0 || result.Updated != 1 {
+		t.Fatalf("rescan of survivor: %+v, %v", result, err)
+	}
+	v, err = app.cat.GetVideo(ctx, kept)
+	if err != nil || v.FileName != "renamed.mp4" {
+		t.Fatalf("renamed survivor = %+v, %v", v, err)
+	}
+}
+
+func TestBlacklistCleanupSkipsSourceReassignedAfterSnapshot(t *testing.T) {
+	ctx := context.Background()
+	app, video, _ := seedDeferredVideoAssets(t)
+	if _, err := app.deleteVideo(ctx, video.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	items, err := app.cat.ListDeletedVideosPendingSourceDeletion(ctx)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("unclaimed source snapshot = %+v, %v", items, err)
+	}
+	drv := &serverRemovableFakeDrive{id: video.DriveID}
+	app.registry = proxy.NewRegistry()
+	app.registry.Set(drv.ID(), drv)
+	if err := app.cat.UpsertVideo(ctx, &catalog.Video{
+		ID: "other-owner", DriveID: video.DriveID, FileID: video.FileID, Hidden: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if skipped, err := app.deleteBlacklistedVideoSource(ctx, items[0]); err != nil || !skipped {
+		t.Fatalf("cleanup after reassignment: skipped=%v, err=%v", skipped, err)
+	}
+	if drv.removedFileID != "" {
+		t.Fatalf("removed reassigned provider file %q", drv.removedFileID)
 	}
 }

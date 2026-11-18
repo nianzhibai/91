@@ -407,12 +407,19 @@ func nullableStatus(s string) string {
 	return s
 }
 
-func (c *Catalog) UpdatePreview(ctx context.Context, id, previewLocal, status string) (resultErr error) {
+func (c *Catalog) UpdatePreview(ctx context.Context, id, previewLocal, status string) error {
+	return c.updatePreview(ctx, id, nil, previewLocal, status)
+}
+
+func (c *Catalog) UpdatePreviewForSource(ctx context.Context, source *Video, previewLocal, status string) error {
+	return c.updatePreview(ctx, source.ID, source, previewLocal, status)
+}
+
+func (c *Catalog) updatePreview(ctx context.Context, id string, source *Video, previewLocal, status string) (resultErr error) {
 	defer c.notifyDriveWrite(&resultErr, "", driveevents.MediaChanged)
 	now := time.Now().UnixMilli()
-	_, err := c.db.ExecContext(ctx,
-		`UPDATE videos
-		    SET preview_file_id = '',
+	return c.updateVideoRow(ctx, id, source,
+		`preview_file_id = '',
 		        preview_local = ?,
 		        preview_updated_at = CASE
 		          WHEN ? = 'ready' AND COALESCE(?, '') != ''
@@ -434,12 +441,10 @@ func (c *Catalog) UpdatePreview(ctx context.Context, id, previewLocal, status st
 		            THEN 0
 		          ELSE thumbnail_failures
 		        END,
-		        updated_at = ?
-		  WHERE id = ?`,
+		        updated_at = ?`,
 		previewLocal, status, previewLocal, now, status,
 		status, previewLocal, status, previewLocal,
-		now, id)
-	return err
+		now)
 }
 
 func (c *Catalog) HideVideo(ctx context.Context, id string) (resultErr error) {
@@ -511,6 +516,7 @@ func migrateVideoToDrive(ctx context.Context, exec videoRowExecer, videoID strin
 	if strings.TrimSpace(videoID) == "" || strings.TrimSpace(target.DriveID) == "" || strings.TrimSpace(target.FileID) == "" {
 		return fmt.Errorf("catalog: migrate video: empty id/drive/file")
 	}
+	target.ContentHash = normalizeContentHash(target.ContentHash)
 	// A new storage location cannot inherit names from the old directory chain.
 	dirNames := target.AncestorDirNames
 	if dirNames == nil {
@@ -690,6 +696,13 @@ func (c *Catalog) IncrementView(ctx context.Context, id string) (int, error) {
 // VideoMetaPatch 轻量更新视频元数据。大多数字段仍按非零值更新；带 Set
 // 标记的字段允许调用方显式写入零值。
 type VideoMetaPatch struct {
+	// ExpectedSource guards observations and generated assets against a
+	// concurrent replacement or migration of the file they describe.
+	ExpectedSource *Video
+	// ResetContent replaces the size and provider hash together and invalidates
+	// every match input generated from the previous bytes.
+	ResetContent           bool
+	Size                   int64
 	ThumbnailURL           string
 	ThumbnailStatus        string
 	ResetThumbnailFailures bool
@@ -711,6 +724,28 @@ type VideoMetaPatch struct {
 	AuthorSet              bool
 	Tags                   []string
 	TagsSet                bool
+}
+
+// Workers can commit results only while the row still refers to the bytes
+// they read. Engagement and other metadata can change freely.
+func videoRowWhere(id string, source *Video) (string, []any) {
+	if source == nil {
+		return "id = ?", []any{id}
+	}
+	return "id = ? AND drive_id = ? AND file_id = ? AND size_bytes = ? AND COALESCE(content_hash, '') = ?",
+		[]any{id, source.DriveID, source.FileID, source.Size, source.ContentHash}
+}
+
+func (c *Catalog) updateVideoRow(ctx context.Context, id string, source *Video, setSQL string, args ...any) error {
+	where, match := videoRowWhere(id, source)
+	res, err := c.db.ExecContext(ctx, "UPDATE videos SET "+setSQL+" WHERE "+where, append(args, match...)...)
+	if err != nil {
+		return err
+	}
+	if count, err := res.RowsAffected(); err == nil && count == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (c *Catalog) UpdateVideoMeta(ctx context.Context, id string, p VideoMetaPatch) error {
@@ -754,7 +789,14 @@ func (c *Catalog) UpdateVideoMeta(ctx context.Context, id string, p VideoMetaPat
 		}
 		args = append(args, duration)
 	}
-	if p.ContentHash != "" {
+	if p.ResetContent {
+		parts = append(parts, "size_bytes = ?", "sampled_sha256 = ''", "fingerprint_status = 'pending'",
+			"fingerprint_error = ''", "duration_seconds = 0",
+			"thumbnail_url = ''", "thumbnail_updated_at = 0", "thumbnail_status = 'pending'", "thumbnail_failures = 0",
+			"preview_file_id = ''", "preview_local = ''", "preview_updated_at = 0", "preview_status = 'pending'")
+		args = append(args, p.Size)
+	}
+	if p.ResetContent || p.ContentHash != "" {
 		parts = append(parts, "content_hash = ?")
 		args = append(args, normalizeContentHash(p.ContentHash))
 	}
@@ -806,9 +848,7 @@ func (c *Catalog) UpdateVideoMeta(ctx context.Context, id string, p VideoMetaPat
 	}
 	parts = append(parts, "updated_at = ?")
 	args = append(args, now)
-	args = append(args, id)
-	q := `UPDATE videos SET ` + strings.Join(parts, ", ") + ` WHERE id = ?`
-	if _, err := c.db.ExecContext(ctx, q, args...); err != nil {
+	if err := c.updateVideoRow(ctx, id, p.ExpectedSource, strings.Join(parts, ", "), args...); err != nil {
 		return err
 	}
 	c.driveEvents.Notify("", false, driveevents.MediaChanged)
@@ -819,35 +859,20 @@ func (c *Catalog) UpdateVideoMeta(ctx context.Context, id string, p VideoMetaPat
 }
 
 func (c *Catalog) IncrementThumbnailFailures(ctx context.Context, id string) (int, error) {
-	tx, err := c.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
+	return c.incrementThumbnailFailures(ctx, id, nil)
+}
 
-	res, err := tx.ExecContext(ctx,
-		`UPDATE videos
-		    SET thumbnail_failures = COALESCE(thumbnail_failures, 0) + 1,
-		        updated_at = ?
-		  WHERE id = ?`,
-		time.Now().UnixMilli(), id)
-	if err != nil {
-		return 0, err
-	}
-	if affected, err := res.RowsAffected(); err == nil && affected == 0 {
-		return 0, sql.ErrNoRows
-	}
+func (c *Catalog) IncrementThumbnailFailuresForSource(ctx context.Context, source *Video) (int, error) {
+	return c.incrementThumbnailFailures(ctx, source.ID, source)
+}
 
+func (c *Catalog) incrementThumbnailFailures(ctx context.Context, id string, source *Video) (int, error) {
+	where, match := videoRowWhere(id, source)
 	var failures int
-	if err := tx.QueryRowContext(ctx,
-		`SELECT COALESCE(thumbnail_failures, 0) FROM videos WHERE id = ?`,
-		id).Scan(&failures); err != nil {
-		return 0, err
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	return failures, nil
+	err := c.db.QueryRowContext(ctx, `UPDATE videos
+		SET thumbnail_failures = COALESCE(thumbnail_failures, 0) + 1, updated_at = ?
+		WHERE `+where+` RETURNING thumbnail_failures`, append([]any{time.Now().UnixMilli()}, match...)...).Scan(&failures)
+	return failures, err
 }
 
 type TagStat struct {
@@ -1167,27 +1192,27 @@ func (c *Catalog) GetVideo(ctx context.Context, id string) (*Video, error) {
 	return scanVideo(row)
 }
 
-// FindVideoByDriveFileID resolves the row that owns an actual provider file.
-// Migrated crawler rows preserve their original logical ID, so a scanner's
-// generated ID is not always the catalog ID.
-func (c *Catalog) FindVideoByDriveFileID(ctx context.Context, driveID, fileID string) (*Video, error) {
-	driveID = strings.TrimSpace(driveID)
-	fileID = strings.TrimSpace(fileID)
+// ListVideosByDriveFileID includes migrated rows sharing a physical file.
+// Each needs the same source observation, even before maintenance merges them.
+func (c *Catalog) ListVideosByDriveFileID(ctx context.Context, driveID, fileID string) ([]*Video, error) {
 	if driveID == "" || fileID == "" {
-		return nil, sql.ErrNoRows
+		return nil, nil
 	}
-	row := c.db.QueryRowContext(ctx,
-		`SELECT `+allVideoCols+` FROM videos
-		 WHERE drive_id = ? AND file_id = ?
-		 ORDER BY created_at ASC, id ASC
-		 LIMIT 1`, driveID, fileID)
-	return scanVideo(row)
+	return c.listDriveVideos(ctx, driveID, fileID)
 }
 
 func (c *Catalog) ListVideosByDrive(ctx context.Context, driveID string) ([]*Video, error) {
-	rows, err := c.db.QueryContext(ctx,
-		`SELECT `+allVideoCols+` FROM videos WHERE drive_id = ? ORDER BY created_at ASC, id ASC`,
-		driveID)
+	return c.listDriveVideos(ctx, driveID, "")
+}
+
+func (c *Catalog) listDriveVideos(ctx context.Context, driveID, fileID string) ([]*Video, error) {
+	query := "SELECT " + allVideoCols + " FROM videos WHERE drive_id = ?"
+	args := []any{driveID}
+	if fileID != "" {
+		query += " AND file_id = ?"
+		args = append(args, fileID)
+	}
+	rows, err := c.db.QueryContext(ctx, query+" ORDER BY created_at ASC, id ASC", args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1778,6 +1803,16 @@ func (c *Catalog) ListDeletedVideos(ctx context.Context, p ListParams) ([]*Delet
 	return out, total, rows.Err()
 }
 
+// A tombstone can be an alias for a row that still owns the same provider
+// file. Keep the public redirect, and omit that file from source cleanup.
+const pendingSourceDeletionWhere = `COALESCE(source_deleted, 0) = 0
+ AND COALESCE(restore_requested, 0) = 0
+ AND NOT EXISTS (
+     SELECT 1 FROM videos
+      WHERE videos.drive_id = deleted_videos.drive_id
+        AND videos.file_id = deleted_videos.file_id
+ )`
+
 // ListDeletedVideosPendingSourceDeletion returns every tombstone whose source
 // has not been confirmed deleted. It is intentionally unpaginated because the
 // caller runs one serialized background cleanup job and needs a stable work
@@ -1793,8 +1828,7 @@ SELECT id,
        COALESCE(reason, ''),
        deleted_at
 	 FROM deleted_videos
-	WHERE COALESCE(source_deleted, 0) = 0
-	  AND COALESCE(restore_requested, 0) = 0
+	WHERE `+pendingSourceDeletionWhere+`
  ORDER BY deleted_at, id`)
 	if err != nil {
 		return nil, err
@@ -1854,8 +1888,7 @@ SELECT id,
        COALESCE(reason, ''),
        deleted_at
 	 FROM deleted_videos
-	WHERE COALESCE(source_deleted, 0) = 0
-	  AND COALESCE(restore_requested, 0) = 0
+	WHERE `+pendingSourceDeletionWhere+`
 	  AND id IN (`+placeholders+`)
  ORDER BY deleted_at, id`, args...)
 	if err != nil {
@@ -1886,7 +1919,7 @@ SELECT id,
 func (c *Catalog) CountDeletedVideosPendingSourceDeletion(ctx context.Context) (int, error) {
 	var count int
 	err := c.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM deleted_videos WHERE COALESCE(source_deleted, 0) = 0 AND COALESCE(restore_requested, 0) = 0`,
+		`SELECT COUNT(*) FROM deleted_videos WHERE `+pendingSourceDeletionWhere,
 	).Scan(&count)
 	return count, err
 }
@@ -2395,15 +2428,21 @@ func (c *Catalog) IsDeletedVideoCandidate(ctx context.Context, id, driveID, file
 	err := c.db.QueryRowContext(ctx, `
 SELECT 1
   FROM deleted_videos
- WHERE id = ?
+ WHERE (id = ?
     OR (drive_id = ? AND ? != '' AND file_id = ?)
     OR (drive_id = ? AND ? != '' AND content_hash = ?)
-    OR (drive_id = ? AND ? != '' AND ? > 0 AND file_name = ? AND size_bytes = ?)
+    OR (drive_id = ? AND ? != '' AND ? > 0 AND file_name = ? AND size_bytes = ?))
+   AND NOT (reason = ? AND EXISTS (
+       SELECT 1 FROM videos AS survivor
+        WHERE survivor.id = deleted_videos.canonical_video_id
+          AND survivor.drive_id = ? AND survivor.file_id = ? AND survivor.file_id != ''
+   ))
  LIMIT 1`,
 		id,
 		driveID, fileID, fileID,
 		driveID, contentHash, contentHash,
 		driveID, fileName, size, fileName, size,
+		DeletedVideoReasonDuplicate, driveID, fileID,
 	).Scan(&found)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
@@ -2589,7 +2628,15 @@ func (c *Catalog) ListVideosByFingerprintStatus(ctx context.Context, driveID, st
 	return out, rows.Err()
 }
 
-func (c *Catalog) UpdateVideoFingerprint(ctx context.Context, id, sampledSHA256, status, errText string) (resultErr error) {
+func (c *Catalog) UpdateVideoFingerprint(ctx context.Context, id, sampledSHA256, status, errText string) error {
+	return c.updateVideoFingerprint(ctx, id, nil, sampledSHA256, status, errText)
+}
+
+func (c *Catalog) UpdateVideoFingerprintForSource(ctx context.Context, source *Video, sampledSHA256, status, errText string) error {
+	return c.updateVideoFingerprint(ctx, source.ID, source, sampledSHA256, status, errText)
+}
+
+func (c *Catalog) updateVideoFingerprint(ctx context.Context, id string, source *Video, sampledSHA256, status, errText string) (resultErr error) {
 	defer c.notifyDriveWrite(&resultErr, "", driveevents.GenerationChanged)
 	sampledSHA256 = normalizeContentHash(sampledSHA256)
 	if status == "" {
@@ -2598,21 +2645,8 @@ func (c *Catalog) UpdateVideoFingerprint(ctx context.Context, id, sampledSHA256,
 	if len(errText) > 500 {
 		errText = errText[:500]
 	}
-	res, err := c.db.ExecContext(ctx,
-		`UPDATE videos
-		    SET sampled_sha256 = ?,
-		        fingerprint_status = ?,
-		        fingerprint_error = ?,
-		        updated_at = ?
-		  WHERE id = ?`,
-		sampledSHA256, status, errText, time.Now().UnixMilli(), id)
-	if err != nil {
-		return err
-	}
-	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
+	return c.updateVideoRow(ctx, id, source, `sampled_sha256 = ?, fingerprint_status = ?,
+		fingerprint_error = ?, updated_at = ?`, sampledSHA256, status, errText, time.Now().UnixMilli())
 }
 
 type ListParams struct {
@@ -4201,7 +4235,7 @@ const activeDriveWhereSQL = `(videos.drive_id IN ('local-upload','telegram-local
 		  FROM drives
 	))`
 
-// uniqueVideoWhereSQL is the hot-path materialized form of the exact legacy
+// uniqueVideoWhereSQL is the hot-path materialized form of the visibility
 // predicate below. SQLite triggers update it in the same statement/transaction
 // as every insert, delete, or dedup-key change.
 const uniqueVideoWhereSQL = `videos.is_canonical = 1`
@@ -4210,11 +4244,11 @@ const uniqueVideoWhereSQL = `videos.is_canonical = 1`
 // trigger recomputation and consistency tests. Keep its three independent
 // clauses intact: a row may map to different representatives by hash, sampled
 // fingerprint, and filename+size, so a single canonical_video_id is lossy.
-const dynamicUniqueVideoWhereSQL = `((COALESCE(videos.content_hash, '') = ''
+const dynamicUniqueVideoWhereSQL = duplicateLookupScope + ` AND ((COALESCE(videos.content_hash, '') = ''
 		OR NOT EXISTS (
 			SELECT 1
 			FROM videos AS dup
-			WHERE dup.content_hash = videos.content_hash
+			WHERE ` + duplicateLookupScope + ` AND dup.content_hash = videos.content_hash
 			  AND COALESCE(dup.content_hash, '') != ''
 			  AND (
 				dup.created_at < videos.created_at
@@ -4226,7 +4260,7 @@ const dynamicUniqueVideoWhereSQL = `((COALESCE(videos.content_hash, '') = ''
 		OR NOT EXISTS (
 			SELECT 1
 			FROM videos AS dup
-			WHERE dup.sampled_sha256 = videos.sampled_sha256
+			WHERE ` + duplicateLookupScope + ` AND dup.sampled_sha256 = videos.sampled_sha256
 			  AND dup.size_bytes = videos.size_bytes
 			  AND COALESCE(dup.sampled_sha256, '') != ''
 			  AND dup.size_bytes > 0
@@ -4240,7 +4274,7 @@ const dynamicUniqueVideoWhereSQL = `((COALESCE(videos.content_hash, '') = ''
 		OR NOT EXISTS (
 			SELECT 1
 			FROM videos AS dup
-			WHERE dup.file_name = videos.file_name
+			WHERE ` + duplicateLookupScope + ` AND dup.file_name = videos.file_name
 			  AND dup.size_bytes = videos.size_bytes
 			  AND COALESCE(dup.file_name, '') != ''
 			  AND dup.size_bytes > 0
@@ -4330,10 +4364,6 @@ func scanVideo(row rowScanner) (*Video, error) {
 		v.LastLikedAt = time.UnixMilli(lastLikedAt)
 	}
 	return v, nil
-}
-
-func normalizeContentHash(hash string) string {
-	return strings.ToLower(strings.TrimSpace(hash))
 }
 
 func normalizeDeletedVideoReason(reason string) string {

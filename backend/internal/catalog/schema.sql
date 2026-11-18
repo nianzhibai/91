@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS videos (
     last_liked_at    INTEGER DEFAULT 0,
     dislikes         INTEGER DEFAULT 0,
     hidden           INTEGER DEFAULT 0,          -- 1 = hidden from public display
-    is_canonical     INTEGER NOT NULL DEFAULT 1, -- derived by dedup triggers; hidden rows still participate
+    is_canonical     INTEGER NOT NULL DEFAULT 1, -- derived from visible rows with a file
     tags_manual      INTEGER DEFAULT 0,          -- 1 = user explicitly curated tags
     badges           TEXT,                      -- JSON array
     published_at     INTEGER NOT NULL,          -- unix ms
@@ -164,6 +164,15 @@ CREATE INDEX IF NOT EXISTS idx_deleted_videos_drive_hash
     ON deleted_videos(drive_id, content_hash);
 CREATE INDEX IF NOT EXISTS idx_deleted_videos_drive_signature
     ON deleted_videos(drive_id, file_name, size_bytes);
+
+-- Physical source reservations held while a provider delete is in flight.
+CREATE TABLE IF NOT EXISTS video_source_removals (
+    drive_id   TEXT NOT NULL,
+    file_id    TEXT NOT NULL,
+    token      TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    PRIMARY KEY (drive_id, file_id)
+);
 
 -- Internal decision history, independent of tombstones and public visibility.
 -- Snapshots and evidence survive subsequent renames, merges and source removal.

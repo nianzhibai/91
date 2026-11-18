@@ -2,8 +2,6 @@ package scanner
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 	"path"
 	"slices"
@@ -12,6 +10,7 @@ import (
 
 	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/dedupe"
 	"github.com/nianzhibai/91/backend/internal/videoid"
 	"github.com/nianzhibai/91/backend/internal/videoname"
 )
@@ -62,19 +61,9 @@ func (s *Scanner) reconcileFile(ctx context.Context, file File, result *Result) 
 	if displayTitle == "" {
 		displayTitle = strings.TrimSpace(entry.Name)
 	}
-	assignments, err := s.Catalog.MatchTagAssignments(ctx, parsed.Title, entry.Name, parsed.Author, file.DirName, file.AncestorDirNames...)
-	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
-		}
-		result.addIssue(ctx, file, IssueTags, err)
-		assignments = nil
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	existing, err := s.findExisting(ctx, id, entry.ID)
+	// Migrated rows retain their original public IDs. Only the current
+	// provider identity can authorize updating a row from this scan.
+	existing, err := s.Catalog.ListVideosByDriveFileID(ctx, s.Drive.ID(), entry.ID)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
@@ -82,25 +71,26 @@ func (s *Scanner) reconcileFile(ctx context.Context, file File, result *Result) 
 		result.addIssue(ctx, file, IssueLookup, err)
 		return nil
 	}
-	if existing != nil {
-		return s.reconcileExisting(ctx, file, displayTitle, parsed.Author, assignments, existing, result)
+	assignments, tagErr := s.Catalog.MatchTagAssignments(ctx, parsed.Title, entry.Name, parsed.Author, file.DirName, file.AncestorDirNames...)
+	if tagErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		result.addIssue(ctx, file, IssueTags, tagErr)
 	}
-	return s.insertNew(ctx, file, id, displayTitle, parsed.Author, assignments, result)
-}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
-func (s *Scanner) findExisting(ctx context.Context, generatedID, fileID string) (*catalog.Video, error) {
-	existing, err := s.Catalog.FindVideoByDriveFileID(ctx, s.Drive.ID(), fileID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return nil, err
+	if len(existing) == 0 {
+		return s.insertNew(ctx, file, id, displayTitle, parsed.Author, assignments, result)
 	}
-	if existing != nil {
-		return existing, nil
+	for _, row := range existing {
+		if err := s.reconcileExisting(ctx, file, displayTitle, parsed.Author, row, assignments, tagErr == nil, result); err != nil {
+			return err
+		}
 	}
-	existing, err = s.Catalog.GetVideo(ctx, generatedID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	return existing, err
+	return nil
 }
 
 func (s *Scanner) reconcileExisting(
@@ -108,14 +98,28 @@ func (s *Scanner) reconcileExisting(
 	file File,
 	displayTitle string,
 	parsedAuthor string,
-	assignments []catalog.TagAssignment,
 	existing *catalog.Video,
+	assignments []catalog.TagAssignment,
+	tagLookupOK bool,
 	result *Result,
 ) error {
 	entry := file.Entry
-	patch := catalog.VideoMetaPatch{}
-	if entry.Hash != "" && existing.ContentHash == "" {
-		patch.ContentHash = entry.Hash
+	patch := catalog.VideoMetaPatch{ExpectedSource: existing}
+	hash := dedupe.NormalizeHash(entry.Hash)
+	previousHash := existing.ContentHash
+	sampled := existing.SampledSHA256
+	// Some providers omit hashes from directory listings. The stored evidence
+	// remains usable until a positive observation changes the size or hash.
+	contentChanged := entry.Size != existing.Size || (hash != "" && previousHash != "" && hash != previousHash)
+	if contentChanged {
+		patch.ResetContent = true
+		patch.Size = entry.Size
+		patch.ContentHash = hash
+		sampled = ""
+	} else if hash != "" && hash != previousHash {
+		patch.ContentHash = hash
+	} else if hash == "" {
+		hash = previousHash
 	}
 	if existing.ParentID != file.ParentID {
 		patch.ParentID = file.ParentID
@@ -148,21 +152,21 @@ func (s *Scanner) reconcileExisting(
 				return ctxErr
 			}
 			result.addIssue(ctx, file, IssueMetadata, err)
-		} else {
-			result.Updated++
+			return nil
+		}
+		result.Updated++
+	}
+	if tagLookupOK {
+		if _, err := s.Catalog.ReplaceAutoVideoTags(ctx, existing.ID, assignments); err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
+			result.addIssue(ctx, file, IssueTags, err)
 		}
 	}
 
-	// The row stays live even when it matches another row, so its automatic
-	// tags are refreshed before the match is recorded.
-	if _, err := s.Catalog.ReplaceAutoVideoTags(ctx, existing.ID, assignments); err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
-		}
-		result.addIssue(ctx, file, IssueTags, err)
-	}
 	source := &catalog.Video{
-		ID: existing.ID, DriveID: s.Drive.ID(), ContentHash: entry.Hash,
+		ID: existing.ID, DriveID: s.Drive.ID(), ContentHash: hash, SampledSHA256: sampled,
 		FileID: entry.ID, FileName: entry.Name, Title: displayTitle, Size: entry.Size,
 		ParentID: file.ParentID, DirName: file.DirName,
 		AncestorDirIDs:   append([]string(nil), file.AncestorDirIDs...),
@@ -268,7 +272,7 @@ func (r *Result) addIssue(ctx context.Context, file File, stage IssueStage, err 
 }
 
 func metadataPatchSet(patch catalog.VideoMetaPatch) bool {
-	return patch.ContentHash != "" || patch.FileName != "" || patch.ParentIDSet ||
+	return patch.ResetContent || patch.ContentHash != "" || patch.FileName != "" || patch.ParentIDSet ||
 		patch.DirNameSet || patch.AncestorDirIDsSet || patch.AncestorDirNamesSet || patch.TitleSet || patch.AuthorSet
 }
 

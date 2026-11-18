@@ -151,6 +151,7 @@ var catalogTables = []catalogTable{
 	{name: "telegram_upload_cleanups", kind: secretRows},
 
 	{name: "duplicate_asset_cleanup_jobs", kind: localRows},
+	{name: "video_source_removals", kind: localRows},
 	{name: "video_dedup_representatives", kind: derivedRows},
 }
 

@@ -62,30 +62,35 @@ func (a *App) deleteVideo(ctx context.Context, videoID string, deleteSource bool
 	// the same side of the persistence snapshot gate.
 	persistence.RLock()
 	defer persistence.RUnlock()
-	deletedSource := false
-	if deleteSource {
-		deletedSource, err = a.removeVideoSourceFile(ctx, v)
+	if !deleteSource {
+		err := a.cat.DeleteVideoWithTombstoneOptions(ctx, v.ID, catalog.DeleteVideoTombstoneOptions{
+			AssetCleanupAfter: time.Now().Add(videoDeletionGracePeriod),
+		})
 		if err != nil {
 			return api.DeleteVideoResult{}, err
 		}
+		return api.DeleteVideoResult{OK: true}, nil
 	}
 
-	options := catalog.DeleteVideoTombstoneOptions{SourceDeleted: deletedSource}
-	if deleteSource {
+	err = a.cat.WithVideoSourceRemoval(ctx, v.DriveID, v.FileID, v.ID, func(ctx context.Context) error {
+		if err := a.removeVideoSourceFile(ctx, v); err != nil {
+			return err
+		}
 		localDir := ""
 		if a.cfg != nil {
 			localDir = a.cfg.Storage.LocalPreviewDir
 		}
 		if err := removeLocalVideoAssets(localDir, v); err != nil {
-			return api.DeleteVideoResult{}, fmt.Errorf("remove local assets for %s: %w", v.ID, err)
+			return fmt.Errorf("remove local assets for %s: %w", v.ID, err)
 		}
-	} else {
-		options.AssetCleanupAfter = time.Now().Add(videoDeletionGracePeriod)
-	}
-	if err := a.cat.DeleteVideoWithTombstoneOptions(ctx, v.ID, options); err != nil {
+		finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		return a.cat.DeleteVideoWithTombstoneOptions(finishCtx, v.ID, catalog.DeleteVideoTombstoneOptions{SourceDeleted: true})
+	})
+	if err != nil {
 		return api.DeleteVideoResult{}, err
 	}
-	return api.DeleteVideoResult{OK: true, DeletedSource: deletedSource}, nil
+	return api.DeleteVideoResult{OK: true, DeletedSource: true}, nil
 }
 
 func (a *App) startBlacklistSourceDelete(ctx context.Context, req api.BlacklistSourceDeleteRequest) bool {
@@ -254,9 +259,9 @@ func (a *App) deleteBlacklistedVideoSource(ctx context.Context, snapshot *catalo
 		return false, err
 	}
 	if err := a.removeDeletedVideoSourceFile(ctx, current); err != nil {
-		return false, err
-	}
-	if err := a.purgeDeletedVideoTombstone(ctx, current.ID); err != nil {
+		if errors.Is(err, catalog.ErrVideoSourceInUse) {
+			return true, nil
+		}
 		return false, err
 	}
 	return false, nil
@@ -289,7 +294,16 @@ func (a *App) removeDeletedVideoSourceFile(ctx context.Context, item *catalog.De
 	}
 	var lastErr error
 	for attempt := 0; attempt < blacklistSourceDeleteMaxAttempts; attempt++ {
-		_, err := a.removeVideoSourceFile(ctx, video)
+		err := a.cat.WithVideoSourceRemoval(ctx, video.DriveID, video.FileID, "", func(ctx context.Context) error {
+			if err := a.removeVideoSourceFile(ctx, video); err != nil {
+				return err
+			}
+			// The remote deletion has succeeded. Finish the catalog write even
+			// if the task was canceled while the provider was responding.
+			finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer cancel()
+			return a.purgeDeletedVideoTombstone(finishCtx, item.ID)
+		})
 		if err == nil {
 			return nil
 		}
@@ -357,38 +371,35 @@ func (a *App) finishBlacklistSourceDelete(state string, err error) {
 	}
 }
 
-func (a *App) removeVideoSourceFile(ctx context.Context, v *catalog.Video) (bool, error) {
+func (a *App) removeVideoSourceFile(ctx context.Context, v *catalog.Video) error {
 	if v == nil {
-		return false, errors.New("remove video source: empty video")
+		return errors.New("remove video source: empty video")
 	}
 	if a == nil {
-		return false, fmt.Errorf("remove video source %s: app unavailable: %w", v.ID, drives.ErrNotSupported)
+		return fmt.Errorf("remove video source %s: app unavailable: %w", v.ID, drives.ErrNotSupported)
 	}
-	fileID := strings.TrimSpace(v.FileID)
-	if fileID == "" {
-		return false, fmt.Errorf("remove video source %s: empty file id", v.ID)
+	fileID := v.FileID
+	if strings.TrimSpace(fileID) == "" {
+		return fmt.Errorf("remove video source %s: empty file id", v.ID)
 	}
 	gate := a.driveOperationGate(v.DriveID)
 	taskRelease, generation, admitted := gate.tryBeginTask(ctx, 0)
 	if !admitted {
-		return false, fmt.Errorf("remove video source %s: drive %s configuration update in progress", v.ID, v.DriveID)
+		return fmt.Errorf("remove video source %s: drive %s configuration update in progress", v.ID, v.DriveID)
 	}
 	defer taskRelease()
 	ctx = withDriveTaskAdmission(ctx, gate, generation)
-	if a == nil || a.registry == nil {
-		return false, fmt.Errorf("remove video source %s: drive registry unavailable: %w", v.ID, drives.ErrNotSupported)
+	if a.registry == nil {
+		return fmt.Errorf("remove video source %s: drive registry unavailable: %w", v.ID, drives.ErrNotSupported)
 	}
 	if _, ok := a.registry.Get(v.DriveID); !ok {
-		if a.cat == nil {
-			return false, fmt.Errorf("remove video source %s: drive %s not attached: %w", v.ID, v.DriveID, drives.ErrNotSupported)
-		}
 		if err := a.ensureDriveAttached(ctx, v.DriveID); err != nil {
-			return false, fmt.Errorf("remove video source %s: attach drive %s: %w", v.ID, v.DriveID, err)
+			return fmt.Errorf("remove video source %s: attach drive %s: %w", v.ID, v.DriveID, err)
 		}
 	}
 	drv, ok := a.registry.Get(v.DriveID)
 	if !ok {
-		return false, fmt.Errorf("remove video source %s: drive %s not attached: %w", v.ID, v.DriveID, drives.ErrNotSupported)
+		return fmt.Errorf("remove video source %s: drive %s not attached: %w", v.ID, v.DriveID, drives.ErrNotSupported)
 	}
 	if sourceRemover, ok := drv.(drives.SourceRemover); ok {
 		if err := sourceRemover.RemoveSource(ctx, drives.SourceFile{
@@ -397,18 +408,18 @@ func (a *App) removeVideoSourceFile(ctx context.Context, v *catalog.Video) (bool
 			Name:     strings.TrimSpace(v.FileName),
 			Size:     v.Size,
 		}); err != nil {
-			return false, fmt.Errorf("remove video source %s from drive %s: %w", v.ID, v.DriveID, err)
+			return fmt.Errorf("remove video source %s from drive %s: %w", v.ID, v.DriveID, err)
 		}
-		return true, nil
+		return nil
 	}
 	remover, ok := drv.(drives.Remover)
 	if !ok {
-		return false, fmt.Errorf("remove video source %s: drive %s (%s) does not support source deletion: %w", v.ID, v.DriveID, drv.Kind(), drives.ErrNotSupported)
+		return fmt.Errorf("remove video source %s: drive %s (%s) does not support source deletion: %w", v.ID, v.DriveID, drv.Kind(), drives.ErrNotSupported)
 	}
 	if err := remover.Remove(ctx, fileID); err != nil {
-		return false, fmt.Errorf("remove video source %s from drive %s: %w", v.ID, v.DriveID, err)
+		return fmt.Errorf("remove video source %s from drive %s: %w", v.ID, v.DriveID, err)
 	}
-	return true, nil
+	return nil
 }
 
 // restoreDeletedVideo coordinates expired asset cleanup, provider inspection,
