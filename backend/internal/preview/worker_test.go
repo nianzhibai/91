@@ -554,6 +554,68 @@ func TestPreviewWorkerRemovesPreviousLocalTeaserAfterNewTeaserIsReady(t *testing
 	}
 }
 
+// seedReadyStableTeaser stores a ready teaser at the stable path the worker's
+// MoveToLocal overwrites, then returns a stale snapshot of the row.
+func seedReadyStableTeaser(t *testing.T, id string) (*catalog.Catalog, *catalog.Video, string) {
+	t.Helper()
+	ctx := context.Background()
+	cat, video := seedPreviewTestVideo(t, id)
+	localPath := filepath.Join(t.TempDir(), id+".mp4")
+	if err := os.WriteFile(localPath, []byte("teaser"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	video.Size = 100
+	if err := cat.UpsertVideo(ctx, video); err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.UpdatePreview(ctx, video.ID, filepath.Base(localPath), "ready"); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := cat.GetVideo(ctx, video.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cat, snapshot, localPath
+}
+
+func TestPreviewWorkerKeepsReferencedTeaserWhenStaleWriteIsRejected(t *testing.T) {
+	ctx := context.Background()
+	cat, snapshot, localPath := seedReadyStableTeaser(t, "stale-same-bytes")
+	// A scan fills in a missing provider hash: same bytes, same teaser reference.
+	if err := cat.UpdateVideoMeta(ctx, snapshot.ID, catalog.VideoMetaPatch{ContentHash: "abc"}); err != nil {
+		t.Fatal(err)
+	}
+
+	NewWorker(&fakeTeaserGenerator{localPath: localPath}, cat, &previewFakeDrive{}).process(ctx, snapshot)
+
+	if _, err := os.Stat(localPath); err != nil {
+		t.Fatalf("referenced teaser removed after rejected write: %v", err)
+	}
+	got, err := cat.GetVideo(ctx, snapshot.ID)
+	if err != nil || got.PreviewLocal != filepath.Base(localPath) || got.PreviewStatus != "ready" {
+		t.Fatalf("row after rejected write = %+v, %v", got, err)
+	}
+}
+
+func TestPreviewWorkerRemovesUnreferencedTeaserWhenStaleWriteIsRejected(t *testing.T) {
+	ctx := context.Background()
+	cat, snapshot, localPath := seedReadyStableTeaser(t, "stale-new-bytes")
+	// The file was replaced in place: the reset clears the teaser reference.
+	if err := cat.UpdateVideoMeta(ctx, snapshot.ID, catalog.VideoMetaPatch{ResetContent: true, Size: 200}); err != nil {
+		t.Fatal(err)
+	}
+
+	NewWorker(&fakeTeaserGenerator{localPath: localPath}, cat, &previewFakeDrive{}).process(ctx, snapshot)
+
+	if _, err := os.Stat(localPath); !os.IsNotExist(err) {
+		t.Fatalf("teaser for replaced bytes still exists: %v", err)
+	}
+	got, err := cat.GetVideo(ctx, snapshot.ID)
+	if err != nil || got.PreviewLocal != "" || got.PreviewStatus != "pending" {
+		t.Fatalf("row after rejected write = %+v, %v", got, err)
+	}
+}
+
 func TestPreviewWorkerNeverCallsDriveUploadOrEnsureDir(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "preview-local-only-video")

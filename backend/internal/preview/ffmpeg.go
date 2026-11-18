@@ -3,6 +3,7 @@ package preview
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2189,14 +2190,14 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
 		return false
 	}
 
-	if previous, ok := localpath.Managed(filepath.Dir(local), v.PreviewLocal); ok {
-		removePreviousLocalTeaser(previous, local)
-	}
 	reference := filepath.Base(local)
 	if err := w.Catalog.UpdatePreviewForSource(ctx, v, reference, "ready"); err != nil {
-		removePreviousLocalTeaser(local, "")
+		w.discardUnsavedTeaser(ctx, v.ID, local)
 		applog.Error(ctx, "Save preview metadata failed: "+v.Title, err, applog.Fields{Component: "preview", DriveID: generationDriveID(w.Drive), VideoID: v.ID, Stage: "save"})
 		return false
+	}
+	if previous, ok := localpath.Managed(filepath.Dir(local), v.PreviewLocal); ok {
+		removePreviousLocalTeaser(previous, local)
 	}
 	if w.OnPreviewReady != nil && v.ThumbnailURL == "" {
 		ready := *v
@@ -2235,6 +2236,24 @@ func (w *Worker) generateTeaserFromOriginal(ctx context.Context, v *catalog.Vide
 func isRateLimitError(err error) bool {
 	_, ok := drives.RateLimitRetryAfter(err)
 	return ok
+}
+
+// discardUnsavedTeaser removes a teaser whose metadata write was rejected.
+// MoveToLocal writes the stable per-video path, so the row may still reference
+// that file. A source update that keeps the reference keeps the same bytes;
+// one that changes the content clears the reference first.
+func (w *Worker) discardUnsavedTeaser(ctx context.Context, videoID, local string) {
+	current, err := w.Catalog.GetVideo(ctx, videoID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return
+	}
+	if err == nil {
+		if referenced, ok := localpath.Managed(filepath.Dir(local), current.PreviewLocal); ok &&
+			filepath.Clean(referenced) == filepath.Clean(local) {
+			return
+		}
+	}
+	removePreviousLocalTeaser(local, "")
 }
 
 func removePreviousLocalTeaser(previous, current string) {
