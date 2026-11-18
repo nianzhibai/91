@@ -78,7 +78,7 @@ func TestCancelBlacklistDuringGraceKeepsAssetsAndSkipsRegeneration(t *testing.T)
 	app.thumbWorkers = map[string]*preview.ThumbWorker{video.DriveID: thumbWorker}
 	invalidations := 0
 	app.onTagsChanged = func() { invalidations++ }
-	if _, err := app.deleteVideo(ctx, video.ID, false); err != nil {
+	if _, err := app.deleteVideo(ctx, video.ID, catalog.VideoDeletionOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	assertDeferredAssets(t, paths, true)
@@ -157,7 +157,7 @@ func TestStaleAssetCleanupCannotDeleteNewDeletionDuringGrace(t *testing.T) {
 	if err := app.cat.UpsertVideo(ctx, video); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.deleteVideo(ctx, video.ID, false); err != nil {
+	if _, err := app.deleteVideo(ctx, video.ID, catalog.VideoDeletionOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.cleanupDeletedVideoAssets(ctx, ids[0], time.Now(), false); err != nil {
@@ -172,7 +172,7 @@ func TestExplicitBlacklistSourceDeletionBypassesAssetGrace(t *testing.T) {
 	drv := &serverRemovableFakeDrive{id: video.DriveID}
 	app.registry = proxy.NewRegistry()
 	app.registry.Set(drv.ID(), drv)
-	if _, err := app.deleteVideo(ctx, video.ID, false); err != nil {
+	if _, err := app.deleteVideo(ctx, video.ID, catalog.VideoDeletionOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	items, err := app.cat.ListDeletedVideosPendingSourceDeletionByIDs(ctx, []string{video.ID})
@@ -209,9 +209,6 @@ func TestDuplicateMaintenanceProtectsSharedSourceDuringBlacklistCleanup(t *testi
 	drv := &serverRemovableFakeDrive{id: target.DriveID}
 	app.registry = proxy.NewRegistry()
 	app.registry.Set(drv.ID(), drv)
-	if _, err := app.deleteVideo(ctx, target.ID, true); !errors.Is(err, catalog.ErrVideoSourceInUse) {
-		t.Fatalf("direct source removal while shared: %v", err)
-	}
 	if err := app.cleanupDuplicateVideoAssets(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +244,7 @@ func TestDuplicateMaintenanceProtectsSharedSourceDuringBlacklistCleanup(t *testi
 func TestBlacklistCleanupSkipsSourceReassignedAfterSnapshot(t *testing.T) {
 	ctx := context.Background()
 	app, video, _ := seedDeferredVideoAssets(t)
-	if _, err := app.deleteVideo(ctx, video.ID, false); err != nil {
+	if _, err := app.deleteVideo(ctx, video.ID, catalog.VideoDeletionOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	items, err := app.cat.ListDeletedVideosPendingSourceDeletion(ctx)
@@ -267,5 +264,164 @@ func TestBlacklistCleanupSkipsSourceReassignedAfterSnapshot(t *testing.T) {
 	}
 	if drv.removedFileID != "" {
 		t.Fatalf("removed reassigned provider file %q", drv.removedFileID)
+	}
+}
+
+func TestDuplicateAssetCleanupSkipsVideoRestoredFromBackup(t *testing.T) {
+	ctx := context.Background()
+	app, video, paths := seedDeferredVideoAssets(t)
+	if err := app.cat.UpsertVideo(ctx, &catalog.Video{ID: "kept", DriveID: "source-drive", FileID: "kept.mp4", Size: video.Size}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.cat.ApplyDuplicateVideoDeletions(ctx, []catalog.DuplicateVideoDeletion{{VideoID: video.ID, CanonicalVideoID: "kept"}}); err != nil {
+		t.Fatal(err)
+	}
+	// A restore brings the retired row back while the deployment-local job
+	// survives it. The administrator then deletes only the record, which
+	// promises to keep the assets during the undo window.
+	if err := app.cat.UpsertVideo(ctx, video); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.deleteVideo(ctx, video.ID, catalog.VideoDeletionOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := app.cleanupPendingDuplicateAssets(ctx, app.cfg.Storage.LocalPreviewDir); err != nil {
+		t.Fatal(err)
+	}
+	assertDeferredAssets(t, paths, true)
+	if jobs, err := app.cat.ListDuplicateAssetCleanupJobs(ctx, 10); err != nil || len(jobs) != 0 {
+		t.Fatalf("cleanup jobs after restore = %+v, %v", jobs, err)
+	}
+}
+
+func TestBlacklistCleanupRemovesSharedFileOnce(t *testing.T) {
+	ctx := context.Background()
+	app, video, paths := seedDeferredVideoAssets(t)
+	alias := *video
+	alias.ID = "alias"
+	if err := app.cat.UpsertVideo(ctx, &alias); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.deleteVideo(ctx, video.ID, catalog.VideoDeletionOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := app.cat.ListDeletedVideosPendingSourceDeletion(ctx)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("pending=%v, err=%v", rows, err)
+	}
+	drive := &serverRemovableFakeDrive{id: video.DriveID}
+	app.registry = proxy.NewRegistry()
+	app.registry.Set(drive.ID(), drive)
+	if skipped, err := app.deleteBlacklistedVideoSource(ctx, rows[0]); err != nil || skipped {
+		t.Fatalf("first skipped=%t err=%v", skipped, err)
+	}
+	if drive.removedFileID != video.FileID {
+		t.Fatalf("removed %q", drive.removedFileID)
+	}
+	drive.removedFileID = ""
+	if skipped, err := app.deleteBlacklistedVideoSource(ctx, rows[1]); err != nil || !skipped || drive.removedFileID != "" {
+		t.Fatalf("second skipped=%t err=%v removed=%s", skipped, err, drive.removedFileID)
+	}
+	if err := app.cleanupPendingDuplicateAssets(ctx, app.cfg.Storage.LocalPreviewDir); err != nil {
+		t.Fatal(err)
+	}
+	assertDeferredAssets(t, paths, false)
+}
+
+func TestDeletionChecksMergedFileAgainstCurrentProvider(t *testing.T) {
+	ctx := context.Background()
+	app, root, _ := seedDeferredVideoAssets(t)
+	old := &catalog.Video{ID: "retired", DriveID: "local-upload", FileID: "restored.mp4", FileName: "restored.mp4", Size: 10, ContentHash: "old"}
+	if err := app.cat.UpsertVideo(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.cat.ApplyDuplicateVideoDeletions(ctx, []catalog.DuplicateVideoDeletion{{VideoID: old.ID, CanonicalVideoID: root.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	other := &serverRestorableLocalUploadDrive{entry: &drives.Entry{ID: old.FileID, Name: old.FileName, Size: old.Size, Hash: "new"}}
+	selected := &serverRemovableFakeDrive{id: root.DriveID}
+	app.registry = proxy.NewRegistry()
+	app.registry.Set(other.ID(), other)
+	app.registry.Set(selected.ID(), selected)
+	preview, err := app.cat.PreviewVideoDeletion(ctx, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := true
+	options := catalog.VideoDeletionOptions{DeleteSource: true, IncludeDuplicates: &all, GroupRevision: preview.GroupRevision}
+	if _, err := app.deleteVideo(ctx, root.ID, options); err == nil {
+		t.Fatal("removed a replaced historical file")
+	}
+	if selected.removedFileID != "" || other.removeCalls != 0 {
+		t.Fatal("provider was asked to remove a file")
+	}
+	if _, err := app.cat.GetVideo(ctx, root.ID); err != nil {
+		t.Fatal(err)
+	}
+	other.entry.Hash = old.ContentHash
+	if _, err := app.deleteVideo(ctx, root.ID, options); err != nil {
+		t.Fatal(err)
+	}
+	if other.removeCalls != 1 || selected.removedFileID != root.FileID {
+		t.Fatalf("merged removal: historical=%d selected=%q", other.removeCalls, selected.removedFileID)
+	}
+
+}
+
+func TestAdminMergedSourceDeletionVerifiesProvider(t *testing.T) {
+	for _, tc := range []struct {
+		name, storedHash, providerHash string
+		missing                        bool
+		wantErr                        error
+		state                          string
+		calls                          int
+	}{
+		{"confirmed", "old", "old", false, nil, catalog.MergedSourceGone, 1},
+		{"already absent", "old", "", true, nil, catalog.MergedSourceGone, 0},
+		{"replaced", "old", "new", false, catalog.ErrMergedSourceReplaced, catalog.MergedSourceReplaced, 0},
+		{"identity unavailable", "", "", false, catalog.ErrMergedSourceUnverified, catalog.MergedSourceRecorded, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			app, kept, _ := seedDeferredVideoAssets(t)
+			v := &catalog.Video{ID: "alias", DriveID: "local-upload", FileID: "stored.mp4", FileName: "stored.mp4", Size: 50, ContentHash: tc.storedHash}
+			if err := app.cat.UpsertVideo(ctx, v); err != nil {
+				t.Fatal(err)
+			}
+			if err := app.cat.ApplyDuplicateVideoDeletions(ctx, []catalog.DuplicateVideoDeletion{{VideoID: v.ID, CanonicalVideoID: kept.ID}}); err != nil {
+				t.Fatal(err)
+			}
+			drv := &serverRestorableLocalUploadDrive{}
+			if !tc.missing {
+				drv.entry = &drives.Entry{ID: v.FileID, Name: v.FileName, Size: v.Size, Hash: tc.providerHash}
+			}
+			app.registry = proxy.NewRegistry()
+			app.registry.Set(drv.ID(), drv)
+			app.runBlacklistSourceDelete(ctx)
+			if drv.removeCalls != 0 || drv.statCalls != 0 {
+				t.Fatal("blacklist cleanup touched automatically merged source")
+			}
+			m, err := app.cat.GetMergedVideo(ctx, v.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = app.deleteMergedSource(ctx, v.ID, m.SourceRevision)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("removal error=%v want=%v", err, tc.wantErr)
+			}
+			if tc.wantErr == nil {
+				if err := app.deleteMergedSource(ctx, v.ID, m.SourceRevision); err != nil {
+					t.Fatal(err)
+				}
+			}
+			m, err = app.cat.GetMergedVideo(ctx, v.ID)
+			if err != nil || m.SourceState != tc.state || drv.removeCalls != tc.calls {
+				t.Fatalf("record=%+v calls=%d err=%v", m, drv.removeCalls, err)
+			}
+			if got, err := app.cat.ResolveVideoID(ctx, v.ID); err != nil || got != kept.ID {
+				t.Fatalf("resolved=%s err=%v", got, err)
+			}
+		})
 	}
 }

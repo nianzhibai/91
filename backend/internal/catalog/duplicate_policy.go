@@ -14,6 +14,12 @@ import (
 // action now blacklists instead) and rows without a file cannot be played.
 const duplicateLookupScope = `COALESCE(hidden, 0) = 0 AND COALESCE(file_id, '') != ''`
 
+// contentVerifiedWhere excludes rows whose source may have been replaced in
+// place. Their thumbnails and teasers can still describe the previous bytes
+// until the fingerprint worker settles the verification, so perceptual
+// matching must not use them.
+const contentVerifiedWhere = `COALESCE(previous_sampled_sha256, '') = ''`
+
 func normalizeContentHash(hash string) string {
 	return dedupe.NormalizeHash(hash)
 }
@@ -74,7 +80,7 @@ func DuplicateRevision(v *Video) string {
 	}
 	h := sha256.New()
 	for _, field := range []string{
-		v.DriveID, v.FileID, normalizeContentHash(v.ContentHash), strconv.FormatInt(v.Size, 10),
+		v.DriveID, v.FileID, v.SourceModTime, normalizeContentHash(v.ContentHash), strconv.FormatInt(v.Size, 10),
 		normalizeContentHash(v.SampledSHA256), v.FingerprintStatus,
 		v.Title, strconv.Itoa(v.DurationSeconds),
 		v.ThumbnailURL, strconv.FormatInt(unixMilliOrZero(v.ThumbnailUpdatedAt), 10),

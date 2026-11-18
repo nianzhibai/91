@@ -5,13 +5,16 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/dedupe"
 	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/drives/localstorage"
 )
 
 func TestScanRecordsDuplicatesForNewAndExistingSources(t *testing.T) {
@@ -123,6 +126,148 @@ func TestScanRecordsDuplicatesForNewAndExistingSources(t *testing.T) {
 	}
 }
 
+func TestRescanSameSizeLocalReplacement(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cat.Close()
+	root := t.TempDir()
+	drive := localstorage.New(localstorage.Config{ID: "local", RootPath: root})
+	scanner := New(cat, drive, []string{".mp4"}, nil, nil)
+	scan := func() Result {
+		t.Helper()
+		result, err := scanner.Scan(ctx, drive.RootID())
+		if err != nil || len(result.Issues) > 0 {
+			t.Fatalf("scan issues=%v err=%v", result.Issues, err)
+		}
+		return result
+	}
+	path := filepath.Join(root, "clip.mp4")
+	write := func(bytes string, stamp time.Time) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(bytes), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stamp := time.Unix(1700000000, 0)
+	write("original", stamp)
+	initial := scan()
+	if len(initial.NewVideos) != 1 {
+		t.Fatalf("new videos = %d", len(initial.NewVideos))
+	}
+	video := initial.NewVideos[0]
+	if _, err := cat.UpdateVideoFingerprintForSource(ctx, video, "old-sample", "ready", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.UpdatePreviewForSource(ctx, video, "clip-preview.mp4", "ready"); err != nil {
+		t.Fatal(err)
+	}
+	if got := scan(); got.Updated != 0 {
+		t.Fatalf("unchanged scan updated %d rows", got.Updated)
+	}
+	// Keep the file ID, size and millisecond timestamp identical.
+	write("replaced", stamp.Add(time.Microsecond))
+	scan()
+	current, err := cat.GetVideo(ctx, video.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The timestamp alone does not discard assets; the fingerprint decides.
+	if current.SampledSHA256 != "" || current.FingerprintStatus != "pending" || current.PreviewLocal != "clip-preview.mp4" {
+		t.Fatalf("timestamp change should await fingerprint verification: %+v", current)
+	}
+	if _, err := cat.UpdateVideoFingerprintForSource(ctx, video, "late-sample", "ready", ""); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("stale fingerprint write = %v", err)
+	}
+	replaced, err := cat.UpdateVideoFingerprintForSource(ctx, current, "new-sample", "ready", "")
+	if err != nil || !replaced {
+		t.Fatalf("new fingerprint replaced=%v err=%v", replaced, err)
+	}
+	current, err = cat.GetVideo(ctx, video.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.SampledSHA256 != "new-sample" || current.PreviewLocal != "" || current.PreviewStatus != "pending" {
+		t.Fatalf("replacement retained old evidence: %+v", current)
+	}
+}
+
+func TestRescanVerifiesTimestampOnlyChanges(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		sampled      string
+		recomputed   string
+		wantReset    bool
+		wantReplaced bool
+	}{
+		{"same bytes keep assets", "sample", "sample", false, false},
+		{"different bytes reset assets", "sample", "other", true, true},
+		{"no fingerprint to compare resets at scan", "", "", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			cat, err := catalog.Open(filepath.Join(t.TempDir(), "catalog.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cat.Close()
+			before := &catalog.Video{ID: "existing", DriveID: "drive", FileID: "file", FileName: "file.mp4", Size: 100,
+				SourceModTime: catalog.FormatSourceModTime(time.Unix(100, 0)), SampledSHA256: tc.sampled, DurationSeconds: 180,
+				ThumbnailURL: "/p/thumb/existing", PreviewStatus: "ready", PreviewLocal: "existing.mp4"}
+			if err := cat.UpsertVideo(ctx, before); err != nil {
+				t.Fatal(err)
+			}
+			drive := &scannerFakeDrive{entries: []drives.Entry{{ID: "file", Name: "file.mp4", Size: 100, ModTime: time.Unix(200, 0)}}}
+			if _, err := New(cat, drive, []string{".mp4"}, nil, nil).Scan(ctx, "root"); err != nil {
+				t.Fatal(err)
+			}
+			scanned, err := cat.GetVideo(ctx, "existing")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if scanned.SampledSHA256 != "" || scanned.FingerprintStatus != "pending" {
+				t.Fatalf("fingerprint should be recomputed: %+v", scanned)
+			}
+			if tc.sampled != "" {
+				if scanned.PreviewLocal != "existing.mp4" || scanned.ThumbnailURL == "" {
+					t.Fatalf("assets discarded before verification: %+v", scanned)
+				}
+				candidates, err := cat.ListVideoMaintenanceCandidates(ctx)
+				if err != nil || len(candidates) != 0 {
+					t.Fatalf("unverified row offered to maintenance: %d err=%v", len(candidates), err)
+				}
+				replaced, err := cat.UpdateVideoFingerprintForSource(ctx, scanned, tc.recomputed, "ready", "")
+				if err != nil || replaced != tc.wantReplaced {
+					t.Fatalf("replaced=%v err=%v, want %v", replaced, err, tc.wantReplaced)
+				}
+			}
+			got, err := cat.GetVideo(ctx, "existing")
+			if err != nil {
+				t.Fatal(err)
+			}
+			reset := got.PreviewLocal == "" && got.PreviewStatus == "pending" && got.ThumbnailURL == "" && got.DurationSeconds == 0
+			kept := got.PreviewLocal == "existing.mp4" && got.PreviewStatus == "ready" && got.ThumbnailURL != "" && got.DurationSeconds == 180
+			if (tc.wantReset && !reset) || (!tc.wantReset && !kept) {
+				t.Fatalf("reset=%v kept=%v, want reset %v: %+v", reset, kept, tc.wantReset, got)
+			}
+			if got.SourceModTime != catalog.FormatSourceModTime(time.Unix(200, 0)) {
+				t.Fatalf("source timestamp = %q", got.SourceModTime)
+			}
+			if tc.sampled != "" {
+				candidates, err := cat.ListVideoMaintenanceCandidates(ctx)
+				if err != nil || len(candidates) != 1 {
+					t.Fatalf("verified row missing from maintenance: %d err=%v", len(candidates), err)
+				}
+			}
+		})
+	}
+}
+
 func TestRescanKeepsOnlyCurrentContentEvidence(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -130,11 +275,14 @@ func TestRescanKeepsOnlyCurrentContentEvidence(t *testing.T) {
 		hash     string
 		wantHash string
 		changed  bool
+		modTime  time.Time
 	}{
-		{"same size and new hash", 100, "UPDATED", "updated", true},
-		{"new size without a hash", 101, "", "", true},
-		{"hash omitted for unchanged file", 100, "", "old", false},
-		{"hash differs only in case", 100, "OLD", "old", false},
+		{"same size and new hash", 100, "UPDATED", "updated", true, time.Time{}},
+		{"new size without a hash", 101, "", "", true, time.Time{}},
+		{"hash omitted for unchanged file", 100, "", "old", false, time.Time{}},
+		{"hash differs only in case", 100, "OLD", "old", false, time.Time{}},
+		{"first timestamp is a baseline", 100, "", "old", false, time.Unix(100, 0)},
+		{"same bytes confirmed by hash", 100, "old", "old", false, time.Unix(100, 0)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -155,7 +303,7 @@ func TestRescanKeepsOnlyCurrentContentEvidence(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			drive := &scannerFakeDrive{entries: []drives.Entry{{ID: "file", Name: "file.mp4", Size: tc.size, Hash: tc.hash}}}
+			drive := &scannerFakeDrive{entries: []drives.Entry{{ID: "file", Name: "file.mp4", Size: tc.size, Hash: tc.hash, ModTime: tc.modTime}}}
 			result, err := New(cat, drive, []string{".mp4"}, nil, nil).Scan(ctx, "root")
 			if err != nil || len(result.Issues) != 0 {
 				t.Fatalf("scan issues=%v err=%v", result.Issues, err)
@@ -172,7 +320,7 @@ func TestRescanKeepsOnlyCurrentContentEvidence(t *testing.T) {
 					got.DurationSeconds != 0 || got.ThumbnailURL != "" || got.PreviewLocal != "" || got.PreviewStatus != "pending" {
 					t.Fatalf("stale evidence after replacement: duplicates=%d row=%+v", result.Duplicates, got)
 				}
-				if err := cat.UpdateVideoFingerprintForSource(ctx, before, "late", "ready", ""); !errors.Is(err, sql.ErrNoRows) {
+				if _, err := cat.UpdateVideoFingerprintForSource(ctx, before, "late", "ready", ""); !errors.Is(err, sql.ErrNoRows) {
 					t.Fatalf("late fingerprint from previous file: %v", err)
 				}
 				if err := cat.UpdatePreviewForSource(ctx, before, "late.mp4", "ready"); !errors.Is(err, sql.ErrNoRows) {
@@ -311,5 +459,63 @@ func TestRescanRefreshesAllRowsSharingAProviderFile(t *testing.T) {
 		if row.ContentHash != "new" || row.SampledSHA256 != "" {
 			t.Fatalf("row retained stale identity: %+v", row)
 		}
+	}
+}
+
+func TestScanRefreshesLiveOwnersMatchedByTombstones(t *testing.T) {
+	for _, merged := range []bool{false, true} {
+		name := "record-only-delete"
+		if merged {
+			name = "duplicate-merge"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			cat, err := catalog.Open(filepath.Join(t.TempDir(), "catalog.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cat.Close()
+			// alias shares owner's file; copy is another file with the same hash.
+			for _, v := range []*catalog.Video{
+				{ID: "owner", DriveID: "drive", FileID: "shared", FileName: "old.mp4", ContentHash: "h", Size: 100},
+				{ID: "alias", DriveID: "drive", FileID: "shared", FileName: "old.mp4", ContentHash: "h", Size: 100},
+				{ID: "copy", DriveID: "drive", FileID: "copy-file", FileName: "copy.mp4", ContentHash: "h", Size: 100},
+			} {
+				if err := cat.UpsertVideo(ctx, v); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if merged {
+				err = cat.ApplyDuplicateVideoDeletions(ctx, []catalog.DuplicateVideoDeletion{{VideoID: "alias", CanonicalVideoID: "owner"}})
+			} else {
+				err = cat.DeleteVideoWithTombstone(ctx, "alias")
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			drive := &scannerTreeFakeDrive{entries: map[string][]drives.Entry{"root": {
+				{ID: "shared", Name: "renamed.mp4", Hash: "h", Size: 100},
+				{ID: "copy-file", Name: "copy-renamed.mp4", Hash: "h", Size: 100},
+				{ID: "new-file", Name: "new.mp4", Hash: "h", Size: 100},
+			}}}
+			result, err := New(cat, drive, []string{".mp4"}, nil, nil).Scan(ctx, "root")
+			wantTombstoned := 1
+			if merged {
+				wantTombstoned = 0
+			}
+			if err != nil || len(result.Issues) != 0 || result.Tombstoned != wantTombstoned {
+				t.Fatalf("scan result=%+v err=%v", result, err)
+			}
+			for id, want := range map[string]string{"owner": "renamed.mp4", "copy": "copy-renamed.mp4"} {
+				if v, err := cat.GetVideo(ctx, id); err != nil || v.FileName != want {
+					t.Fatalf("%s after scan = %+v, %v; want file name %q", id, v, err, want)
+				}
+			}
+			// Manual deletion blocks admission, while a merge skips the live duplicate.
+			if rows, err := cat.ListVideosByDriveFileID(ctx, "drive", "new-file"); err != nil || len(rows) != 0 {
+				t.Fatalf("new source admitted: %+v, %v", rows, err)
+			}
+		})
 	}
 }

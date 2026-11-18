@@ -5,7 +5,9 @@ CREATE TABLE IF NOT EXISTS videos (
     file_id          TEXT NOT NULL,
     file_name        TEXT DEFAULT '',           -- 网盘侧原始文件名，用于同名同大小去重
     content_hash     TEXT DEFAULT '',
+    source_mod_time  TEXT NOT NULL DEFAULT '',
     sampled_sha256   TEXT DEFAULT '',           -- 跨网盘统一采样指纹（size + sampled bytes）
+    previous_sampled_sha256 TEXT NOT NULL DEFAULT '', -- 修改时间变化后待核对的旧指纹
     fingerprint_status TEXT DEFAULT 'pending',  -- pending / ready / failed
     fingerprint_error  TEXT DEFAULT '',
     parent_id        TEXT,
@@ -139,7 +141,7 @@ CREATE TABLE IF NOT EXISTS video_tags (
 CREATE INDEX IF NOT EXISTS idx_video_tags_tag ON video_tags(tag_id);
 CREATE INDEX IF NOT EXISTS idx_video_tags_video ON video_tags(video_id);
 
--- 被拉黑、删除或自动去重的视频。用于防止后续扫描 / 爬虫把同一个源文件
+-- 用户主动拉黑的视频。用于防止后续扫描 / 爬虫把同一个源文件
 -- 再次入库；source_deleted 是旧版本兼容字段，源文件删除成功后会清除墓碑。
 CREATE TABLE IF NOT EXISTS deleted_videos (
     id                 TEXT PRIMARY KEY,

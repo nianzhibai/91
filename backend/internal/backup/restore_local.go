@@ -218,11 +218,11 @@ SELECT id, drive_id, file_id
 		newToOld[newID] = video.oldID
 	}
 
-	deletedRows, err := tx.QueryContext(ctx, `
-SELECT id, drive_id, file_id
-  FROM deleted_videos
- WHERE drive_id IN (SELECT old_id FROM restore_local_drive_ids)
- ORDER BY id`)
+	retiredSources := "SELECT id,drive_id,file_id FROM deleted_videos"
+	if _, ok := present["merged_videos"]; ok {
+		retiredSources += " UNION SELECT video_id,drive_id,file_id FROM merged_videos"
+	}
+	deletedRows, err := tx.QueryContext(ctx, "SELECT id,drive_id,file_id FROM ("+retiredSources+") WHERE drive_id IN (SELECT old_id FROM restore_local_drive_ids) ORDER BY id")
 	if err != nil {
 		return nil, err
 	}
@@ -241,18 +241,17 @@ SELECT id, drive_id, file_id
 	}
 	for _, video := range deletedVideos {
 		newID := videoid.ForDrive("localstorage", video.newDriveID, video.fileID)
-		var existing string
-		scanErr := tx.QueryRowContext(ctx, `SELECT old_id FROM restore_local_video_ids WHERE new_id = ?`, newID).Scan(&existing)
-		if scanErr == nil && existing != video.oldID {
-			return nil, fmt.Errorf("backup: deleted local videos %s and %s resolve to the same restored video id", existing, video.oldID)
+		if _, ok := oldToNew[video.oldID]; ok {
+			continue
 		}
-		if scanErr != nil && scanErr != sql.ErrNoRows {
-			return nil, scanErr
+		// Several retired IDs (and a live video) may share one physical file.
+		base := newID
+		for i := 1; newToOld[newID] != ""; i++ {
+			newID = videoid.Generation(base, i)
 		}
-		if scanErr == sql.ErrNoRows {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO restore_local_video_ids (old_id, new_id, new_drive_id) VALUES (?, ?, ?)`, video.oldID, newID, video.newDriveID); err != nil {
-				return nil, err
-			}
+		newToOld[newID] = video.oldID
+		if _, err := tx.ExecContext(ctx, `INSERT INTO restore_local_video_ids(old_id,new_id,new_drive_id) VALUES (?,?,?)`, video.oldID, newID, video.newDriveID); err != nil {
+			return nil, err
 		}
 		oldToNew[video.oldID] = newID
 	}

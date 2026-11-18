@@ -304,10 +304,10 @@ WHERE type='index' AND tbl_name='duplicate_records' AND name IN (
 		}
 		var reason, canonical string
 		var deletedAt int64
-		if err := cat.db.QueryRow(`SELECT reason,canonical_video_id,deleted_at FROM deleted_videos WHERE id='historical'`).Scan(&reason, &canonical, &deletedAt); err != nil {
+		if err := cat.db.QueryRow(`SELECT merge_reason,canonical_video_id,merged_at FROM merged_videos WHERE video_id='historical'`).Scan(&reason, &canonical, &deletedAt); err != nil {
 			t.Fatal(err)
 		}
-		if reason != DeletedVideoReasonDuplicate || canonical != "kept" || deletedAt != 1 {
+		if reason != "" || canonical != "kept" || deletedAt != 1 {
 			t.Fatalf("old tombstone changed: %s/%s/%d", reason, canonical, deletedAt)
 		}
 		var status string

@@ -323,12 +323,12 @@ func TestHandleDeleteVideoDefaultsDeleteSourceFalse(t *testing.T) {
 
 	called := false
 	(&AdminServer{
-		OnDeleteVideo: func(ctx context.Context, videoID string, deleteSource bool) (DeleteVideoResult, error) {
+		OnDeleteVideo: func(ctx context.Context, videoID string, options catalog.VideoDeletionOptions) (DeleteVideoResult, error) {
 			called = true
 			if videoID != "video-1" {
 				t.Fatalf("videoID = %q, want video-1", videoID)
 			}
-			if deleteSource {
+			if options.DeleteSource {
 				t.Fatal("deleteSource defaulted to true")
 			}
 			return DeleteVideoResult{OK: true}, nil
@@ -344,16 +344,16 @@ func TestHandleDeleteVideoDefaultsDeleteSourceFalse(t *testing.T) {
 }
 
 func TestHandleDeleteVideoPassesDeleteSourceOption(t *testing.T) {
-	req := httptest.NewRequest(http.MethodDelete, "/admin/api/videos/video-1", strings.NewReader(`{"deleteSource":true}`))
+	req := httptest.NewRequest(http.MethodDelete, "/admin/api/videos/video-1", strings.NewReader(`{"deleteSource":true,"includeDuplicates":false,"groupRevision":"shown"}`))
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", "video-1")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 	rr := httptest.NewRecorder()
 
 	(&AdminServer{
-		OnDeleteVideo: func(ctx context.Context, videoID string, deleteSource bool) (DeleteVideoResult, error) {
-			if !deleteSource {
-				t.Fatal("deleteSource = false, want true")
+		OnDeleteVideo: func(ctx context.Context, videoID string, options catalog.VideoDeletionOptions) (DeleteVideoResult, error) {
+			if !options.DeleteSource || options.IncludeDuplicates == nil || *options.IncludeDuplicates || options.GroupRevision != "shown" {
+				t.Fatalf("unexpected choice: %+v", options)
 			}
 			return DeleteVideoResult{OK: true, DeletedSource: true}, nil
 		},
@@ -371,7 +371,101 @@ func TestHandleDeleteVideoPassesDeleteSourceOption(t *testing.T) {
 	}
 }
 
-func TestHandleRemoveBlacklistRejectsNonRestorableVideo(t *testing.T) {
+func TestHandleDeleteVideoReportsSourceRemovalInProgressAsConflict(t *testing.T) {
+	req := httptest.NewRequest(http.MethodDelete, "/admin/api/videos/video-1", strings.NewReader(`{"deleteSource":true}`))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "video-1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rr := httptest.NewRecorder()
+
+	(&AdminServer{
+		OnDeleteVideo: func(context.Context, string, catalog.VideoDeletionOptions) (DeleteVideoResult, error) {
+			return DeleteVideoResult{}, catalog.ErrVideoSourceInUse
+		},
+	}).handleDeleteVideo(rr, req)
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body = %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "源文件删除正在进行") {
+		t.Fatalf("body = %s, want removal-in-progress explanation", rr.Body.String())
+	}
+}
+
+func TestAdminVideoDeletionPreviewAndExecution(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+	seed := func(id, drive string) {
+		t.Helper()
+		if err := cat.UpsertVideo(ctx, &catalog.Video{ID: id, DriveID: drive, FileID: "file", ContentHash: "hash", FileName: "clip.mp4"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed("a", "one")
+	seed("alias", "one")
+	removed := 0
+	admin := AdminServer{Catalog: cat, OnDeleteVideo: func(ctx context.Context, id string, options catalog.VideoDeletionOptions) (DeleteVideoResult, error) {
+		err := cat.DeleteVideoGroup(ctx, id, options, time.Time{}, func(context.Context, *catalog.Video, bool) error { removed++; return nil }, nil)
+		return DeleteVideoResult{OK: err == nil, DeletedSource: err == nil}, err
+	}}
+	router := chi.NewRouter()
+	router.Get("/videos/{id}/deletion-preview", admin.handleVideoDeletionPreview)
+	router.Delete("/videos/{id}", admin.handleDeleteVideo)
+	request := func(method, path, body string, want int) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(method, path, strings.NewReader(body)))
+		if w.Code != want {
+			t.Fatalf("%s %s: HTTP %d, want %d: %s", method, path, w.Code, want, w.Body.String())
+		}
+		return w
+	}
+	preview := func() catalog.VideoDeletionPreview {
+		t.Helper()
+		w := request(http.MethodGet, "/videos/a/deletion-preview", "", http.StatusOK)
+		var result catalog.VideoDeletionPreview
+		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		if result.GroupRevision == "" || w.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("preview: %s", w.Body)
+		}
+		return result
+	}
+	single := preview()
+	if single.RequiresConfirmation || len(single.Sources) != 1 || single.Sources[0].DriveID != "one" {
+		t.Fatalf("shared file: %+v", single)
+	}
+	seed("duplicate", "two")
+	multi := preview()
+	if !multi.RequiresConfirmation || len(multi.Sources) != 2 || multi.Sources[0].DriveID != "one" || multi.Sources[1].DriveID != "two" {
+		t.Fatalf("multi-file: %+v", multi)
+	}
+	for _, body := range []string{`{"deleteSource":true}`, `{"deleteSource":true,"includeDuplicates":true}`, `{"deleteSource":true,"groupRevision":"` + multi.GroupRevision + `"}`} {
+		request(http.MethodDelete, "/videos/a", body, http.StatusBadRequest)
+	}
+	// A single-file preview may have skipped the choice dialog. Adding a
+	// duplicate before execution must invalidate that preview as well.
+	stale := request(http.MethodDelete, "/videos/a", `{"deleteSource":true,"groupRevision":"`+single.GroupRevision+`"}`, http.StatusConflict)
+	var failure map[string]string
+	if err := json.Unmarshal(stale.Body.Bytes(), &failure); err != nil || failure["code"] != "deletion_scope_changed" {
+		t.Fatalf("stale: %s", stale.Body)
+	}
+	if removed != 0 {
+		t.Fatalf("provider removals before confirmation: %d", removed)
+	}
+	request(http.MethodDelete, "/videos/a", `{"deleteSource":true,"includeDuplicates":true,"groupRevision":"`+multi.GroupRevision+`"}`, http.StatusOK)
+	if removed != 2 {
+		t.Fatalf("provider removals after confirmation: %d", removed)
+	}
+	request(http.MethodGet, "/videos/a/deletion-preview", "", http.StatusNotFound)
+}
+
+func TestHandleRemoveBlacklistExcludesMergedVideo(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
 	if err != nil {
@@ -389,10 +483,7 @@ func TestHandleRemoveBlacklistRejectsNonRestorableVideo(t *testing.T) {
 			t.Fatalf("seed %s: %v", id, err)
 		}
 	}
-	if err := cat.DeleteVideoWithTombstoneOptions(ctx, "duplicate-video", catalog.DeleteVideoTombstoneOptions{
-		Reason:           catalog.DeletedVideoReasonDuplicate,
-		CanonicalVideoID: "canonical-video",
-	}); err != nil {
+	if err := cat.ApplyDuplicateVideoDeletions(ctx, []catalog.DuplicateVideoDeletion{{VideoID: "duplicate-video", CanonicalVideoID: "canonical-video"}}); err != nil {
 		t.Fatalf("tombstone video: %v", err)
 	}
 
@@ -404,11 +495,11 @@ func TestHandleRemoveBlacklistRejectsNonRestorableVideo(t *testing.T) {
 
 	(&AdminServer{Catalog: cat}).handleRemoveBlacklist(rr, req)
 
-	if rr.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want 409; body = %s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("blacklist restore status=%d", rr.Code)
 	}
-	if deleted, err := cat.IsVideoDeleted(ctx, "duplicate-video"); err != nil || !deleted {
-		t.Fatalf("non-restorable tombstone was removed: deleted=%v err=%v", deleted, err)
+	if m, err := cat.GetMergedVideo(ctx, "duplicate-video"); err != nil || m.CanonicalVideoID != "canonical-video" {
+		t.Fatalf("merged=%+v err=%v", m, err)
 	}
 }
 
@@ -4044,5 +4135,62 @@ func TestHandleGenerateDrivePreviewsInvokesHookWithDriveID(t *testing.T) {
 	}
 	if calledWith != "PikPak" {
 		t.Fatalf("hook called with %q, want PikPak", calledWith)
+	}
+}
+
+func TestAdminMergedVideoRoutes(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cat.Close()
+	for _, id := range []string{"a", "b"} {
+		if err := cat.UpsertVideo(ctx, &catalog.Video{ID: id, DriveID: "drive", FileID: id, Size: 100}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := cat.ApplyDuplicateVideoDeletions(ctx, []catalog.DuplicateVideoDeletion{{VideoID: "b", CanonicalVideoID: "a"}}); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	a := AdminServer{Catalog: cat, OnDeleteMergedSource: func(ctx context.Context, id, revision string) error {
+		return cat.RemoveMergedVideoSource(ctx, id, revision, func(context.Context, *catalog.Video) error { calls++; return nil })
+	}}
+	r := chi.NewRouter()
+	r.Get("/merged-videos", a.handleMergedVideos)
+	r.Get("/merged-videos/{id}", a.handleMergedVideo)
+	r.Delete("/merged-videos/{id}/source", a.handleDeleteMergedSource)
+	request := func(method, path, body string, want int) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(method, path, strings.NewReader(body)))
+		if w.Code != want {
+			t.Fatalf("%s %s: status=%d body=%s", method, path, w.Code, w.Body.String())
+		}
+		return w
+	}
+	var list catalog.MergedVideoList
+	w := request("GET", "/merged-videos?canonicalVideoId=a&sourceState=recorded&driveId=drive", "", 200)
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil || list.Total != 1 || list.Items[0].VideoID != "b" {
+		t.Fatalf("list=%+v err=%v", list, err)
+	}
+	request("GET", "/merged-videos?sourceState=invalid", "", 400)
+	request("GET", "/merged-videos/a", "", 404)
+	w = request("GET", "/merged-videos/b", "", 200)
+	var b catalog.MergedVideo
+	if err := json.Unmarshal(w.Body.Bytes(), &b); err != nil || b.SourceRevision == "" {
+		t.Fatal("missing revision")
+	}
+	request("DELETE", "/merged-videos/b/source", "{}", 400)
+	w = request("DELETE", "/merged-videos/b/source", `{"sourceRevision":"old"}`, 409)
+	if !strings.Contains(w.Body.String(), "source_revision_changed") {
+		t.Fatal(w.Body.String())
+	}
+	for range 2 {
+		request("DELETE", "/merged-videos/b/source", `{"sourceRevision":"`+b.SourceRevision+`"}`, 200)
+	}
+	if calls != 1 {
+		t.Fatalf("source removed %d times", calls)
 	}
 }

@@ -152,10 +152,59 @@ VALUES ('scriptcrawler','crawler','legacy-source','duplicate','kept-shared',1,2)
 	if err := db.QueryRow(`SELECT COUNT(*) FROM duplicate_records`).Scan(&count); err != nil || count != 3 {
 		t.Fatalf("restart backfilled old archive history: count=%d err=%v", count, err)
 	}
-	if err := db.QueryRow(`SELECT COUNT(*) FROM deleted_videos WHERE id='legacy-duplicate' AND reason='duplicate'`).Scan(&count); err != nil || count != 1 {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM merged_videos WHERE video_id='legacy-duplicate' AND canonical_video_id='kept-shared'`).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("old archive tombstone lost: count=%d err=%v", count, err)
 	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM crawler_seen_sources WHERE source_id='legacy-source' AND status='duplicate'`).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("old archive crawler state lost: count=%d err=%v", count, err)
+	}
+}
+
+func TestRestoreDropsCleanupJobsOfRevivedVideos(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	sourcePath, targetPath := filepath.Join(dir, "source.db"), filepath.Join(dir, "target.db")
+	for _, path := range []string{sourcePath, targetPath} {
+		cat, err := catalog.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cat.UpsertDrive(ctx, &catalog.Drive{ID: "cloud", Kind: "quark", Name: "Cloud", RootID: "0"}); err != nil {
+			t.Fatal(err)
+		}
+		for _, id := range []string{"kept", "retired"} {
+			if err := cat.UpsertVideo(ctx, &catalog.Video{ID: id, DriveID: "cloud", FileID: id, FileName: id + ".mp4", Size: 123}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// Only the target retires the video after the archive was made.
+		if path == targetPath {
+			if err := cat.ApplyDuplicateVideoDeletions(ctx, []catalog.DuplicateVideoDeletion{{VideoID: "retired", CanonicalVideoID: "kept"}}); err != nil {
+				t.Fatal(err)
+			}
+			if jobs, err := cat.ListDuplicateAssetCleanupJobs(ctx, 10); err != nil || len(jobs) != 1 {
+				t.Fatalf("target cleanup jobs = %+v, %v", jobs, err)
+			}
+		}
+		if err := cat.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := mergeSelectiveRestoreDatabase(ctx, targetPath, sourcePath, FullBackupSelection()); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var live, jobs int
+	if err := db.QueryRow(`SELECT (SELECT COUNT(*) FROM videos WHERE id = 'retired'),
+		(SELECT COUNT(*) FROM duplicate_asset_cleanup_jobs)`).Scan(&live, &jobs); err != nil {
+		t.Fatal(err)
+	}
+	if live != 1 || jobs != 0 {
+		t.Fatalf("after restore: retired live=%d, cleanup jobs=%d; want 1 and 0", live, jobs)
 	}
 }

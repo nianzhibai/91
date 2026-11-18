@@ -4344,11 +4344,15 @@
                     },
                     "blacklisted": {
                       "type": "integer"
+                    },
+                    "merged": {
+                      "type": "integer"
                     }
                   },
                   "required": [
                     "current",
-                    "blacklisted"
+                    "blacklisted",
+                    "merged"
                   ]
                 }
               }
@@ -4445,7 +4449,7 @@
         },
         "responses": {
           "200": {
-            "description": "Success",
+            "description": "Deletion completed.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4462,6 +4466,79 @@
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
+          },
+          "409": {
+            "description": "The preview is stale (code deletion_scope_changed), or a source removal is already running (code conflict). Refresh a stale preview before confirming again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or missing multi-file deletion choice or revision.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "description": "Delete the records in the group or execute the selected source deletion. For multiple source files, submit the revision and choice from the deletion preview."
+      }
+    },
+    "/admin/api/videos/{id}/deletion-preview": {
+      "get": {
+        "operationId": "get_admin_api_videos_id_deletion_preview",
+        "summary": "Preview video source deletion",
+        "description": "Read the current deletion scope before asking the user whether to include duplicate files.",
+        "tags": [
+          "Management"
+        ],
+        "x-role": "admin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current deletion scope. No storage operations are performed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoDeletionPreview"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Video not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
           }
         }
       }
@@ -7368,6 +7445,245 @@
         },
         "description": "Read GitHub release metadata for frontends with a known repository. Does not download, install or activate a frontend. Frontends whose metadata cannot be read report no update."
       }
+    },
+    "/admin/api/merged-videos": {
+      "get": {
+        "operationId": "get_admin_api_merged_videos",
+        "summary": "List retired video IDs and their retained sources",
+        "tags": [
+          "Management"
+        ],
+        "x-role": "admin",
+        "parameters": [
+          {
+            "name": "canonicalVideoId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "driveId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sourceState",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "recorded",
+                "gone",
+                "replaced"
+              ]
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MergedVideoList"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          },
+          "400": {
+            "description": "Invalid source state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/api/merged-videos/{id}": {
+      "get": {
+        "operationId": "get_admin_api_merged_videos_id",
+        "summary": "Read a merged video by its original ID",
+        "tags": [
+          "Management"
+        ],
+        "x-role": "admin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MergedVideo"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "description": "Unknown merged video ID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/api/merged-videos/{id}/source": {
+      "delete": {
+        "operationId": "delete_admin_api_merged_videos_id_source",
+        "summary": "Remove the recorded physical source and retain the public alias",
+        "tags": [
+          "Management"
+        ],
+        "x-role": "admin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MergedSourceDeleteResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "description": "Unknown merged video ID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A source revision is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The source cannot be removed using this revision.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "source_revision_changed",
+                        "source_shared",
+                        "source_replaced",
+                        "source_unverified",
+                        "source_removal_in_progress"
+                      ]
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergedSourceDeleteRequest"
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -10109,6 +10425,14 @@
         "properties": {
           "deleteSource": {
             "type": "boolean"
+          },
+          "includeDuplicates": {
+            "type": "boolean",
+            "description": "For a multi-file source deletion, explicitly choose true for all files or false for the selected file and its records."
+          },
+          "groupRevision": {
+            "type": "string",
+            "description": "Version from the deletion preview. Required with a multi-file source choice. A supplied version is checked before anything is deleted."
           }
         },
         "type": "object"
@@ -11550,6 +11874,174 @@
             "description": "Delay before the next poll; the provider may raise it"
           }
         }
+      },
+      "VideoDeletionPreview": {
+        "type": "object",
+        "required": [
+          "sources",
+          "groupRevision",
+          "requiresConfirmation"
+        ],
+        "properties": {
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "driveId",
+                "fileId",
+                "fileName"
+              ],
+              "properties": {
+                "driveId": {
+                  "type": "string"
+                },
+                "fileId": {
+                  "type": "string"
+                },
+                "fileName": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Distinct physical files. The first entry belongs to the selected video."
+          },
+          "groupRevision": {
+            "type": "string"
+          },
+          "requiresConfirmation": {
+            "type": "boolean",
+            "description": "True if source deletion needs a choice between the selected file and all duplicate files."
+          }
+        }
+      },
+      "MergedVideo": {
+        "type": "object",
+        "properties": {
+          "videoId": {
+            "type": "string"
+          },
+          "canonicalVideoId": {
+            "type": "string"
+          },
+          "driveId": {
+            "type": "string"
+          },
+          "fileId": {
+            "type": "string"
+          },
+          "parentId": {
+            "type": "string"
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "sizeBytes": {
+            "type": "integer"
+          },
+          "contentHash": {
+            "type": "string"
+          },
+          "sampledSha256": {
+            "type": "string"
+          },
+          "sourceModTime": {
+            "type": "string"
+          },
+          "sourceState": {
+            "type": "string",
+            "enum": [
+              "recorded",
+              "gone",
+              "replaced"
+            ]
+          },
+          "mergeReason": {
+            "type": "string"
+          },
+          "mergedAt": {
+            "type": "integer",
+            "description": "Unix milliseconds."
+          },
+          "sharedSource": {
+            "type": "boolean"
+          },
+          "sourceRevision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "videoId",
+          "canonicalVideoId",
+          "driveId",
+          "fileId",
+          "parentId",
+          "fileName",
+          "sizeBytes",
+          "contentHash",
+          "sampledSha256",
+          "sourceModTime",
+          "sourceState",
+          "mergeReason",
+          "mergedAt",
+          "sharedSource",
+          "sourceRevision"
+        ]
+      },
+      "MergedVideoList": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MergedVideo"
+            }
+          },
+          "total": {
+            "type": "integer"
+          },
+          "page": {
+            "type": "integer"
+          },
+          "size": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size"
+        ]
+      },
+      "MergedSourceDeleteRequest": {
+        "type": "object",
+        "properties": {
+          "sourceRevision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sourceRevision"
+        ]
+      },
+      "MergedSourceDeleteResult": {
+        "type": "object",
+        "properties": {
+          "videoId": {
+            "type": "string"
+          },
+          "sourceState": {
+            "type": "string",
+            "enum": [
+              "gone"
+            ]
+          }
+        },
+        "required": [
+          "videoId",
+          "sourceState"
+        ]
       }
     },
     "responses": {

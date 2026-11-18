@@ -43,8 +43,7 @@ UPDATE video_tags
 		t.Fatalf("downgrade canonical shared tag for merge test: %v", err)
 	}
 	if _, err := cat.db.ExecContext(ctx, `
-INSERT INTO deleted_videos (id, reason, canonical_video_id, deleted_at)
-VALUES ('historical', 'duplicate', 'old-a', 1)`); err != nil {
+INSERT INTO merged_videos (video_id,canonical_video_id,merged_at) VALUES ('historical','old-a',1)`); err != nil {
 		t.Fatalf("seed historical tombstone: %v", err)
 	}
 	if err := cat.MarkCrawlerSourceSeen(ctx, "scriptcrawler", "crawler", "source", "duplicate", "old-a", "", 0); err != nil {
@@ -106,7 +105,7 @@ SELECT vt.source
 		t.Fatalf("shared tag source = %q, want stronger manual assignment", sharedTagSource)
 	}
 	var historicalCanonical string
-	if err := cat.db.QueryRowContext(ctx, `SELECT canonical_video_id FROM deleted_videos WHERE id = 'historical'`).Scan(&historicalCanonical); err != nil {
+	if err := cat.db.QueryRowContext(ctx, `SELECT canonical_video_id FROM merged_videos WHERE video_id = 'historical'`).Scan(&historicalCanonical); err != nil {
 		t.Fatalf("read historical tombstone: %v", err)
 	}
 	if historicalCanonical != "final" {

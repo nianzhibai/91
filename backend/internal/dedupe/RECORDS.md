@@ -5,8 +5,8 @@ inspection. It has no HTTP endpoint or website presentation. `catalog.Open`
 creates the table for new and existing databases when the updated server starts.
 Only new duplicate decisions are recorded. Startup does not backfill old
 tombstones, crawler seen entries, scan summaries or operational logs. Existing
-audit records remain unchanged, and the original tombstones and crawler seen
-state continue to control admission independently of the audit table.
+audit records remain unchanged, and legacy duplicate tombstones migrate to `merged_videos`. Merge aliases,
+user blacklists and crawler seen state control admission independently of the audit table.
 
 The history is included when **all resource types** are selected for backup.
 Partial backups omit it because a decision may retain comparison snapshots

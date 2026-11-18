@@ -74,6 +74,7 @@ var catalogTables = []catalogTable{
 	{name: "drives", kind: driveRows, ownerColumn: "id"},
 	{name: "videos", kind: driveRows, ownerColumn: "drive_id"},
 	{name: "scans", kind: driveRows, ownerColumn: "drive_id"},
+	{name: "merged_videos", kind: driveRows, ownerColumn: "drive_id", videoRefs: []string{"video_id", "canonical_video_id"}},
 	{name: "deleted_videos", kind: driveRows, ownerColumn: "drive_id", videoRefs: []string{"canonical_video_id"}},
 	{name: "crawler_seen_sources", kind: driveRows, ownerColumn: "drive_id", videoRefs: []string{"canonical_video_id"}},
 	{name: "crawler_discoveries", kind: driveRows, ownerColumn: "drive_id"},
@@ -150,6 +151,7 @@ var catalogTables = []catalogTable{
 	{name: "telegram_local_files", kind: secretRows},
 	{name: "telegram_upload_cleanups", kind: secretRows},
 
+	// A catalog trigger drops the jobs of video IDs the restore makes live.
 	{name: "duplicate_asset_cleanup_jobs", kind: localRows},
 	{name: "video_source_removals", kind: localRows},
 	{name: "video_dedup_representatives", kind: derivedRows},

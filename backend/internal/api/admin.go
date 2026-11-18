@@ -100,7 +100,8 @@ type AdminServer struct {
 	OnRegenPreview                 func(videoID string)
 	OnRegenAllPreviews             func()
 	OnDriveGenerationRequested     func(context.Context, string, DriveGenerationKind) (DriveGenerationResult, error)
-	OnDeleteVideo                  func(ctx context.Context, videoID string, deleteSource bool) (DeleteVideoResult, error)
+	OnDeleteMergedSource           func(context.Context, string, string) error
+	OnDeleteVideo                  func(ctx context.Context, videoID string, options catalog.VideoDeletionOptions) (DeleteVideoResult, error)
 	OnStartBlacklistSourceDelete   func(BlacklistSourceDeleteRequest) bool
 	GetBlacklistSourceDeleteStatus func() BlacklistSourceDeleteStatus
 	// OnRemoveBlacklist owns the complete application-level restore operation:
@@ -225,10 +226,6 @@ type DeleteVideoResult struct {
 	DeletedSource bool `json:"deletedSource"`
 }
 
-type deleteVideoReq struct {
-	DeleteSource bool `json:"deleteSource"`
-}
-
 // Register mounts identity routes and the administrator API. Each of
 // adminRoutes adds routes relative to /admin/api behind the administrator check.
 func (a *AdminServer) Register(r chi.Router, adminRoutes ...func(chi.Router)) {
@@ -291,9 +288,14 @@ func (a *AdminServer) Register(r chi.Router, adminRoutes ...func(chi.Router)) {
 			r.Get("/videos/stats", a.handleVideoStats)
 			r.Put("/videos/{id}", a.handleUpdateVideo)
 			r.Delete("/videos/{id}", a.handleDeleteVideo)
+			r.Get("/videos/{id}/deletion-preview", a.handleVideoDeletionPreview)
 			r.Post("/videos/regen-preview", a.handleRegenAllPreviews)
 			r.Post("/videos/{id}/regen-preview", a.handleRegenPreview)
-			// 黑名单（被拉黑/手动删除、扫盘不再入库的视频）
+			// 已合并视频按原公开 ID 管理。
+			r.Get("/merged-videos", a.handleMergedVideos)
+			r.Get("/merged-videos/{id}", a.handleMergedVideo)
+			r.Delete("/merged-videos/{id}/source", a.handleDeleteMergedSource)
+			// 用户主动拉黑的来源。
 			r.Get("/blacklist", a.handleListBlacklist)
 			r.Get("/blacklist/source-delete/status", a.handleBlacklistSourceDeleteStatus)
 			r.Post("/blacklist/source-delete", a.handleStartBlacklistSourceDelete)

@@ -1095,6 +1095,16 @@ func TestLocalStorageRestorePreservesSourceDriveNamespaces(t *testing.T) {
 		}
 	}
 
+	// An unreferenced-by-live-rows copy belongs to the isolated restored drive,
+	// and its old public ID and canonical ID must follow their respective files.
+	aliasFile := base64.RawURLEncoding.EncodeToString([]byte("videos/alias.mp4"))
+	writeTestFile(t, filepath.Join(sources[0].root, "videos/alias.mp4"), []byte("alias bytes"))
+	if err := env.cat.UpsertVideo(ctx, &catalog.Video{ID: "retired-alias", DriveID: sources[0].driveID, FileID: aliasFile, Size: 11}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.cat.ApplyDuplicateVideoDeletions(ctx, []catalog.DuplicateVideoDeletion{{VideoID: "retired-alias", CanonicalVideoID: sources[0].videoID}}); err != nil {
+		t.Fatal(err)
+	}
 	record := createAndWaitForBackup(t, env.manager, BackupSelection{LocalStorage: true})
 	if _, err := env.manager.PrepareRestore(ctx, record.ID); err != nil {
 		t.Fatal(err)
@@ -1149,6 +1159,17 @@ func TestLocalStorageRestorePreservesSourceDriveNamespaces(t *testing.T) {
 			t.Fatalf("isolated local drive for %s was not found", source.driveID)
 		}
 		restoredID := videoid.ForDrive("localstorage", restoredDrive.ID, source.fileID)
+		if source.driveID == sources[0].driveID {
+			aliasID := videoid.ForDrive("localstorage", restoredDrive.ID, aliasFile)
+			alias, err := restored.GetMergedVideo(ctx, aliasID)
+			if err != nil || alias.CanonicalVideoID != restoredID || alias.DriveID != restoredDrive.ID {
+				t.Fatalf("restored alias=%+v err=%v", alias, err)
+			}
+			data, err := os.ReadFile(filepath.Join(restoredDrive.Credentials["path"], "videos/alias.mp4"))
+			if err != nil || string(data) != "alias bytes" {
+				t.Fatalf("copy bytes=%q err=%v", data, err)
+			}
+		}
 		video, err := restored.GetVideo(ctx, restoredID)
 		if err != nil || video.DriveID != restoredDrive.ID {
 			t.Fatalf("restored video %s = %+v err=%v", restoredID, video, err)

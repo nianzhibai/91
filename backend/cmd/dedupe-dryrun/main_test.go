@@ -87,7 +87,7 @@ func TestDeleteDuplicateWithAssetsRemovesThumbnailDerivedAssets(t *testing.T) {
 	if _, err := cat.GetVideo(ctx, canonical.ID); err != nil {
 		t.Fatalf("canonical video missing: %v", err)
 	}
-	if deleted, err := cat.IsVideoDeleted(ctx, duplicate.ID); err != nil || !deleted {
-		t.Fatalf("duplicate tombstone deleted=%v error=%v, want true/nil", deleted, err)
+	if deleted, err := cat.IsVideoDeleted(ctx, duplicate.ID); err != nil || deleted {
+		t.Fatalf("merged video entered blacklist: %v, %v", deleted, err)
 	}
 }

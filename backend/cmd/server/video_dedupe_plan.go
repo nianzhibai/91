@@ -156,16 +156,15 @@ func (a *App) cleanupPendingDuplicateAssetsLocked(ctx context.Context, localDir 
 		if err := ctx.Err(); err != nil {
 			return errors.Join(append(cleanupErrors, err)...)
 		}
-		if err := mediaasset.RemoveGeneratedVideoAssets(localDir, job.VideoID, job.PreviewLocal); err != nil {
-			if markErr := a.cat.FailDuplicateAssetCleanupJob(ctx, job.VideoID, err); markErr != nil {
-				cleanupErrors = append(cleanupErrors, fmt.Errorf("record asset cleanup failure for %s: %w", job.VideoID, markErr))
-			}
-			cleanupErrors = append(cleanupErrors, fmt.Errorf("remove duplicate assets for %s: %w", job.VideoID, err))
-			continue
-		}
-		if err := a.cat.CompleteDuplicateAssetCleanupJob(ctx, job.VideoID); err != nil {
-			cleanupErrors = append(cleanupErrors, fmt.Errorf("complete asset cleanup for %s: %w", job.VideoID, err))
+		if err := a.cleanupRetiredVideoAssets(ctx, localDir, job.VideoID); err != nil {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("remove generated assets for %s: %w", job.VideoID, err))
 		}
 	}
 	return errors.Join(cleanupErrors...)
+}
+
+func (a *App) cleanupRetiredVideoAssets(ctx context.Context, localDir, id string) error {
+	return a.cat.CleanupRetiredVideoAssets(ctx, id, func(preview string) error {
+		return mediaasset.RemoveGeneratedVideoAssets(localDir, id, preview)
+	})
 }

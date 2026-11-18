@@ -175,9 +175,9 @@ func parseAdminVideoDurationRange(minRaw, maxRaw string) (minSeconds, maxSeconds
 	return minMinutes * 60, maxMinutes * 60, nil
 }
 
-// handleVideoStats 返回后台视频管理两个标签页的计数（当前/拉黑）。
+// handleVideoStats 返回当前、手动拉黑及已合并的视频计数。
 func (a *AdminServer) handleVideoStats(w http.ResponseWriter, r *http.Request) {
-	current, blacklisted, err := a.Catalog.VideoManagementCounts(r.Context())
+	current, blacklisted, merged, err := a.Catalog.VideoManagementCounts(r.Context())
 	if err != nil {
 		writeErr(w, r, http.StatusInternalServerError, err)
 		return
@@ -185,6 +185,7 @@ func (a *AdminServer) handleVideoStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"current":     current,
 		"blacklisted": blacklisted,
+		"merged":      merged,
 	})
 }
 

@@ -43,6 +43,10 @@ type Worker struct {
 	Config          Config
 	TaskGuard       func() func()
 	OnStatusChanged func(bool)
+	// OnContentReplaced receives a row whose recomputed fingerprint showed that
+	// its source was replaced in place. Its generated assets were cleared and
+	// need to be scheduled again.
+	OnContentReplaced func(*catalog.Video)
 
 	ch       chan *catalog.Video
 	queue    videoQueue
@@ -238,14 +242,24 @@ func (w *Worker) processQueued(ctx context.Context, v *catalog.Video) {
 			return
 		}
 		applog.Error(ctx, "Fingerprint computation failed", err, applog.Fields{Stage: "compute"})
-		_ = w.Catalog.UpdateVideoFingerprintForSource(ctx, current, "", "failed", err.Error())
+		_, _ = w.Catalog.UpdateVideoFingerprintForSource(ctx, current, "", "failed", err.Error())
 		return
 	}
-	if err := w.Catalog.UpdateVideoFingerprintForSource(ctx, current, sum, "ready", ""); err != nil {
+	replaced, err := w.Catalog.UpdateVideoFingerprintForSource(ctx, current, sum, "ready", "")
+	if err != nil {
 		applog.Error(ctx, "Save fingerprint failed", err, applog.Fields{Stage: "save"})
 		return
 	}
-	applog.Info(ctx, "Fingerprint ready", applog.Fields{})
+	if !replaced {
+		applog.Info(ctx, "Fingerprint ready", applog.Fields{})
+		return
+	}
+	applog.Info(ctx, "Source replaced in place; regenerating its assets", applog.Fields{})
+	if w.OnContentReplaced != nil {
+		if updated, err := w.Catalog.GetVideo(ctx, current.ID); err == nil {
+			w.OnContentReplaced(updated)
+		}
+	}
 }
 
 func Compute(ctx context.Context, drv drives.Drive, v *catalog.Video, cfg Config, hc *http.Client) (string, error) {

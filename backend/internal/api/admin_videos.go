@@ -151,13 +151,23 @@ func (a *AdminServer) handleUpdateVideo(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, mapAdminVideo(v))
 }
 
+func (a *AdminServer) handleVideoDeletionPreview(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	preview, err := a.Catalog.PreviewVideoDeletion(r.Context(), strings.TrimSpace(chi.URLParam(r, "id")))
+	if err != nil {
+		writeCatalogLookupError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, preview)
+}
+
 func (a *AdminServer) handleDeleteVideo(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(chi.URLParam(r, "id"))
 	if id == "" {
 		writeErr(w, r, http.StatusBadRequest, errors.New("invalid video id"))
 		return
 	}
-	var body deleteVideoReq
+	var body catalog.VideoDeletionOptions
 	if r.Body != nil {
 		defer r.Body.Close()
 		decoder := json.NewDecoder(r.Body)
@@ -171,14 +181,29 @@ func (a *AdminServer) handleDeleteVideo(w http.ResponseWriter, r *http.Request) 
 		err    error
 	)
 	if a.OnDeleteVideo != nil {
-		result, err = a.OnDeleteVideo(r.Context(), id, body.DeleteSource)
+		result, err = a.OnDeleteVideo(r.Context(), id, body)
+	} else if body.DeleteSource {
+		writeServiceUnavailable(w, r, "delete video source", errors.New("source removal is unavailable"))
+		return
 	} else {
-		err = a.Catalog.DeleteVideoWithTombstone(r.Context(), id)
+		err = a.Catalog.DeleteVideoGroup(r.Context(), id, body, time.Time{}, nil, nil)
 		result = DeleteVideoResult{OK: err == nil}
 	}
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeErr(w, r, http.StatusNotFound, err)
+			return
+		}
+		if errors.Is(err, catalog.ErrDeletionScopeIncomplete) {
+			writeErr(w, r, http.StatusBadRequest, err)
+			return
+		}
+		if errors.Is(err, catalog.ErrDeletionScopeChanged) {
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "deletion_scope_changed", "error": err.Error()})
+			return
+		}
+		if errors.Is(err, catalog.ErrVideoSourceInUse) {
+			writeErr(w, r, http.StatusConflict, errors.New("源文件删除正在进行，请稍后重试"))
 			return
 		}
 		writeErr(w, r, http.StatusInternalServerError, err)

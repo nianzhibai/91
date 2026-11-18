@@ -283,7 +283,8 @@ func pruneSnapshotTables(ctx context.Context, tx *sql.Tx, selection BackupSelect
 func collectSnapshotAssets(ctx context.Context, tx *sql.Tx, state *snapshotSelectionState) error {
 	rows, err := tx.QueryContext(ctx, `
 SELECT id, drive_id, file_id, COALESCE(preview_local, '')
-  FROM videos`)
+  FROM videos
+UNION ALL SELECT '',drive_id,file_id,'' FROM merged_videos WHERE file_id!='' AND source_state='recorded'`)
 	if err != nil {
 		return err
 	}
@@ -293,7 +294,9 @@ SELECT id, drive_id, file_id, COALESCE(preview_local, '')
 		if err := rows.Scan(&id, &driveID, &fileID, &previewPath); err != nil {
 			return err
 		}
-		state.SelectedVideoIDs[id] = struct{}{}
+		if id != "" {
+			state.SelectedVideoIDs[id] = struct{}{}
+		}
 		if previewPath != "" {
 			state.SelectedPreviewPaths[id] = previewPath
 		}

@@ -24,7 +24,13 @@ func (c *Catalog) migrate(ctx context.Context) error {
 	if err := c.addColumnIfMissing(ctx, "videos", "content_hash", "TEXT DEFAULT ''"); err != nil {
 		return err
 	}
+	if err := c.addColumnIfMissing(ctx, "videos", "source_mod_time", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
 	if err := c.addColumnIfMissing(ctx, "videos", "sampled_sha256", "TEXT DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := c.addColumnIfMissing(ctx, "videos", "previous_sampled_sha256", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if err := c.addColumnIfMissing(ctx, "videos", "fingerprint_status", "TEXT DEFAULT 'pending'"); err != nil {
@@ -143,6 +149,9 @@ UPDATE videos
 	if err := c.ensureSourceRemovalGuards(ctx); err != nil {
 		return err
 	}
+	if err := c.ensureDuplicateAssetCleanupGuard(ctx); err != nil {
+		return err
+	}
 	// Preview generation is now controlled exclusively by config.yaml.
 	if err := c.dropColumnIfExists(ctx, "drives", "teaser_enabled"); err != nil {
 		return err
@@ -199,6 +208,12 @@ CREATE TABLE IF NOT EXISTS deleted_videos (
 		return err
 	}
 	if _, err := c.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_deleted_videos_asset_cleanup ON deleted_videos(asset_cleanup_after) WHERE asset_cleanup_after > 0`); err != nil {
+		return err
+	}
+	if err := MigrateMergedVideos(ctx, c.db); err != nil {
+		return err
+	}
+	if err := c.ensureMergedVideoGuards(ctx); err != nil {
 		return err
 	}
 	if err := c.purgeLegacySourceDeletedTombstones(ctx); err != nil {
@@ -882,7 +897,9 @@ var currentVideoColumnNames = []string{
 	"file_id",
 	"file_name",
 	"content_hash",
+	"source_mod_time",
 	"sampled_sha256",
+	"previous_sampled_sha256",
 	"fingerprint_status",
 	"fingerprint_error",
 	"parent_id",
@@ -926,7 +943,9 @@ CREATE TABLE videos_schema_rebuild_new (
     file_id            TEXT NOT NULL,
     file_name          TEXT DEFAULT '',
     content_hash       TEXT DEFAULT '',
+    source_mod_time    TEXT NOT NULL DEFAULT '',
     sampled_sha256     TEXT DEFAULT '',
+    previous_sampled_sha256 TEXT NOT NULL DEFAULT '',
     fingerprint_status TEXT DEFAULT 'pending',
     fingerprint_error  TEXT DEFAULT '',
     parent_id          TEXT,

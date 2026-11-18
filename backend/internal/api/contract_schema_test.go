@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/drivelogin"
 	"github.com/nianzhibai/91/backend/internal/frontend"
 )
@@ -25,6 +26,8 @@ func TestOpenAPIMatchesClientDTOs(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, dto := range map[string]any{
+		"MergedVideo": catalog.MergedVideo{}, "MergedVideoList": catalog.MergedVideoList{}, "MergedSourceDeleteRequest": mergedSourceDeleteRequest{},
+		"VideoDeletionPreview": catalog.VideoDeletionPreview{}, "deleteVideoReq": catalog.VideoDeletionOptions{},
 		"VideoList": VideoListDTO{}, "VideoDTO": VideoDTO{}, "VideoCardDTO": VideoCardDTO{},
 		"VideoDetailDTO": VideoDetailDTO{}, "videoFeedResponse": videoFeedResponse{},
 		"shortsFeedResponse": shortsFeedResponse{}, "VideoCollectionDTO": VideoCollectionDTO{},

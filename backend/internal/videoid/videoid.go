@@ -2,6 +2,7 @@ package videoid
 
 import (
 	"encoding/base64"
+	"strconv"
 	"strings"
 )
 
@@ -17,4 +18,10 @@ func FilePart(fileID string) string {
 		return fileID
 	}
 	return "b64_" + base64.RawURLEncoding.EncodeToString([]byte(fileID))
+}
+
+// Generation assigns another public ID when an earlier generation of a
+// provider file still owns its original link. Drive kinds never start with ~.
+func Generation(base string, n int) string {
+	return "~" + strconv.Itoa(n) + "~" + base
 }

@@ -262,12 +262,10 @@ func cleanupPendingAssets(ctx context.Context, cat *catalog.Catalog, localDir st
 	}
 	var cleanupErrors []error
 	for _, job := range jobs {
-		if err := mediaasset.RemoveGeneratedVideoAssets(localDir, job.VideoID, job.PreviewLocal); err != nil {
-			_ = cat.FailDuplicateAssetCleanupJob(ctx, job.VideoID, err)
-			cleanupErrors = append(cleanupErrors, err)
-			continue
-		}
-		if err := cat.CompleteDuplicateAssetCleanupJob(ctx, job.VideoID); err != nil {
+		err := cat.CleanupRetiredVideoAssets(ctx, job.VideoID, func(preview string) error {
+			return mediaasset.RemoveGeneratedVideoAssets(localDir, job.VideoID, preview)
+		})
+		if err != nil {
 			cleanupErrors = append(cleanupErrors, err)
 		}
 	}

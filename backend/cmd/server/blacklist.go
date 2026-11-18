@@ -15,6 +15,7 @@ import (
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/drives"
 	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
+	"github.com/nianzhibai/91/backend/internal/fingerprint"
 	"github.com/nianzhibai/91/backend/internal/mediaasset"
 	"github.com/nianzhibai/91/backend/internal/persistence"
 )
@@ -37,7 +38,7 @@ func (a *App) migrateHiddenVideosToTombstone(ctx context.Context) {
 	log.Printf("[migrate] converting %d hidden video(s) to blacklist tombstones", len(hidden))
 	migrated := 0
 	for _, v := range hidden {
-		if _, err := a.deleteVideo(ctx, v.ID, false); err != nil {
+		if err := a.cat.DeleteVideoWithTombstoneOptions(ctx, v.ID, catalog.DeleteVideoTombstoneOptions{AssetCleanupAfter: time.Now().Add(videoDeletionGracePeriod)}); err != nil {
 			log.Printf("[migrate] hidden->tombstone %s: %v", v.ID, err)
 			continue
 		}
@@ -46,51 +47,28 @@ func (a *App) migrateHiddenVideosToTombstone(ctx context.Context) {
 	log.Printf("[migrate] hidden->tombstone done: %d/%d", migrated, len(hidden))
 }
 
-func (a *App) deleteVideo(ctx context.Context, videoID string, deleteSource bool) (api.DeleteVideoResult, error) {
+func (a *App) deleteVideo(ctx context.Context, videoID string, options catalog.VideoDeletionOptions) (api.DeleteVideoResult, error) {
 	if a == nil || a.cat == nil {
 		return api.DeleteVideoResult{}, sql.ErrNoRows
 	}
 	unlock := a.blacklistVideoLocks.lock(videoID)
 	defer unlock()
-	v, err := a.cat.GetVideo(ctx, videoID)
-	if err != nil {
+	if err := persistence.RLockContext(ctx); err != nil {
 		return api.DeleteVideoResult{}, err
 	}
-
-	// Source deletion can remove a local-upload or crawler file that belongs in
-	// a full backup. Keep source, derived assets, and the catalog tombstone on
-	// the same side of the persistence snapshot gate.
-	persistence.RLock()
 	defer persistence.RUnlock()
-	if !deleteSource {
-		err := a.cat.DeleteVideoWithTombstoneOptions(ctx, v.ID, catalog.DeleteVideoTombstoneOptions{
-			AssetCleanupAfter: time.Now().Add(videoDeletionGracePeriod),
-		})
-		if err != nil {
-			return api.DeleteVideoResult{}, err
-		}
-		return api.DeleteVideoResult{OK: true}, nil
+	localDir := ""
+	if a.cfg != nil {
+		localDir = a.cfg.Storage.LocalPreviewDir
 	}
-
-	err = a.cat.WithVideoSourceRemoval(ctx, v.DriveID, v.FileID, v.ID, func(ctx context.Context) error {
-		if err := a.removeVideoSourceFile(ctx, v); err != nil {
-			return err
+	clean := func(ctx context.Context, v *catalog.Video) error {
+		if localDir == "" {
+			return nil
 		}
-		localDir := ""
-		if a.cfg != nil {
-			localDir = a.cfg.Storage.LocalPreviewDir
-		}
-		if err := removeLocalVideoAssets(localDir, v); err != nil {
-			return fmt.Errorf("remove local assets for %s: %w", v.ID, err)
-		}
-		finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		defer cancel()
-		return a.cat.DeleteVideoWithTombstoneOptions(finishCtx, v.ID, catalog.DeleteVideoTombstoneOptions{SourceDeleted: true})
-	})
-	if err != nil {
-		return api.DeleteVideoResult{}, err
+		return a.cleanupRetiredVideoAssets(ctx, localDir, v.ID)
 	}
-	return api.DeleteVideoResult{OK: true, DeletedSource: true}, nil
+	err := a.cat.DeleteVideoGroup(ctx, videoID, options, time.Now().Add(videoDeletionGracePeriod), a.removeVideoSource, clean)
+	return api.DeleteVideoResult{OK: err == nil, DeletedSource: err == nil && options.DeleteSource}, err
 }
 
 func (a *App) startBlacklistSourceDelete(ctx context.Context, req api.BlacklistSourceDeleteRequest) bool {
@@ -294,15 +272,27 @@ func (a *App) removeDeletedVideoSourceFile(ctx context.Context, item *catalog.De
 	}
 	var lastErr error
 	for attempt := 0; attempt < blacklistSourceDeleteMaxAttempts; attempt++ {
-		err := a.cat.WithVideoSourceRemoval(ctx, video.DriveID, video.FileID, "", func(ctx context.Context) error {
-			if err := a.removeVideoSourceFile(ctx, video); err != nil {
+		err := a.cat.WithBlacklistedSourceRemoval(ctx, item, func(ctx context.Context) error {
+			merged, err := a.cat.GetMergedVideo(ctx, item.ID)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			check := liveSource
+			if merged != nil {
+				check = mergedSource
+				if merged.SourceState != catalog.MergedSourceRecorded {
+					return catalog.ErrMergedSourceReplaced
+				}
+				video.ContentHash, video.SampledSHA256, video.SourceModTime = merged.ContentHash, merged.SampledSHA256, merged.SourceModTime
+			}
+			if err := a.removeProviderSource(ctx, video, check); err != nil {
 				return err
 			}
 			// The remote deletion has succeeded. Finish the catalog write even
 			// if the task was canceled while the provider was responding.
 			finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel()
-			return a.purgeDeletedVideoTombstone(finishCtx, item.ID)
+			return a.purgeDeletedSource(finishCtx, video)
 		})
 		if err == nil {
 			return nil
@@ -340,13 +330,13 @@ func waitForBlacklistSourceDelete(ctx context.Context, wait time.Duration) error
 	}
 }
 
-func (a *App) purgeDeletedVideoTombstone(ctx context.Context, videoID string) error {
+func (a *App) purgeDeletedSource(ctx context.Context, item *catalog.Video) error {
 	var lastErr error
 	for attempt := 0; attempt < 8; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := a.cat.PurgeDeletedVideo(ctx, videoID); err != nil {
+		if err := a.cat.PurgeSourceTombstones(ctx, item); err != nil {
 			if !isSQLiteBusyError(err) {
 				return err
 			}
@@ -371,7 +361,41 @@ func (a *App) finishBlacklistSourceDelete(state string, err error) {
 	}
 }
 
-func (a *App) removeVideoSourceFile(ctx context.Context, v *catalog.Video) error {
+func (a *App) deleteMergedSource(ctx context.Context, id, revision string) error {
+	if err := persistence.RLockContext(ctx); err != nil {
+		return err
+	}
+	defer persistence.RUnlock()
+	return a.cat.RemoveMergedVideoSource(ctx, id, revision, func(ctx context.Context, v *catalog.Video) error {
+		return a.removeProviderSource(ctx, v, mergedSource)
+	})
+}
+
+func (a *App) removeVideoSource(ctx context.Context, v *catalog.Video, historical bool) error {
+	check := liveSource
+	if historical {
+		_, err := a.cat.GetMergedVideo(ctx, v.ID)
+		switch {
+		case err == nil:
+			check = mergedSource
+		case errors.Is(err, sql.ErrNoRows):
+			check = skippedScanSource
+		default:
+			return err
+		}
+	}
+	return a.removeProviderSource(ctx, v, check)
+}
+
+type sourceIdentityCheck int
+
+const (
+	liveSource sourceIdentityCheck = iota
+	skippedScanSource
+	mergedSource
+)
+
+func (a *App) removeProviderSource(ctx context.Context, v *catalog.Video, check sourceIdentityCheck) error {
 	if v == nil {
 		return errors.New("remove video source: empty video")
 	}
@@ -401,6 +425,52 @@ func (a *App) removeVideoSourceFile(ctx context.Context, v *catalog.Video) error
 	if !ok {
 		return fmt.Errorf("remove video source %s: drive %s not attached: %w", v.ID, v.DriveID, drives.ErrNotSupported)
 	}
+	if check != liveSource {
+		entry, err := historicalSourceEntry(ctx, drv, v)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if entry == nil {
+			return catalog.ErrMergedSourceUnverified
+		}
+		if entry.IsDir || entry.ID != fileID || entry.Size != v.Size {
+			return catalog.ErrMergedSourceReplaced
+		}
+		switch {
+		case v.ContentHash != "" && entry.Hash != "":
+			if !strings.EqualFold(v.ContentHash, entry.Hash) {
+				return catalog.ErrMergedSourceReplaced
+			}
+		case v.SourceModTime != "" && !entry.ModTime.IsZero():
+			if catalog.FormatSourceModTime(entry.ModTime) != v.SourceModTime {
+				return catalog.ErrMergedSourceReplaced
+			}
+		case check == mergedSource && v.SampledSHA256 != "":
+			cfg := fingerprintConfigForDrive(drv)
+			_, _, cfg.Limiter = a.generationLimits()
+			sum, err := fingerprint.Compute(ctx, drv, v, cfg, nil)
+			if err != nil {
+				return fmt.Errorf("%w: %v", catalog.ErrMergedSourceUnverified, err)
+			}
+			if !strings.EqualFold(sum, v.SampledSHA256) {
+				return catalog.ErrMergedSourceReplaced
+			}
+		case check == mergedSource:
+			return catalog.ErrMergedSourceUnverified
+		case entry.Name != v.FileName:
+			return catalog.ErrMergedSourceReplaced
+		}
+		// Providers may require up-to-date directory and filename metadata.
+		current := *v
+		current.FileName, current.Size = entry.Name, entry.Size
+		if entry.ParentID != "" {
+			current.ParentID = entry.ParentID
+		}
+		v = &current
+	}
 	if sourceRemover, ok := drv.(drives.SourceRemover); ok {
 		if err := sourceRemover.RemoveSource(ctx, drives.SourceFile{
 			FileID:   fileID,
@@ -420,6 +490,30 @@ func (a *App) removeVideoSourceFile(ctx context.Context, v *catalog.Video) error
 		return fmt.Errorf("remove video source %s from drive %s: %w", v.ID, v.DriveID, err)
 	}
 	return nil
+}
+
+// Some providers expose file metadata only through the parent listing.
+func historicalSourceEntry(ctx context.Context, drive drives.Drive, v *catalog.Video) (*drives.Entry, error) {
+	entry, err := drive.Stat(ctx, v.FileID)
+	if !errors.Is(err, drives.ErrNotSupported) {
+		return entry, err
+	}
+	if v.ParentID == "" {
+		return nil, catalog.ErrMergedSourceUnverified
+	}
+	entries, err := drive.List(ctx, v.ParentID)
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, drives.ErrNotSupported) {
+		return nil, catalog.ErrMergedSourceUnverified
+	}
+	if err != nil {
+		return nil, err
+	}
+	for i := range entries {
+		if entries[i].ID == v.FileID {
+			return &entries[i], nil
+		}
+	}
+	return nil, fmt.Errorf("%w: 原目录中找不到文件 %s", catalog.ErrMergedSourceUnverified, v.FileID)
 }
 
 // restoreDeletedVideo coordinates expired asset cleanup, provider inspection,

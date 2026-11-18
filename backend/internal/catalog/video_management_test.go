@@ -54,7 +54,7 @@ func TestListHiddenVideosForMigration(t *testing.T) {
 		t.Fatalf("ListHiddenVideos = %v, want only v2", hidden)
 	}
 
-	current, blacklisted, err := cat.VideoManagementCounts(ctx)
+	current, blacklisted, _, err := cat.VideoManagementCounts(ctx)
 	if err != nil {
 		t.Fatalf("counts: %v", err)
 	}
@@ -85,12 +85,7 @@ func TestBlacklistListAndRemove(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("seed %s: %v", s.id, err)
 		}
-		var err error
-		if s.id == "d2" {
-			err = cat.DeleteVideoWithTombstoneReason(ctx, s.id, DeletedVideoReasonDuplicate)
-		} else {
-			err = cat.DeleteVideoWithTombstone(ctx, s.id)
-		}
+		err := cat.DeleteVideoWithTombstone(ctx, s.id)
 		if err != nil {
 			t.Fatalf("tombstone %s: %v", s.id, err)
 		}
@@ -110,8 +105,8 @@ func TestBlacklistListAndRemove(t *testing.T) {
 	if reasons["d1"] != "" || reasons["d3"] != "" {
 		t.Fatalf("manual tombstone reasons = %#v, want empty", reasons)
 	}
-	if reasons["d2"] != DeletedVideoReasonDuplicate {
-		t.Fatalf("duplicate tombstone reason = %q, want %q", reasons["d2"], DeletedVideoReasonDuplicate)
+	if reasons["d2"] != "" {
+		t.Fatalf("unexpected manual reason %q", reasons["d2"])
 	}
 
 	// 关键字过滤
@@ -160,7 +155,7 @@ func TestBlacklistListAndRemove(t *testing.T) {
 	}
 
 	// counts: 删完一个还剩 2 个黑名单；可见视频已全部被墓碑删除
-	current, blacklisted, err := cat.VideoManagementCounts(ctx)
+	current, blacklisted, _, err := cat.VideoManagementCounts(ctx)
 	if err != nil {
 		t.Fatalf("counts: %v", err)
 	}
@@ -248,7 +243,7 @@ func TestBlacklistRestorePolicies(t *testing.T) {
 	if items, total, err := cat.ListDeletedVideos(ctx, ListParams{Page: 1, PageSize: 50}); err != nil || total != 0 || len(items) != 0 {
 		t.Fatalf("visible blacklist after crawler restore request = total:%d items:%#v err:%v, want empty", total, items, err)
 	}
-	if _, blacklisted, err := cat.VideoManagementCounts(ctx); err != nil || blacklisted != 0 {
+	if _, blacklisted, _, err := cat.VideoManagementCounts(ctx); err != nil || blacklisted != 0 {
 		t.Fatalf("blacklist count after crawler restore request = %d err=%v, want 0", blacklisted, err)
 	}
 
@@ -289,46 +284,6 @@ func TestBlacklistRestorePolicies(t *testing.T) {
 		t.Fatalf("source-deleted local upload should not keep tombstone: deleted=%v err=%v", deleted, err)
 	}
 
-	// 被去重删掉的本地上传也仍然不可恢复：应当去看保留下来的那一条。
-	seedVideo("local-upload-canonical", "local-upload", "canonical-file", "Canonical upload")
-	seedVideo("local-upload-duplicate", "local-upload", "duplicate-file", "Duplicate upload")
-	if err := cat.DeleteVideoWithTombstoneOptions(ctx, "local-upload-duplicate", DeleteVideoTombstoneOptions{
-		Reason:           DeletedVideoReasonDuplicate,
-		CanonicalVideoID: "local-upload-canonical",
-	}); err != nil {
-		t.Fatalf("tombstone duplicate local upload: %v", err)
-	}
-	if got := findDeleted("local-upload-duplicate").RestorePolicy; got != DeletedVideoRestorePolicyNone {
-		t.Fatalf("duplicate local upload restore policy = %q, want %q", got, DeletedVideoRestorePolicyNone)
-	}
-	if err := cat.RemoveDeletedVideo(ctx, "local-upload-duplicate"); !errors.Is(err, ErrDeletedVideoNotRestorable) {
-		t.Fatalf("restore duplicate local upload error = %v, want ErrDeletedVideoNotRestorable", err)
-	}
-
-	seedVideo("canonical-video", "remote", "canonical", "Canonical title")
-	seedVideo("duplicate-video", "remote-copy", "duplicate", "Duplicate")
-	if err := cat.DeleteVideoWithTombstoneOptions(ctx, "duplicate-video", DeleteVideoTombstoneOptions{
-		Reason:           DeletedVideoReasonDuplicate,
-		CanonicalVideoID: "canonical-video",
-	}); err != nil {
-		t.Fatalf("tombstone duplicate: %v", err)
-	}
-	duplicate := findDeleted("duplicate-video")
-	if duplicate.RestorePolicy != DeletedVideoRestorePolicyNone ||
-		duplicate.CanonicalVideoID != "canonical-video" ||
-		duplicate.CanonicalTitle != "Canonical title" {
-		t.Fatalf("duplicate metadata = %#v", duplicate)
-	}
-	if err := cat.RemoveDeletedVideo(ctx, "duplicate-video"); !errors.Is(err, ErrDeletedVideoNotRestorable) {
-		t.Fatalf("restore duplicate error = %v, want ErrDeletedVideoNotRestorable", err)
-	}
-
-	for _, id := range []string{"local-upload-duplicate", "duplicate-video"} {
-		deleted, err := cat.IsVideoDeleted(ctx, id)
-		if err != nil || !deleted {
-			t.Fatalf("non-restorable tombstone %s was removed: deleted=%v err=%v", id, deleted, err)
-		}
-	}
 }
 
 // 取消拉黑本地上传时记录当场重建，且标题、作者、标签这些用户数据都要跟着回来
@@ -400,7 +355,7 @@ func TestRemoveDeletedVideoDirectRestoresLocalUploadLosslessly(t *testing.T) {
 	if deleted, err := cat.IsVideoDeleted(ctx, "local-upload-rich"); err != nil || deleted {
 		t.Fatalf("tombstone still present after restore: deleted=%v err=%v", deleted, err)
 	}
-	current, blacklisted, err := cat.VideoManagementCounts(ctx)
+	current, blacklisted, _, err := cat.VideoManagementCounts(ctx)
 	if err != nil {
 		t.Fatalf("counts: %v", err)
 	}

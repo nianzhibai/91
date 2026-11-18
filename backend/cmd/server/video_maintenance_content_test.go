@@ -161,15 +161,9 @@ func TestCleanupContentDuplicateVideos(t *testing.T) {
 			t.Fatalf("%s should survive: %v", id, err)
 		}
 	}
-	deletedItems, _, err := cat.ListDeletedVideos(ctx, catalog.ListParams{Page: 1, PageSize: 10})
-	if err != nil {
-		t.Fatalf("list deleted videos: %v", err)
-	}
-	if len(deletedItems) != 1 ||
-		deletedItems[0].ID != "video-compressed" ||
-		deletedItems[0].Reason != catalog.DeletedVideoReasonDuplicate ||
-		deletedItems[0].CanonicalVideoID != "video-original" {
-		t.Fatalf("tombstone = %#v", deletedItems)
+	m, err := cat.GetMergedVideo(ctx, "video-compressed")
+	if err != nil || m.CanonicalVideoID != "video-original" {
+		t.Fatalf("merge=%+v err=%v", m, err)
 	}
 	if _, err := os.Stat(filepath.Join(localDir, "video-compressed.mp4")); !os.IsNotExist(err) {
 		t.Fatalf("compressed teaser still exists, err=%v", err)
@@ -259,9 +253,9 @@ func TestCleanupContentDuplicateVideosFormerReviewBandDeletes(t *testing.T) {
 	if _, err := cat.GetVideo(ctx, "gray-b"); err != nil {
 		t.Fatalf("larger canonical missing: %v", err)
 	}
-	deletedItems, _, err := cat.ListDeletedVideos(ctx, catalog.ListParams{Page: 1, PageSize: 10})
-	if err != nil || len(deletedItems) != 1 || deletedItems[0].CanonicalVideoID != "gray-b" {
-		t.Fatalf("tombstones = %#v err=%v", deletedItems, err)
+	m, err := cat.GetMergedVideo(ctx, "gray-a")
+	if err != nil || m.CanonicalVideoID != "gray-b" {
+		t.Fatalf("merge=%+v err=%v", m, err)
 	}
 }
 
@@ -389,17 +383,9 @@ func TestCleanupDuplicateVideoAssetsResolvesCanonicalAcrossChannels(t *testing.T
 			t.Fatalf("deleted video %s teaser remains: %v", id, err)
 		}
 	}
-	deletedItems, _, err := cat.ListDeletedVideos(ctx, catalog.ListParams{Page: 1, PageSize: 10})
-	if err != nil {
-		t.Fatalf("list deleted videos: %v", err)
-	}
-	if len(deletedItems) != 2 {
-		t.Fatalf("deleted items = %#v", deletedItems)
-	}
-	for _, item := range deletedItems {
-		if item.CanonicalVideoID != "final-content-winner" {
-			t.Fatalf("tombstone %s canonical = %q", item.ID, item.CanonicalVideoID)
-		}
+	list, err := cat.ListMergedVideos(ctx, catalog.MergedVideoFilter{CanonicalVideoID: "final-content-winner"})
+	if err != nil || list.Total != 2 {
+		t.Fatalf("merged list=%+v err=%v", list, err)
 	}
 	jobs, err := cat.ListDuplicateAssetCleanupJobs(ctx, 10)
 	if err != nil || len(jobs) != 0 {

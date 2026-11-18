@@ -1043,7 +1043,7 @@ func (s *Server) handleHideVideo(w http.ResponseWriter, r *http.Request) {
 		// 走拉黑逻辑：删记录 + 删本地封面/预览 + 写墓碑，保留网盘源文件。
 		err = s.OnHideVideo(r.Context(), id)
 	} else {
-		err = s.Catalog.HideVideo(r.Context(), id)
+		err = s.Catalog.DeleteVideoGroup(r.Context(), id, catalog.VideoDeletionOptions{}, time.Time{}, nil, nil)
 	}
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1301,9 +1301,12 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleThumb(w http.ResponseWriter, r *http.Request) {
 	videoID := routeParam(r, "videoID")
 	if s.Catalog != nil {
-		if resolvedID, err := s.Catalog.ResolveVideoID(r.Context(), videoID); err == nil {
-			videoID = resolvedID
+		resolvedID, err := s.Catalog.ResolveVideoID(r.Context(), videoID)
+		if err != nil {
+			writeCatalogLookupError(w, r, err)
+			return
 		}
+		videoID = resolvedID
 	}
 	s.serveVideoThumb(w, r, videoID)
 }

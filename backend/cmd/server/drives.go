@@ -1223,6 +1223,11 @@ func (a *App) newDriveGenerationWorkers(drv drives.Drive) (*preview.Worker, *pre
 	fingerprintCfg := fingerprintConfigForDrive(drv)
 	fingerprintCfg.Limiter = fingerprintLimiter
 	fingerprintWorker := fingerprint.NewWorker(a.cat, drv, fingerprintCfg)
+	fingerprintWorker.OnContentReplaced = func(video *catalog.Video) {
+		// A full queue leaves the row pending for the next reconciliation.
+		previewWorker.Enqueue(video)
+		thumbWorker.Enqueue(video)
+	}
 	driveID := drv.ID()
 	notifyStatus := func(immediate bool) { a.notifyDriveRuntime(driveID, immediate) }
 	previewWorker.OnStatusChanged = notifyStatus

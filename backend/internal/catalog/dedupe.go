@@ -47,7 +47,7 @@ type CrawlerSourceSeen struct {
 // ApplyDuplicateVideoDeletions atomically applies a finalized hard-dedupe plan.
 // User state and durable references are merged into each canonical row before
 // duplicate rows are retired. Generated files are intentionally not touched
-// here; cleanup jobs are committed with the tombstones and processed later.
+// here; cleanup jobs are committed with the aliases and processed later.
 func (c *Catalog) ApplyDuplicateVideoDeletions(ctx context.Context, deletions []DuplicateVideoDeletion) (resultErr error) {
 	defer c.notifyDriveWrite(&resultErr, "", driveevents.MediaChanged)
 	if len(deletions) == 0 {
@@ -113,7 +113,7 @@ func (c *Catalog) ApplyDuplicateVideoDeletions(ctx context.Context, deletions []
 		}
 	}
 	for _, deletion := range normalized {
-		if err := mergeAndRetireDuplicateVideoTx(ctx, tx, videos[deletion.VideoID], deletion.CanonicalVideoID); err != nil {
+		if err := mergeAndRetireDuplicateVideoTx(ctx, tx, videos[deletion.VideoID], deletion.CanonicalVideoID, deletion.Evidence.Reason); err != nil {
 			return err
 		}
 	}
@@ -136,10 +136,14 @@ func loadDuplicateRevisionTx(ctx context.Context, tx *sql.Tx, role, id, expected
 	return video, nil
 }
 
-// ResolveVideoID maps a public video ID through duplicate tombstones to the
+// ResolveVideoID maps a public video ID through merged video aliases to the
 // current live row. Catalog.GetVideo deliberately keeps its strict row lookup
 // semantics; callers opt into alias resolution only at public read boundaries.
 func (c *Catalog) ResolveVideoID(ctx context.Context, id string) (string, error) {
+	return resolveVideoID(ctx, c.db, id)
+}
+
+func resolveVideoID(ctx context.Context, query deletedVideoRestoreQuerier, id string) (string, error) {
 	current := strings.TrimSpace(id)
 	if current == "" {
 		return "", sql.ErrNoRows
@@ -152,7 +156,7 @@ func (c *Catalog) ResolveVideoID(ctx context.Context, id string) (string, error)
 		seen[current] = struct{}{}
 
 		var liveID string
-		err := c.db.QueryRowContext(ctx, `SELECT id FROM videos WHERE id = ?`, current).Scan(&liveID)
+		err := query.QueryRowContext(ctx, `SELECT id FROM videos WHERE id = ?`, current).Scan(&liveID)
 		if err == nil {
 			return liveID, nil
 		}
@@ -161,11 +165,10 @@ func (c *Catalog) ResolveVideoID(ctx context.Context, id string) (string, error)
 		}
 
 		var next string
-		err = c.db.QueryRowContext(ctx, `
+		err = query.QueryRowContext(ctx, `
 SELECT canonical_video_id
-  FROM deleted_videos
- WHERE id = ?
-   AND reason = ?`, current, DeletedVideoReasonDuplicate).Scan(&next)
+  FROM merged_videos
+ WHERE video_id = ?`, current).Scan(&next)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return "", sql.ErrNoRows
@@ -180,7 +183,7 @@ SELECT canonical_video_id
 	return "", sql.ErrNoRows
 }
 
-func mergeAndRetireDuplicateVideoTx(ctx context.Context, tx *sql.Tx, duplicate *Video, canonicalID string) error {
+func mergeAndRetireDuplicateVideoTx(ctx context.Context, tx *sql.Tx, duplicate *Video, canonicalID, reason string) error {
 	if duplicate == nil {
 		return sql.ErrNoRows
 	}
@@ -194,10 +197,13 @@ func mergeAndRetireDuplicateVideoTx(ctx context.Context, tx *sql.Tx, duplicate *
 	if err := redirectDuplicateVideoReferencesTx(ctx, tx, duplicate.ID, canonicalID); err != nil {
 		return err
 	}
-	if err := deleteVideoWithTombstoneTx(ctx, tx, duplicate, DeleteVideoTombstoneOptions{
-		Reason:           DeletedVideoReasonDuplicate,
-		CanonicalVideoID: canonicalID,
-	}); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO merged_videos
+		(video_id,canonical_video_id,drive_id,file_id,parent_id,file_name,size_bytes,content_hash,sampled_sha256,source_mod_time,merge_reason,merged_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, duplicate.ID, canonicalID, duplicate.DriveID, duplicate.FileID, duplicate.ParentID,
+		duplicate.FileName, duplicate.Size, duplicate.ContentHash, duplicate.SampledSHA256, duplicate.SourceModTime, reason, time.Now().UnixMilli()); err != nil {
+		return err
+	}
+	if err := deleteVideoRowTx(ctx, tx, duplicate.ID); err != nil {
 		return err
 	}
 	return enqueueDuplicateAssetCleanupTx(ctx, tx, duplicate)
@@ -336,10 +342,7 @@ func redirectDuplicateVideoReferencesTx(ctx context.Context, tx *sql.Tx, duplica
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
-UPDATE deleted_videos
-   SET canonical_video_id = ?
- WHERE reason = ?
-   AND canonical_video_id = ?`, canonicalID, DeletedVideoReasonDuplicate, duplicateID); err != nil {
+UPDATE merged_videos SET canonical_video_id = ? WHERE canonical_video_id = ?`, canonicalID, duplicateID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -371,6 +374,20 @@ ON CONFLICT(video_id) DO UPDATE SET
 	return err
 }
 
+// A cleanup job belongs to a retired video ID. When the ID becomes live again,
+// as when a backup restore merges the row back, its assets belong to the live
+// row and the job is dropped in the same statement. Install after legacy
+// migrations which may rebuild the videos table.
+func (c *Catalog) ensureDuplicateAssetCleanupGuard(ctx context.Context) error {
+	_, err := c.db.ExecContext(ctx, `
+CREATE TRIGGER IF NOT EXISTS drop_duplicate_asset_cleanup_on_revive
+AFTER INSERT ON videos
+BEGIN DELETE FROM duplicate_asset_cleanup_jobs WHERE video_id = NEW.id; END;
+DELETE FROM duplicate_asset_cleanup_jobs WHERE video_id IN (SELECT id FROM videos);
+`)
+	return err
+}
+
 func (c *Catalog) ListDuplicateAssetCleanupJobs(ctx context.Context, limit int) ([]DuplicateAssetCleanupJob, error) {
 	if limit <= 0 {
 		limit = 10000
@@ -395,24 +412,31 @@ SELECT video_id, COALESCE(preview_local, ''), attempts, COALESCE(last_error, '')
 	return jobs, rows.Err()
 }
 
-func (c *Catalog) CompleteDuplicateAssetCleanupJob(ctx context.Context, videoID string) error {
-	_, err := c.db.ExecContext(ctx, `DELETE FROM duplicate_asset_cleanup_jobs WHERE video_id = ?`, strings.TrimSpace(videoID))
-	return err
-}
-
-func (c *Catalog) FailDuplicateAssetCleanupJob(ctx context.Context, videoID string, cleanupErr error) error {
-	message := ""
-	if cleanupErr != nil {
-		message = cleanupErr.Error()
-		if len(message) > 500 {
-			message = message[:500]
-		}
+// CleanupRetiredVideoAssets rechecks the job under the SQLite writer lock.
+// Restoring the video cancels the job and cannot race the filesystem removal.
+func (c *Catalog) CleanupRetiredVideoAssets(ctx context.Context, id string, remove func(string) error) error {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
 	}
-	_, err := c.db.ExecContext(ctx, `
-UPDATE duplicate_asset_cleanup_jobs
-   SET attempts = attempts + 1,
-       last_error = ?,
-       updated_at = ?
- WHERE video_id = ?`, message, time.Now().UnixMilli(), strings.TrimSpace(videoID))
-	return err
+	defer tx.Rollback()
+	var preview string
+	err = tx.QueryRowContext(ctx, "SELECT preview_local FROM duplicate_asset_cleanup_jobs WHERE video_id = ?", id).Scan(&preview)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	cleanupErr := remove(preview)
+	if cleanupErr == nil {
+		_, err = tx.ExecContext(ctx, "DELETE FROM duplicate_asset_cleanup_jobs WHERE video_id = ?", id)
+	} else {
+		_, err = tx.ExecContext(ctx, `UPDATE duplicate_asset_cleanup_jobs SET attempts = attempts + 1,
+			last_error = substr(?,1,500), updated_at = ? WHERE video_id = ?`, cleanupErr.Error(), time.Now().UnixMilli(), id)
+	}
+	if err != nil {
+		return errors.Join(cleanupErr, err)
+	}
+	return errors.Join(cleanupErr, tx.Commit())
 }

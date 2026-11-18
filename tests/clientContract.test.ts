@@ -68,3 +68,31 @@ test("OpenAPI describes the query parameters sent by SDK library and log request
     }
   }
 });
+
+test("admin previews source deletion before submitting the chosen scope", async () => {
+  const preview = {
+    sources: [
+      { driveId: "one", fileId: "1", fileName: "clip.mp4" },
+      { driveId: "two", fileId: "2", fileName: "copy.mp4" },
+    ],
+    requiresConfirmation: true,
+    groupRevision: "shown",
+  };
+  const calls: string[] = [];
+  const client = createClient({ baseURL: "https://api.example", fetch: async (input, init) => {
+    const path = new URL(String(input)).pathname;
+    calls.push(`${init?.method ?? "GET"} ${path}`);
+    if (path.endsWith("/deletion-preview")) return Response.json(preview);
+    assert.deepEqual(JSON.parse(String(init?.body)), {
+      deleteSource: true, includeDuplicates: false, groupRevision: "shown",
+    });
+    return Response.json({ ok: true, deletedSource: true });
+  } });
+  const shown = await client.admin.previewVideoDeletion("video id");
+  assert.deepEqual(shown, preview);
+  assert.deepEqual(calls, ["GET /admin/api/videos/video%20id/deletion-preview"]);
+  await client.admin.deleteVideo("video id", {
+    deleteSource: true, includeDuplicates: false, groupRevision: shown.groupRevision,
+  });
+  assert.equal(calls[1], "DELETE /admin/api/videos/video%20id");
+});

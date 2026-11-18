@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -25,49 +26,87 @@ WHEN (OLD.drive_id != NEW.drive_id OR OLD.file_id != NEW.file_id)
              WHERE (drive_id, file_id) IN ((OLD.drive_id, OLD.file_id), (NEW.drive_id, NEW.file_id))
                AND expires_at > unixepoch())
 BEGIN SELECT RAISE(ABORT, 'video source removal in progress'); END;
+CREATE TRIGGER IF NOT EXISTS guard_source_removal_delete
+BEFORE DELETE ON videos
+WHEN EXISTS (SELECT 1 FROM video_source_removals
+             WHERE drive_id = OLD.drive_id AND file_id = OLD.file_id AND expires_at > unixepoch())
+BEGIN SELECT RAISE(ABORT, 'video source removal in progress'); END;
 DELETE FROM video_source_removals WHERE expires_at <= unixepoch();
 `)
 	return err
 }
 
-// WithVideoSourceRemoval reserves the physical file through the provider call.
-// exceptID may name the live row being removed. A tombstone has no exemption.
-// SQLite serializes the ownership check and reservation, but other files and
-// provider credential writes remain available during the network request.
-func (c *Catalog) WithVideoSourceRemoval(ctx context.Context, driveID, fileID, exceptID string, remove func(context.Context) error) (err error) {
-	// Bound a single provider attempt. A crashed process leaves a reservation
-	// only until that deadline and a short grace period for cancellation.
+// WithBlacklistedSourceRemoval rechecks the snapshot under the writer lock
+// before reserving a physical file. Other aliases may have finished it already.
+func (c *Catalog) WithBlacklistedSourceRemoval(ctx context.Context, item *DeletedVideo, remove func(context.Context) error) (err error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	deadline, _ := ctx.Deadline()
-	token := rand.Text()
-	res, err := c.db.ExecContext(ctx, `
-INSERT INTO video_source_removals (drive_id, file_id, token, expires_at)
-SELECT ?, ?, ?, ? WHERE NOT EXISTS (
-	SELECT 1 FROM videos WHERE drive_id = ? AND file_id = ? AND id != ?
-)
-AND (? = '' OR EXISTS (SELECT 1 FROM videos WHERE id = ? AND drive_id = ? AND file_id = ?))
-ON CONFLICT(drive_id, file_id) DO UPDATE SET token = excluded.token, expires_at = excluded.expires_at
-WHERE video_source_removals.expires_at <= unixepoch()`,
-		driveID, fileID, token, deadline.Add(time.Minute).Unix(), driveID, fileID, exceptID,
-		exceptID, exceptID, driveID, fileID)
+	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	count, err := res.RowsAffected()
-	if err != nil {
+	defer tx.Rollback()
+	var pending bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM deleted_videos WHERE id=? AND drive_id=? AND file_id=? AND deleted_at=? AND `+pendingSourceDeletionWhere+`)`, item.ID, item.DriveID, item.FileID, item.DeletedAt).Scan(&pending); err != nil {
 		return err
 	}
-	if count == 0 {
+	if !pending {
 		return ErrVideoSourceInUse
 	}
-	defer func() {
-		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		if _, releaseErr := c.db.ExecContext(releaseCtx, `DELETE FROM video_source_removals
-			WHERE drive_id = ? AND file_id = ? AND token = ?`, driveID, fileID, token); releaseErr != nil {
-			err = errors.Join(err, fmt.Errorf("release video source removal: %w", releaseErr))
-		}
-	}()
+	token := rand.Text()
+	deadline, _ := ctx.Deadline()
+	if err := reserveDeletionFile(ctx, tx, item.DriveID, item.FileID, token, deadline); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, c.releaseSourceReservations(ctx, token)) }()
 	return remove(ctx)
+}
+
+func (c *Catalog) releaseSourceReservations(ctx context.Context, token string) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	_, err := c.db.ExecContext(ctx, "DELETE FROM video_source_removals WHERE token=?", token)
+	if err != nil {
+		return fmt.Errorf("release source reservations: %w", err)
+	}
+	return nil
+}
+
+// PurgeSourceTombstones finalizes one physical removal, including aliases that
+// were blacklisted separately. Pending local assets remain durably scheduled.
+func (c *Catalog) PurgeSourceTombstones(ctx context.Context, source *Video) error {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := purgeSourceTombstonesTx(ctx, tx, source); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func purgeSourceTombstonesTx(ctx context.Context, tx *sql.Tx, source *Video) error {
+	// Other generations recorded at this provider ID must never inherit a
+	// successful removal of different bytes.
+	if err := markReplacedMergedSources(ctx, tx, source); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE merged_videos SET source_state='gone'
+		WHERE drive_id=? AND file_id=? AND source_state='recorded'`, source.DriveID, source.FileID); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO duplicate_asset_cleanup_jobs(video_id,preview_local,created_at,updated_at)
+		SELECT d.id, CASE WHEN json_valid(d.restore_payload) THEN COALESCE(json_extract(d.restore_payload,'$.video.previewLocal'),'') ELSE '' END, ?, ?
+		FROM deleted_videos d WHERE d.drive_id=? AND d.file_id=? AND d.asset_cleanup_after>0
+		AND NOT EXISTS (SELECT 1 FROM videos WHERE id=d.id)
+		ON CONFLICT(video_id) DO NOTHING`, time.Now().UnixMilli(), time.Now().UnixMilli(), source.DriveID, source.FileID)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `DELETE FROM deleted_videos WHERE drive_id=? AND file_id=?`, source.DriveID, source.FileID)
+	return err
 }

@@ -40,27 +40,6 @@ func (s *Scanner) reconcile(ctx context.Context, result *Result, progress progre
 
 func (s *Scanner) reconcileFile(ctx context.Context, file File, result *Result) error {
 	entry := file.Entry
-	id := videoid.ForDrive(s.Drive.Kind(), s.Drive.ID(), entry.ID)
-	deleted, err := s.Catalog.IsDeletedVideoCandidate(
-		ctx, id, s.Drive.ID(), entry.ID, entry.Hash, entry.Name, entry.Size,
-	)
-	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
-		}
-		result.addIssue(ctx, file, IssueTombstone, err)
-		return nil
-	}
-	if deleted {
-		result.Tombstoned++
-		return nil
-	}
-
-	parsed := Parse(entry.Name)
-	displayTitle := videoname.TitleFromFileName(entry.Name)
-	if displayTitle == "" {
-		displayTitle = strings.TrimSpace(entry.Name)
-	}
 	// Migrated rows retain their original public IDs. Only the current
 	// provider identity can authorize updating a row from this scan.
 	existing, err := s.Catalog.ListVideosByDriveFileID(ctx, s.Drive.ID(), entry.ID)
@@ -70,6 +49,31 @@ func (s *Scanner) reconcileFile(ctx context.Context, file File, result *Result) 
 		}
 		result.addIssue(ctx, file, IssueLookup, err)
 		return nil
+	}
+	// Tombstones keep deleted sources from being admitted again. They never
+	// suppress a live row that still owns this file.
+	id := videoid.ForDrive(s.Drive.Kind(), s.Drive.ID(), entry.ID)
+	if len(existing) == 0 {
+		deleted, err := s.Catalog.IsDeletedVideoCandidate(
+			ctx, id, s.Drive.ID(), entry.ID, entry.Hash, entry.Name, entry.Size,
+		)
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
+			result.addIssue(ctx, file, IssueTombstone, err)
+			return nil
+		}
+		if deleted {
+			result.Tombstoned++
+			return nil
+		}
+	}
+
+	parsed := Parse(entry.Name)
+	displayTitle := videoname.TitleFromFileName(entry.Name)
+	if displayTitle == "" {
+		displayTitle = strings.TrimSpace(entry.Name)
 	}
 	assignments, tagErr := s.Catalog.MatchTagAssignments(ctx, parsed.Title, entry.Name, parsed.Author, file.DirName, file.AncestorDirNames...)
 	if tagErr != nil {
@@ -108,9 +112,28 @@ func (s *Scanner) reconcileExisting(
 	hash := dedupe.NormalizeHash(entry.Hash)
 	previousHash := existing.ContentHash
 	sampled := existing.SampledSHA256
-	// Some providers omit hashes from directory listings. The stored evidence
-	// remains usable until a positive observation changes the size or hash.
-	contentChanged := entry.Size != existing.Size || (hash != "" && previousHash != "" && hash != previousHash)
+	modTime := catalog.FormatSourceModTime(entry.ModTime)
+	// The first timestamp observed for a row is its baseline, not a change.
+	modTimeChanged := modTime != "" && existing.SourceModTime != "" && modTime != existing.SourceModTime
+	hashComparable := hash != "" && previousHash != ""
+	// A different size or provider hash proves new bytes.
+	contentChanged := entry.Size != existing.Size || (hashComparable && hash != previousHash)
+	// Equal provider hashes confirm the bytes even if the timestamp changed.
+	// Without them a new timestamp is only a suspicion: the fingerprint worker
+	// compares the sampled fingerprint again before any asset is discarded.
+	// A row without a fingerprint has nothing to compare and is reset.
+	if !contentChanged && !hashComparable && modTimeChanged {
+		if existing.SampledSHA256 != "" {
+			patch.VerifyContent = true
+			sampled = ""
+		} else {
+			contentChanged = true
+		}
+	}
+	// A reset rewrites the timestamp along with the rest of the observation.
+	if contentChanged || modTime != existing.SourceModTime {
+		patch.SourceModTime = modTime
+	}
 	if contentChanged {
 		patch.ResetContent = true
 		patch.Size = entry.Size
@@ -215,6 +238,7 @@ func (s *Scanner) insertNew(
 		FileID:           entry.ID,
 		FileName:         entry.Name,
 		ContentHash:      entry.Hash,
+		SourceModTime:    catalog.FormatSourceModTime(entry.ModTime),
 		ParentID:         file.ParentID,
 		DirName:          file.DirName,
 		AncestorDirIDs:   append([]string(nil), file.AncestorDirIDs...),
@@ -272,7 +296,7 @@ func (r *Result) addIssue(ctx context.Context, file File, stage IssueStage, err 
 }
 
 func metadataPatchSet(patch catalog.VideoMetaPatch) bool {
-	return patch.ResetContent || patch.ContentHash != "" || patch.FileName != "" || patch.ParentIDSet ||
+	return patch.ResetContent || patch.VerifyContent || patch.SourceModTime != "" || patch.ContentHash != "" || patch.FileName != "" || patch.ParentIDSet ||
 		patch.DirNameSet || patch.AncestorDirIDsSet || patch.AncestorDirNamesSet || patch.TitleSet || patch.AuthorSet
 }
 

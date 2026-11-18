@@ -310,34 +310,3 @@ func (r *queryPlanRecorder) QueryContext(ctx context.Context, query string, args
 	// The lookup itself only needs an empty result.
 	return r.db.QueryContext(ctx, "SELECT "+allVideoCols+" FROM videos WHERE 0")
 }
-
-func TestDuplicateTombstoneAllowsOnlyItsLiveCanonicalSource(t *testing.T) {
-	ctx := context.Background()
-	for _, sharedFile := range []bool{false, true} {
-		t.Run(fmt.Sprintf("shared-file-%t", sharedFile), func(t *testing.T) {
-			cat := duplicateRecordTestCatalog(t)
-			duplicate := &Video{ID: "scan-id", DriveID: "drive", FileID: "duplicate-file", FileName: "duplicate.mp4", ContentHash: "hash", Size: 100}
-			kept := &Video{ID: "migrated-id", DriveID: "drive", FileID: "kept-file", FileName: "kept.mp4", ContentHash: "hash", Size: 100}
-			if sharedFile {
-				duplicate.FileID = kept.FileID
-			}
-			for _, v := range []*Video{duplicate, kept} {
-				if err := cat.UpsertVideo(ctx, v); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if err := cat.ApplyDuplicateVideoDeletions(ctx, []DuplicateVideoDeletion{{VideoID: duplicate.ID, CanonicalVideoID: kept.ID}}); err != nil {
-				t.Fatal(err)
-			}
-			// The scanner's generated ID can even belong to the retired row.
-			if blocked, err := cat.IsDeletedVideoCandidate(ctx, duplicate.ID, kept.DriveID, kept.FileID, kept.ContentHash, "renamed.mp4", 100); err != nil || blocked {
-				t.Fatalf("survivor blocked=%t err=%v", blocked, err)
-			}
-			if !sharedFile {
-				if blocked, err := cat.IsDeletedVideoCandidate(ctx, duplicate.ID, duplicate.DriveID, duplicate.FileID, duplicate.ContentHash, duplicate.FileName, 100); err != nil || !blocked {
-					t.Fatalf("retired source blocked=%t err=%v", blocked, err)
-				}
-			}
-		})
-	}
-}

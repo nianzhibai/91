@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"database/sql"
+
 	"errors"
 	"strings"
 
@@ -19,54 +20,54 @@ func (c *Catalog) InsertScannedVideo(ctx context.Context, v *Video, seenFileIDs 
 	if v == nil || v.ID == "" || v.DriveID == "" || v.FileID == "" {
 		return false, errors.New("catalog: scanned video requires video, drive, and file IDs")
 	}
-	conn, err := c.db.Conn(ctx)
+	// Catalog opens SQLite with _txlock=immediate, serializing the decision
+	// with concurrent scans and source deletions.
+	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
-	defer conn.Close()
-	// Acquire SQLite's writer reservation before reading candidates. A deferred
-	// read transaction could observe an obsolete snapshot before trying to write.
-	// This also coordinates scanners using separate Catalog instances.
-	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+	defer tx.Rollback()
+	var removing bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM video_source_removals WHERE drive_id=? AND file_id=? AND expires_at>unixepoch())`, v.DriveID, v.FileID).Scan(&removing); err != nil {
 		return false, err
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
-		}
-	}()
-
+	if removing {
+		return false, ErrVideoSourceInUse
+	}
 	var exists bool
-	if err := conn.QueryRowContext(ctx, `SELECT EXISTS (
-SELECT 1 FROM videos WHERE id = ? OR (drive_id = ? AND file_id = ?)
-)`, v.ID, v.DriveID, v.FileID).Scan(&exists); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM videos WHERE id=? OR (drive_id=? AND file_id=?))", v.ID, v.DriveID, v.FileID).Scan(&exists); err != nil {
 		return false, err
 	}
 	if exists {
 		return false, nil
 	}
-	duplicate, err := findScannedVideoDuplicate(ctx, conn, v, seenFileIDs)
+	blocked, err := isDeletedVideoCandidate(ctx, tx, v.ID, v.DriveID, v.FileID, v.ContentHash, v.FileName, v.Size)
+	if err != nil || blocked {
+		return false, err
+	}
+	skip, err := reconcileMergedScan(ctx, tx, v)
+	if err != nil {
+		return false, err
+	}
+	if skip {
+		return false, tx.Commit()
+	}
+	duplicate, err := findScannedVideoDuplicate(ctx, tx, v, seenFileIDs)
 	if err != nil {
 		return false, err
 	}
 	if duplicate != nil {
-		if err := recordScannedDuplicate(ctx, conn, v, duplicate, DuplicateOutcomeSkipped); err != nil {
+		if err := recordScannedDuplicate(ctx, tx, v, duplicate, DuplicateOutcomeSkipped); err != nil {
 			return false, err
 		}
-		if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
-			return false, err
-		}
-		committed = true
-		return false, nil
+		return false, tx.Commit()
 	}
-	if _, err := upsertVideoRow(ctx, conn, v); err != nil {
+	if _, err := upsertVideoRow(ctx, tx, v); err != nil {
 		return false, err
 	}
-	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+	if err := tx.Commit(); err != nil {
 		return false, err
 	}
-	committed = true
 	c.driveEvents.Notify("", false, driveevents.MediaChanged)
 	return true, nil
 }

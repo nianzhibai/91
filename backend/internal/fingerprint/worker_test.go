@@ -269,6 +269,44 @@ func TestWorkerP115PersistentRangeForbiddenKeepsFingerprintPending(t *testing.T)
 	}
 }
 
+func TestWorkerSchedulesAssetsWhenVerificationFindsNewBytes(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "clip.mp4")
+	if err := os.WriteFile(path, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cat, err := catalog.Open(filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+	drv := &fakeDrive{paths: map[string]string{"file": path}}
+	video := &catalog.Video{ID: "clip", DriveID: "fake", FileID: "file", Title: "Clip", Size: 8, SourceModTime: "t1",
+		ThumbnailURL: "/p/thumb/clip", PreviewStatus: "ready", PreviewLocal: "clip.mp4"}
+	video.SampledSHA256, err = Compute(ctx, drv, video, Config{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.UpsertVideo(ctx, video); err != nil {
+		t.Fatal(err)
+	}
+	// A scan saw a new timestamp; the same-size bytes were replaced.
+	if err := cat.UpdateVideoMeta(ctx, video.ID, catalog.VideoMetaPatch{ExpectedSource: video, VerifyContent: true, SourceModTime: "t2"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("replaced"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var scheduled *catalog.Video
+	worker := NewWorker(cat, drv, Config{})
+	worker.OnContentReplaced = func(v *catalog.Video) { scheduled = v }
+	worker.processQueued(ctx, video)
+
+	if scheduled == nil || scheduled.PreviewStatus != "pending" || scheduled.ThumbnailURL != "" || scheduled.SampledSHA256 == video.SampledSHA256 {
+		t.Fatalf("scheduled = %+v, want reset row with the new fingerprint", scheduled)
+	}
+}
+
 func TestWopanRemoteRangeErrorsLookRateLimited(t *testing.T) {
 	for _, tc := range []struct {
 		rawURL string

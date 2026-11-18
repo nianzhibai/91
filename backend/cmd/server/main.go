@@ -289,7 +289,7 @@ func main() {
 		// 保留网盘源文件（deleteSource=false）。后续任务不再入库；可重新发现的
 		// 普通网盘/爬虫来源可在后台解除墓碑，操作本身不会立即触发扫盘或爬取。
 		OnHideVideo: func(reqCtx context.Context, videoID string) error {
-			_, err := app.deleteVideo(reqCtx, videoID, false)
+			_, err := app.deleteVideo(reqCtx, videoID, catalog.VideoDeletionOptions{})
 			return err
 		},
 		GetTheme:          func() string { return app.Theme() },
@@ -364,9 +364,8 @@ func main() {
 		OnDriveGenerationRequested: func(reqCtx context.Context, driveID string, kind api.DriveGenerationKind) (api.DriveGenerationResult, error) {
 			return app.requestDriveGeneration(reqCtx, ctx, driveID, kind)
 		},
-		OnDeleteVideo: func(reqCtx context.Context, videoID string, deleteSource bool) (api.DeleteVideoResult, error) {
-			return app.deleteVideo(reqCtx, videoID, deleteSource)
-		},
+		OnDeleteVideo:        app.deleteVideo,
+		OnDeleteMergedSource: app.deleteMergedSource,
 		OnStartBlacklistSourceDelete: func(req api.BlacklistSourceDeleteRequest) bool {
 			return app.startBlacklistSourceDelete(ctx, req)
 		},

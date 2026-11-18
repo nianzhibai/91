@@ -445,6 +445,7 @@ export type AdminVideoListParams = {
 export type VideoStats = {
   current: number;
   blacklisted: number;
+  merged: number;
 };
 
 export type AdminDeletedVideo = {
@@ -1077,12 +1078,16 @@ export function createAdminClient(http: Transport) {
     });
   }
 
-  async function deleteVideo(id: string, options: { deleteSource?: boolean } = {}) {
-    const result = await request<{ ok: boolean; deletedSource: boolean }>(
+  function previewVideoDeletion(id: string) {
+    return request<Schema<"VideoDeletionPreview">>(`/videos/${encodeURIComponent(id)}/deletion-preview`);
+  }
+
+  async function deleteVideo(id: string, options: Schema<"deleteVideoReq"> = {}) {
+    const result = await request<Schema<"DeleteVideoResult">>(
       `/videos/${encodeURIComponent(id)}`,
       {
         method: "DELETE",
-        body: JSON.stringify({ deleteSource: !!options.deleteSource }),
+        body: JSON.stringify({ ...options, deleteSource: !!options.deleteSource }),
       }
     );
     if (!result?.ok) throw new Error("Video deletion failed");
@@ -1370,6 +1375,7 @@ export function createAdminClient(http: Transport) {
     getBlacklistSourceDeleteStatus,
     startBlacklistSourceDelete,
     updateVideo,
+    previewVideoDeletion,
     deleteVideo,
     regenPreview,
     updateVideoTags,

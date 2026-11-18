@@ -3643,7 +3643,7 @@ func TestDeleteVideoDefersGeneratedAssetsKeepsLocalOriginalAndTombstones(t *test
 		cfg: &config.Config{Storage: config.Storage{LocalPreviewDir: localDir}},
 		cat: cat,
 	}
-	result, err := app.deleteVideo(ctx, "localstorage-local-main-file", false)
+	result, err := app.deleteVideo(ctx, "localstorage-local-main-file", catalog.VideoDeletionOptions{})
 	if err != nil {
 		t.Fatalf("delete video: %v", err)
 	}
@@ -3736,7 +3736,7 @@ func TestDeleteVideoRemovesSourceFileWhenRequested(t *testing.T) {
 		cat:      cat,
 		registry: registry,
 	}
-	result, err := app.deleteVideo(ctx, "video-with-source", true)
+	result, err := app.deleteVideo(ctx, "video-with-source", catalog.VideoDeletionOptions{DeleteSource: true})
 	if err != nil {
 		t.Fatalf("delete video: %v", err)
 	}
@@ -3795,7 +3795,7 @@ func TestDeleteVideoUsesSourceRemoverWithCatalogMetadata(t *testing.T) {
 		cat:      cat,
 		registry: registry,
 	}
-	result, err := app.deleteVideo(ctx, "video-with-rich-source", true)
+	result, err := app.deleteVideo(ctx, "video-with-rich-source", catalog.VideoDeletionOptions{DeleteSource: true})
 	if err != nil {
 		t.Fatalf("delete video: %v", err)
 	}
@@ -3876,7 +3876,7 @@ func TestDeleteVideoRemovesScriptCrawlerSourceFile(t *testing.T) {
 		t.Fatalf("seed video: %v", err)
 	}
 
-	result, err := app.deleteVideo(ctx, "scriptcrawler-crawler-main-source", true)
+	result, err := app.deleteVideo(ctx, "scriptcrawler-crawler-main-source", catalog.VideoDeletionOptions{DeleteSource: true})
 	if err != nil {
 		t.Fatalf("delete crawler video: %v", err)
 	}
@@ -4344,23 +4344,12 @@ func TestCleanupDuplicateVideoAssetsDeletesExactDuplicateRows(t *testing.T) {
 	if _, err := cat.GetVideo(ctx, "duplicate-video"); err != sql.ErrNoRows {
 		t.Fatalf("duplicate lookup error = %v, want sql.ErrNoRows", err)
 	}
-	deleted, err := cat.IsVideoDeleted(ctx, "duplicate-video")
-	if err != nil {
-		t.Fatalf("check duplicate tombstone: %v", err)
+	if deleted, err := cat.IsVideoDeleted(ctx, "duplicate-video"); err != nil || deleted {
+		t.Fatalf("unexpected blacklist entry: %v %v", deleted, err)
 	}
-	if !deleted {
-		t.Fatalf("duplicate tombstone missing")
-	}
-	deletedItems, _, err := cat.ListDeletedVideos(ctx, catalog.ListParams{Page: 1, PageSize: 10})
-	if err != nil {
-		t.Fatalf("list deleted videos: %v", err)
-	}
-	if len(deletedItems) != 1 ||
-		deletedItems[0].ID != "duplicate-video" ||
-		deletedItems[0].Reason != catalog.DeletedVideoReasonDuplicate ||
-		deletedItems[0].CanonicalVideoID != "canonical-video" ||
-		deletedItems[0].RestorePolicy != catalog.DeletedVideoRestorePolicyNone {
-		t.Fatalf("duplicate tombstone = %#v, want reason %q", deletedItems, catalog.DeletedVideoReasonDuplicate)
+	m, err := cat.GetMergedVideo(ctx, "duplicate-video")
+	if err != nil || m.CanonicalVideoID != "canonical-video" {
+		t.Fatalf("merge=%+v err=%v", m, err)
 	}
 	canon, err := cat.GetVideo(ctx, "canonical-video")
 	if err != nil {
@@ -4448,23 +4437,12 @@ func TestCleanupDuplicateVideoAssetsDeletesNearDuplicateRowsKeepingLargest(t *te
 	if _, err := cat.GetVideo(ctx, "small-video"); err != sql.ErrNoRows {
 		t.Fatalf("small duplicate lookup error = %v, want sql.ErrNoRows", err)
 	}
-	deleted, err := cat.IsVideoDeleted(ctx, "small-video")
-	if err != nil {
-		t.Fatalf("check small tombstone: %v", err)
+	if deleted, err := cat.IsVideoDeleted(ctx, "small-video"); err != nil || deleted {
+		t.Fatalf("unexpected blacklist entry: %v %v", deleted, err)
 	}
-	if !deleted {
-		t.Fatalf("small duplicate tombstone missing")
-	}
-	deletedItems, _, err := cat.ListDeletedVideos(ctx, catalog.ListParams{Page: 1, PageSize: 10})
-	if err != nil {
-		t.Fatalf("list deleted videos: %v", err)
-	}
-	if len(deletedItems) != 1 ||
-		deletedItems[0].ID != "small-video" ||
-		deletedItems[0].Reason != catalog.DeletedVideoReasonDuplicate ||
-		deletedItems[0].CanonicalVideoID != "large-video" ||
-		deletedItems[0].RestorePolicy != catalog.DeletedVideoRestorePolicyNone {
-		t.Fatalf("small duplicate tombstone = %#v, want reason %q", deletedItems, catalog.DeletedVideoReasonDuplicate)
+	m, err := cat.GetMergedVideo(ctx, "small-video")
+	if err != nil || m.CanonicalVideoID != "large-video" {
+		t.Fatalf("merge=%+v err=%v", m, err)
 	}
 	large, err := cat.GetVideo(ctx, "large-video")
 	if err != nil {

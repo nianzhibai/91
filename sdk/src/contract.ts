@@ -465,6 +465,10 @@ export type Schemas = {
   };
   deleteVideoReq: {
     deleteSource?: boolean;
+    /** For a multi-file source deletion, explicitly choose true for all files or false for the selected file and its records. */
+    includeDuplicates?: boolean;
+    /** Version from the deletion preview. Required with a multi-file source choice. A supplied version is checked before anything is deleted. */
+    groupRevision?: string;
   };
   DeleteVideoResult: {
     deletedSource: boolean;
@@ -623,6 +627,37 @@ export type Schemas = {
     ok: boolean;
     role: "admin" | "user";
     telegramEnabled?: boolean;
+  };
+  MergedSourceDeleteRequest: {
+    sourceRevision: string;
+  };
+  MergedSourceDeleteResult: {
+    videoId: string;
+    sourceState: "gone";
+  };
+  MergedVideo: {
+    videoId: string;
+    canonicalVideoId: string;
+    driveId: string;
+    fileId: string;
+    parentId: string;
+    fileName: string;
+    sizeBytes: number;
+    contentHash: string;
+    sampledSha256: string;
+    sourceModTime: string;
+    sourceState: "recorded" | "gone" | "replaced";
+    mergeReason: string;
+    /** Unix milliseconds. */
+    mergedAt: number;
+    sharedSource: boolean;
+    sourceRevision: string;
+  };
+  MergedVideoList: {
+    items: Schemas["MergedVideo"][];
+    total: number;
+    page: number;
+    size: number;
   };
   NightlyJobStatus: {
     issues?: Schemas["scanjobIssue"][] | null;
@@ -1001,6 +1036,17 @@ export type Schemas = {
     currentIndex: number;
     name: string;
     total: number;
+  };
+  VideoDeletionPreview: {
+    /** Distinct physical files. The first entry belongs to the selected video. */
+    sources: Array<{
+      driveId: string;
+      fileId: string;
+      fileName: string;
+    }>;
+    groupRevision: string;
+    /** True if source deletion needs a choice between the selected file and all duplicate files. */
+    requiresConfirmation: boolean;
   };
   VideoDetailDTO: {
     author: string;

@@ -32,6 +32,9 @@ func mergeSelectiveRestoreDatabase(
 	if err := catalog.MigrateImportDatabase(ctx, database); err != nil {
 		return err
 	}
+	if err := catalog.MigrateMergedVideos(ctx, database); err != nil {
+		return err
+	}
 	if _, err := database.ExecContext(ctx, `ATTACH DATABASE ? AS backup_source`, sourcePath); err != nil {
 		return fmt.Errorf("backup: attach filtered backup database: %w", err)
 	}
@@ -151,6 +154,9 @@ func mergeArchivedTables(ctx context.Context, database *sql.DB, selection Backup
 		if err := merge(ctx, tx); err != nil {
 			return err
 		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM main.merged_videos WHERE video_id IN (SELECT id FROM main.videos)`); err != nil {
+		return err
 	}
 	for _, table := range catalogTables {
 		for _, statement := range table.restoreReset {
