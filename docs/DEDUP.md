@@ -116,6 +116,8 @@ Planner 跑完全部通道后会压缩 canonical 链。例如精确通道先得�
 
 如果 `requiresConfirmation` 为 `true`，前端询问是否一并删除重复文件。用户确认后调用 `DELETE /admin/api/videos/{id}`，提交 `deleteSource: true`、预览的 `groupRevision` 和 `includeDuplicates`。选择 `true` 删除全部文件，选择 `false` 只删除当前文件及其引用记录。用户取消即可关闭弹窗。删除成功返回 `200`。预览后范围变化时返回 `409 deletion_scope_changed`，前端重新获取预览。
 
+只删除当前文件时，合并到被删视频的副本交给组内最早入库的可见视频，旧 ID 解析到它，扫描继续跳过这些副本。没有可见视频保留时，释放仍在原位的副本，下次扫描以原 ID 入库。
+
 跨盘删除逐个完成，用户选中的文件最后处理。某个网盘失败时可以从原视频重新发起请求。扫描历史中的源文件在物理删除前会向网盘核对当前信息。
 
 ## 缓存与工具

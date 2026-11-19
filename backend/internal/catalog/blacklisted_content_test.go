@@ -199,6 +199,60 @@ func TestDeletionIncludesCopiesAwaitingUsableSize(t *testing.T) {
 	}
 }
 
+func TestKeepingDuplicatesHandsMergedCopiesOn(t *testing.T) {
+	ctx := context.Background()
+	keep := false
+	remove := func(context.Context, *Video, bool) error { return nil }
+	deleteSelected := func(t *testing.T, cat *Catalog) {
+		t.Helper()
+		preview, err := cat.PreviewVideoDeletion(ctx, "A")
+		if err != nil {
+			t.Fatal(err)
+		}
+		options := VideoDeletionOptions{DeleteSource: true, IncludeDuplicates: &keep, GroupRevision: preview.GroupRevision}
+		if err := cat.DeleteVideoGroup(ctx, "A", options, time.Time{}, remove, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	merged := &Video{ID: "B", DriveID: "two", FileID: "b", ContentHash: "h", FileName: "b.mp4", Size: 10}
+
+	t.Run("successor", func(t *testing.T) {
+		cat := openCanonicalTestCatalog(t)
+		base := time.UnixMilli(1_800_000_000_000)
+		seedVideos(t, cat,
+			&Video{ID: "A", DriveID: "one", FileID: "a", ContentHash: "h", FileName: "a.mp4", Size: 10, CreatedAt: base},
+			&Video{ID: "B", DriveID: "two", FileID: "b", ContentHash: "h", FileName: "b.mp4", Size: 10, CreatedAt: base.Add(time.Millisecond)},
+			&Video{ID: "C", DriveID: "three", FileID: "c", ContentHash: "h", FileName: "c.mp4", Size: 10, CreatedAt: base.Add(2 * time.Millisecond)},
+		)
+		if err := cat.ApplyDuplicateVideoDeletions(ctx, []DuplicateVideoDeletion{{VideoID: "B", CanonicalVideoID: "A"}}); err != nil {
+			t.Fatal(err)
+		}
+		deleteSelected(t, cat)
+		if got, err := cat.ResolveVideoID(ctx, "B"); err != nil || got != "C" {
+			t.Fatalf("B resolves to %q, err=%v", got, err)
+		}
+		copy := *merged
+		if admit(t, cat, &copy) {
+			t.Fatalf("merged copy was admitted as %s beside its new canonical", copy.ID)
+		}
+	})
+
+	t.Run("released", func(t *testing.T) {
+		cat := openCanonicalTestCatalog(t)
+		seedVideos(t, cat, &Video{ID: "A", DriveID: "one", FileID: "a", ContentHash: "h", FileName: "a.mp4", Size: 10})
+		copy := *merged
+		seedVideos(t, cat, &copy)
+		if err := cat.ApplyDuplicateVideoDeletions(ctx, []DuplicateVideoDeletion{{VideoID: "B", CanonicalVideoID: "A"}}); err != nil {
+			t.Fatal(err)
+		}
+		deleteSelected(t, cat)
+		copy = *merged
+		if !admit(t, cat, &copy) || copy.ID != "B" {
+			t.Fatalf("kept copy admitted=%s, want its original ID", copy.ID)
+		}
+	})
+}
+
 func TestBlacklistFingerprintsMigrateFromRestoreSnapshots(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "catalog.db")
 	db, err := sql.Open("sqlite", path)

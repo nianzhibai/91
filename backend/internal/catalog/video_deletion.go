@@ -339,7 +339,9 @@ func (c *Catalog) DeleteVideoGroup(ctx context.Context, id string, options Video
 	if len(g.files) > 1 && (options.IncludeDuplicates == nil || options.GroupRevision == "") {
 		return ErrDeletionScopeIncomplete
 	}
+	successor := ""
 	if options.IncludeDuplicates != nil && !*options.IncludeDuplicates {
+		successor = g.successor()
 		g.files = g.files[:1]
 	}
 	if remove == nil {
@@ -367,7 +369,7 @@ func (c *Catalog) DeleteVideoGroup(ctx context.Context, id string, options Video
 			return fmt.Errorf("delete source %s/%s: %w", f.video.DriveID, f.video.FileID, err)
 		}
 		finish, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
-		err := c.finishDeletionFile(finish, f, token)
+		err := c.finishDeletionFile(finish, f, token, successor)
 		if err == nil && cleanAssets != nil {
 			for _, v := range slices.Concat(f.live, f.retired) {
 				if err = cleanAssets(finish, v); err != nil {
@@ -396,7 +398,27 @@ func reserveDeletionFile(ctx context.Context, tx *sql.Tx, drive, file, token str
 	return nil
 }
 
-func (c *Catalog) finishDeletionFile(ctx context.Context, f *deletionFile, token string) error {
+// successor is the earliest visible member that keeps its file when only the
+// selected file is removed.
+func (g *deletionGroup) successor() string {
+	var keep *Video
+	for _, f := range g.files[1:] {
+		for _, v := range f.live {
+			if v.Hidden || v.FileID == "" {
+				continue
+			}
+			if keep == nil || v.CreatedAt.Before(keep.CreatedAt) || (v.CreatedAt.Equal(keep.CreatedAt) && v.ID < keep.ID) {
+				keep = v
+			}
+		}
+	}
+	if keep == nil {
+		return ""
+	}
+	return keep.ID
+}
+
+func (c *Catalog) finishDeletionFile(ctx context.Context, f *deletionFile, token, successor string) error {
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -425,9 +447,40 @@ func (c *Catalog) finishDeletionFile(ctx context.Context, f *deletionFile, token
 	if err := purgeSourceTombstonesTx(ctx, tx, v); err != nil {
 		return err
 	}
+	if err := rehomeMergedSourcesTx(ctx, tx, f.live, successor); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
 	c.driveEvents.Notify("", false, driveevents.MediaChanged)
+	return nil
+}
+
+// Merged copies on files that are kept outlive their deleted canonical. A
+// surviving group member takes over their public IDs and scan skips. Without
+// one, the copies are released so the next scan admits them under their own
+// IDs instead of new generation IDs.
+func rehomeMergedSourcesTx(ctx context.Context, tx *sql.Tx, removed []*Video, successor string) error {
+	if successor != "" {
+		var live bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM videos WHERE id = ? AND `+duplicateLookupScope+`)`, successor).Scan(&live); err != nil {
+			return err
+		}
+		if !live {
+			successor = ""
+		}
+	}
+	for _, v := range removed {
+		var err error
+		if successor != "" {
+			_, err = tx.ExecContext(ctx, `UPDATE merged_videos SET canonical_video_id = ? WHERE canonical_video_id = ?`, successor, v.ID)
+		} else {
+			_, err = tx.ExecContext(ctx, `DELETE FROM merged_videos WHERE canonical_video_id = ? AND source_state = ?`, v.ID, MergedSourceRecorded)
+		}
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
