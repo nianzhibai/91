@@ -208,3 +208,40 @@ func TestRestoreDropsCleanupJobsOfRevivedVideos(t *testing.T) {
 		t.Fatalf("after restore: retired live=%d, cleanup jobs=%d; want 1 and 0", live, jobs)
 	}
 }
+
+// Older versions stored provider hashes as reported. A selective restore merges
+// archived rows into a catalog that already normalized its own hashes once.
+func TestRestoreNormalizesArchivedProviderHashes(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "archive.db")
+	cat, err := catalog.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.UpsertVideo(ctx, &catalog.Video{ID: "video", DriveID: "cloud", FileID: "file", FileName: "video.mp4", Size: 123}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE videos SET content_hash = ' ABCDEF ' WHERE id = 'video'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rewriteRestoredDatabase(ctx, path, catalogRewrite{
+		stagePreviewDir:   filepath.Join(dir, "stage-previews"),
+		sourcePreviewRoot: filepath.Join(dir, "source-previews"),
+		targetPreviewRoot: filepath.Join(dir, "target-previews"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var hash string
+	if err := db.QueryRow(`SELECT content_hash FROM videos WHERE id = 'video'`).Scan(&hash); err != nil || hash != "abcdef" {
+		t.Fatalf("restored hash = %q, err=%v; want abcdef", hash, err)
+	}
+}

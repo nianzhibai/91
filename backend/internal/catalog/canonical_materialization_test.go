@@ -380,7 +380,7 @@ func TestCanonicalUpgradeNormalizesMigratedProviderHashes(t *testing.T) {
 	if _, err := cat.db.Exec(`UPDATE videos SET content_hash = 'ABCDEF' WHERE id = 'migrated';
 		UPDATE videos SET is_canonical = 0 WHERE id = 'migrated';
 		DELETE FROM video_dedup_representatives;
-		DELETE FROM settings WHERE key IN (?, ?)`, canonicalMaterializationMarker, dedupRepresentativesMarker); err != nil {
+		DELETE FROM settings WHERE key IN (?, ?, ?)`, canonicalMaterializationMarker, dedupRepresentativesMarker, contentHashNormalizationMarker); err != nil {
 		t.Fatal(err)
 	}
 	if err := cat.Close(); err != nil {

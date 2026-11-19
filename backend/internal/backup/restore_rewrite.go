@@ -65,6 +65,9 @@ func rewriteRestoredDatabase(ctx context.Context, databasePath string, rewrite c
 	if err := catalog.MigrateMergedVideos(ctx, database); err != nil {
 		return ValidationReport{}, err
 	}
+	if err := catalog.NormalizeVideoContentHashes(ctx, database); err != nil {
+		return ValidationReport{}, err
+	}
 	tx, err := database.BeginTx(ctx, nil)
 	if err != nil {
 		return ValidationReport{}, err

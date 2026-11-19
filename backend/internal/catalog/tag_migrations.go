@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -565,6 +566,8 @@ const canonicalMaterializationMarker = "videos.is_canonical.v3"
 
 const dedupRepresentativesMarker = "videos.dedup_representatives.v3"
 
+const contentHashNormalizationMarker = "videos.content_hash.normalized"
+
 const canonicalRowsMatchingNewVideoSQL = `(videos.id = NEW.id
 	OR (COALESCE(NEW.content_hash, '') != ''
 		AND videos.content_hash = NEW.content_hash)
@@ -678,11 +681,8 @@ END;
 		return fmt.Errorf("install canonical video triggers: %w", err)
 	}
 
-	// Older drive transfers and restored archives may contain uppercase
-	// provider hashes. Normalize storage so exact lookups stay indexable.
-	if _, err := c.db.ExecContext(ctx, `UPDATE videos SET content_hash = lower(trim(content_hash))
-		WHERE content_hash != lower(trim(content_hash))`); err != nil {
-		return fmt.Errorf("normalize video content hashes: %w", err)
+	if err := c.normalizeVideoContentHashesOnce(ctx); err != nil {
+		return err
 	}
 
 	marker, err := c.GetSetting(ctx, canonicalMaterializationMarker, "")
@@ -1081,6 +1081,35 @@ UPDATE videos
 	}
 	if err := c.SetSetting(ctx, markerKey, "1"); err != nil {
 		return fmt.Errorf("write %s marker: %w", markerKey, err)
+	}
+	return nil
+}
+
+// normalizeVideoContentHashesOnce repairs hashes stored before every writer
+// normalized them. Restored archives are normalized before they are merged.
+func (c *Catalog) normalizeVideoContentHashesOnce(ctx context.Context) error {
+	marker, err := c.GetSetting(ctx, contentHashNormalizationMarker, "")
+	if err != nil {
+		return fmt.Errorf("read %s marker: %w", contentHashNormalizationMarker, err)
+	}
+	if strings.TrimSpace(marker) == "1" {
+		return nil
+	}
+	if err := NormalizeVideoContentHashes(ctx, c.db); err != nil {
+		return err
+	}
+	if err := c.SetSetting(ctx, contentHashNormalizationMarker, "1"); err != nil {
+		return fmt.Errorf("write %s marker: %w", contentHashNormalizationMarker, err)
+	}
+	return nil
+}
+
+// NormalizeVideoContentHashes lowercases provider hashes that older drive
+// transfers stored as reported, so exact lookups stay indexable.
+func NormalizeVideoContentHashes(ctx context.Context, db *sql.DB) error {
+	if _, err := db.ExecContext(ctx, `UPDATE videos SET content_hash = lower(trim(content_hash))
+		WHERE content_hash != lower(trim(content_hash))`); err != nil {
+		return fmt.Errorf("normalize video content hashes: %w", err)
 	}
 	return nil
 }
