@@ -151,7 +151,7 @@ func TestStaleAssetCleanupCannotDeleteNewDeletionDuringGrace(t *testing.T) {
 	if err != nil || len(ids) != 1 {
 		t.Fatalf("old cleanup snapshot = %v, %v", ids, err)
 	}
-	if err := app.cat.PurgeSourceTombstones(ctx, video); err != nil {
+	if err := app.cat.RecordSourceDeleted(ctx, video); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.cat.UpsertVideo(ctx, video); err != nil {
@@ -186,8 +186,11 @@ func TestExplicitBlacklistSourceDeletionBypassesAssetGrace(t *testing.T) {
 	if drv.removedFileID != video.FileID {
 		t.Fatalf("removed source %q, want %q", drv.removedFileID, video.FileID)
 	}
-	if deleted, err := app.cat.IsVideoDeleted(ctx, video.ID); err != nil || deleted {
-		t.Fatalf("source-deleted tombstone still present: %v, %v", deleted, err)
+	if pending, err := app.cat.ListDeletedVideosPendingSourceDeletionByIDs(ctx, []string{video.ID}); err != nil || len(pending) != 0 {
+		t.Fatalf("source deletion still pending: %#v, %v", pending, err)
+	}
+	if deleted, err := app.cat.IsVideoDeleted(ctx, video.ID); err != nil || !deleted {
+		t.Fatalf("source-deleted tombstone no longer blocks content: %v, %v", deleted, err)
 	}
 }
 

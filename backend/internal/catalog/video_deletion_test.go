@@ -214,10 +214,83 @@ func TestDeletionIncludesMergedAndScanSkippedFiles(t *testing.T) {
 			if physical && !reflect.DeepEqual(history, []string{"skipped", "retired"}) {
 				t.Fatalf("historical files: %v", history)
 			}
+			// Removing the whole group keeps its content blacklisted.
 			for _, id := range []string{"root", "retired", "skipped"} {
-				if ok, err := cat.IsVideoDeleted(ctx, id); err != nil || ok == physical {
-					t.Fatalf("tombstone %s=%t, %v", id, ok, err)
+				if entry := deletedEntry(t, cat, id); entry == nil || entry.SourceDeleted != physical {
+					t.Fatalf("tombstone %s=%+v", id, entry)
 				}
+			}
+		})
+	}
+}
+
+func deletedEntry(t *testing.T, cat *Catalog, id string) *DeletedVideo {
+	t.Helper()
+	items, _, err := cat.ListDeletedVideos(context.Background(), ListParams{Page: 1, PageSize: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range items {
+		if item.ID == id {
+			return item
+		}
+	}
+	return nil
+}
+
+func TestRemovingGroupSourcesKeepsContentBlocked(t *testing.T) {
+	ctx := context.Background()
+	remove := func(context.Context, *Video, bool) error { return nil }
+	for _, all := range []bool{false, true} {
+		t.Run(map[bool]string{false: "selected", true: "all"}[all], func(t *testing.T) {
+			cat := openCanonicalTestCatalog(t)
+			seedVideos(t, cat,
+				&Video{ID: "A", DriveID: "one", FileID: "a", ContentHash: "hash", SampledSHA256: "s", FileName: "a.mp4", Size: 10},
+				&Video{ID: "B", DriveID: "two", FileID: "b", SampledSHA256: "s", FileName: "b.mp4", Size: 10},
+			)
+			preview, err := cat.PreviewVideoDeletion(ctx, "A")
+			if err != nil {
+				t.Fatal(err)
+			}
+			options := VideoDeletionOptions{DeleteSource: true, IncludeDuplicates: &all, GroupRevision: preview.GroupRevision}
+			if err := cat.DeleteVideoGroup(ctx, "A", options, time.Time{}, remove, nil); err != nil {
+				t.Fatal(err)
+			}
+			if entry := deletedEntry(t, cat, "A"); (entry != nil) != all {
+				t.Fatalf("entry A=%+v, want present=%t", entry, all)
+			}
+			if !all {
+				// B keeps the content, so a new copy is an ordinary duplicate of B
+				// and nothing was blacklisted.
+				if entry := deletedEntry(t, cat, "B"); entry != nil {
+					t.Fatalf("kept video blacklisted: %+v", entry)
+				}
+				if admit(t, cat, &Video{ID: "N", DriveID: "three", FileID: "n", SampledSHA256: "s", FileName: "n.mp4", Size: 10}) {
+					t.Fatal("copy of a kept video was admitted")
+				}
+				return
+			}
+			entry := deletedEntry(t, cat, "A")
+			if !entry.SourceDeleted || entry.RestorePolicy != DeletedVideoRestorePolicyScan {
+				t.Fatalf("entry A=%+v", entry)
+			}
+			if admit(t, cat, &Video{ID: "N", DriveID: "three", FileID: "n", ContentHash: "hash", FileName: "n.mp4", Size: 10}) {
+				t.Fatal("copy of removed content was admitted")
+			}
+			if admit(t, cat, &Video{ID: "S", DriveID: "one", FileID: "s", FileName: "a.mp4", Size: 10}) {
+				t.Fatal("same name and size on the removed file's drive was admitted")
+			}
+			// The provider may reuse the removed file ID for other content.
+			reused := &Video{ID: "A", DriveID: "one", FileID: "a", ContentHash: "other", FileName: "other.mp4", Size: 20}
+			if !admit(t, cat, reused) || reused.ID == "A" {
+				t.Fatalf("reused file ID: admitted as %q", reused.ID)
+			}
+			// Lifting one entry releases the content held by the whole group.
+			if err := cat.RemoveDeletedVideo(ctx, "A"); err != nil {
+				t.Fatal(err)
+			}
+			if !admit(t, cat, &Video{ID: "M", DriveID: "three", FileID: "m", ContentHash: "hash", FileName: "m.mp4", Size: 10}) {
+				t.Fatal("released content stayed blocked")
 			}
 		})
 	}

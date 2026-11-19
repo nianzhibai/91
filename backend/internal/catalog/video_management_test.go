@@ -182,7 +182,7 @@ func TestBlacklistRestorePolicies(t *testing.T) {
 	}
 	findDeleted := func(id string) *DeletedVideo {
 		t.Helper()
-		items, _, err := cat.ListDeletedVideos(ctx, ListParams{Page: 1, PageSize: 50, IncludeSourceDeleted: true})
+		items, _, err := cat.ListDeletedVideos(ctx, ListParams{Page: 1, PageSize: 50})
 		if err != nil {
 			t.Fatalf("list deleted: %v", err)
 		}
@@ -1137,7 +1137,7 @@ INSERT INTO deleted_videos (
 	}
 }
 
-func TestSourceDeletedTombstonesArePurgedOnMigration(t *testing.T) {
+func TestSourceDeletedTombstonesSurviveMigration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "catalog.db")
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -1192,12 +1192,12 @@ INSERT INTO crawler_seen_sources (
 	}
 	t.Cleanup(func() { _ = cat.Close() })
 
-	items, total, err := cat.ListDeletedVideos(context.Background(), ListParams{Page: 1, PageSize: 10, IncludeSourceDeleted: true})
+	items, total, err := cat.ListDeletedVideos(context.Background(), ListParams{Page: 1, PageSize: 10})
 	if err != nil {
 		t.Fatalf("list migrated tombstones: %v", err)
 	}
-	if total != 0 || len(items) != 0 {
-		t.Fatalf("source-deleted tombstones after migration = total %d items %#v, want none", total, items)
+	if total != 1 || len(items) != 1 || !items[0].SourceDeleted || items[0].RestorePolicy != DeletedVideoRestorePolicyScan {
+		t.Fatalf("source-deleted tombstones after migration = total %d items %#v, want one that blocks content", total, items)
 	}
 	seen, err := cat.ListCrawlerSourceIDs(context.Background(), "scriptcrawler", "crawler-a")
 	if err != nil {
@@ -1251,37 +1251,30 @@ func TestDeletedVideoSourceDeletionQueue(t *testing.T) {
 		t.Fatalf("pending source deletion by ids = %#v", byIDs)
 	}
 
-	if err := cat.PurgeSourceTombstones(ctx, &Video{DriveID: "drive", FileID: "file"}); err != nil {
-		t.Fatalf("purge deleted video: %v", err)
+	if err := cat.RecordSourceDeleted(ctx, &Video{DriveID: "drive", FileID: "file"}); err != nil {
+		t.Fatalf("record deleted source: %v", err)
 	}
 	byIDs, err = cat.ListDeletedVideosPendingSourceDeletionByIDs(ctx, []string{"queued-video"})
 	if err != nil {
-		t.Fatalf("list pending source deletion by ids after purge: %v", err)
+		t.Fatalf("list pending source deletion by ids after source deletion: %v", err)
 	}
 	if len(byIDs) != 0 {
-		t.Fatalf("pending source deletion by ids after purge = %#v", byIDs)
+		t.Fatalf("pending source deletion by ids after source deletion = %#v", byIDs)
 	}
 	count, err = cat.CountDeletedVideosPendingSourceDeletion(ctx)
 	if err != nil || count != 0 {
-		t.Fatalf("pending count after purge = %d, err=%v, want 0", count, err)
+		t.Fatalf("pending count after source deletion = %d, err=%v, want 0", count, err)
 	}
 	deleted, _, err := cat.ListDeletedVideos(ctx, ListParams{Page: 1, PageSize: 10})
 	if err != nil {
 		t.Fatalf("list deleted videos: %v", err)
 	}
-	if len(deleted) != 0 {
-		t.Fatalf("purged tombstone should not be listed: %#v", deleted)
-	}
-	deleted, _, err = cat.ListDeletedVideos(ctx, ListParams{Page: 1, PageSize: 10, IncludeSourceDeleted: true})
-	if err != nil {
-		t.Fatalf("list deleted videos after purge: %v", err)
-	}
-	if len(deleted) != 0 {
-		t.Fatalf("purged tombstone remained = %#v", deleted)
+	if len(deleted) != 1 || deleted[0].ID != "queued-video" || !deleted[0].SourceDeleted {
+		t.Fatalf("source-deleted tombstone = %#v, want it kept as a content block", deleted)
 	}
 }
 
-func TestPurgeSourceTombstonesKeepsCrawlerSeenMetadata(t *testing.T) {
+func TestRecordSourceDeletedKeepsCrawlerSeenMetadata(t *testing.T) {
 	ctx := context.Background()
 	cat, err := Open(t.TempDir() + "/catalog.db")
 	if err != nil {
@@ -1311,11 +1304,11 @@ func TestPurgeSourceTombstonesKeepsCrawlerSeenMetadata(t *testing.T) {
 		t.Fatalf("tombstone crawler video: %v", err)
 	}
 
-	if err := cat.PurgeSourceTombstones(ctx, &Video{DriveID: "crawler-a", FileID: "source-1.mp4"}); err != nil {
-		t.Fatalf("purge crawler tombstone: %v", err)
+	if err := cat.RecordSourceDeleted(ctx, &Video{DriveID: "crawler-a", FileID: "source-1.mp4"}); err != nil {
+		t.Fatalf("record deleted crawler source: %v", err)
 	}
-	if deleted, err := cat.IsVideoDeleted(ctx, videoID); err != nil || deleted {
-		t.Fatalf("crawler tombstone remained: deleted=%v err=%v", deleted, err)
+	if deleted, err := cat.IsVideoDeleted(ctx, videoID); err != nil || !deleted {
+		t.Fatalf("crawler tombstone was removed: deleted=%v err=%v", deleted, err)
 	}
 	seen, err := cat.ListCrawlerSourceIDs(ctx, "scriptcrawler", "crawler-a")
 	if err != nil {

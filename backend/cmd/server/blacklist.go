@@ -292,7 +292,7 @@ func (a *App) removeDeletedVideoSourceFile(ctx context.Context, item *catalog.De
 			// if the task was canceled while the provider was responding.
 			finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel()
-			return a.purgeDeletedSource(finishCtx, video)
+			return a.recordDeletedSource(finishCtx, video)
 		})
 		if err == nil {
 			return nil
@@ -330,13 +330,13 @@ func waitForBlacklistSourceDelete(ctx context.Context, wait time.Duration) error
 	}
 }
 
-func (a *App) purgeDeletedSource(ctx context.Context, item *catalog.Video) error {
+func (a *App) recordDeletedSource(ctx context.Context, item *catalog.Video) error {
 	var lastErr error
 	for attempt := 0; attempt < 8; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := a.cat.PurgeSourceTombstones(ctx, item); err != nil {
+		if err := a.cat.RecordSourceDeleted(ctx, item); err != nil {
 			if !isSQLiteBusyError(err) {
 				return err
 			}
@@ -346,7 +346,7 @@ func (a *App) purgeDeletedSource(ctx context.Context, item *catalog.Video) error
 		}
 		return nil
 	}
-	return fmt.Errorf("purge blacklisted tombstone after retries: %w", lastErr)
+	return fmt.Errorf("record deleted blacklisted source after retries: %w", lastErr)
 }
 
 func (a *App) finishBlacklistSourceDelete(state string, err error) {

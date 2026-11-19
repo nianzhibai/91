@@ -1684,7 +1684,7 @@ type DeletedVideo struct {
 
 // ListDeletedVideos 分页列出黑名单视频，按拉黑时间倒序。
 // Keyword 非空时按文件名模糊匹配，DriveID 非空时限定来源网盘。
-// source_deleted 是旧版本兼容字段；新版本删除源文件成功后会直接清除墓碑。
+// 源文件已删除的记录（sourceDeleted）仍拦截同内容，同样列出，可移出黑名单。
 func (c *Catalog) ListDeletedVideos(ctx context.Context, p ListParams) ([]*DeletedVideo, int, error) {
 	if p.PageSize <= 0 {
 		p.PageSize = 50
@@ -1695,9 +1695,6 @@ func (c *Catalog) ListDeletedVideos(ctx context.Context, p ListParams) ([]*Delet
 	var where []string
 	var args []any
 	where = append(where, "COALESCE(dv.restore_requested, 0) = 0")
-	if !p.IncludeSourceDeleted {
-		where = append(where, "COALESCE(dv.source_deleted, 0) = 0")
-	}
 	if kw := strings.TrimSpace(p.Keyword); kw != "" {
 		where = append(where, "dv.file_name LIKE ?")
 		args = append(args, "%"+kw+"%")
@@ -2057,8 +2054,6 @@ func deletedVideoNotRestorableError(deleted *DeletedVideo) error {
 	switch {
 	case deleted == nil:
 		return sql.ErrNoRows
-	case deleted.SourceDeleted:
-		return fmt.Errorf("%w: source file was deleted", ErrDeletedVideoNotRestorable)
 	default:
 		return fmt.Errorf("%w: source does not support rediscovery", ErrDeletedVideoNotRestorable)
 	}
@@ -2344,7 +2339,7 @@ DELETE FROM deleted_videos
 // and retired public IDs from a single snapshot.
 func (c *Catalog) VideoManagementCounts(ctx context.Context) (current, blacklisted, merged int, err error) {
 	err = c.db.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM videos WHERE COALESCE(hidden,0)=0 AND `+activeDriveWhereSQL+` AND `+uniqueVideoWhereSQL+`),
-		(SELECT COUNT(*) FROM deleted_videos WHERE source_deleted=0 AND restore_requested=0),
+		(SELECT COUNT(*) FROM deleted_videos WHERE restore_requested=0),
 		(SELECT COUNT(*) FROM merged_videos)`).Scan(&current, &blacklisted, &merged)
 	return
 }
@@ -2378,7 +2373,9 @@ func isDeletedVideoCandidate(ctx context.Context, q deletedVideoRestoreQuerier, 
 	if id == "" && driveID == "" {
 		return false, nil
 	}
-	where := "id = ? OR (drive_id = ? AND ? != '' AND file_id = ?)"
+	// A source-deleted entry blocks content only. Its file ID may be reused by
+	// a provider, and a new file there gets a new generation ID.
+	where := "(source_deleted = 0 AND (id = ? OR (drive_id = ? AND ? != '' AND file_id = ?)))"
 	args := []any{id, driveID, fileID, fileID}
 	content, contentArgs, ok := blacklistedContentWhere(&Video{
 		DriveID: driveID, ContentHash: contentHash, FileName: strings.TrimSpace(fileName), Size: size,
@@ -2642,7 +2639,6 @@ type ListParams struct {
 	ThumbnailReadyOnly    bool
 	PreferReadyThumbnails bool
 	SkipTotal             bool
-	IncludeSourceDeleted  bool
 	CreatedAtFrom         int64 // inclusive unix milliseconds
 	CreatedAtBefore       int64 // exclusive unix milliseconds
 	DurationSecondsMin    int   // inclusive; zero disables the lower bound
@@ -4633,12 +4629,13 @@ func deletedVideoSourceChanged(
 		(video.ContentHash != "" || video.SampledSHA256 != "")
 }
 
-// Releasing a manual block on a merged source keeps its public alias.
+// Releasing a manual block on a merged source keeps its public alias. An entry
+// whose source was deleted only releases its content block.
 func deletedVideoRestorePolicy(v *DeletedVideo, driveKind string) string {
-	if v == nil || v.SourceDeleted {
+	if v == nil {
 		return DeletedVideoRestorePolicyNone
 	}
-	if v.CanonicalVideoID != "" {
+	if v.SourceDeleted || v.CanonicalVideoID != "" {
 		return DeletedVideoRestorePolicyScan
 	}
 	if strings.TrimSpace(v.DriveID) == "local-upload" || strings.TrimSpace(v.DriveID) == TelegramLocalDriveID {

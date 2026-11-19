@@ -65,7 +65,7 @@ func (c *Catalog) AbandonedTelegramLocalFiles(ctx context.Context) ([]TelegramLo
  WHERE (j.id IS NULL OR j.state IN ('failed','canceled'))
  AND NOT EXISTS (SELECT 1 FROM telegram_upload_cleanups u WHERE u.source_drive_id='telegram-local' AND u.source_file_id=f.file_id)
  AND NOT EXISTS (SELECT 1 FROM videos v WHERE v.drive_id='telegram-local' AND v.file_id=f.file_id)
- AND NOT EXISTS (SELECT 1 FROM deleted_videos v WHERE v.drive_id='telegram-local' AND v.file_id=f.file_id)`)
+ AND NOT EXISTS (SELECT 1 FROM deleted_videos v WHERE v.drive_id='telegram-local' AND v.file_id=f.file_id AND v.source_deleted=0)`)
 	if err != nil {
 		return nil, err
 	}

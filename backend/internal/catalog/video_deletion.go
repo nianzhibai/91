@@ -339,9 +339,11 @@ func (c *Catalog) DeleteVideoGroup(ctx context.Context, id string, options Video
 	if len(g.files) > 1 && (options.IncludeDuplicates == nil || options.GroupRevision == "") {
 		return ErrDeletionScopeIncomplete
 	}
-	successor := ""
+	// Removing the whole group also blacklists its content. Removing one file
+	// of a group keeps the content, so nothing is blocked.
+	block, successor := true, ""
 	if options.IncludeDuplicates != nil && !*options.IncludeDuplicates {
-		successor = g.successor()
+		block, successor = false, g.successor()
 		g.files = g.files[:1]
 	}
 	if remove == nil {
@@ -369,7 +371,7 @@ func (c *Catalog) DeleteVideoGroup(ctx context.Context, id string, options Video
 			return fmt.Errorf("delete source %s/%s: %w", f.video.DriveID, f.video.FileID, err)
 		}
 		finish, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
-		err := c.finishDeletionFile(finish, f, token, successor)
+		err := c.finishDeletionFile(finish, f, token, successor, block)
 		if err == nil && cleanAssets != nil {
 			for _, v := range slices.Concat(f.live, f.retired) {
 				if err = cleanAssets(finish, v); err != nil {
@@ -418,7 +420,7 @@ func (g *deletionGroup) successor() string {
 	return keep.ID
 }
 
-func (c *Catalog) finishDeletionFile(ctx context.Context, f *deletionFile, token, successor string) error {
+func (c *Catalog) finishDeletionFile(ctx context.Context, f *deletionFile, token, successor string, block bool) error {
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -440,11 +442,23 @@ func (c *Catalog) finishDeletionFile(ctx context.Context, f *deletionFile, token
 		if err := enqueueDuplicateAssetCleanupTx(ctx, tx, current); err != nil {
 			return err
 		}
+		if block {
+			if err := blacklistRemovedSourceTx(ctx, tx, current); err != nil {
+				return err
+			}
+		}
 		if err := deleteVideoRowTx(ctx, tx, current.ID); err != nil {
 			return err
 		}
 	}
-	if err := purgeSourceTombstonesTx(ctx, tx, v); err != nil {
+	if block {
+		for _, member := range slices.Concat(f.retired, f.skipped) {
+			if err := blacklistRemovedSourceTx(ctx, tx, member); err != nil {
+				return err
+			}
+		}
+	}
+	if err := recordSourceDeletedTx(ctx, tx, v); err != nil {
 		return err
 	}
 	if err := rehomeMergedSourcesTx(ctx, tx, f.live, successor); err != nil {
@@ -455,6 +469,16 @@ func (c *Catalog) finishDeletionFile(ctx context.Context, f *deletionFile, token
 	}
 	c.driveEvents.Notify("", false, driveevents.MediaChanged)
 	return nil
+}
+
+// blacklistRemovedSourceTx records the content of a file being removed with
+// its group. recordSourceDeletedTx then marks the entry source-deleted.
+func blacklistRemovedSourceTx(ctx context.Context, tx *sql.Tx, v *Video) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO deleted_videos(id, drive_id, file_id, parent_id, file_name, size_bytes, content_hash, sampled_sha256, deleted_at)
+		VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET blocks_content = 1, restore_requested = 0`,
+		v.ID, v.DriveID, v.FileID, v.ParentID, v.FileName, v.Size,
+		normalizeContentHash(v.ContentHash), normalizeContentHash(v.SampledSHA256), time.Now().UnixMilli())
+	return err
 }
 
 // Merged copies on files that are kept outlive their deleted canonical. A

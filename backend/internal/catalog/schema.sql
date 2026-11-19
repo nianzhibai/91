@@ -141,9 +141,9 @@ CREATE TABLE IF NOT EXISTS video_tags (
 CREATE INDEX IF NOT EXISTS idx_video_tags_tag ON video_tags(tag_id);
 CREATE INDEX IF NOT EXISTS idx_video_tags_video ON video_tags(video_id);
 
--- 用户主动拉黑的视频。源文件本身不再入库；blocks_content=1 时，任何网盘或爬虫
--- 来源的相同内容也不入库，恢复同内容的视频会解除这一拦截。source_deleted 是
--- 旧版本兼容字段，源文件删除成功后会清除墓碑。
+-- 用户拉黑或连同源文件删除的视频。源文件本身不再入库；blocks_content=1 时，
+-- 任何网盘或爬虫来源的相同内容也不入库，恢复同内容的视频会解除这一拦截。
+-- source_deleted=1 表示源文件已删除：记录只拦截内容，移出黑名单即解除拦截。
 CREATE TABLE IF NOT EXISTS deleted_videos (
     id                 TEXT PRIMARY KEY,
     drive_id           TEXT NOT NULL DEFAULT '',

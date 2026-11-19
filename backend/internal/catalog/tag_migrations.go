@@ -220,9 +220,6 @@ CREATE TABLE IF NOT EXISTS deleted_videos (
 	if err := c.ensureMergedVideoGuards(ctx); err != nil {
 		return err
 	}
-	if err := c.purgeLegacySourceDeletedTombstones(ctx); err != nil {
-		return err
-	}
 	if err := c.syncDriveScanRootIDToRootID(ctx); err != nil {
 		return err
 	}
@@ -476,11 +473,6 @@ DELETE FROM video_tags
 		}
 	}
 	return nil
-}
-
-func (c *Catalog) purgeLegacySourceDeletedTombstones(ctx context.Context) error {
-	_, err := c.db.ExecContext(ctx, `DELETE FROM deleted_videos WHERE COALESCE(source_deleted, 0) = 1`)
-	return err
 }
 
 func (c *Catalog) addColumnIfMissing(ctx context.Context, table, column, definition string) error {

@@ -76,7 +76,7 @@ func (c *Catalog) TelegramUploadSourceReferenced(ctx context.Context, driveID, f
 	var referenced bool
 	err := c.db.QueryRowContext(ctx, `SELECT EXISTS(
  SELECT 1 FROM videos WHERE drive_id=? AND file_id=?
- UNION ALL SELECT 1 FROM deleted_videos WHERE drive_id=? AND file_id=?)`, driveID, fileID, driveID, fileID).Scan(&referenced)
+ UNION ALL SELECT 1 FROM deleted_videos WHERE drive_id=? AND file_id=? AND source_deleted=0)`, driveID, fileID, driveID, fileID).Scan(&referenced)
 	return referenced, err
 }
 

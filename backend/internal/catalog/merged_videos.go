@@ -195,7 +195,7 @@ func (c *Catalog) RemoveMergedVideoSource(ctx context.Context, id, revision stri
 	if removeErr != nil {
 		_, err = tx.ExecContext(finish, "UPDATE merged_videos SET source_state='replaced' WHERE video_id=? AND source_state='recorded'", id)
 	} else {
-		err = purgeSourceTombstonesTx(finish, tx, source)
+		err = recordSourceDeletedTx(finish, tx, source)
 	}
 	if err != nil {
 		return errors.Join(removeErr, err)

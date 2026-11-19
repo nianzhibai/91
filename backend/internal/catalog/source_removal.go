@@ -75,21 +75,24 @@ func (c *Catalog) releaseSourceReservations(ctx context.Context, token string) e
 	return nil
 }
 
-// PurgeSourceTombstones finalizes one physical removal, including aliases that
+// RecordSourceDeleted finalizes one physical removal, including aliases that
 // were blacklisted separately. Pending local assets remain durably scheduled.
-func (c *Catalog) PurgeSourceTombstones(ctx context.Context, source *Video) error {
+func (c *Catalog) RecordSourceDeleted(ctx context.Context, source *Video) error {
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if err := purgeSourceTombstonesTx(ctx, tx, source); err != nil {
+	if err := recordSourceDeletedTx(ctx, tx, source); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-func purgeSourceTombstonesTx(ctx context.Context, tx *sql.Tx, source *Video) error {
+// recordSourceDeletedTx keeps the blacklist entries of a removed file. They
+// still block their content; with the source gone they can only be lifted,
+// never restored. A pending crawler restore has nothing left to restore.
+func recordSourceDeletedTx(ctx context.Context, tx *sql.Tx, source *Video) error {
 	// Other generations recorded at this provider ID must never inherit a
 	// successful removal of different bytes.
 	if err := markReplacedMergedSources(ctx, tx, source); err != nil {
@@ -107,6 +110,10 @@ func purgeSourceTombstonesTx(ctx context.Context, tx *sql.Tx, source *Video) err
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `DELETE FROM deleted_videos WHERE drive_id=? AND file_id=?`, source.DriveID, source.FileID)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM deleted_videos WHERE drive_id=? AND file_id=? AND restore_requested=1`, source.DriveID, source.FileID); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE deleted_videos SET source_deleted=1, restore_payload='', asset_cleanup_after=0
+		WHERE drive_id=? AND file_id=?`, source.DriveID, source.FileID)
 	return err
 }

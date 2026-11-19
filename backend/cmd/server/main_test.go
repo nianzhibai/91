@@ -2421,8 +2421,12 @@ func TestBlacklistSourceDeleteAndRestoreAreSerializedPerVideo(t *testing.T) {
 	if result := <-deleteDone; result.err != nil || result.skipped {
 		t.Fatalf("source deletion result = skipped:%v err:%v", result.skipped, result.err)
 	}
-	if err := <-restoreDone; !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("restore after source deletion error = %v, want sql.ErrNoRows", err)
+	// With the source gone, restoring only lifts the content block.
+	if err := <-restoreDone; err != nil {
+		t.Fatalf("restore after source deletion error = %v", err)
+	}
+	if deleted, err := cat.IsVideoDeleted(ctx, video.ID); err != nil || deleted {
+		t.Fatalf("lifted entry remained: %v, %v", deleted, err)
 	}
 	if _, err := cat.GetVideo(ctx, video.ID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("source-deleted video was restored: %v", err)
@@ -3817,12 +3821,12 @@ func TestDeleteVideoRemovesSourceFileWhenRequested(t *testing.T) {
 	if _, err := cat.GetVideo(ctx, "video-with-source"); err != sql.ErrNoRows {
 		t.Fatalf("deleted video lookup error = %v, want sql.ErrNoRows", err)
 	}
-	deletedItems, _, err := cat.ListDeletedVideos(ctx, catalog.ListParams{Page: 1, PageSize: 10, IncludeSourceDeleted: true})
+	deletedItems, _, err := cat.ListDeletedVideos(ctx, catalog.ListParams{Page: 1, PageSize: 10})
 	if err != nil {
 		t.Fatalf("list deleted videos: %v", err)
 	}
-	if len(deletedItems) != 0 {
-		t.Fatalf("source-deleted video kept tombstone = %#v", deletedItems)
+	if len(deletedItems) != 1 || deletedItems[0].ID != "video-with-source" || !deletedItems[0].SourceDeleted {
+		t.Fatalf("source-deleted video tombstone = %#v, want one that blocks content", deletedItems)
 	}
 	for _, path := range []string{previewPath, thumbPath} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -3963,8 +3967,8 @@ func TestDeleteVideoRemovesScriptCrawlerSourceFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("check tombstone: %v", err)
 	}
-	if deleted {
-		t.Fatal("deleted crawler source kept tombstone")
+	if !deleted {
+		t.Fatal("deleted crawler source no longer blocks content")
 	}
 }
 
@@ -4020,16 +4024,19 @@ func TestRunBlacklistSourceDeleteMarksSuccessAndKeepsFailuresPending(t *testing.
 		t.Fatalf("source delete status = %#v", status)
 	}
 
-	items, _, err := cat.ListDeletedVideos(ctx, catalog.ListParams{Page: 1, PageSize: 10, IncludeSourceDeleted: true})
+	items, _, err := cat.ListDeletedVideos(ctx, catalog.ListParams{Page: 1, PageSize: 10})
 	if err != nil {
 		t.Fatalf("list tombstones: %v", err)
 	}
-	remaining := make(map[string]bool, len(items))
+	sourceDeleted := make(map[string]bool, len(items))
 	for _, item := range items {
-		remaining[item.ID] = true
+		sourceDeleted[item.ID] = item.SourceDeleted
 	}
-	if remaining["source-ok"] || !remaining["source-fail"] {
-		t.Fatalf("remaining tombstones = %#v, want only failed source", remaining)
+	if ok, found := sourceDeleted["source-ok"]; !found || !ok {
+		t.Fatalf("tombstones = %#v, want source-ok kept with its source deleted", sourceDeleted)
+	}
+	if failed, found := sourceDeleted["source-fail"]; !found || failed {
+		t.Fatalf("tombstones = %#v, want source-fail pending", sourceDeleted)
 	}
 	pending, err := cat.CountDeletedVideosPendingSourceDeletion(ctx)
 	if err != nil || pending != 1 {
@@ -4088,16 +4095,19 @@ func TestRunBlacklistSourceDeleteCanTargetSelectedIDs(t *testing.T) {
 		t.Fatalf("source delete status = %#v", status)
 	}
 
-	items, _, err := cat.ListDeletedVideos(ctx, catalog.ListParams{Page: 1, PageSize: 10, IncludeSourceDeleted: true})
+	items, _, err := cat.ListDeletedVideos(ctx, catalog.ListParams{Page: 1, PageSize: 10})
 	if err != nil {
 		t.Fatalf("list tombstones: %v", err)
 	}
-	remaining := make(map[string]bool, len(items))
+	sourceDeleted := make(map[string]bool, len(items))
 	for _, item := range items {
-		remaining[item.ID] = true
+		sourceDeleted[item.ID] = item.SourceDeleted
 	}
-	if remaining["selected-source"] || !remaining["unselected-source"] {
-		t.Fatalf("remaining tombstones = %#v, want only unselected source", remaining)
+	if selected, found := sourceDeleted["selected-source"]; !found || !selected {
+		t.Fatalf("tombstones = %#v, want selected-source kept with its source deleted", sourceDeleted)
+	}
+	if unselected, found := sourceDeleted["unselected-source"]; !found || unselected {
+		t.Fatalf("tombstones = %#v, want unselected-source pending", sourceDeleted)
 	}
 }
 
