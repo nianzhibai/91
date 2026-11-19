@@ -4291,7 +4291,7 @@ const uniqueVideoWhereSQL = `videos.is_canonical = 1`
 // trigger recomputation and consistency tests. Keep its three independent
 // clauses intact: a row may map to different representatives by hash, sampled
 // fingerprint, and filename+size, so a single canonical_video_id is lossy.
-const dynamicUniqueVideoWhereSQL = duplicateLookupScope + ` AND ((COALESCE(videos.content_hash, '') = ''
+var dynamicUniqueVideoWhereSQL = duplicateLookupScope + ` AND ((COALESCE(videos.content_hash, '') = ''
 		OR NOT EXISTS (
 			SELECT 1
 			FROM videos AS dup
@@ -4325,6 +4325,7 @@ const dynamicUniqueVideoWhereSQL = duplicateLookupScope + ` AND ((COALESCE(video
 			  AND dup.size_bytes = videos.size_bytes
 			  AND COALESCE(dup.file_name, '') != ''
 			  AND dup.size_bytes > 0
+			  AND ` + weakDuplicateCompatibleSQL("dup", "videos") + `
 			  AND (
 				dup.created_at < videos.created_at
 				OR (dup.created_at = videos.created_at AND dup.id < videos.id)

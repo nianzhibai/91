@@ -1,6 +1,6 @@
 # 去重体系
 
-去重分布在扫描入库、爬虫导入、前台软过滤和全库维护四个时机。哈希或采样指纹用于匹配字节证据，标题、封面与 teaser 内容帧用于匹配转码副本。扫描和软过滤还使用 `file_name + size_bytes` 弱兜底，存在同名同大小碰撞风险。
+去重分布在扫描入库、爬虫导入、前台软过滤和全库维护四个时机。哈希或采样指纹用于匹配字节证据，标题、封面与 teaser 内容帧用于匹配转码副本。扫描和软过滤还使用 `file_name + size_bytes` 弱兜底；双方都有采样指纹，或同盘双方都有原生哈希时，这些信号必须一致，弱兜底才成立。
 
 以下路径均相对 `backend/`：`internal/scanner/`（扫描）、`internal/drives/scriptcrawler/neardupe.go`（爬虫）、`internal/dedupe/`（规划）、`internal/catalog/`（软过滤、墓碑与事务）、`cmd/server/video_maintenance.go` 和 `video_dedupe_plan.go`（维护执行）、`internal/mediasim/`（相似度与阈值）。
 
@@ -18,7 +18,7 @@ flowchart LR
 | `(drive_id, file_id)` | 视频恒等 ID | 同盘同文件的重复扫描（upsert 同一行） | 一切副本 |
 | `content_hash` | 网盘原生哈希（如 115 SHA1、PikPak GCID） | 原生哈希值相同的文件，可跨盘匹配 | 不同算法产生不同哈希值的副本、转码副本 |
 | `sampled_sha256` | `size + 采样字节` 的统一指纹，fingerprint worker 后台计算 | **跨盘**字节采样一致的文件 | 转码/水印副本 |
-| `file_name + size_bytes` | 原生哈希缺失或未命中时的弱兜底 | 常见的同名同大小副本 | 改名副本；也可能碰撞不同内容 |
+| `file_name + size_bytes` | 精确信号缺失时的弱兜底；双方可比较的指纹或同盘哈希不同时不成立 | 常见的同名同大小副本 | 改名副本；指纹算出前仍可能碰撞不同内容 |
 | 标题相似度 + 封面 SSIM | 归一化 Levenshtein（含核心段变体）+ 96×96 亮度 SSIM | 同源重发（标题几乎一样） | 改名重发、跨源转码 |
 | teaser 帧签名 | teaser 按 1fps 抽 12 帧 96×96 灰度 | **跨源不同压制**（标题、封面全对不上也能抓） | 时长差 >2 秒的剪辑版 |
 
@@ -111,6 +111,8 @@ Planner 跑完全部通道后会压缩 canonical 链。例如精确通道先得�
 库内已有可见的同内容视频时，新文件按普通重复处理。恢复黑名单中的任一视频时，同内容记录的 `blocks_content` 置为 0：它们各自的源文件仍被拦截，同内容的新文件改与恢复的视频按普通规则判重。再次拉黑会重新启用拦截。删除源文件会移除对应记录，之后不再拦截该内容。
 
 后台勾选删除源文件时，先调用 `GET /admin/api/videos/{id}/deletion-preview`。成功返回 `200`，包含独立源文件列表 `sources`、版本 `groupRevision` 和 `requiresConfirmation`。列表首项是选中视频的文件。多条记录共用一个文件时只列一项，可携带预览版本直接提交删除。
+
+物理删除与只删记录使用同一个删除组，即前台同一张卡片内的全部视频，包括只靠文件名加大小关联的视频，另加合并记录和扫描跳过记录对应的源文件。
 
 如果 `requiresConfirmation` 为 `true`，前端询问是否一并删除重复文件。用户确认后调用 `DELETE /admin/api/videos/{id}`，提交 `deleteSource: true`、预览的 `groupRevision` 和 `includeDuplicates`。选择 `true` 删除全部文件，选择 `false` 只删除当前文件及其引用记录。用户取消即可关闭弹窗。删除成功返回 `200`。预览后范围变化时返回 `409 deletion_scope_changed`，前端重新获取预览。
 

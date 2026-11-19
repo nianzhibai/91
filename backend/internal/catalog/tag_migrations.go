@@ -561,9 +561,9 @@ func (c *Catalog) ensureBaseVideoIndexes(ctx context.Context) error {
 	return nil
 }
 
-const canonicalMaterializationMarker = "videos.is_canonical.v2"
+const canonicalMaterializationMarker = "videos.is_canonical.v3"
 
-const dedupRepresentativesMarker = "videos.dedup_representatives.v2"
+const dedupRepresentativesMarker = "videos.dedup_representatives.v3"
 
 const canonicalRowsMatchingNewVideoSQL = `(videos.id = NEW.id
 	OR (COALESCE(NEW.content_hash, '') != ''
@@ -611,9 +611,10 @@ CREATE INDEX IF NOT EXISTS idx_video_dedup_representative
 	insertRepresentativeRefreshSQL := refreshInsertedVideoDedupRepresentativesSQL()
 	updateRepresentativeRefreshSQL := refreshUpdatedVideoDedupRepresentativesSQL()
 	deleteRepresentativeRefreshSQL := refreshDeletedVideoDedupRepresentativesSQL()
-	const dedupUpdateSQL = `AFTER UPDATE OF id, hidden, file_id, content_hash, sampled_sha256, size_bytes, file_name, created_at ON videos
+	const dedupUpdateSQL = `AFTER UPDATE OF id, hidden, drive_id, file_id, content_hash, sampled_sha256, size_bytes, file_name, created_at ON videos
 WHEN OLD.id IS NOT NEW.id
 	OR OLD.hidden IS NOT NEW.hidden
+	OR OLD.drive_id IS NOT NEW.drive_id
 	OR OLD.file_id IS NOT NEW.file_id
 	OR COALESCE(OLD.content_hash, '') IS NOT COALESCE(NEW.content_hash, '')
 	OR COALESCE(OLD.sampled_sha256, '') IS NOT COALESCE(NEW.sampled_sha256, '')
@@ -844,6 +845,7 @@ func writeVideoDedupRepresentativeGroupsSQL(hashScope, sampleScope, fileScope st
 	           AND canonical.size_bytes = videos.size_bytes
 	           AND COALESCE(canonical.file_name, '') != ''
 	           AND canonical.size_bytes > 0
+	           AND ` + weakDuplicateCompatibleSQL("canonical", "videos") + `
 	         ORDER BY canonical.created_at ASC, canonical.id ASC
 	         LIMIT 1)
 	  FROM videos

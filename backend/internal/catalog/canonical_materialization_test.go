@@ -60,7 +60,7 @@ func TestCanonicalMaterializationPreservesIndependentDedupRepresentatives(t *tes
 		FileName: "b.mp4", Size: 100, CreatedAt: base.Add(time.Millisecond),
 	})
 	seedCanonicalVideo(t, cat, Video{
-		ID: "filename-representative", ContentHash: "hash-c", SampledSHA256: "sample-c",
+		ID:       "filename-representative",
 		FileName: "shared-name.mp4", Size: 100, CreatedAt: base.Add(2 * time.Millisecond),
 	})
 	seedCanonicalVideo(t, cat, Video{
@@ -328,6 +328,7 @@ WITH eligible AS (
 	         WHERE canonical.file_name = videos.file_name
 	           AND canonical.size_bytes = videos.size_bytes
 	           AND COALESCE(canonical.file_name, '') != ''
+	           AND ` + weakDuplicateCompatibleSQL("canonical", "videos") + `
 	           AND canonical.size_bytes > 0
 	         ORDER BY canonical.created_at ASC, canonical.id ASC
 	         LIMIT 1)

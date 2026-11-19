@@ -12,6 +12,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/nianzhibai/91/backend/internal/dedupe"
 	"github.com/nianzhibai/91/backend/internal/driveevents"
 )
 
@@ -65,6 +66,8 @@ func (g *deletionGroup) file(v *Video) *deletionFile {
 
 // Traverse current catalog relationships. Visit physical files breadth first so
 // that removing them in reverse order leaves the remaining group reachable on retry.
+// The group matches the catalog's visible cards, for record-only and physical
+// deletion alike.
 func loadDeletionGroup(ctx context.Context, tx *sql.Tx, id string) (*deletionGroup, error) {
 	root, err := scanVideo(tx.QueryRowContext(ctx, "SELECT "+allVideoCols+" FROM videos WHERE id = ?", id))
 	if err != nil {
@@ -240,7 +243,8 @@ func (g *deletionGroup) loadSkippedSources(ctx context.Context, tx *sql.Tx, owne
 			return err
 		}
 		v := &Video{ID: s.ID, DriveID: s.DriveID, FileID: s.FileID, ParentID: s.ParentID, FileName: s.FileName, Size: s.SizeBytes, ContentHash: s.ContentHash, SampledSHA256: s.SampledSHA256}
-		if exactDuplicateReason(v, owner) == "" && !(reason == "file_name_size" && sameFileNameAndSize(v, owner)) {
+		weak := reason == dedupe.ReasonFileNameSize && weakDuplicate(v, owner)
+		if exactDuplicateReason(v, owner) == "" && !weak {
 			continue
 		}
 		f := g.file(v)

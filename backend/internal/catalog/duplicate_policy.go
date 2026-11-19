@@ -49,6 +49,31 @@ func equivalentVideoLookupWhere(source *Video) (string, []any, bool) {
 	return strings.Join(parts, " OR "), args, true
 }
 
+// weakDuplicate reports whether a file name and size match may stand for the
+// same content. The match is provisional: exact signals carried by both rows
+// must agree. Sampled fingerprints compare across drives; provider hashes only
+// within one drive, because drives use different hash algorithms.
+func weakDuplicate(left, right *Video) bool {
+	if left.FileName == "" || left.FileName != right.FileName || left.Size <= 0 || left.Size != right.Size {
+		return false
+	}
+	ls, rs := normalizeContentHash(left.SampledSHA256), normalizeContentHash(right.SampledSHA256)
+	if ls != "" && rs != "" && ls != rs {
+		return false
+	}
+	lh, rh := normalizeContentHash(left.ContentHash), normalizeContentHash(right.ContentHash)
+	return left.DriveID != right.DriveID || lh == "" || rh == "" || lh == rh
+}
+
+// weakDuplicateCompatibleSQL is the signal check of weakDuplicate for two
+// aliased video rows whose file name and size are already known to match.
+func weakDuplicateCompatibleSQL(left, right string) string {
+	return `(COALESCE(` + left + `.sampled_sha256, '') = '' OR COALESCE(` + right + `.sampled_sha256, '') = ''
+			OR ` + left + `.sampled_sha256 = ` + right + `.sampled_sha256)
+		AND (` + left + `.drive_id != ` + right + `.drive_id OR COALESCE(` + left + `.content_hash, '') = ''
+			OR COALESCE(` + right + `.content_hash, '') = '' OR ` + left + `.content_hash = ` + right + `.content_hash)`
+}
+
 // exactDuplicateReason returns the first exact key shared by two videos, or
 // an empty string when they share none.
 func exactDuplicateReason(left, right *Video) string {

@@ -3,7 +3,6 @@ package catalog
 import (
 	"context"
 	"database/sql"
-
 	"errors"
 	"strings"
 
@@ -91,7 +90,7 @@ func recordScannedDuplicate(ctx context.Context, exec videoRowExecer, source, du
 		return errors.New("catalog: scan duplicate requires both videos")
 	}
 	reason := exactDuplicateReason(source, duplicate)
-	if reason == "" && sameFileNameAndSize(source, duplicate) {
+	if reason == "" && weakDuplicate(source, duplicate) {
 		reason = dedupe.ReasonFileNameSize
 	}
 	if reason == "" {
@@ -121,8 +120,12 @@ func findScannedVideoDuplicate(ctx context.Context, query scanDuplicateQuerier, 
 	}
 	hasName := v.FileName != "" && v.Size > 0
 	if hasName {
-		clauses = append(clauses, "(file_name = ? AND size_bytes = ?)")
-		args = append(args, v.FileName, v.Size)
+		// The SQL form of weakDuplicate against the incoming observation.
+		sampled, hash := normalizeContentHash(v.SampledSHA256), normalizeContentHash(v.ContentHash)
+		clauses = append(clauses, `(file_name = ? AND size_bytes = ?
+			AND (COALESCE(sampled_sha256, '') = '' OR ? = '' OR sampled_sha256 = ?)
+			AND (drive_id != ? OR COALESCE(content_hash, '') = '' OR ? = '' OR content_hash = ?))`)
+		args = append(args, v.FileName, v.Size, sampled, sampled, v.DriveID, hash, hash)
 	}
 	if len(clauses) == 0 {
 		return nil, nil
@@ -158,8 +161,4 @@ ORDER BY `+order, args...)
 		return candidate, nil
 	}
 	return nil, rows.Err()
-}
-
-func sameFileNameAndSize(left, right *Video) bool {
-	return left.FileName != "" && left.FileName == right.FileName && left.Size > 0 && left.Size == right.Size
 }

@@ -123,6 +123,50 @@ func TestRestoreLiftsContentBlock(t *testing.T) {
 	}
 }
 
+func TestFileNameMatchRequiresAgreeingSignals(t *testing.T) {
+	ctx := context.Background()
+	cat := openCanonicalTestCatalog(t)
+	base := time.UnixMilli(1_800_000_000_000)
+	seedVideos(t, cat,
+		&Video{ID: "A", DriveID: "one", FileID: "a", ContentHash: "x", SampledSHA256: "s1", FileName: "1.mp4", Size: 10, CreatedAt: base},
+		&Video{ID: "X", DriveID: "two", FileID: "x", SampledSHA256: "s2", FileName: "1.mp4", Size: 10, CreatedAt: base.Add(time.Millisecond)},
+		&Video{ID: "Y", DriveID: "one", FileID: "y", ContentHash: "y", SampledSHA256: "s3", FileName: "1.mp4", Size: 10, CreatedAt: base.Add(2 * time.Millisecond)},
+		&Video{ID: "D", DriveID: "two", FileID: "d", FileName: "1.mp4", Size: 10, CreatedAt: base.Add(3 * time.Millisecond)},
+	)
+	assertCanonicalMatchesDynamic(t, cat)
+	// Different fingerprints, or different hashes on one drive, are different videos.
+	assertCanonicalFlag(t, cat, "A", true)
+	assertCanonicalFlag(t, cat, "X", true)
+	assertCanonicalFlag(t, cat, "Y", true)
+	assertCanonicalFlag(t, cat, "D", false)
+
+	if admit(t, cat, &Video{ID: "N", DriveID: "three", FileID: "n", FileName: "1.mp4", Size: 10}) {
+		t.Fatal("unproven name and size copy was admitted")
+	}
+
+	blacklist(t, cat, "A")
+	for _, id := range []string{"X", "Y"} {
+		if _, err := cat.GetVideo(ctx, id); err != nil {
+			t.Fatalf("%s was blacklisted with A: %v", id, err)
+		}
+	}
+	if _, err := cat.GetVideo(ctx, "D"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("D shared A's card and should be blacklisted with it: %v", err)
+	}
+}
+
+func TestScanAdmitsSameNameWithDifferentHashOnOneDrive(t *testing.T) {
+	cat := openCanonicalTestCatalog(t)
+	seedVideos(t, cat, &Video{ID: "A", DriveID: "one", FileID: "a", ContentHash: "x", FileName: "1.mp4", Size: 10})
+	if !admit(t, cat, &Video{ID: "Z", DriveID: "one", FileID: "z", ContentHash: "z", FileName: "1.mp4", Size: 10}) {
+		t.Fatal("same-drive file with a different provider hash was skipped")
+	}
+	// Without comparable signals the match stays a provisional duplicate.
+	if admit(t, cat, &Video{ID: "W", DriveID: "two", FileID: "w", FileName: "1.mp4", Size: 10}) {
+		t.Fatal("unproven copy on another drive was admitted")
+	}
+}
+
 func TestDeletionIncludesCopiesAwaitingUsableSize(t *testing.T) {
 	ctx := context.Background()
 	for _, physical := range []bool{false, true} {
