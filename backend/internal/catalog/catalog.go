@@ -1624,9 +1624,9 @@ func deleteVideoWithTombstoneTx(ctx context.Context, tx *sql.Tx, restoreVideo *V
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO deleted_videos (
   id, drive_id, file_id, parent_id, content_hash, sampled_sha256, blocks_content, file_name, size_bytes,
-  reason, source_deleted, canonical_video_id, restore_requested, restore_payload, asset_cleanup_after, deleted_at
+  reason, source_deleted, restore_requested, restore_payload, asset_cleanup_after, deleted_at
 )
-VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 0, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
   drive_id           = excluded.drive_id,
   file_id            = excluded.file_id,
@@ -1638,14 +1638,13 @@ ON CONFLICT(id) DO UPDATE SET
   size_bytes         = excluded.size_bytes,
   reason             = excluded.reason,
   source_deleted     = excluded.source_deleted,
-  canonical_video_id = excluded.canonical_video_id,
   restore_requested  = 0,
   restore_payload    = excluded.restore_payload,
   asset_cleanup_after = excluded.asset_cleanup_after,
   deleted_at         = excluded.deleted_at`,
 		restoreVideo.ID, restoreVideo.DriveID, restoreVideo.FileID, restoreVideo.ParentID, restoreVideo.ContentHash, normalizeContentHash(restoreVideo.SampledSHA256),
 		restoreVideo.FileName, restoreVideo.Size,
-		options.Reason, boolToInt(options.SourceDeleted), "", restorePayload, unixMilliOrZero(options.AssetCleanupAfter), now); err != nil {
+		options.Reason, boolToInt(options.SourceDeleted), restorePayload, unixMilliOrZero(options.AssetCleanupAfter), now); err != nil {
 		return err
 	}
 	return deleteVideoRowTx(ctx, tx, restoreVideo.ID)

@@ -75,7 +75,7 @@ var catalogTables = []catalogTable{
 	{name: "videos", kind: driveRows, ownerColumn: "drive_id"},
 	{name: "scans", kind: driveRows, ownerColumn: "drive_id"},
 	{name: "merged_videos", kind: driveRows, ownerColumn: "drive_id", videoRefs: []string{"video_id", "canonical_video_id"}},
-	{name: "deleted_videos", kind: driveRows, ownerColumn: "drive_id", videoRefs: []string{"canonical_video_id"}},
+	{name: "deleted_videos", kind: driveRows, ownerColumn: "drive_id"},
 	{name: "crawler_seen_sources", kind: driveRows, ownerColumn: "drive_id", videoRefs: []string{"canonical_video_id"}},
 	{name: "crawler_discoveries", kind: driveRows, ownerColumn: "drive_id"},
 	{name: "crawler_tasks", kind: driveRows, ownerColumn: "drive_id"},
