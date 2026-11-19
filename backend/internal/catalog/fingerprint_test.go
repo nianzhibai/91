@@ -57,10 +57,10 @@ func TestListVideosDeduplicatesBySampledSHA256(t *testing.T) {
 	}
 
 	const sampled = "abc123"
-	if err := cat.UpdateVideoFingerprint(ctx, "drive-a-file-a", sampled, "ready", ""); err != nil {
+	if _, err := cat.UpdateVideoFingerprintForSource(ctx, storedVideo(t, cat, "drive-a-file-a"), sampled, "ready", ""); err != nil {
 		t.Fatalf("update a fingerprint: %v", err)
 	}
-	if err := cat.UpdateVideoFingerprint(ctx, "drive-b-file-b", sampled, "ready", ""); err != nil {
+	if _, err := cat.UpdateVideoFingerprintForSource(ctx, storedVideo(t, cat, "drive-b-file-b"), sampled, "ready", ""); err != nil {
 		t.Fatalf("update b fingerprint: %v", err)
 	}
 
@@ -139,7 +139,7 @@ func TestDuplicateAssetCleanupCandidates(t *testing.T) {
 	}
 	const sampled = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	for _, v := range videos {
-		if err := cat.UpdateVideoFingerprint(ctx, v.ID, sampled, "ready", ""); err != nil {
+		if _, err := cat.UpdateVideoFingerprintForSource(ctx, storedVideo(t, cat, v.ID), sampled, "ready", ""); err != nil {
 			t.Fatalf("fingerprint %s: %v", v.ID, err)
 		}
 	}
@@ -176,4 +176,14 @@ func TestDuplicateAssetCleanupCandidates(t *testing.T) {
 	if thumbStatus != "pending" {
 		t.Fatalf("thumbnail_status = %q, want pending", thumbStatus)
 	}
+}
+
+// storedVideo loads the current row for writes guarded by the row's source.
+func storedVideo(t *testing.T, cat *Catalog, id string) *Video {
+	t.Helper()
+	v, err := cat.GetVideo(context.Background(), id)
+	if err != nil {
+		t.Fatalf("load %s: %v", id, err)
+	}
+	return v
 }

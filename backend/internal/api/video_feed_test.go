@@ -311,7 +311,11 @@ func TestVideoFeedSkipsRemovedSnapshotRowsAndExpires(t *testing.T) {
 	}
 
 	removedID := server.videoFeeds[first.FeedToken].videoIDs[first.NextCursor]
-	if err := cat.HideVideo(ctx, removedID); err != nil {
+	removed, err := cat.GetVideo(ctx, removedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.MarkInvalidSizeSources(ctx, removed.DriveID, []string{removed.FileID}); err != nil {
 		t.Fatalf("hide snapshot row: %v", err)
 	}
 	nextReq := httptest.NewRequest(

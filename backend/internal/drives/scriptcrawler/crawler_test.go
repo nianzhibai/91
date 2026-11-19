@@ -468,7 +468,7 @@ func TestCrawlerRunOnceSkipsThenRestoresRetainedLocalVideo(t *testing.T) {
 	if _, err := cat.EnsureCrawlerTagForVideo(ctx, v.ID, crawlerTag.Label); err != nil {
 		t.Fatal(err)
 	}
-	if err := cat.DeleteVideoWithTombstone(ctx, v.ID); err != nil {
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, v.ID, catalog.DeleteVideoTombstoneOptions{}); err != nil {
 		t.Fatalf("delete with tombstone: %v", err)
 	}
 	if err := cat.ReconcileVideoTags(ctx); err != nil {
@@ -579,7 +579,7 @@ func TestImporterRestoreRequestedVideosMatchesCurrentRulesForTaglessVideo(t *tes
 					t.Fatal(err)
 				}
 			}
-			if err := cat.DeleteVideoWithTombstone(ctx, video.ID); err != nil {
+			if err := cat.DeleteVideoWithTombstoneOptions(ctx, video.ID, catalog.DeleteVideoTombstoneOptions{}); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := cat.CreateTagAndClassify(ctx, "travel", "user"); err != nil {

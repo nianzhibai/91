@@ -41,7 +41,7 @@ func TestRandomVideosExcluding(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed hidden: %v", err)
 	}
-	if err := cat.HideVideo(ctx, "v-hidden"); err != nil {
+	if err := cat.MarkInvalidSizeSources(ctx, "drive", []string{"f-hidden"}); err != nil {
 		t.Fatalf("hide v-hidden: %v", err)
 	}
 

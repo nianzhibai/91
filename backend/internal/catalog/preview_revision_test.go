@@ -53,7 +53,7 @@ func TestPreviewRevisionChangesOnlyWithPreviewAsset(t *testing.T) {
 		t.Fatalf("metadata update changed preview revision: got %v, want %v", afterMetadata.PreviewUpdatedAt, revision)
 	}
 
-	if err := cat.UpdatePreview(ctx, "video-1", "/tmp/video-1-v2.mp4", "ready"); err != nil {
+	if err := cat.UpdatePreviewForSource(ctx, storedVideo(t, cat, "video-1"), "/tmp/video-1-v2.mp4", "ready"); err != nil {
 		t.Fatalf("update preview: %v", err)
 	}
 	afterPreview, err := cat.GetVideo(ctx, "video-1")
@@ -101,7 +101,7 @@ func TestReadyPreviewRequeuesFailedThumbnail(t *testing.T) {
 	if err := cat.UpdateVideoMeta(ctx, video.ID, VideoMetaPatch{ThumbnailStatus: "failed"}); err != nil {
 		t.Fatalf("mark thumbnail failed: %v", err)
 	}
-	if err := cat.UpdatePreview(ctx, video.ID, "/tmp/preview.mp4", "ready"); err != nil {
+	if err := cat.UpdatePreviewForSource(ctx, storedVideo(t, cat, video.ID), "/tmp/preview.mp4", "ready"); err != nil {
 		t.Fatalf("mark preview ready: %v", err)
 	}
 
@@ -137,15 +137,15 @@ func TestReadyPreviewRefreshesPendingThumbnailRetryBudget(t *testing.T) {
 		t.Fatalf("seed video: %v", err)
 	}
 	for i := 0; i < 2; i++ {
-		if _, err := cat.IncrementThumbnailFailures(ctx, video.ID); err != nil {
+		if _, err := cat.IncrementThumbnailFailuresForSource(ctx, storedVideo(t, cat, video.ID)); err != nil {
 			t.Fatalf("increment thumbnail failures: %v", err)
 		}
 	}
-	if err := cat.UpdatePreview(ctx, video.ID, "/tmp/preview.mp4", "ready"); err != nil {
+	if err := cat.UpdatePreviewForSource(ctx, storedVideo(t, cat, video.ID), "/tmp/preview.mp4", "ready"); err != nil {
 		t.Fatalf("mark preview ready: %v", err)
 	}
 
-	failures, err := cat.IncrementThumbnailFailures(ctx, video.ID)
+	failures, err := cat.IncrementThumbnailFailuresForSource(ctx, storedVideo(t, cat, video.ID))
 	if err != nil {
 		t.Fatalf("read refreshed failure budget: %v", err)
 	}

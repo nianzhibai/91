@@ -22,15 +22,13 @@ func TestListLegacyHiddenVideosForMigration(t *testing.T) {
 
 	now := time.Now()
 	for _, id := range []string{"v1", "v2", "v3"} {
+		// v2 is a legacy hide, which current code no longer writes.
 		if err := cat.UpsertVideo(ctx, &Video{
-			ID: id, DriveID: "drive", FileID: "f-" + id, Title: id,
+			ID: id, DriveID: "drive", FileID: "f-" + id, Title: id, Hidden: id == "v2",
 			PublishedAt: now, CreatedAt: now, UpdatedAt: now,
 		}); err != nil {
 			t.Fatalf("seed %s: %v", id, err)
 		}
-	}
-	if err := cat.HideVideo(ctx, "v2"); err != nil {
-		t.Fatalf("hide v2: %v", err)
 	}
 
 	visible, total, err := cat.ListVideos(ctx, ListParams{Page: 1, PageSize: 50})
@@ -85,7 +83,7 @@ func TestBlacklistListAndRemove(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("seed %s: %v", s.id, err)
 		}
-		err := cat.DeleteVideoWithTombstone(ctx, s.id)
+		err := cat.DeleteVideoWithTombstoneOptions(ctx, s.id, DeleteVideoTombstoneOptions{})
 		if err != nil {
 			t.Fatalf("tombstone %s: %v", s.id, err)
 		}
@@ -198,7 +196,7 @@ func TestBlacklistRestorePolicies(t *testing.T) {
 	}
 
 	seedVideo("remote-video", "remote", "remote-file", "Remote")
-	if err := cat.DeleteVideoWithTombstone(ctx, "remote-video"); err != nil {
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, "remote-video", DeleteVideoTombstoneOptions{}); err != nil {
 		t.Fatalf("tombstone remote: %v", err)
 	}
 	if got := findDeleted("remote-video").RestorePolicy; got != DeletedVideoRestorePolicyScan {
@@ -218,7 +216,7 @@ func TestBlacklistRestorePolicies(t *testing.T) {
 	if err := cat.MarkCrawlerSourceSeen(ctx, "scriptcrawler", "crawler-a", "source-1", "imported", crawlerID, "sampled", 123); err != nil {
 		t.Fatalf("mark crawler source seen: %v", err)
 	}
-	if err := cat.DeleteVideoWithTombstone(ctx, crawlerID); err != nil {
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, crawlerID, DeleteVideoTombstoneOptions{}); err != nil {
 		t.Fatalf("tombstone crawler: %v", err)
 	}
 	if got := findDeleted(crawlerID).RestorePolicy; got != DeletedVideoRestorePolicyCrawler {
@@ -247,23 +245,10 @@ func TestBlacklistRestorePolicies(t *testing.T) {
 		t.Fatalf("blacklist count after crawler restore request = %d err=%v, want 0", blacklisted, err)
 	}
 
-	seedVideo("source-deleted", "remote", "gone", "Gone")
-	if err := cat.DeleteVideoWithTombstoneOptions(ctx, "source-deleted", DeleteVideoTombstoneOptions{
-		SourceDeleted: true,
-	}); err != nil {
-		t.Fatalf("delete source-deleted video: %v", err)
-	}
-	if deleted, err := cat.IsVideoDeleted(ctx, "source-deleted"); err != nil || deleted {
-		t.Fatalf("source-deleted should not keep tombstone: deleted=%v err=%v", deleted, err)
-	}
-	if _, err := cat.GetVideo(ctx, "source-deleted"); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("source-deleted catalog lookup error = %v, want sql.ErrNoRows", err)
-	}
-
 	// 本地上传的源文件被保留，但这个盘不支持枚举，永远不会被扫盘或爬取重新
 	// 发现，所以取消拉黑必须当场重建记录。
 	seedVideo("local-upload-video", "local-upload", "upload-file", "Upload")
-	if err := cat.DeleteVideoWithTombstone(ctx, "local-upload-video"); err != nil {
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, "local-upload-video", DeleteVideoTombstoneOptions{}); err != nil {
 		t.Fatalf("tombstone local upload: %v", err)
 	}
 	if got := findDeleted("local-upload-video").RestorePolicy; got != DeletedVideoRestorePolicyDirect {
@@ -272,18 +257,6 @@ func TestBlacklistRestorePolicies(t *testing.T) {
 	if err := cat.RemoveDeletedVideo(ctx, "local-upload-video"); !errors.Is(err, ErrDeletedVideoSourceCheckRequired) {
 		t.Fatalf("unchecked direct restore error = %v, want ErrDeletedVideoSourceCheckRequired", err)
 	}
-
-	// 源文件已删的本地上传仍然不可恢复：source_deleted 的优先级高于来源类型。
-	seedVideo("local-upload-gone", "local-upload", "gone-file", "Gone upload")
-	if err := cat.DeleteVideoWithTombstoneOptions(ctx, "local-upload-gone", DeleteVideoTombstoneOptions{
-		SourceDeleted: true,
-	}); err != nil {
-		t.Fatalf("delete local upload with source: %v", err)
-	}
-	if deleted, err := cat.IsVideoDeleted(ctx, "local-upload-gone"); err != nil || deleted {
-		t.Fatalf("source-deleted local upload should not keep tombstone: deleted=%v err=%v", deleted, err)
-	}
-
 }
 
 // 取消拉黑本地上传时记录当场重建，且标题、作者、标签这些用户数据都要跟着回来
@@ -310,7 +283,7 @@ func TestRemoveDeletedVideoDirectRestoresLocalUploadLosslessly(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed video: %v", err)
 	}
-	if err := cat.DeleteVideoWithTombstone(ctx, "local-upload-rich"); err != nil {
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, "local-upload-rich", DeleteVideoTombstoneOptions{}); err != nil {
 		t.Fatalf("tombstone video: %v", err)
 	}
 	if _, err := cat.GetVideo(ctx, "local-upload-rich"); !errors.Is(err, sql.ErrNoRows) {
@@ -382,7 +355,7 @@ func TestRemoveDeletedVideoDirectRestoresWithoutPayload(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed video: %v", err)
 	}
-	if err := cat.DeleteVideoWithTombstone(ctx, "legacy-upload"); err != nil {
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, "legacy-upload", DeleteVideoTombstoneOptions{}); err != nil {
 		t.Fatalf("tombstone video: %v", err)
 	}
 	if _, err := cat.db.ExecContext(ctx,
@@ -441,7 +414,7 @@ func TestRestoreDeletedVideoSkipsMissingTags(t *testing.T) {
 			if err := cat.UpsertVideo(ctx, video); err != nil {
 				t.Fatal(err)
 			}
-			if err := cat.DeleteVideoWithTombstone(ctx, video.ID); err != nil {
+			if err := cat.DeleteVideoWithTombstoneOptions(ctx, video.ID, DeleteVideoTombstoneOptions{}); err != nil {
 				t.Fatal(err)
 			}
 			if test.legacy {
@@ -516,7 +489,7 @@ func TestCompleteCrawlerRestoreRollsBackTagsAndSourceIdentity(t *testing.T) {
 	if err := cat.MarkCrawlerSourceSeen(ctx, "scriptcrawler", video.DriveID, "source-1", "imported", video.ID, "before", video.Size); err != nil {
 		t.Fatal(err)
 	}
-	if err := cat.DeleteVideoWithTombstone(ctx, video.ID); err != nil {
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, video.ID, DeleteVideoTombstoneOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	deletedTag := mustTagByLabel(t, ctx, cat, "已删除标签")
@@ -607,7 +580,7 @@ func TestCompleteCrawlerRestoreMatchesCurrentRulesForTaglessVideo(t *testing.T) 
 					t.Fatal(err)
 				}
 			}
-			if err := cat.DeleteVideoWithTombstone(ctx, video.ID); err != nil {
+			if err := cat.DeleteVideoWithTombstoneOptions(ctx, video.ID, DeleteVideoTombstoneOptions{}); err != nil {
 				t.Fatal(err)
 			}
 			if test.deletedTag {
@@ -735,7 +708,7 @@ func TestCompleteCrawlerRestorePreservesExistingVideo(t *testing.T) {
 			if err := cat.MarkCrawlerSourceSeen(ctx, "scriptcrawler", original.DriveID, "source-1", "imported", original.ID, original.SampledSHA256, original.Size); err != nil {
 				t.Fatal(err)
 			}
-			if err := cat.DeleteVideoWithTombstone(ctx, original.ID); err != nil {
+			if err := cat.DeleteVideoWithTombstoneOptions(ctx, original.ID, DeleteVideoTombstoneOptions{}); err != nil {
 				t.Fatal(err)
 			}
 			if err := cat.RemoveDeletedVideo(ctx, original.ID); err != nil {
@@ -849,7 +822,7 @@ func TestCompleteCrawlerRestoreRejectsMismatchedSources(t *testing.T) {
 			if err := cat.UpsertVideo(ctx, video); err != nil {
 				t.Fatal(err)
 			}
-			if err := cat.DeleteVideoWithTombstone(ctx, video.ID); err != nil {
+			if err := cat.DeleteVideoWithTombstoneOptions(ctx, video.ID, DeleteVideoTombstoneOptions{}); err != nil {
 				t.Fatal(err)
 			}
 			if err := cat.RemoveDeletedVideo(ctx, video.ID); err != nil {
@@ -923,7 +896,7 @@ VALUES (?, '{}', 'generated', '', ?, ?)`, "自动标签", now.UnixMilli(), now.U
 	if err := cat.syncVideoTagsJSON(ctx, "local-upload-auto-tags", false); err != nil {
 		t.Fatalf("sync automatic tag JSON: %v", err)
 	}
-	if err := cat.DeleteVideoWithTombstone(ctx, "local-upload-auto-tags"); err != nil {
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, "local-upload-auto-tags", DeleteVideoTombstoneOptions{}); err != nil {
 		t.Fatalf("tombstone video: %v", err)
 	}
 
@@ -965,7 +938,7 @@ func TestRemoveDeletedVideoDirectIsAtomicWhenTombstoneDeleteFails(t *testing.T) 
 	}); err != nil {
 		t.Fatalf("seed video: %v", err)
 	}
-	if err := cat.DeleteVideoWithTombstone(ctx, "local-upload-atomic"); err != nil {
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, "local-upload-atomic", DeleteVideoTombstoneOptions{}); err != nil {
 		t.Fatalf("tombstone video: %v", err)
 	}
 	if _, err := cat.db.ExecContext(ctx, `
@@ -1008,7 +981,7 @@ func TestRemoveDeletedVideoDirectFinishesLegacyPartialRestoreWithoutLosingActivi
 	if err := cat.UpsertVideo(ctx, original); err != nil {
 		t.Fatalf("seed video: %v", err)
 	}
-	if err := cat.DeleteVideoWithTombstone(ctx, original.ID); err != nil {
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, original.ID, DeleteVideoTombstoneOptions{}); err != nil {
 		t.Fatalf("tombstone video: %v", err)
 	}
 
@@ -1074,7 +1047,7 @@ func TestRemoveDeletedVideoDirectRefreshesChangedSourceMetadata(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed video: %v", err)
 	}
-	if err := cat.DeleteVideoWithTombstone(ctx, "local-upload-replaced"); err != nil {
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, "local-upload-replaced", DeleteVideoTombstoneOptions{}); err != nil {
 		t.Fatalf("tombstone video: %v", err)
 	}
 	if _, err := cat.RestoreDeletedVideo(ctx, "local-upload-replaced", func(string, string) (DeletedVideoSourceInfo, error) {
@@ -1098,7 +1071,7 @@ func TestRemoveDeletedVideoDirectRefreshesChangedSourceMetadata(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed same-size video: %v", err)
 	}
-	if err := cat.DeleteVideoWithTombstone(ctx, "local-upload-replaced-same-size"); err != nil {
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, "local-upload-replaced-same-size", DeleteVideoTombstoneOptions{}); err != nil {
 		t.Fatalf("tombstone same-size video: %v", err)
 	}
 	if _, err := cat.RestoreDeletedVideo(ctx, "local-upload-replaced-same-size", func(string, string) (DeletedVideoSourceInfo, error) {
@@ -1251,7 +1224,7 @@ func TestDeletedVideoSourceDeletionQueue(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed queued video: %v", err)
 	}
-	if err := cat.DeleteVideoWithTombstone(ctx, "queued-video"); err != nil {
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, "queued-video", DeleteVideoTombstoneOptions{}); err != nil {
 		t.Fatalf("tombstone queued video: %v", err)
 	}
 
@@ -1278,7 +1251,7 @@ func TestDeletedVideoSourceDeletionQueue(t *testing.T) {
 		t.Fatalf("pending source deletion by ids = %#v", byIDs)
 	}
 
-	if err := cat.PurgeDeletedVideo(ctx, "queued-video"); err != nil {
+	if err := cat.PurgeSourceTombstones(ctx, &Video{DriveID: "drive", FileID: "file"}); err != nil {
 		t.Fatalf("purge deleted video: %v", err)
 	}
 	byIDs, err = cat.ListDeletedVideosPendingSourceDeletionByIDs(ctx, []string{"queued-video"})
@@ -1308,7 +1281,7 @@ func TestDeletedVideoSourceDeletionQueue(t *testing.T) {
 	}
 }
 
-func TestPurgeDeletedVideoKeepsCrawlerSeenMetadata(t *testing.T) {
+func TestPurgeSourceTombstonesKeepsCrawlerSeenMetadata(t *testing.T) {
 	ctx := context.Background()
 	cat, err := Open(t.TempDir() + "/catalog.db")
 	if err != nil {
@@ -1334,11 +1307,11 @@ func TestPurgeDeletedVideoKeepsCrawlerSeenMetadata(t *testing.T) {
 	if err := cat.MarkCrawlerSourceSeen(ctx, "scriptcrawler", "crawler-a", "source-1", "imported", videoID, "sampled", 123); err != nil {
 		t.Fatalf("mark crawler source seen: %v", err)
 	}
-	if err := cat.DeleteVideoWithTombstone(ctx, videoID); err != nil {
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, videoID, DeleteVideoTombstoneOptions{}); err != nil {
 		t.Fatalf("tombstone crawler video: %v", err)
 	}
 
-	if err := cat.PurgeDeletedVideo(ctx, videoID); err != nil {
+	if err := cat.PurgeSourceTombstones(ctx, &Video{DriveID: "crawler-a", FileID: "source-1.mp4"}); err != nil {
 		t.Fatalf("purge crawler tombstone: %v", err)
 	}
 	if deleted, err := cat.IsVideoDeleted(ctx, videoID); err != nil || deleted {

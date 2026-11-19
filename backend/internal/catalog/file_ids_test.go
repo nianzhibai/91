@@ -153,7 +153,7 @@ func TestDeleteVideoWithTombstonePreventsReimport(t *testing.T) {
 		t.Fatalf("upsert: %v", err)
 	}
 
-	if err := cat.DeleteVideoWithTombstone(ctx, "scriptcrawler-crawler-a-source004"); err != nil {
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, "scriptcrawler-crawler-a-source004", DeleteVideoTombstoneOptions{}); err != nil {
 		t.Fatalf("delete with tombstone: %v", err)
 	}
 	if _, err := cat.GetVideo(ctx, "scriptcrawler-crawler-a-source004"); err != sql.ErrNoRows {

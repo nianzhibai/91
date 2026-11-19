@@ -151,7 +151,7 @@ func TestStaleAssetCleanupCannotDeleteNewDeletionDuringGrace(t *testing.T) {
 	if err != nil || len(ids) != 1 {
 		t.Fatalf("old cleanup snapshot = %v, %v", ids, err)
 	}
-	if err := app.cat.PurgeDeletedVideo(ctx, video.ID); err != nil {
+	if err := app.cat.PurgeSourceTombstones(ctx, video); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.cat.UpsertVideo(ctx, video); err != nil {

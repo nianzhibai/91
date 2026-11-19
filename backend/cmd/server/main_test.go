@@ -2218,7 +2218,7 @@ func TestRestoreDeletedVideoQueuesDerivedAssetsAndInvalidatesTags(t *testing.T) 
 	if err := cat.UpsertVideo(ctx, video); err != nil {
 		t.Fatalf("seed video: %v", err)
 	}
-	if err := cat.DeleteVideoWithTombstone(ctx, video.ID); err != nil {
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, video.ID, catalog.DeleteVideoTombstoneOptions{}); err != nil {
 		t.Fatalf("tombstone video: %v", err)
 	}
 
@@ -2279,7 +2279,7 @@ func TestBlacklistSourceDeleteSkipsSnapshotRestoredBeforeProcessing(t *testing.T
 	if err := cat.UpsertVideo(ctx, video); err != nil {
 		t.Fatalf("seed video: %v", err)
 	}
-	if err := cat.DeleteVideoWithTombstone(ctx, video.ID); err != nil {
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, video.ID, catalog.DeleteVideoTombstoneOptions{}); err != nil {
 		t.Fatalf("tombstone video: %v", err)
 	}
 	snapshot, err := cat.ListDeletedVideosPendingSourceDeletion(ctx)
@@ -2316,7 +2316,7 @@ func TestBlacklistSourceDeleteSkipsSnapshotRestoredBeforeProcessing(t *testing.T
 	// Reusing the same stable video ID must not let the old job claim a newer
 	// tombstone generation created after the restore.
 	time.Sleep(2 * time.Millisecond)
-	if err := cat.DeleteVideoWithTombstone(ctx, video.ID); err != nil {
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, video.ID, catalog.DeleteVideoTombstoneOptions{}); err != nil {
 		t.Fatalf("create newer tombstone: %v", err)
 	}
 	skipped, err = app.deleteBlacklistedVideoSource(ctx, snapshot[0])
@@ -2354,7 +2354,7 @@ func TestBlacklistSourceDeleteAndRestoreAreSerializedPerVideo(t *testing.T) {
 	if err := cat.UpsertVideo(ctx, video); err != nil {
 		t.Fatalf("seed video: %v", err)
 	}
-	if err := cat.DeleteVideoWithTombstone(ctx, video.ID); err != nil {
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, video.ID, catalog.DeleteVideoTombstoneOptions{}); err != nil {
 		t.Fatalf("tombstone video: %v", err)
 	}
 	snapshot, err := cat.ListDeletedVideosPendingSourceDeletion(ctx)
@@ -2446,7 +2446,7 @@ func TestRestoreDeletedVideoRejectsEmptySource(t *testing.T) {
 	if err := cat.UpsertVideo(ctx, video); err != nil {
 		t.Fatalf("seed video: %v", err)
 	}
-	if err := cat.DeleteVideoWithTombstone(ctx, video.ID); err != nil {
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, video.ID, catalog.DeleteVideoTombstoneOptions{}); err != nil {
 		t.Fatalf("tombstone video: %v", err)
 	}
 	drv := &serverRestorableLocalUploadDrive{entry: &drives.Entry{ID: video.FileID, Name: video.FileName}}
@@ -3992,7 +3992,7 @@ func TestRunBlacklistSourceDeleteMarksSuccessAndKeepsFailuresPending(t *testing.
 		if err := cat.UpsertVideo(ctx, v); err != nil {
 			t.Fatalf("seed %s: %v", v.ID, err)
 		}
-		if err := cat.DeleteVideoWithTombstone(ctx, v.ID); err != nil {
+		if err := cat.DeleteVideoWithTombstoneOptions(ctx, v.ID, catalog.DeleteVideoTombstoneOptions{}); err != nil {
 			t.Fatalf("tombstone %s: %v", v.ID, err)
 		}
 	}
@@ -4061,7 +4061,7 @@ func TestRunBlacklistSourceDeleteCanTargetSelectedIDs(t *testing.T) {
 		if err := cat.UpsertVideo(ctx, v); err != nil {
 			t.Fatalf("seed %s: %v", v.ID, err)
 		}
-		if err := cat.DeleteVideoWithTombstone(ctx, v.ID); err != nil {
+		if err := cat.DeleteVideoWithTombstoneOptions(ctx, v.ID, catalog.DeleteVideoTombstoneOptions{}); err != nil {
 			t.Fatalf("tombstone %s: %v", v.ID, err)
 		}
 	}
@@ -4386,7 +4386,7 @@ func TestCleanupDuplicateVideoAssetsDeletesExactDuplicateRows(t *testing.T) {
 		if err := cat.UpsertVideo(ctx, v); err != nil {
 			t.Fatalf("seed %s: %v", v.ID, err)
 		}
-		if err := cat.UpdateVideoFingerprint(ctx, v.ID, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "ready", ""); err != nil {
+		if _, err := cat.UpdateVideoFingerprintForSource(ctx, v, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "ready", ""); err != nil {
 			t.Fatalf("fingerprint %s: %v", v.ID, err)
 		}
 	}

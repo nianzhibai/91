@@ -274,7 +274,7 @@ func TestPreviewReadyFollowUpSurvivesRunningThumbnailAttempt(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("initial thumbnail generation did not start")
 	}
-	if err := cat.UpdatePreview(ctx, video.ID, "/tmp/preview.mp4", "ready"); err != nil {
+	if err := cat.UpdatePreviewForSource(ctx, video, "/tmp/preview.mp4", "ready"); err != nil {
 		t.Fatalf("mark preview ready: %v", err)
 	}
 	ready := *video
@@ -568,7 +568,7 @@ func seedReadyStableTeaser(t *testing.T, id string) (*catalog.Catalog, *catalog.
 	if err := cat.UpsertVideo(ctx, video); err != nil {
 		t.Fatal(err)
 	}
-	if err := cat.UpdatePreview(ctx, video.ID, filepath.Base(localPath), "ready"); err != nil {
+	if err := cat.UpdatePreviewForSource(ctx, video, filepath.Base(localPath), "ready"); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err := cat.GetVideo(ctx, video.ID)

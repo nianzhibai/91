@@ -383,7 +383,11 @@ c=read();send(c,"item",discovery_key="one",source_id="source",title="New",media=
 	}
 	result, err := c.RunTask(context.Background(), task, func(ctx context.Context, task *Task) error {
 		return task.RunStage(ctx, "generation", func(ctx context.Context) error {
-			return c.cfg.Catalog.UpdatePreview(ctx, task.Result.ImportedVideoIDs[0], "", "failed")
+			video, err := c.cfg.Catalog.GetVideo(ctx, task.Result.ImportedVideoIDs[0])
+			if err != nil {
+				return err
+			}
+			return c.cfg.Catalog.UpdatePreviewForSource(ctx, video, "", "failed")
 		})
 	})
 	if err == nil || result.State != "partial" || result.NewVideos != 1 || result.Failed != 1 || len(result.Issues) != 1 || result.Issues[0].Stage != "generation" || result.Issues[0].VideoID == "" {

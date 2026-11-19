@@ -52,7 +52,7 @@ func TestDriveChangesFollowCommittedWritesAndExcludeFailedWrites(t *testing.T) {
 	before = cat.DriveEvents().Version("a", driveevents.MediaChanged)
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
-	if err := cat.UpdatePreview(canceled, "video", "preview.mp4", "ready"); err == nil {
+	if err := cat.UpdatePreviewForSource(canceled, storedVideo(t, cat, "video"), "preview.mp4", "ready"); err == nil {
 		t.Fatal("canceled write succeeded")
 	}
 	if cat.DriveEvents().Version("a", driveevents.MediaChanged) != before {

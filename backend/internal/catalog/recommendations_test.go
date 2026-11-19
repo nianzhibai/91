@@ -52,7 +52,7 @@ func TestListRecommendationCandidatesBoundsAndCombinesTagFilters(t *testing.T) {
 			t.Fatalf("seed %s: %v", video.ID, err)
 		}
 	}
-	if err := cat.HideVideo(ctx, "hidden-shared"); err != nil {
+	if err := cat.MarkInvalidSizeSources(ctx, "drive", []string{"hidden-shared"}); err != nil {
 		t.Fatalf("hide tagged candidate: %v", err)
 	}
 

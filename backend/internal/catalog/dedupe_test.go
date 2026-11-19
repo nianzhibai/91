@@ -250,7 +250,11 @@ func TestApplyDuplicateVideoDeletionsRejectsRegeneratedAssets(t *testing.T) {
 			return cat.UpdateVideoMeta(context.Background(), id, VideoMetaPatch{ThumbnailURL: "/p/thumb/" + id})
 		},
 		"preview": func(cat *Catalog, id string) error {
-			return cat.UpdatePreview(context.Background(), id, id+".mp4", "ready")
+			source, err := cat.GetVideo(context.Background(), id)
+			if err != nil {
+				return err
+			}
+			return cat.UpdatePreviewForSource(context.Background(), source, id+".mp4", "ready")
 		},
 	}
 	for asset, regen := range regenerate {

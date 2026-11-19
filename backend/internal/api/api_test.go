@@ -2283,7 +2283,11 @@ func TestHandleShortsNextSkipsVideosHiddenAfterFeedCreation(t *testing.T) {
 		t.Fatalf("stored feed = %#v, want 3 ids", feed)
 	}
 	hiddenID := feed.videoIDs[first.NextCursor]
-	if err := cat.HideVideo(ctx, hiddenID); err != nil {
+	hidden, err := cat.GetVideo(ctx, hiddenID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.MarkInvalidSizeSources(ctx, hidden.DriveID, []string{hidden.FileID}); err != nil {
 		t.Fatalf("hide %s: %v", hiddenID, err)
 	}
 

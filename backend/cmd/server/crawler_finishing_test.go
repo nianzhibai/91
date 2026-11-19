@@ -338,7 +338,7 @@ print(json.dumps(dict(type="error", request_id=c["request_id"], scope="source", 
 				}
 			}
 			restoreID := scriptcrawler.BuildVideoID(source.ID(), "restore")
-			if err := cat.DeleteVideoWithTombstone(ctx, restoreID); err != nil {
+			if err := cat.DeleteVideoWithTombstoneOptions(ctx, restoreID, catalog.DeleteVideoTombstoneOptions{}); err != nil {
 				t.Fatal(err)
 			}
 			if err := cat.RemoveDeletedVideo(ctx, restoreID); err != nil {

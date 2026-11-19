@@ -23,7 +23,7 @@ func TestCrawlerIdentityBackfillPreservesLegacyAndDeletedSources(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := cat.DeleteVideoWithTombstone(ctx, "scriptcrawler-demo-deleted"); err != nil {
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, "scriptcrawler-demo-deleted", DeleteVideoTombstoneOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := cat.BackfillCrawlerSources(ctx, "demo"); err != nil {

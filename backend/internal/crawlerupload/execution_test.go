@@ -293,10 +293,14 @@ func TestUploadReportsEachLocalProblemAndContinuesReadyVideos(t *testing.T) {
 	}
 	fingerprint := writeCrawlerVideo(t, cat, src, "c-fingerprint", ".mp4", []byte("fingerprint"), false)
 	preview := writeCrawlerVideo(t, cat, src, "d-preview", ".mp4", []byte("preview"), true)
-	if err := cat.UpdateVideoFingerprint(ctx, preview, "unique-preview-fingerprint", "ready", ""); err != nil {
+	previewVideo, err := cat.GetVideo(ctx, preview)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := cat.UpdatePreview(ctx, preview, "", "failed"); err != nil {
+	if _, err := cat.UpdateVideoFingerprintForSource(ctx, previewVideo, "unique-preview-fingerprint", "ready", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.UpdatePreviewForSource(ctx, previewVideo, "", "failed"); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.RunOnce(ctx); err == nil {
@@ -328,7 +332,11 @@ func TestUploadPagesPastFiftyWithoutRevisitingMigratedRows(t *testing.T) {
 	cat, src, target, m := uploadTestSetup(t)
 	for i := 0; i < 61; i++ {
 		id := writeCrawlerVideo(t, cat, src, fmt.Sprintf("video-%03d", i), ".mp4", []byte("payload"), true)
-		if err := cat.UpdateVideoFingerprint(ctx, id, fmt.Sprintf("%064x", i+1), "ready", ""); err != nil {
+		video, err := cat.GetVideo(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := cat.UpdateVideoFingerprintForSource(ctx, video, fmt.Sprintf("%064x", i+1), "ready", ""); err != nil {
 			t.Fatal(err)
 		}
 	}

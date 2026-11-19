@@ -193,7 +193,7 @@ func TestDurationBackfillProviderErrorsCooldownWithoutThumbnailRetries(t *testin
 			if err != nil || len(ready) != 1 || ready[0].DurationSeconds != 0 {
 				t.Fatalf("duration failure changed cover state or metadata: %v, %v", ready, err)
 			}
-			failures, err := cat.IncrementThumbnailFailures(ctx, video.ID)
+			failures, err := cat.IncrementThumbnailFailuresForSource(ctx, video)
 			if err != nil || failures != 1 {
 				t.Fatalf("duration failure consumed thumbnail retries: failures=%d err=%v", failures, err)
 			}
@@ -283,7 +283,7 @@ func TestPreviewReadyFollowUpSurvivesCanceledDurationBackfill(t *testing.T) {
 	if err := cat.UpdateVideoMeta(runCtx, video.ID, catalog.VideoMetaPatch{DurationSeconds: 42}); err != nil {
 		t.Fatal(err)
 	}
-	if err := cat.UpdatePreview(runCtx, video.ID, "preview.mp4", "ready"); err != nil {
+	if err := cat.UpdatePreviewForSource(runCtx, video, "preview.mp4", "ready"); err != nil {
 		t.Fatal(err)
 	}
 	ready, err := cat.GetVideo(runCtx, video.ID)

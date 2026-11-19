@@ -30,7 +30,7 @@ func TestCountDriveAssetStatsKeepsCanonicalAndFingerprintScopes(t *testing.T) {
 			t.Fatalf("seed %s: %v", video.ID, err)
 		}
 	}
-	if err := cat.UpdateVideoFingerprint(ctx, "duplicate", "sha-duplicate", "ready", ""); err != nil {
+	if _, err := cat.UpdateVideoFingerprintForSource(ctx, storedVideo(t, cat, "duplicate"), "sha-duplicate", "ready", ""); err != nil {
 		t.Fatalf("mark duplicate fingerprint ready: %v", err)
 	}
 	if _, err := cat.db.ExecContext(ctx, `UPDATE videos SET is_canonical = 0 WHERE id = 'duplicate'`); err != nil {

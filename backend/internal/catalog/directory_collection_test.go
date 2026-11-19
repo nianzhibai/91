@@ -39,7 +39,7 @@ func TestListVisibleVideosByDirectoryScopesAndFiltersCollection(t *testing.T) {
 	seed("other-drive", "drive-b", "folder-a", "other-drive.mp4")
 	seed("no-directory", "drive-a", "", "loose.mp4")
 	seed("hidden", "drive-a", "folder-a", "hidden.mp4")
-	if err := cat.HideVideo(ctx, "hidden"); err != nil {
+	if err := cat.MarkInvalidSizeSources(ctx, "drive-a", []string{"hidden"}); err != nil {
 		t.Fatalf("hide video: %v", err)
 	}
 

@@ -51,7 +51,7 @@ func TestSourceRemovalPreventsRebindingDuringProviderCall(t *testing.T) {
 	if err := writer.MigrateVideoToDrive(ctx, other.ID, target); err != nil {
 		t.Fatalf("provider error did not release reservation: %v", err)
 	}
-	if err := cat.DeleteVideoWithTombstone(ctx, owner.ID); err != nil {
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, owner.ID, DeleteVideoTombstoneOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	err = cat.WithBlacklistedSourceRemoval(ctx, &DeletedVideo{ID: owner.ID, DriveID: owner.DriveID, FileID: owner.FileID}, func(context.Context) error {

@@ -46,7 +46,7 @@ func TestVisibleVideoSummariesByIDsReturnsOnlyVisibleCardsInSnapshotOrder(t *tes
 			t.Fatalf("seed %s: %v", id, err)
 		}
 	}
-	if err := cat.HideVideo(ctx, "hidden"); err != nil {
+	if err := cat.MarkInvalidSizeSources(ctx, "drive", []string{"file-hidden"}); err != nil {
 		t.Fatalf("hide video: %v", err)
 	}
 

@@ -118,7 +118,7 @@ func TestCleanupContentDuplicateVideos(t *testing.T) {
 		if err := cat.UpsertVideo(ctx, v); err != nil {
 			t.Fatalf("seed %s: %v", s.id, err)
 		}
-		if err := cat.UpdateVideoFingerprint(ctx, s.id, fmt.Sprintf("%064d", i), "ready", ""); err != nil {
+		if _, err := cat.UpdateVideoFingerprintForSource(ctx, v, fmt.Sprintf("%064d", i), "ready", ""); err != nil {
 			t.Fatalf("fingerprint %s: %v", s.id, err)
 		}
 		videos = append(videos, v)
@@ -357,7 +357,7 @@ func TestCleanupDuplicateVideoAssetsResolvesCanonicalAcrossChannels(t *testing.T
 		if i < 2 {
 			fingerprint = "same-exact-fingerprint"
 		}
-		if err := cat.UpdateVideoFingerprint(ctx, video.ID, fingerprint, "ready", ""); err != nil {
+		if _, err := cat.UpdateVideoFingerprintForSource(ctx, video, fingerprint, "ready", ""); err != nil {
 			t.Fatalf("fingerprint %s: %v", video.ID, err)
 		}
 	}

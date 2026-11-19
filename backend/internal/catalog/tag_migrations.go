@@ -1087,7 +1087,7 @@ UPDATE videos
 
 // requeueFailedThumbnailsWithReadyPreviewOnce repairs rows created before
 // preview completion became a thumbnail retry signal. Future rows are handled
-// transactionally by UpdatePreview; the marker prevents a permanently bad
+// transactionally by UpdatePreviewForSource; the marker prevents a permanently bad
 // source video from being retried on every process restart.
 func (c *Catalog) requeueFailedThumbnailsWithReadyPreviewOnce(ctx context.Context) error {
 	const markerKey = "videos.failed_thumbnail.ready_preview_requeued_v2"

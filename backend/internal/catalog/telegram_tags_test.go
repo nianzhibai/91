@@ -124,7 +124,7 @@ func TestTelegramTagSurvivesLastVideoDeletionAndRestore(t *testing.T) {
 			c := telegramTestCatalog(t)
 			video := finalizeTaggedImport(t, c, "restore-tg", "telegram", nil, nil)
 			original := mustTagByLabel(t, ctx, c, TelegramTagLabel)
-			if err := c.DeleteVideoWithTombstone(ctx, video.ID); err != nil {
+			if err := c.DeleteVideoWithTombstoneOptions(ctx, video.ID, DeleteVideoTombstoneOptions{}); err != nil {
 				t.Fatal(err)
 			}
 			if err := c.ReconcileVideoTags(ctx); err != nil {

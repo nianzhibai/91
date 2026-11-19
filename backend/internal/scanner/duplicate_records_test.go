@@ -488,7 +488,7 @@ func TestScanRefreshesLiveOwnersMatchedByTombstones(t *testing.T) {
 			if merged {
 				err = cat.ApplyDuplicateVideoDeletions(ctx, []catalog.DuplicateVideoDeletion{{VideoID: "alias", CanonicalVideoID: "owner"}})
 			} else {
-				err = cat.DeleteVideoWithTombstone(ctx, "alias")
+				err = cat.DeleteVideoWithTombstoneOptions(ctx, "alias", catalog.DeleteVideoTombstoneOptions{})
 			}
 			if err != nil {
 				t.Fatal(err)

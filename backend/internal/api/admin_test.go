@@ -519,7 +519,7 @@ func TestHandleRemoveBlacklistRestoresLocalUploadImmediately(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed video: %v", err)
 	}
-	if err := cat.DeleteVideoWithTombstone(ctx, "local-upload-video"); err != nil {
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, "local-upload-video", catalog.DeleteVideoTombstoneOptions{}); err != nil {
 		t.Fatalf("tombstone video: %v", err)
 	}
 	beforeRestore, err := cat.CountDriveAssetStats(ctx)
@@ -587,7 +587,7 @@ func TestHandleRemoveBlacklistRejectsDirectRestoreWhenSourceMissing(t *testing.T
 	}); err != nil {
 		t.Fatalf("seed video: %v", err)
 	}
-	if err := cat.DeleteVideoWithTombstone(ctx, "local-upload-video"); err != nil {
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, "local-upload-video", catalog.DeleteVideoTombstoneOptions{}); err != nil {
 		t.Fatalf("tombstone video: %v", err)
 	}
 
@@ -637,7 +637,7 @@ func TestHandleRemoveBlacklistSkipsSourceCheckForScannableDrive(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed video: %v", err)
 	}
-	if err := cat.DeleteVideoWithTombstone(ctx, "remote-video"); err != nil {
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, "remote-video", catalog.DeleteVideoTombstoneOptions{}); err != nil {
 		t.Fatalf("tombstone video: %v", err)
 	}
 
@@ -2210,7 +2210,7 @@ func TestHandleListCrawlersOnlyIncludesCrawlerPageScripts(t *testing.T) {
 		if err := cat.UpsertVideo(ctx, v); err != nil {
 			t.Fatalf("seed crawler video %s: %v", v.ID, err)
 		}
-		if err := cat.UpdateVideoFingerprint(ctx, v.ID, "sha-"+v.ID, "ready", ""); err != nil {
+		if _, err := cat.UpdateVideoFingerprintForSource(ctx, v, "sha-"+v.ID, "ready", ""); err != nil {
 			t.Fatalf("seed crawler fingerprint %s: %v", v.ID, err)
 		}
 	}
@@ -3150,10 +3150,10 @@ func TestHandleListDrivesIncludesTeaserCounts(t *testing.T) {
 	if err := cat.UpdateVideoMeta(ctx, "od-ready-2", catalog.VideoMetaPatch{ThumbnailStatus: "failed"}); err != nil {
 		t.Fatalf("mark thumbnail failed: %v", err)
 	}
-	if err := cat.UpdateVideoFingerprint(ctx, "od-ready-1", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "ready", ""); err != nil {
+	if _, err := cat.UpdateVideoFingerprintForSource(ctx, videos[0], "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "ready", ""); err != nil {
 		t.Fatalf("mark fingerprint ready: %v", err)
 	}
-	if err := cat.UpdateVideoFingerprint(ctx, "od-ready-2", "", "failed", "sample failed"); err != nil {
+	if _, err := cat.UpdateVideoFingerprintForSource(ctx, videos[1], "", "failed", "sample failed"); err != nil {
 		t.Fatalf("mark fingerprint failed: %v", err)
 	}
 

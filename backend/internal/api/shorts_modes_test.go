@@ -42,7 +42,7 @@ func TestShortsOrderedModesFreezeSortingAndResumeAfterRestart(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := cat.HideVideo(ctx, "hidden"); err != nil {
+			if err := cat.MarkInvalidSizeSources(ctx, "drive", []string{"hidden"}); err != nil {
 				t.Fatal(err)
 			}
 			request := func(server *Server, path string) shortsFeedResponse {

@@ -1768,11 +1768,11 @@ func TestTagFilterMatchesCanonicalDuplicateVideo(t *testing.T) {
 		}
 	}
 	for _, id := range []string{"pikpak-canonical", "scriptcrawler-crawler-a-dup-1", "scriptcrawler-crawler-a-dup-2"} {
-		if err := cat.UpdateVideoFingerprint(ctx, id, "same-sampled-sha256", "ready", ""); err != nil {
+		if _, err := cat.UpdateVideoFingerprintForSource(ctx, storedVideo(t, cat, id), "same-sampled-sha256", "ready", ""); err != nil {
 			t.Fatalf("fingerprint %s: %v", id, err)
 		}
 	}
-	if err := cat.UpdateVideoFingerprint(ctx, "scriptcrawler-crawler-a-visible", "unique-sampled-sha256", "ready", ""); err != nil {
+	if _, err := cat.UpdateVideoFingerprintForSource(ctx, storedVideo(t, cat, "scriptcrawler-crawler-a-visible"), "unique-sampled-sha256", "ready", ""); err != nil {
 		t.Fatalf("fingerprint visible: %v", err)
 	}
 
@@ -1978,7 +1978,9 @@ VALUES ('retained-tag', '{"keywords":["kept-rule"]}', ?, ?, ?, ?)`,
 				}
 				deleteVideo := cat.DeleteVideo
 				if deletion == "tombstone" {
-					deleteVideo = cat.DeleteVideoWithTombstone
+					deleteVideo = func(ctx context.Context, id string) error {
+						return cat.DeleteVideoWithTombstoneOptions(ctx, id, DeleteVideoTombstoneOptions{})
+					}
 				}
 				for index, id := range []string{"video-a", "video-b"} {
 					if err := deleteVideo(ctx, id); err != nil {

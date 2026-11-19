@@ -243,7 +243,7 @@ func TestRunSkipsAdminDeletedVideo(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed video: %v", err)
 	}
-	if err := cat.DeleteVideoWithTombstone(ctx, "fake-drive-file-1"); err != nil {
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, "fake-drive-file-1", catalog.DeleteVideoTombstoneOptions{}); err != nil {
 		t.Fatalf("delete with tombstone: %v", err)
 	}
 

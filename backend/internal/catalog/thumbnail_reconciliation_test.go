@@ -34,7 +34,7 @@ func TestResetMissingLocalThumbnailsGuardsVersionAndDeduplicates(t *testing.T) {
 			t.Fatalf("seed %s: %v", video.ID, err)
 		}
 	}
-	if _, err := cat.IncrementThumbnailFailures(ctx, "local"); err != nil {
+	if _, err := cat.IncrementThumbnailFailuresForSource(ctx, storedVideo(t, cat, "local")); err != nil {
 		t.Fatalf("increment local thumbnail failures: %v", err)
 	}
 	references, err := cat.ListCanonicalLocalThumbnailReferences(ctx)
@@ -65,7 +65,7 @@ func TestResetMissingLocalThumbnailsGuardsVersionAndDeduplicates(t *testing.T) {
 	if local.ThumbnailURL != "" || !local.ThumbnailUpdatedAt.IsZero() {
 		t.Fatalf("local thumbnail = %q updated=%v", local.ThumbnailURL, local.ThumbnailUpdatedAt)
 	}
-	failures, err := cat.IncrementThumbnailFailures(ctx, "local")
+	failures, err := cat.IncrementThumbnailFailuresForSource(ctx, storedVideo(t, cat, "local"))
 	if err != nil {
 		t.Fatalf("increment reconciled thumbnail failures: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestResetMissingLocalPreviewsGuardsExactReadyReference(t *testing.T) {
 	if len(references) != 2 {
 		t.Fatalf("references = %#v", references)
 	}
-	if err := cat.UpdatePreview(ctx, "refreshed", "/previews/new.mp4", "ready"); err != nil {
+	if err := cat.UpdatePreviewForSource(ctx, storedVideo(t, cat, "refreshed"), "/previews/new.mp4", "ready"); err != nil {
 		t.Fatalf("refresh preview concurrently: %v", err)
 	}
 	references = append(references, references[0])

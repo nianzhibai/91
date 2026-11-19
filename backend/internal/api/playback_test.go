@@ -415,7 +415,7 @@ func TestHLSPlaybackAuthenticatesEveryResourceAndShare(t *testing.T) {
 	if w := request(segment, shareCookie); w.Code != 404 {
 		t.Fatalf("expired share media=%d", w.Code)
 	}
-	if err := cat.HideVideo(ctx, "video"); err != nil {
+	if err := cat.MarkInvalidSizeSources(ctx, "115", []string{"video"}); err != nil {
 		t.Fatal(err)
 	}
 	if w := request(root, login); w.Code != 404 {

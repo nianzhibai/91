@@ -520,7 +520,7 @@ func TestRunOncePreservesCrawlerVideoPendingDirectoryRestore(t *testing.T) {
 		t.Fatalf("upsert crawler drive: %v", err)
 	}
 	videoID := writeCrawlerVideo(t, cat, src, "source-restore", ".mp4", []byte("retained payload"), true)
-	if err := cat.DeleteVideoWithTombstone(ctx, videoID); err != nil {
+	if err := cat.DeleteVideoWithTombstoneOptions(ctx, videoID, catalog.DeleteVideoTombstoneOptions{}); err != nil {
 		t.Fatalf("delete video with tombstone: %v", err)
 	}
 	if err := cat.RemoveDeletedVideo(ctx, videoID); err != nil {
@@ -647,7 +647,11 @@ func TestCrawlerUploadFollowsLiveGlobalPreviewSwitch(t *testing.T) {
 		t.Fatal(err)
 	}
 	videoID := writeCrawlerVideo(t, cat, source, "pending-preview", ".mp4", []byte("payload"), true)
-	if err := cat.UpdatePreview(ctx, videoID, "", "pending"); err != nil {
+	pending, err := cat.GetVideo(ctx, videoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.UpdatePreviewForSource(ctx, pending, "", "pending"); err != nil {
 		t.Fatal(err)
 	}
 	enabled := true

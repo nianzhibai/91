@@ -409,18 +409,12 @@ func nullableStatus(s string) string {
 	return s
 }
 
-func (c *Catalog) UpdatePreview(ctx context.Context, id, previewLocal, status string) error {
-	return c.updatePreview(ctx, id, nil, previewLocal, status)
-}
-
-func (c *Catalog) UpdatePreviewForSource(ctx context.Context, source *Video, previewLocal, status string) error {
-	return c.updatePreview(ctx, source.ID, source, previewLocal, status)
-}
-
-func (c *Catalog) updatePreview(ctx context.Context, id string, source *Video, previewLocal, status string) (resultErr error) {
+// UpdatePreviewForSource stores a preview generated from source. The write is
+// rejected when the row no longer refers to the bytes the worker read.
+func (c *Catalog) UpdatePreviewForSource(ctx context.Context, source *Video, previewLocal, status string) (resultErr error) {
 	defer c.notifyDriveWrite(&resultErr, "", driveevents.MediaChanged)
 	now := time.Now().UnixMilli()
-	return c.updateVideoRow(ctx, id, source,
+	return c.updateVideoRow(ctx, source.ID, source,
 		`preview_file_id = '',
 		        preview_local = ?,
 		        preview_updated_at = CASE
@@ -447,20 +441,6 @@ func (c *Catalog) updatePreview(ctx context.Context, id string, source *Video, p
 		previewLocal, status, previewLocal, now, status,
 		status, previewLocal, status, previewLocal,
 		now)
-}
-
-func (c *Catalog) HideVideo(ctx context.Context, id string) (resultErr error) {
-	defer c.notifyDriveWrite(&resultErr, "", driveevents.MediaChanged)
-	res, err := c.db.ExecContext(ctx,
-		`UPDATE videos SET hidden = 1, updated_at = ? WHERE id = ?`,
-		time.Now().UnixMilli(), id)
-	if err != nil {
-		return err
-	}
-	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
 }
 
 // ListLegacyHiddenVideos only returns the old, unclassified hides that startup
@@ -886,16 +866,10 @@ func (c *Catalog) UpdateVideoMeta(ctx context.Context, id string, p VideoMetaPat
 	return nil
 }
 
-func (c *Catalog) IncrementThumbnailFailures(ctx context.Context, id string) (int, error) {
-	return c.incrementThumbnailFailures(ctx, id, nil)
-}
-
+// IncrementThumbnailFailuresForSource counts a failed cover attempt on the
+// bytes in source and returns the new total.
 func (c *Catalog) IncrementThumbnailFailuresForSource(ctx context.Context, source *Video) (int, error) {
-	return c.incrementThumbnailFailures(ctx, source.ID, source)
-}
-
-func (c *Catalog) incrementThumbnailFailures(ctx context.Context, id string, source *Video) (int, error) {
-	where, match := videoRowWhere(id, source)
+	where, match := videoRowWhere(source.ID, source)
 	var failures int
 	err := c.db.QueryRowContext(ctx, `UPDATE videos
 		SET thumbnail_failures = COALESCE(thumbnail_failures, 0) + 1, updated_at = ?
@@ -1087,7 +1061,7 @@ type LocalPreviewReference struct {
 
 // ListReadyLocalPreviewReferences returns teaser files that the catalog claims
 // are ready. A ready row without a local path cannot be validated here and is
-// intentionally excluded; UpdatePreview never creates that state.
+// intentionally excluded; UpdatePreviewForSource never creates that state.
 func (c *Catalog) ListReadyLocalPreviewReferences(ctx context.Context) ([]LocalPreviewReference, error) {
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT id, preview_local
@@ -1568,27 +1542,16 @@ type deletedVideoTagRestoreAssignment struct {
 }
 
 type DeleteVideoTombstoneOptions struct {
-	SourceDeleted     bool
 	AssetCleanupAfter time.Time
 	Reason            string
 }
 
-// DeleteVideoWithTombstone records that a video was removed, then removes the
-// visible catalog row. The tombstone is used by scanners/crawlers to avoid
-// importing the same source file again.
-func (c *Catalog) DeleteVideoWithTombstone(ctx context.Context, id string) error {
-	return c.DeleteVideoWithTombstoneOptions(ctx, id, DeleteVideoTombstoneOptions{})
-}
-
-// DeleteVideoWithTombstoneOptions records restore-relevant facts alongside the
-// tombstone. When SourceDeleted is true the source file is gone, so no tombstone
-// is retained.
+// DeleteVideoWithTombstoneOptions blacklists one video: it records
+// restore-relevant facts in a tombstone, then removes the catalog row.
+// Scanners and crawlers use the tombstone to avoid importing the same source
+// file again.
 func (c *Catalog) DeleteVideoWithTombstoneOptions(ctx context.Context, id string, options DeleteVideoTombstoneOptions) (resultErr error) {
 	defer c.notifyDriveWrite(&resultErr, "", driveevents.MediaChanged)
-	if options.SourceDeleted {
-		return c.DeleteVideo(ctx, id)
-	}
-
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -1626,7 +1589,7 @@ INSERT INTO deleted_videos (
   id, drive_id, file_id, parent_id, content_hash, sampled_sha256, blocks_content, file_name, size_bytes,
   reason, source_deleted, restore_requested, restore_payload, asset_cleanup_after, deleted_at
 )
-VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 0, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 0, 0, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
   drive_id           = excluded.drive_id,
   file_id            = excluded.file_id,
@@ -1637,14 +1600,14 @@ ON CONFLICT(id) DO UPDATE SET
   file_name          = excluded.file_name,
   size_bytes         = excluded.size_bytes,
   reason             = excluded.reason,
-  source_deleted     = excluded.source_deleted,
+  source_deleted     = 0,
   restore_requested  = 0,
   restore_payload    = excluded.restore_payload,
   asset_cleanup_after = excluded.asset_cleanup_after,
   deleted_at         = excluded.deleted_at`,
 		restoreVideo.ID, restoreVideo.DriveID, restoreVideo.FileID, restoreVideo.ParentID, restoreVideo.ContentHash, normalizeContentHash(restoreVideo.SampledSHA256),
 		restoreVideo.FileName, restoreVideo.Size,
-		options.Reason, boolToInt(options.SourceDeleted), restorePayload, unixMilliOrZero(options.AssetCleanupAfter), now); err != nil {
+		options.Reason, restorePayload, unixMilliOrZero(options.AssetCleanupAfter), now); err != nil {
 		return err
 	}
 	return deleteVideoRowTx(ctx, tx, restoreVideo.ID)
@@ -1926,24 +1889,6 @@ func (c *Catalog) CountDeletedVideosPendingSourceDeletion(ctx context.Context) (
 		`SELECT COUNT(*) FROM deleted_videos WHERE `+pendingSourceDeletionWhere,
 	).Scan(&count)
 	return count, err
-}
-
-// PurgeDeletedVideo removes a blacklist tombstone after the source file has
-// been deleted. Crawler seen metadata is intentionally retained so crawler
-// sources are not fetched again after the user deletes their stored video file.
-func (c *Catalog) PurgeDeletedVideo(ctx context.Context, id string) error {
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return sql.ErrNoRows
-	}
-	res, err := c.db.ExecContext(ctx, `DELETE FROM deleted_videos WHERE id = ?`, id)
-	if err != nil {
-		return err
-	}
-	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
 }
 
 // RemoveDeletedVideo 在后悔期内当场恢复记录和资源引用；过期后允许可扫描
@@ -2629,21 +2574,12 @@ func (c *Catalog) ListVideosByFingerprintStatus(ctx context.Context, driveID, st
 	return out, rows.Err()
 }
 
-func (c *Catalog) UpdateVideoFingerprint(ctx context.Context, id, sampledSHA256, status, errText string) error {
-	_, err := c.updateVideoFingerprint(ctx, id, nil, sampledSHA256, status, errText)
-	return err
-}
-
 // UpdateVideoFingerprintForSource stores a fingerprint computed from source.
 // A ready fingerprint settles a pending content verification; replaced reports
 // that it differed from the fingerprint set aside, so the row's generated
 // assets were cleared and must be regenerated. A row whose ready fingerprint
 // identifies blacklisted content moves to the blacklist and is not replaced.
-func (c *Catalog) UpdateVideoFingerprintForSource(ctx context.Context, source *Video, sampledSHA256, status, errText string) (replaced bool, err error) {
-	return c.updateVideoFingerprint(ctx, source.ID, source, sampledSHA256, status, errText)
-}
-
-func (c *Catalog) updateVideoFingerprint(ctx context.Context, id string, source *Video, sampledSHA256, status, errText string) (replaced bool, resultErr error) {
+func (c *Catalog) UpdateVideoFingerprintForSource(ctx context.Context, source *Video, sampledSHA256, status, errText string) (replaced bool, resultErr error) {
 	defer c.notifyDriveWrite(&resultErr, "", driveevents.GenerationChanged)
 	sampledSHA256 = normalizeContentHash(sampledSHA256)
 	if status == "" {
@@ -2657,7 +2593,7 @@ func (c *Catalog) updateVideoFingerprint(ctx context.Context, id string, source 
 		return false, err
 	}
 	defer tx.Rollback()
-	where, match := videoRowWhere(id, source)
+	where, match := videoRowWhere(source.ID, source)
 	var previous string
 	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(previous_sampled_sha256, '') FROM videos WHERE "+where, match...).Scan(&previous); err != nil {
 		return false, err
@@ -2678,7 +2614,7 @@ func (c *Catalog) updateVideoFingerprint(ctx context.Context, id string, source 
 	}
 	blacklisted := false
 	if status == "ready" && sampledSHA256 != "" {
-		if blacklisted, err = blacklistFingerprintedContentTx(ctx, tx, id); err != nil {
+		if blacklisted, err = blacklistFingerprintedContentTx(ctx, tx, source.ID); err != nil {
 			return false, err
 		}
 	}
