@@ -213,6 +213,9 @@ CREATE TABLE IF NOT EXISTS deleted_videos (
 	if err := MigrateMergedVideos(ctx, c.db); err != nil {
 		return err
 	}
+	if err := c.ensureBlacklistedContent(ctx); err != nil {
+		return err
+	}
 	if err := c.ensureMergedVideoGuards(ctx); err != nil {
 		return err
 	}
@@ -270,9 +273,6 @@ CREATE TABLE IF NOT EXISTS deleted_videos (
 		return err
 	}
 	if _, err := c.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_deleted_videos_drive_file ON deleted_videos(drive_id, file_id)`); err != nil {
-		return err
-	}
-	if _, err := c.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_deleted_videos_drive_hash ON deleted_videos(drive_id, content_hash)`); err != nil {
 		return err
 	}
 	if _, err := c.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_deleted_videos_drive_signature ON deleted_videos(drive_id, file_name, size_bytes)`); err != nil {

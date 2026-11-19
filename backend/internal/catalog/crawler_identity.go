@@ -42,7 +42,7 @@ func (c *Catalog) KnownCrawlerCandidates(ctx context.Context, driveID string, ca
  LEFT JOIN crawler_discoveries a ON a.drive_id=? AND a.discovery_key=c.discovery_key
  JOIN crawler_seen_sources s ON s.kind='scriptcrawler' AND s.drive_id=?
  AND s.source_id=CASE WHEN c.source_id!='' THEN c.source_id ELSE a.source_id END
- WHERE s.status IN ('imported','duplicate')`, args...)
+ WHERE s.status IN ('imported','duplicate','blacklisted')`, args...)
 	if err != nil {
 		return nil, err
 	}

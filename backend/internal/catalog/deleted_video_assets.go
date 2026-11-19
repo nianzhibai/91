@@ -104,6 +104,10 @@ func (c *Catalog) undoVideoDeletion(ctx context.Context, id string) (result Dele
 	if err != nil {
 		return result, false, err
 	}
+	// Paths that do not restore return without committing this release.
+	if err := releaseBlacklistedContentTx(ctx, tx, id); err != nil {
+		return result, false, err
+	}
 	// Undoing a manual block on an alias releases the source for scans.
 	// The public ID keeps resolving through the original merge.
 	res, err := tx.ExecContext(ctx, `DELETE FROM deleted_videos WHERE id=? AND EXISTS(SELECT 1 FROM merged_videos WHERE video_id=?)`, id, id)

@@ -1439,7 +1439,7 @@ func (c *Catalog) ListCrawlerSourceIDs(ctx context.Context, kind, driveID string
  SELECT SUBSTR(id, ?) FROM (SELECT id FROM deleted_videos UNION ALL SELECT video_id AS id FROM merged_videos) v WHERE substr(id,1,length(?))=? AND instr(substr(v.id,?), 'v3~')!=1 AND NOT EXISTS(SELECT 1 FROM crawler_seen_sources s WHERE s.canonical_video_id=v.id AND s.kind=? AND s.drive_id=?)
 		 UNION
 		 SELECT source_id FROM crawler_seen_sources
-		  WHERE kind = ? AND drive_id = ? AND status IN ('imported', 'duplicate')`,
+		  WHERE kind = ? AND drive_id = ? AND status IN ('imported', 'duplicate', 'blacklisted')`,
 		len([]rune(prefix))+1, prefix, prefix, len([]rune(prefix))+1, kind, driveID, len([]rune(prefix))+1, prefix, prefix, len([]rune(prefix))+1, kind, driveID, kind, driveID)
 	if err != nil {
 		return nil, err
@@ -1458,6 +1458,10 @@ func (c *Catalog) ListCrawlerSourceIDs(ctx context.Context, kind, driveID string
 	return out, rows.Err()
 }
 
+// CrawlerSourceBlacklisted marks a crawler source skipped because its content
+// is blacklisted. Like imported and duplicate sources it is never fetched again.
+const CrawlerSourceBlacklisted = "blacklisted"
+
 // MarkCrawlerSourceSeen records the outcome for a crawler source item. Duplicate
 // source IDs are filtered by the coordinator before resolving or downloading.
 func (c *Catalog) MarkCrawlerSourceSeen(ctx context.Context, kind, driveID, sourceID, status, canonicalVideoID, sampledSHA256 string, size int64) error {
@@ -1473,7 +1477,7 @@ func markCrawlerSourceSeen(ctx context.Context, exec videoRowExecer, kind, drive
 		return nil
 	}
 	switch status {
-	case "imported", "duplicate":
+	case "imported", "duplicate", CrawlerSourceBlacklisted:
 	default:
 		return fmt.Errorf("catalog: unsupported crawler source status %q", status)
 	}
@@ -1560,6 +1564,7 @@ type deletedVideoTagRestoreAssignment struct {
 type DeleteVideoTombstoneOptions struct {
 	SourceDeleted     bool
 	AssetCleanupAfter time.Time
+	Reason            string
 }
 
 // DeleteVideoWithTombstone records that a video was removed, then removes the
@@ -1612,15 +1617,17 @@ func deleteVideoWithTombstoneTx(ctx context.Context, tx *sql.Tx, restoreVideo *V
 	now := time.Now().UnixMilli()
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO deleted_videos (
-  id, drive_id, file_id, parent_id, content_hash, file_name, size_bytes,
+  id, drive_id, file_id, parent_id, content_hash, sampled_sha256, blocks_content, file_name, size_bytes,
   reason, source_deleted, canonical_video_id, restore_requested, restore_payload, asset_cleanup_after, deleted_at
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 0, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
   drive_id           = excluded.drive_id,
   file_id            = excluded.file_id,
   parent_id          = excluded.parent_id,
   content_hash       = excluded.content_hash,
+  sampled_sha256     = excluded.sampled_sha256,
+  blocks_content     = 1,
   file_name          = excluded.file_name,
   size_bytes         = excluded.size_bytes,
   reason             = excluded.reason,
@@ -1630,8 +1637,9 @@ ON CONFLICT(id) DO UPDATE SET
   restore_payload    = excluded.restore_payload,
   asset_cleanup_after = excluded.asset_cleanup_after,
   deleted_at         = excluded.deleted_at`,
-		restoreVideo.ID, restoreVideo.DriveID, restoreVideo.FileID, restoreVideo.ParentID, restoreVideo.ContentHash, restoreVideo.FileName, restoreVideo.Size,
-		"", boolToInt(options.SourceDeleted), "", restorePayload, unixMilliOrZero(options.AssetCleanupAfter), now); err != nil {
+		restoreVideo.ID, restoreVideo.DriveID, restoreVideo.FileID, restoreVideo.ParentID, restoreVideo.ContentHash, normalizeContentHash(restoreVideo.SampledSHA256),
+		restoreVideo.FileName, restoreVideo.Size,
+		options.Reason, boolToInt(options.SourceDeleted), "", restorePayload, unixMilliOrZero(options.AssetCleanupAfter), now); err != nil {
 		return err
 	}
 	return deleteVideoRowTx(ctx, tx, restoreVideo.ID)
@@ -1997,6 +2005,9 @@ func (c *Catalog) RestoreDeletedVideo(
 	if deleted.RestorePolicy == DeletedVideoRestorePolicyNone {
 		return DeletedVideoRestoreResult{}, deletedVideoNotRestorableError(deleted)
 	}
+	if err := releaseBlacklistedContentTx(ctx, tx, id); err != nil {
+		return DeletedVideoRestoreResult{}, err
+	}
 	if deleted.RestorePolicy == DeletedVideoRestorePolicyCrawler {
 		prefix := driveKind + "-" + deleted.DriveID + "-"
 		if !strings.HasPrefix(deleted.ID, prefix) {
@@ -2125,6 +2136,9 @@ func (c *Catalog) restoreDeletedVideoDirect(
 			return DeletedVideoRestoreResult{}, deletedVideoNotRestorableError(deleted)
 		}
 		return DeletedVideoRestoreResult{}, fmt.Errorf("%w: restore policy changed to %s", ErrDeletedVideoNotRestorable, deleted.RestorePolicy)
+	}
+	if err := releaseBlacklistedContentTx(ctx, tx, id); err != nil {
+		return DeletedVideoRestoreResult{}, err
 	}
 
 	// A row can coexist with a tombstone only when an older, non-atomic direct
@@ -2405,30 +2419,26 @@ func (c *Catalog) IsDeletedVideoCandidate(ctx context.Context, id, driveID, file
 	return isDeletedVideoCandidate(ctx, c.db, id, driveID, fileID, contentHash, fileName, size)
 }
 
+// isDeletedVideoCandidate reports whether a new source is blacklisted: the
+// entry's own source, or blacklisted content (see blacklistedContentWhere).
 func isDeletedVideoCandidate(ctx context.Context, q deletedVideoRestoreQuerier, id, driveID, fileID, contentHash, fileName string, size int64) (bool, error) {
 	id = strings.TrimSpace(id)
 	driveID = strings.TrimSpace(driveID)
 	fileID = strings.TrimSpace(fileID)
-	contentHash = normalizeContentHash(contentHash)
-	fileName = strings.TrimSpace(fileName)
 	if id == "" && driveID == "" {
 		return false, nil
 	}
-
+	where := "id = ? OR (drive_id = ? AND ? != '' AND file_id = ?)"
+	args := []any{id, driveID, fileID, fileID}
+	content, contentArgs, ok := blacklistedContentWhere(&Video{
+		DriveID: driveID, ContentHash: contentHash, FileName: strings.TrimSpace(fileName), Size: size,
+	})
+	if ok {
+		where += " OR (" + content + ")"
+		args = append(args, contentArgs...)
+	}
 	var found int
-	err := q.QueryRowContext(ctx, `
-SELECT 1
-  FROM deleted_videos
- WHERE id = ?
-    OR (drive_id = ? AND ? != '' AND file_id = ?)
-    OR (drive_id = ? AND ? != '' AND content_hash = ?)
-    OR (drive_id = ? AND ? != '' AND ? > 0 AND file_name = ? AND size_bytes = ?)
- LIMIT 1`,
-		id,
-		driveID, fileID, fileID,
-		driveID, contentHash, contentHash,
-		driveID, fileName, size, fileName, size,
-	).Scan(&found)
+	err := q.QueryRowContext(ctx, `SELECT 1 FROM deleted_videos WHERE `+where+` LIMIT 1`, args...).Scan(&found)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -2622,7 +2632,8 @@ func (c *Catalog) UpdateVideoFingerprint(ctx context.Context, id, sampledSHA256,
 // UpdateVideoFingerprintForSource stores a fingerprint computed from source.
 // A ready fingerprint settles a pending content verification; replaced reports
 // that it differed from the fingerprint set aside, so the row's generated
-// assets were cleared and must be regenerated.
+// assets were cleared and must be regenerated. A row whose ready fingerprint
+// identifies blacklisted content moves to the blacklist and is not replaced.
 func (c *Catalog) UpdateVideoFingerprintForSource(ctx context.Context, source *Video, sampledSHA256, status, errText string) (replaced bool, err error) {
 	return c.updateVideoFingerprint(ctx, source.ID, source, sampledSHA256, status, errText)
 }
@@ -2660,8 +2671,18 @@ func (c *Catalog) updateVideoFingerprint(ctx context.Context, id string, source 
 	if _, err := tx.ExecContext(ctx, "UPDATE videos SET "+strings.Join(parts, ", ")+" WHERE "+where, args...); err != nil {
 		return false, err
 	}
+	blacklisted := false
+	if status == "ready" && sampledSHA256 != "" {
+		if blacklisted, err = blacklistFingerprintedContentTx(ctx, tx, id); err != nil {
+			return false, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return false, err
+	}
+	if blacklisted {
+		c.driveEvents.Notify("", false, driveevents.MediaChanged)
+		return false, nil
 	}
 	if replaced {
 		c.driveEvents.Notify("", false, driveevents.MediaChanged)

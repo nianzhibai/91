@@ -141,14 +141,17 @@ CREATE TABLE IF NOT EXISTS video_tags (
 CREATE INDEX IF NOT EXISTS idx_video_tags_tag ON video_tags(tag_id);
 CREATE INDEX IF NOT EXISTS idx_video_tags_video ON video_tags(video_id);
 
--- 用户主动拉黑的视频。用于防止后续扫描 / 爬虫把同一个源文件
--- 再次入库；source_deleted 是旧版本兼容字段，源文件删除成功后会清除墓碑。
+-- 用户主动拉黑的视频。源文件本身不再入库；blocks_content=1 时，任何网盘或爬虫
+-- 来源的相同内容也不入库，恢复同内容的视频会解除这一拦截。source_deleted 是
+-- 旧版本兼容字段，源文件删除成功后会清除墓碑。
 CREATE TABLE IF NOT EXISTS deleted_videos (
     id                 TEXT PRIMARY KEY,
     drive_id           TEXT NOT NULL DEFAULT '',
     file_id            TEXT NOT NULL DEFAULT '',
     parent_id          TEXT NOT NULL DEFAULT '',
     content_hash       TEXT NOT NULL DEFAULT '',
+    sampled_sha256     TEXT NOT NULL DEFAULT '',
+    blocks_content     INTEGER NOT NULL DEFAULT 1,
     file_name          TEXT NOT NULL DEFAULT '',
     size_bytes         INTEGER NOT NULL DEFAULT 0,
     reason             TEXT NOT NULL DEFAULT '',
@@ -162,8 +165,6 @@ CREATE TABLE IF NOT EXISTS deleted_videos (
 
 CREATE INDEX IF NOT EXISTS idx_deleted_videos_drive_file
     ON deleted_videos(drive_id, file_id);
-CREATE INDEX IF NOT EXISTS idx_deleted_videos_drive_hash
-    ON deleted_videos(drive_id, content_hash);
 CREATE INDEX IF NOT EXISTS idx_deleted_videos_drive_signature
     ON deleted_videos(drive_id, file_name, size_bytes);
 
@@ -216,7 +217,7 @@ CREATE TABLE IF NOT EXISTS crawler_seen_sources (
     kind               TEXT NOT NULL,
     drive_id           TEXT NOT NULL,
     source_id          TEXT NOT NULL,
-    status             TEXT NOT NULL DEFAULT 'imported', -- imported / duplicate
+    status             TEXT NOT NULL DEFAULT 'imported', -- imported / duplicate / blacklisted
     canonical_video_id TEXT NOT NULL DEFAULT '',
     sampled_sha256     TEXT NOT NULL DEFAULT '',
     size_bytes         INTEGER NOT NULL DEFAULT 0,

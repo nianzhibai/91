@@ -157,6 +157,14 @@ func (c *Importer) Import(downloadCtx, ctx context.Context, item Item) (ImportOu
 		_ = os.Remove(videoPath)
 		return ImportFailed, fmt.Errorf("duplicate lookup: %w", err)
 	}
+	seen := catalog.CrawlerSourceSeen{Kind: Kind, DriveID: c.cfg.Driver.ID(), SourceID: sourceID, DiscoveryKey: item.DiscoveryKey}
+	if blacklisted, err := c.cfg.Catalog.SkipBlacklistedCrawlerSource(ctx, v, seen); err != nil {
+		_ = os.Remove(videoPath)
+		return ImportFailed, fmt.Errorf("blacklist lookup: %w", err)
+	} else if blacklisted {
+		_ = os.Remove(videoPath)
+		return ImportDuplicate, nil
+	}
 
 	thumbReady := false
 	thumbPath := ""

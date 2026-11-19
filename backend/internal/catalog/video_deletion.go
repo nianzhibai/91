@@ -234,8 +234,9 @@ func (g *deletionGroup) blacklist(ctx context.Context, tx *sql.Tx, cleanupAfter 
 			}
 		}
 		for _, v := range slices.Concat(f.retired, f.skipped) {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO deleted_videos(id, drive_id, file_id, file_name, parent_id, size_bytes, content_hash, deleted_at)
-					VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING`, v.ID, v.DriveID, v.FileID, v.FileName, v.ParentID, v.Size, v.ContentHash, time.Now().UnixMilli()); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO deleted_videos(id, drive_id, file_id, file_name, parent_id, size_bytes, content_hash, sampled_sha256, deleted_at)
+					VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET blocks_content = 1`, v.ID, v.DriveID, v.FileID, v.FileName, v.ParentID, v.Size,
+				normalizeContentHash(v.ContentHash), normalizeContentHash(v.SampledSHA256), time.Now().UnixMilli()); err != nil {
 				return err
 			}
 		}
