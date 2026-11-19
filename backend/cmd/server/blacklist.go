@@ -22,12 +22,12 @@ import (
 
 // migrateHiddenVideosToTombstone 把历史「隐藏」视频一次性迁移为黑名单墓碑。
 // 隐藏机制已废弃——前台「不再展示」改走拉黑逻辑。迁移＝删库记录 + 删本地
-// 封面/预览 + 写墓碑，保留网盘源文件。迁移后无 hidden=1 记录，重复执行为空操作。
+// 封面/预览 + 写墓碑，保留网盘源文件。等待有效大小的记录保留在视频库，供复扫恢复。
 func (a *App) migrateHiddenVideosToTombstone(ctx context.Context) {
 	if a == nil || a.cat == nil {
 		return
 	}
-	hidden, err := a.cat.ListHiddenVideos(ctx)
+	hidden, err := a.cat.ListLegacyHiddenVideos(ctx)
 	if err != nil {
 		log.Printf("[migrate] list hidden videos: %v", err)
 		return

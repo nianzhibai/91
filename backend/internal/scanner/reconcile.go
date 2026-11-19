@@ -25,6 +25,10 @@ func (s *Scanner) reconcile(ctx context.Context, result *Result, progress progre
 			result.Snapshot.DriveKind, result.Snapshot.DriveID, s.Drive.Kind(), s.Drive.ID(),
 		)
 	}
+	// Exclude unavailable sources before a usable file can match one of them.
+	if err := s.Catalog.MarkInvalidSizeSources(ctx, s.Drive.ID(), result.Snapshot.InvalidSizeFileIDs); err != nil {
+		return err
+	}
 	for _, file := range result.Snapshot.Files {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -108,7 +112,7 @@ func (s *Scanner) reconcileExisting(
 	result *Result,
 ) error {
 	entry := file.Entry
-	patch := catalog.VideoMetaPatch{ExpectedSource: existing}
+	patch := catalog.VideoMetaPatch{ExpectedSource: existing, ResumeAfterInvalidSize: existing.SizeUnavailable && entry.Size > 0}
 	hash := dedupe.NormalizeHash(entry.Hash)
 	previousHash := existing.ContentHash
 	sampled := existing.SampledSHA256
@@ -296,7 +300,7 @@ func (r *Result) addIssue(ctx context.Context, file File, stage IssueStage, err 
 }
 
 func metadataPatchSet(patch catalog.VideoMetaPatch) bool {
-	return patch.ResetContent || patch.VerifyContent || patch.SourceModTime != "" || patch.ContentHash != "" || patch.FileName != "" || patch.ParentIDSet ||
+	return patch.ResumeAfterInvalidSize || patch.ResetContent || patch.VerifyContent || patch.SourceModTime != "" || patch.ContentHash != "" || patch.FileName != "" || patch.ParentIDSet ||
 		patch.DirNameSet || patch.AncestorDirIDsSet || patch.AncestorDirNamesSet || patch.TitleSet || patch.AuthorSet
 }
 

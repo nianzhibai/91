@@ -10,9 +10,9 @@ import (
 	"time"
 )
 
-// TestListHiddenVideosForMigration 验证：隐藏的视频不进可见列表，
-// 但能被 ListHiddenVideos 拿到（供一次性迁移为墓碑）。
-func TestListHiddenVideosForMigration(t *testing.T) {
+// TestListLegacyHiddenVideosForMigration 验证：隐藏的视频不进可见列表，
+// 但能被 ListLegacyHiddenVideos 拿到（供一次性迁移为墓碑）。
+func TestListLegacyHiddenVideosForMigration(t *testing.T) {
 	ctx := context.Background()
 	cat, err := Open(t.TempDir() + "/catalog.db")
 	if err != nil {
@@ -46,12 +46,12 @@ func TestListHiddenVideosForMigration(t *testing.T) {
 		}
 	}
 
-	hidden, err := cat.ListHiddenVideos(ctx)
+	hidden, err := cat.ListLegacyHiddenVideos(ctx)
 	if err != nil {
 		t.Fatalf("list hidden: %v", err)
 	}
 	if len(hidden) != 1 || hidden[0].ID != "v2" {
-		t.Fatalf("ListHiddenVideos = %v, want only v2", hidden)
+		t.Fatalf("ListLegacyHiddenVideos = %v, want only v2", hidden)
 	}
 
 	current, blacklisted, _, err := cat.VideoManagementCounts(ctx)

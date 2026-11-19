@@ -2653,6 +2653,74 @@ func TestRunScanImmediatelyRemovesMissingVideoAfterCleanScan(t *testing.T) {
 	}
 }
 
+func TestRunScanRecoversInvalidSizeWithoutBlacklisting(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "catalog.db")
+	cat, err := catalog.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if cat != nil {
+			_ = cat.Close()
+		}
+	})
+	const driveID = "size-drive"
+	if err := cat.UpsertDrive(ctx, &catalog.Drive{ID: driveID, Kind: "fake", RootID: "root"}); err != nil {
+		t.Fatal(err)
+	}
+	const videoID = "original-public-id"
+	v := &catalog.Video{ID: videoID, DriveID: driveID, FileID: "clip", FileName: "clip.mp4",
+		Title: "clip", ParentID: "root", Size: 42, Views: 7, SampledSHA256: "original",
+		PreviewLocal: "clip.mp4", PreviewStatus: "ready"}
+	if err := cat.UpsertVideo(ctx, v); err != nil {
+		t.Fatal(err)
+	}
+	drv := &serverTreeScanDrive{id: driveID, entries: map[string][]drives.Entry{"root": {
+		{ID: "clip", Name: "clip.mp4", Size: 0}, {ID: "new", Name: "new.mp4", Size: -1},
+	}}}
+	registry := proxy.NewRegistry()
+	registry.Set(driveID, drv)
+	app := &App{cfg: &config.Config{
+		Scanner: config.Scanner{VideoExtensions: []string{".mp4"}},
+		Storage: config.Storage{LocalPreviewDir: t.TempDir()},
+	}, cat: cat, registry: registry}
+
+	if r := app.runScan(ctx, driveID); r.State != scanjob.Succeeded || r.AddedCount != 0 || r.CleanedCount != 0 {
+		t.Fatalf("scan of invalid sizes: %+v", r)
+	}
+	got, err := cat.GetVideo(ctx, videoID)
+	if err != nil || !got.Hidden || got.Size != 42 || got.PreviewLocal != "clip.mp4" {
+		t.Fatalf("after invalid size: %+v, %v", got, err)
+	}
+	if err := cat.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cat, err = catalog.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.cat = cat
+	app.migrateHiddenVideosToTombstone(ctx)
+	drv.entries["root"][0].Size = 42
+	drv.entries["root"][1].Size = 123
+	if r := app.runScan(ctx, driveID); r.State != scanjob.Succeeded || r.UpdatedCount != 1 || r.AddedCount != 1 {
+		t.Fatalf("scan after sizes recover: %+v", r)
+	}
+	got, err = cat.GetVideo(ctx, videoID)
+	if err != nil || got.Hidden || got.Views != 7 || got.SampledSHA256 != "original" || got.PreviewLocal != "clip.mp4" {
+		t.Fatalf("after recovery: %+v, %v", got, err)
+	}
+
+	if _, err := app.deleteVideo(ctx, videoID, catalog.VideoDeletionOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	drv.entries["root"][0].Size = 84
+	if r := app.runScan(ctx, driveID); r.State != scanjob.Succeeded || r.TombstonedCount != 1 || r.AddedCount != 0 {
+		t.Fatalf("scan after explicit blacklist: %+v", r)
+	}
+}
+
 func TestMissingFileCleanupModeUsesPresenceIntegrity(t *testing.T) {
 	discoveryIssue := scanner.Issue{Stage: scanner.IssueDiscovery, Err: errors.New("scan issue")}
 	authoritativeSnapshot := scanner.Snapshot{

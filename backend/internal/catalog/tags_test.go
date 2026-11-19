@@ -1598,6 +1598,7 @@ func TestMigrateHidesZeroSizeVideosForKnownDrives(t *testing.T) {
 		{ID: "empty-video", DriveID: "drive-main", FileID: "file-1", Title: "Empty", Size: 0},
 		{ID: "normal-video", DriveID: "drive-main", FileID: "file-2", Title: "Normal", Size: 123},
 		{ID: "orphan-empty-video", DriveID: "unknown-drive", FileID: "file-3", Title: "Orphan", Size: 0},
+		{ID: "legacy-hide", DriveID: "drive-main", FileID: "file-4", Title: "Blocked", Hidden: true},
 	} {
 		v.PublishedAt = now
 		v.CreatedAt = now
@@ -1607,6 +1608,10 @@ func TestMigrateHidesZeroSizeVideosForKnownDrives(t *testing.T) {
 		}
 	}
 
+	// Older catalogs may store an unknown size as SQL NULL.
+	if _, err := cat.db.ExecContext(ctx, "UPDATE videos SET size_bytes=NULL WHERE id='empty-video'"); err != nil {
+		t.Fatal(err)
+	}
 	if err := cat.migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -1615,8 +1620,20 @@ func TestMigrateHidesZeroSizeVideosForKnownDrives(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get empty video: %v", err)
 	}
-	if !empty.Hidden {
-		t.Fatal("empty video was not hidden")
+	if !empty.Hidden || !empty.SizeUnavailable {
+		t.Fatalf("empty video must await a positive size: %+v", empty)
+	}
+	if hidden, err := cat.ListLegacyHiddenVideos(ctx); err != nil || len(hidden) != 1 || hidden[0].ID != "legacy-hide" {
+		t.Fatalf("legacy blacklist migration candidates = %v, err = %v", hidden, err)
+	}
+	if err := cat.UpdateVideoMeta(ctx, empty.ID, VideoMetaPatch{
+		ExpectedSource: empty, ResetContent: true, Size: 42, ResumeAfterInvalidSize: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	empty, err = cat.GetVideo(ctx, empty.ID)
+	if err != nil || empty.Hidden || empty.Size != 42 {
+		t.Fatalf("recovered video = %+v, err = %v", empty, err)
 	}
 
 	normal, err := cat.GetVideo(ctx, "normal-video")

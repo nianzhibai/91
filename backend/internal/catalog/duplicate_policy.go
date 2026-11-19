@@ -10,8 +10,9 @@ import (
 )
 
 // duplicateLookupScope selects rows that may act as duplicate partners at
-// ingress and in maintenance. Hidden rows are retired placeholders (the hide
-// action now blacklists instead) and rows without a file cannot be played.
+// ingress and in maintenance. A hidden row is either a legacy hide awaiting
+// migration to the blacklist or a source whose provider reports no usable
+// size, and rows without a file cannot be played.
 const duplicateLookupScope = `COALESCE(hidden, 0) = 0 AND COALESCE(file_id, '') != ''`
 
 // contentVerifiedWhere excludes rows whose source may have been replaced in

@@ -62,17 +62,19 @@ func (i Issue) Error() string {
 
 // Snapshot is the discovery phase output. EnumeratedDirIDs, FailedDirIDs, and
 // ExcludedDirIDs are the mutually exclusive E/F/X directory classifications
-// used by presence cleanup.
+// used by presence cleanup. SeenFileIDs includes listed videos with invalid sizes;
+// only positive-size observations enter Files and count as scan candidates.
 type Snapshot struct {
-	DriveID          string
-	DriveKind        string
-	StartDirID       string
-	Files            []File
-	SeenFileIDs      map[string]struct{}
-	EnumeratedDirIDs map[string]struct{}
-	FailedDirIDs     map[string]struct{}
-	ExcludedDirIDs   map[string]struct{}
-	Issues           []Issue
+	DriveID            string
+	DriveKind          string
+	StartDirID         string
+	Files              []File
+	InvalidSizeFileIDs []string
+	SeenFileIDs        map[string]struct{}
+	EnumeratedDirIDs   map[string]struct{}
+	FailedDirIDs       map[string]struct{}
+	ExcludedDirIDs     map[string]struct{}
+	Issues             []Issue
 }
 
 func (s Snapshot) Complete() bool {

@@ -183,6 +183,7 @@ type Video struct {
 	LastLikedAt        time.Time `json:"lastLikedAt"`
 	Dislikes           int       `json:"dislikes"`
 	Hidden             bool      `json:"hidden"`
+	SizeUnavailable    bool      `json:"-"`
 	Badges             []string  `json:"badges"`
 	PublishedAt        time.Time `json:"publishedAt"`
 	CreatedAt          time.Time `json:"createdAt"`
@@ -392,7 +393,7 @@ ON CONFLICT(id) DO UPDATE SET
 		v.DurationSeconds, v.Size, v.Ext, v.ThumbnailURL, thumbnailUpdatedAt, v.ThumbnailURL,
 		v.PreviewFileID, v.PreviewLocal, previewUpdatedAt, nullableStatus(v.PreviewStatus),
 		v.Views, unixMilliOrZero(v.LastViewedAt), v.Favorites, v.Comments, v.Likes, unixMilliOrZero(v.LastLikedAt), v.Dislikes,
-		boolToInt(v.Hidden), string(badgesJSON),
+		v.hiddenState(), string(badgesJSON),
 		v.PublishedAt.UnixMilli(), v.CreatedAt.UnixMilli(), v.UpdatedAt.UnixMilli(),
 	)
 	if err != nil {
@@ -462,10 +463,9 @@ func (c *Catalog) HideVideo(ctx context.Context, id string) (resultErr error) {
 	return nil
 }
 
-// ListHiddenVideos 返回所有被标记隐藏（hidden=1）的视频。
-// 仅用于一次性把历史「隐藏」视频迁移为黑名单墓碑——隐藏机制已废弃，
-// 前台「不再展示」改走拉黑逻辑。
-func (c *Catalog) ListHiddenVideos(ctx context.Context) ([]*Video, error) {
+// ListLegacyHiddenVideos only returns the old, unclassified hides that startup
+// migrates to blacklist entries. Size-related holds stay in the live catalog.
+func (c *Catalog) ListLegacyHiddenVideos(ctx context.Context) ([]*Video, error) {
 	rows, err := c.db.QueryContext(ctx,
 		`SELECT `+allVideoCols+` FROM videos WHERE COALESCE(hidden, 0) = 1`)
 	if err != nil {
@@ -703,7 +703,8 @@ type VideoMetaPatch struct {
 	ExpectedSource *Video
 	// ResetContent replaces the size and provider hash together and invalidates
 	// every match input generated from the previous bytes.
-	ResetContent bool
+	ResetContent           bool
+	ResumeAfterInvalidSize bool
 	// VerifyContent records a suspected replacement that size and hash cannot
 	// confirm. The sampled fingerprint is set aside for the fingerprint worker
 	// to compare; generated assets stay until that comparison finds new bytes.
@@ -747,7 +748,7 @@ func videoRowWhere(id string, source *Video) (string, []any) {
 	if source == nil {
 		return "id = ?", []any{id}
 	}
-	return "id = ? AND drive_id = ? AND file_id = ? AND size_bytes = ? AND COALESCE(content_hash, '') = ? AND source_mod_time = ?",
+	return "id = ? AND drive_id = ? AND file_id = ? AND COALESCE(size_bytes, 0) = ? AND COALESCE(content_hash, '') = ? AND source_mod_time = ?",
 		[]any{id, source.DriveID, source.FileID, source.Size, source.ContentHash, source.SourceModTime}
 }
 
@@ -803,6 +804,11 @@ func (c *Catalog) UpdateVideoMeta(ctx context.Context, id string, p VideoMetaPat
 			duration = 0
 		}
 		args = append(args, duration)
+	}
+	if p.ResumeAfterInvalidSize {
+		// A user hide committed since discovery still wins.
+		parts = append(parts, "hidden = CASE WHEN hidden = ? THEN 0 ELSE hidden END")
+		args = append(args, hiddenForInvalidSize)
 	}
 	if p.ResetContent {
 		parts = append(parts, "size_bytes = ?", "sampled_sha256 = ''", "previous_sampled_sha256 = ''",
@@ -4258,7 +4264,7 @@ const allVideoCols = `
 id, drive_id, file_id, COALESCE(file_name, ''), COALESCE(content_hash, ''), source_mod_time,
 COALESCE(sampled_sha256, ''), COALESCE(fingerprint_status, 'pending'), COALESCE(fingerprint_error, ''),
 COALESCE(parent_id, ''), COALESCE(ancestor_dir_ids, ''), COALESCE(ancestor_dir_names, ''), COALESCE(dir_name, ''), title, COALESCE(author, ''), COALESCE(tags, '[]'),
-duration_seconds, size_bytes, COALESCE(ext, ''), COALESCE(thumbnail_url, ''), COALESCE(thumbnail_updated_at, 0),
+duration_seconds, COALESCE(size_bytes, 0), COALESCE(ext, ''), COALESCE(thumbnail_url, ''), COALESCE(thumbnail_updated_at, 0),
 COALESCE(preview_file_id, ''), COALESCE(preview_local, ''), COALESCE(preview_updated_at, 0), COALESCE(preview_status, 'pending'),
 	views, COALESCE(last_viewed_at, 0), favorites, comments, likes, COALESCE(last_liked_at, 0), dislikes,
 	COALESCE(hidden, 0), COALESCE(badges, '[]'),
@@ -4388,7 +4394,8 @@ func scanVideo(row rowScanner) (*Video, error) {
 	}
 	_ = json.Unmarshal([]byte(tagsJSON), &v.Tags)
 	_ = json.Unmarshal([]byte(badgesJSON), &v.Badges)
-	v.Hidden = hidden == 1
+	v.Hidden = hidden != 0
+	v.SizeUnavailable = hidden == hiddenForInvalidSize
 	v.PublishedAt = time.UnixMilli(publishedAt)
 	v.CreatedAt = time.UnixMilli(createdAt)
 	v.UpdatedAt = time.UnixMilli(updatedAt)

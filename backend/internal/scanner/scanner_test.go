@@ -790,8 +790,8 @@ func TestRunReportsSeenVideoFileIDsAndVisitedDirectories(t *testing.T) {
 	if _, ok := stats.SeenFileIDs["note"]; ok {
 		t.Fatalf("seen file ids = %#v, want non-video entries excluded", stats.SeenFileIDs)
 	}
-	if _, ok := stats.SeenFileIDs["empty-video"]; ok {
-		t.Fatalf("seen file ids = %#v, want zero-size entries excluded", stats.SeenFileIDs)
+	if _, ok := stats.SeenFileIDs["empty-video"]; !ok {
+		t.Fatalf("seen file ids = %#v, want zero-size entries protected from missing-file cleanup", stats.SeenFileIDs)
 	}
 	if _, ok := stats.EnumeratedDirIDs["root"]; !ok {
 		t.Fatalf("enumerated dir ids = %#v, want root", stats.EnumeratedDirIDs)

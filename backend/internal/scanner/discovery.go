@@ -170,7 +170,12 @@ func (s *Scanner) discoverDir(
 		}
 
 		ext := strings.ToLower(path.Ext(entry.Name))
-		if !s.Exts[ext] || entry.Size <= 0 {
+		if !s.Exts[ext] {
+			continue
+		}
+		snapshot.SeenFileIDs[entry.ID] = struct{}{}
+		if entry.Size <= 0 {
+			snapshot.InvalidSizeFileIDs = append(snapshot.InvalidSizeFileIDs, entry.ID)
 			continue
 		}
 		snapshot.Files = append(snapshot.Files, File{
@@ -180,7 +185,6 @@ func (s *Scanner) discoverDir(
 			AncestorDirIDs:   append([]string(nil), currentAncestorDirIDs...),
 			AncestorDirNames: append([]string(nil), currentAncestorDirNames...),
 		})
-		snapshot.SeenFileIDs[entry.ID] = struct{}{}
 		stats.Scanned++
 		progress(phase, dirName)
 	}

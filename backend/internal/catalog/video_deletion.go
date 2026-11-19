@@ -108,6 +108,13 @@ func loadDeletionGroup(ctx context.Context, tx *sql.Tx, id string) (*deletionGro
 					g.file(peer)
 				}
 			}
+			held, err := sizeHeldDuplicates(ctx, tx, owner)
+			if err != nil {
+				return nil, err
+			}
+			for _, peer := range held {
+				g.file(peer)
+			}
 		}
 	}
 
@@ -142,6 +149,22 @@ func deletionRepresentativeKeys(ctx context.Context, tx *sql.Tx, id string) ([][
 		keys = append(keys, key)
 	}
 	return keys, rows.Err()
+}
+
+// Rows waiting for a usable provider size are outside the visible groups but
+// still own their files. Exact copies join the group so a later scan cannot
+// bring back blacklisted content when the size recovers.
+func sizeHeldDuplicates(ctx context.Context, tx *sql.Tx, owner *Video) ([]*Video, error) {
+	where, args, ok := equivalentVideoLookupWhere(owner)
+	if !ok {
+		return nil, nil
+	}
+	rows, err := tx.QueryContext(ctx, "SELECT "+allVideoCols+` FROM videos
+		WHERE hidden = ? AND COALESCE(file_id, '') != '' AND (`+where+`) ORDER BY id`, append([]any{hiddenForInvalidSize}, args...)...)
+	if err != nil {
+		return nil, err
+	}
+	return readDeletionVideos(rows)
 }
 
 func readDeletionVideos(rows *sql.Rows) ([]*Video, error) {

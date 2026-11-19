@@ -1230,7 +1230,7 @@ UPDATE videos
 func (c *Catalog) hideZeroSizeVideosFromKnownDrives(ctx context.Context) error {
 	_, err := c.db.ExecContext(ctx, `
 UPDATE videos
-   SET hidden = 1,
+   SET hidden = ?,
        updated_at = ?
  WHERE COALESCE(size_bytes, 0) <= 0
    AND COALESCE(hidden, 0) = 0
@@ -1239,7 +1239,7 @@ UPDATE videos
 	   FROM drives
 	  WHERE drives.id = videos.drive_id
    )
-`, time.Now().UnixMilli())
+`, hiddenForInvalidSize, time.Now().UnixMilli())
 	return err
 }
 

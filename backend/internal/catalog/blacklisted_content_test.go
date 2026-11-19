@@ -123,6 +123,38 @@ func TestRestoreLiftsContentBlock(t *testing.T) {
 	}
 }
 
+func TestDeletionIncludesCopiesAwaitingUsableSize(t *testing.T) {
+	ctx := context.Background()
+	for _, physical := range []bool{false, true} {
+		cat := openCanonicalTestCatalog(t)
+		seedVideos(t, cat,
+			&Video{ID: "A", DriveID: "one", FileID: "a", ContentHash: "h", FileName: "a.mp4", Size: 10},
+			&Video{ID: "C", DriveID: "two", FileID: "c", ContentHash: "h", FileName: "c.mp4", Size: 10},
+		)
+		if err := cat.MarkInvalidSizeSources(ctx, "two", []string{"c"}); err != nil {
+			t.Fatal(err)
+		}
+		if !physical {
+			blacklist(t, cat, "A")
+			if deleted, err := cat.IsVideoDeleted(ctx, "C"); err != nil || !deleted {
+				t.Fatalf("held copy escaped the blacklist: %t %v", deleted, err)
+			}
+			continue
+		}
+		preview, err := cat.PreviewVideoDeletion(ctx, "A")
+		if err != nil || len(preview.Sources) != 2 {
+			t.Fatalf("preview=%+v err=%v", preview, err)
+		}
+		all := true
+		var removed []string
+		err = cat.DeleteVideoGroup(ctx, "A", VideoDeletionOptions{DeleteSource: true, IncludeDuplicates: &all, GroupRevision: preview.GroupRevision}, time.Time{},
+			func(_ context.Context, v *Video, _ bool) error { removed = append(removed, v.ID); return nil }, nil)
+		if err != nil || len(removed) != 2 {
+			t.Fatalf("removed=%v err=%v", removed, err)
+		}
+	}
+}
+
 func TestBlacklistFingerprintsMigrateFromRestoreSnapshots(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "catalog.db")
 	db, err := sql.Open("sqlite", path)

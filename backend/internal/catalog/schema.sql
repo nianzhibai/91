@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS videos (
     likes            INTEGER DEFAULT 0,
     last_liked_at    INTEGER DEFAULT 0,
     dislikes         INTEGER DEFAULT 0,
-    hidden           INTEGER DEFAULT 0,          -- 1 = hidden from public display
+    hidden           INTEGER DEFAULT 0,          -- 0 = visible, 1 = legacy hide, 2 = awaiting positive file size
     is_canonical     INTEGER NOT NULL DEFAULT 1, -- derived from visible rows with a file
     tags_manual      INTEGER DEFAULT 0,          -- 1 = user explicitly curated tags
     badges           TEXT,                      -- JSON array
