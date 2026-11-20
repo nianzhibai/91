@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"log"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -85,4 +87,12 @@ func (a *App) storeVideoSignature(ctx context.Context, video *catalog.Video, sig
 	}
 	defer persistence.RUnlock()
 	return a.cat.SetVideoSignatureForSource(ctx, video, signature)
+}
+
+// removeRetiredFrameSignatureCache deletes the teaser frame cache that content
+// matching kept before signatures were stored in the catalog.
+func removeRetiredFrameSignatureCache(previewDir string) {
+	if err := os.RemoveAll(filepath.Join(previewDir, "framesigs")); err != nil {
+		log.Printf("[startup] remove retired frame signature cache: %v", err)
+	}
 }

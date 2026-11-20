@@ -62,7 +62,6 @@ func TestDeleteDuplicateWithAssetsRemovesThumbnailDerivedAssets(t *testing.T) {
 		duplicate.PreviewLocal,
 		mediaasset.ThumbnailPath(localDir, duplicate.ID),
 		mediaasset.ShortsBackgroundPath(localDir, duplicate.ID),
-		mediaasset.FrameSignaturePath(localDir, duplicate.ID),
 	}
 	for _, path := range assets {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

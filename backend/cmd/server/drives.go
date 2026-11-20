@@ -1343,7 +1343,6 @@ func (a *App) attachScriptCrawler(d *catalog.Drive, drv *scriptcrawler.Driver) {
 		ScriptPath:         scriptPath,
 		WorkDir:            workDir,
 		CommonThumbDir:     a.commonThumbsDir(),
-		LocalPreviewDir:    a.cfg.Storage.LocalPreviewDir,
 		PreviewEnabled:     a.previewEnabled,
 		ProxyURL:           proxyURL,
 		ConfigJSON:         configJSON,

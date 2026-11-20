@@ -5,16 +5,17 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/dedupe"
-	"github.com/nianzhibai/91/backend/internal/localpath"
 	"github.com/nianzhibai/91/backend/internal/mediaasset"
+	"github.com/nianzhibai/91/backend/internal/mediasig"
 	"github.com/nianzhibai/91/backend/internal/mediasim"
 	"github.com/nianzhibai/91/backend/internal/preview"
 )
 
-// 阈值统一定义在 mediasim（NearDuplicate* / ContentDuplicate*），与夜间维护共用。
+// 阈值统一定义在 mediasim（NearDuplicate*）和 mediasig，与夜间维护共用。
 const nearDuplicateCandidateLimit = 200
 
 type nearDuplicateMatch struct {
@@ -37,9 +38,9 @@ func (c *Importer) recordSkippedDuplicate(ctx context.Context, source, canonical
 
 // findNearDuplicateVideo 在导入前查找库内近重复视频，两条通道：
 //  1. 标题相似 + 封面 SSIM（同源重发场景）；
-//  2. 内容级：时长几乎相等时比较候选 teaser 与本地新视频的对齐帧
-//     （跨源不同压制场景，标题和封面通常完全对不上）。它依赖预览视频，
-//     全局预览开关关闭时跳过，不再为每个新视频运行 ffmpeg。
+//  2. 感知签名：时长几乎相等时，用本地新视频在预览选段处的签名比对库内
+//     已存签名（跨源不同压制场景，标题和封面通常完全对不上）。采样要运行
+//     ffmpeg，属于预览工作，全局预览开关关闭时跳过。
 func (c *Importer) findNearDuplicateVideo(ctx context.Context, source *catalog.Video, sourceThumbPath, sourceVideoPath string) (*nearDuplicateMatch, error) {
 	if c == nil || c.cfg.Catalog == nil || source == nil {
 		return nil, nil
@@ -62,7 +63,7 @@ func (c *Importer) findNearDuplicateVideo(ctx context.Context, source *catalog.V
 	if c.cfg.PreviewEnabled != nil && !c.cfg.PreviewEnabled() {
 		return nil, nil
 	}
-	return c.findContentDuplicate(ctx, source, sourceVideoPath, candidates)
+	return c.findSignatureDuplicate(ctx, source, sourceVideoPath, candidates)
 }
 
 func (c *Importer) findTitleThumbDuplicate(source *catalog.Video, sourceThumbPath string, candidates []*catalog.Video) *nearDuplicateMatch {
@@ -96,80 +97,49 @@ func (c *Importer) findTitleThumbDuplicate(source *catalog.Video, sourceThumbPat
 	return nil
 }
 
-func (c *Importer) findContentDuplicate(ctx context.Context, source *catalog.Video, sourceVideoPath string, candidates []*catalog.Video) (*nearDuplicateMatch, error) {
+// findSignatureDuplicate samples the downloaded file at the teaser windows
+// and compares it with the stored signatures of library videos of nearly the
+// same duration. It catches re-encodes whose titles and covers differ. Only
+// strong matches count; probable pairs are imported and left to maintenance.
+func (c *Importer) findSignatureDuplicate(ctx context.Context, source *catalog.Video, sourceVideoPath string, candidates []*catalog.Video) (*nearDuplicateMatch, error) {
 	left := dedupe.Candidate{ID: source.ID, DurationSeconds: source.DurationSeconds}
 	sourceVideoPath = strings.TrimSpace(sourceVideoPath)
-	if sourceVideoPath == "" || !dedupe.ContentEligible(left) {
+	if sourceVideoPath == "" || !dedupe.SignatureEligible(left) {
 		return nil, nil
 	}
-
-	var sourceSig *mediasim.FrameSignature
+	ids := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
-		if err := ctx.Err(); err != nil {
-			return nil, err
+		if candidate != nil && candidate.ID != source.ID {
+			ids = append(ids, candidate.ID)
 		}
-		if candidate == nil || candidate.ID == source.ID {
-			continue
-		}
-		right := dedupe.Candidate{ID: candidate.ID, DurationSeconds: candidate.DurationSeconds}
-		if !dedupe.ContentEligible(right) {
-			continue
-		}
-		teaserPath, validPath := localpath.Managed(c.cfg.LocalPreviewDir, candidate.PreviewLocal)
-		if strings.TrimSpace(candidate.PreviewStatus) != "ready" || !validPath {
-			continue
-		}
-		if info, err := os.Stat(teaserPath); err != nil || !info.Mode().IsRegular() {
-			continue
-		}
+	}
+	signatures, err := c.cfg.Catalog.LoadVideoSignatures(ctx, ids)
+	if err != nil || len(signatures) == 0 {
+		return nil, err
+	}
 
-		if sourceSig == nil {
-			times := preview.TeaserFrameSourceTimes(float64(source.DurationSeconds), mediasim.FrameSignatureMaxFrames)
-			sig, err := mediasim.ExtractFrameSignatureAtTimes(ctx, c.cfg.FFmpegPath, sourceVideoPath, times)
-			if err != nil {
-				log.Printf("[scriptcrawler] drive=%s source_id=%s content signature failed: %v", c.cfg.Driver.ID(), source.ID, err)
-				return nil, nil
-			}
-			if sig.InformativeFrames() < mediasim.ContentDuplicateMinComparisons {
-				return nil, nil
-			}
-			sourceSig = sig
+	windows := preview.TeaserSourceWindows(float64(source.DurationSeconds))
+	clips := make([]mediasig.Clip, 0, len(windows))
+	for _, window := range windows {
+		clips = append(clips, mediasig.Clip{Path: sourceVideoPath, Offset: window.Start, Window: window})
+	}
+	left.Signature, err = mediasig.Extract(ctx, c.cfg.FFmpegPath, time.Duration(source.DurationSeconds)*time.Second, clips)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
 		}
-
-		candidateSig, err := c.loadCandidateTeaserSignature(ctx, candidate.ID, teaserPath)
-		if err != nil {
-			log.Printf("[scriptcrawler] drive=%s source_id=%s candidate=%s teaser signature failed: %v", c.cfg.Driver.ID(), source.ID, candidate.ID, err)
+		log.Printf("[scriptcrawler] drive=%s source_id=%s signature failed: %v", c.cfg.Driver.ID(), source.ID, err)
+		return nil, nil
+	}
+	for _, candidate := range candidates {
+		signature := signatures[candidate.ID]
+		if signature == nil {
 			continue
 		}
-		if match, matched := dedupe.MatchContent(left, right, sourceSig, candidateSig); matched {
-			if cross := match.CrossDetails; cross != nil {
-				log.Printf("[scriptcrawler] drive=%s source_id=%s content duplicate (cross) candidate=%s strong=%d/%d,%d/%d median_best=%.3f",
-					c.cfg.Driver.ID(), source.ID, candidate.ID, cross.LeftStrong, cross.LeftFrames, cross.RightStrong, cross.RightFrames, cross.MedianBest)
-			}
+		right := dedupe.Candidate{ID: candidate.ID, DurationSeconds: candidate.DurationSeconds, Signature: signature}
+		if match, verdict := dedupe.MatchSignature(left, right); verdict == mediasig.VerdictStrong {
 			return &nearDuplicateMatch{video: candidate, match: match}, nil
 		}
 	}
 	return nil, nil
-}
-
-func (c *Importer) loadCandidateTeaserSignature(ctx context.Context, videoID, teaserPath string) (*mediasim.FrameSignature, error) {
-	localDir := strings.TrimSpace(c.cfg.LocalPreviewDir)
-	cachePath := ""
-	if localDir != "" {
-		cachePath = mediaasset.FrameSignaturePath(localDir, videoID)
-		if signature, cached := mediasim.LoadCachedTeaserSignature(cachePath, teaserPath); cached {
-			return signature, nil
-		}
-	}
-
-	signature, err := mediasim.ExtractTeaserFrameSignature(ctx, c.cfg.FFmpegPath, teaserPath)
-	if err != nil {
-		return nil, err
-	}
-	if cachePath != "" && signature != nil && signature.InformativeFrames() >= mediasim.ContentDuplicateMinComparisons {
-		if err := mediasim.StoreCachedTeaserSignature(cachePath, teaserPath, signature); err != nil {
-			log.Printf("[scriptcrawler] candidate=%s content signature cache write: %v", videoID, err)
-		}
-	}
-	return signature, nil
 }

@@ -2422,8 +2422,9 @@ func (c *Catalog) FindEquivalentVideo(ctx context.Context, source *Video) (*Vide
 }
 
 // ListNearDuplicateVideoCandidates returns visible videos that are cheap
-// candidates for perceptual duplicate checking: same-ish duration and a ready
-// thumbnail URL. Callers are expected to apply title similarity and image SSIM.
+// candidates for perceptual duplicate checking: same-ish duration and either a
+// thumbnail URL or a perceptual signature. Callers apply the title/thumbnail
+// and signature rules to whichever input a candidate has.
 func (c *Catalog) ListNearDuplicateVideoCandidates(ctx context.Context, source *Video, durationToleranceSeconds, limit int) ([]*Video, error) {
 	if source == nil || strings.TrimSpace(source.Title) == "" || source.DurationSeconds <= 0 {
 		return nil, nil
@@ -2444,7 +2445,7 @@ func (c *Catalog) ListNearDuplicateVideoCandidates(ctx context.Context, source *
 		 WHERE id != ?
 		   AND `+duplicateLookupScope+`
 		   AND `+contentVerifiedWhere+`
-		   AND COALESCE(thumbnail_url, '') != ''
+		   AND (COALESCE(thumbnail_url, '') != '' OR content_signature IS NOT NULL)
 		   AND COALESCE(duration_seconds, 0) BETWEEN ? AND ?
 		 ORDER BY ABS(duration_seconds - ?) ASC, created_at ASC, id ASC
 		 LIMIT ?`,

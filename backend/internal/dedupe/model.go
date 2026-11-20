@@ -7,18 +7,15 @@ import (
 	"time"
 
 	"github.com/nianzhibai/91/backend/internal/mediasig"
-	"github.com/nianzhibai/91/backend/internal/mediasim"
 )
 
 // Stage identifies the maintenance channel that connected a duplicate group.
 type Stage string
 
 const (
-	StageExact   Stage = "exact"
-	StageNear    Stage = "near"
-	StageContent Stage = "content"
-	// StageSignature compares perceptual signatures. It will replace
-	// StageContent once signatures are generated for every video.
+	StageExact Stage = "exact"
+	StageNear  Stage = "near"
+	// StageSignature compares perceptual signatures of the video content.
 	StageSignature Stage = "signature"
 )
 
@@ -28,12 +25,9 @@ type Channels uint8
 const (
 	ChannelExact Channels = 1 << iota
 	ChannelNear
-	ChannelContent
-	// ChannelSignature is evaluated only when selected explicitly; production
-	// maintenance keeps ChannelContent until signatures replace it.
 	ChannelSignature
 
-	AllChannels = ChannelExact | ChannelNear | ChannelContent
+	AllChannels = ChannelExact | ChannelNear | ChannelSignature
 )
 
 func (c Channels) includes(channel Channels) bool {
@@ -56,7 +50,6 @@ type Candidate struct {
 	CreatedAt       time.Time
 	Revision        string
 	ThumbnailPath   string
-	TeaserPath      string
 	Signature       *mediasig.Signature
 }
 
@@ -91,11 +84,7 @@ type Match struct {
 	RightID     string  `json:"rightId"`
 	Score       float64 `json:"score,omitempty"`
 	Comparisons int     `json:"comparisons,omitempty"`
-	Cross       bool    `json:"cross,omitempty"`
 	TitleScore  float64 `json:"titleScore,omitempty"`
-	// CrossDetails preserves both directional counts; MedianBest alone is not
-	// the criterion used to accept a cross match.
-	CrossDetails *mediasim.FrameSignatureCrossComparison `json:"crossDetails,omitempty"`
 	// Signature is the evidence of a signature-channel pair.
 	Signature *mediasig.Comparison `json:"signature,omitempty"`
 }
@@ -111,20 +100,16 @@ type Issue struct {
 }
 
 type ChannelStats struct {
-	Candidates    int
-	Extracted     int
-	ExtractFailed int
-	Comparisons   int
-	CrossMatched  int
-	Groups        int
-	Deleted       int
+	Candidates  int
+	Comparisons int
+	Groups      int
+	Deleted     int
 }
 
 type Stats struct {
 	Videos    int
 	Exact     ChannelStats
 	Near      ChannelStats
-	Content   ChannelStats
 	Signature ChannelStats
 }
 

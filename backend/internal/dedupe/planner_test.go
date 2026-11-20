@@ -4,25 +4,18 @@ import (
 	"context"
 	"testing"
 	"time"
-
-	"github.com/nianzhibai/91/backend/internal/mediasim"
 )
 
 func TestBuildCompressesIntermediateCanonicalToFinalSurvivor(t *testing.T) {
 	now := time.Date(2026, 8, 23, 0, 0, 0, 0, time.UTC)
-	shared := &mediasim.FrameSignature{Frames: syntheticFrames(7)}
+	shared := windowSignature(1, 2, 3, 4)
 	candidates := []Candidate{
-		{ID: "exact-loser", Size: 100, SampledSHA256: "same", AssetScore: 0, CreatedAt: now, DurationSeconds: 300, TeaserPath: "loser", Revision: "1"},
-		{ID: "exact-winner", Size: 100, SampledSHA256: "same", AssetScore: 1, CreatedAt: now.Add(time.Second), DurationSeconds: 300, TeaserPath: "winner", Revision: "2"},
-		{ID: "content-winner", Size: 200, SampledSHA256: "different", AssetScore: 0, CreatedAt: now.Add(2 * time.Second), DurationSeconds: 300, TeaserPath: "content", Revision: "3"},
+		{ID: "exact-loser", Size: 100, SampledSHA256: "same", AssetScore: 0, CreatedAt: now, DurationSeconds: 300, Signature: shared, Revision: "1"},
+		{ID: "exact-winner", Size: 100, SampledSHA256: "same", AssetScore: 1, CreatedAt: now.Add(time.Second), DurationSeconds: 300, Signature: shared, Revision: "2"},
+		{ID: "content-winner", Size: 200, SampledSHA256: "different", AssetScore: 0, CreatedAt: now.Add(2 * time.Second), DurationSeconds: 300, Signature: shared, Revision: "3"},
 	}
 
-	plan, err := Build(context.Background(), candidates, Options{
-		Channels: AllChannels,
-		LoadContentSignature: func(context.Context, Candidate) (*mediasim.FrameSignature, error) {
-			return shared, nil
-		},
-	})
+	plan, err := Build(context.Background(), candidates, Options{Channels: AllChannels})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -37,14 +30,14 @@ func TestBuildCompressesIntermediateCanonicalToFinalSurvivor(t *testing.T) {
 			if action.Evidence.Reason != ReasonSampledSHA256 || action.Evidence.MatchedVideoID != "exact-winner" || action.Evidence.SelectedVideoID != "exact-winner" || action.Evidence.SelectionReason != "more_complete_assets" {
 				t.Fatalf("exact evidence must keep its original match and selection: %+v", action.Evidence)
 			}
-		} else if action.Evidence.Reason != ReasonContent || action.Evidence.MatchedVideoID != "content-winner" || action.Evidence.SelectionReason != "larger_file" {
+		} else if action.Evidence.Reason != ReasonSignature || action.Evidence.MatchedVideoID != "content-winner" || action.Evidence.SelectionReason != "larger_file" {
 			t.Fatalf("content evidence = %+v", action.Evidence)
 		}
 	}
 	if plan.Redirects["exact-loser"] != "content-winner" || plan.Redirects["exact-winner"] != "content-winner" {
 		t.Fatalf("redirects = %#v", plan.Redirects)
 	}
-	if plan.Stats.Exact.Groups != 1 || plan.Stats.Exact.Deleted != 1 || plan.Stats.Content.Groups != 1 || plan.Stats.Content.Deleted != 1 {
+	if plan.Stats.Exact.Groups != 1 || plan.Stats.Exact.Deleted != 1 || plan.Stats.Signature.Groups != 1 || plan.Stats.Signature.Deleted != 1 {
 		t.Fatalf("stats = %#v", plan.Stats)
 	}
 }
@@ -111,18 +104,6 @@ func TestBuildExactCanonicalPrefersAssetsThenAge(t *testing.T) {
 			t.Fatalf("action = %#v, want most complete then earliest", action)
 		}
 	}
-}
-
-func syntheticFrames(seed byte) [][]byte {
-	frames := make([][]byte, mediasim.FrameSignatureMaxFrames)
-	for i := range frames {
-		frame := make([]byte, mediasim.FrameSignatureGridSize*mediasim.FrameSignatureGridSize)
-		for j := range frame {
-			frame[j] = byte((int(seed) + i*17 + j*31) % 256)
-		}
-		frames[i] = frame
-	}
-	return frames
 }
 
 func TestBuildExactJoinsProviderHashAndSampledFingerprint(t *testing.T) {

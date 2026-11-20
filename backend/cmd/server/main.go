@@ -121,6 +121,7 @@ func main() {
 			log.Printf("release generated asset directory lease: %v", closeErr)
 		}
 	}()
+	removeRetiredFrameSignatureCache(cfg.Storage.LocalPreviewDir)
 
 	cat, err := openStartupCatalog(context.Background(), cfg.Storage, appliedRestore)
 	if err != nil {

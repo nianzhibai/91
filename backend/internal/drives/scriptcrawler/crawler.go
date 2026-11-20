@@ -38,7 +38,6 @@ type CrawlerConfig struct {
 	ScriptPath         string
 	WorkDir            string
 	CommonThumbDir     string
-	LocalPreviewDir    string
 	// PreviewEnabled reads the global preview switch; nil means enabled.
 	PreviewEnabled  func() bool
 	ProxyURL        string
@@ -100,7 +99,7 @@ func NewCrawler(cfg CrawlerConfig) *Crawler {
 		_ = configureExplicitProxy(transport, cfg.ProxyURL)
 		cfg.HTTPClient = &http.Client{Transport: transport}
 	}
-	importer := &Importer{cfg: ImporterConfig{Driver: cfg.Driver, Catalog: cfg.Catalog, FingerprintLimiter: cfg.FingerprintLimiter, CrawlerName: cfg.CrawlerName, FFmpegPath: cfg.FFmpegPath, FFprobePath: cfg.FFprobePath, CommonThumbDir: cfg.CommonThumbDir, LocalPreviewDir: cfg.LocalPreviewDir, PreviewEnabled: cfg.PreviewEnabled, HTTPClient: cfg.HTTPClient, DownloadTimeout: cfg.DownloadTimeout}}
+	importer := &Importer{cfg: ImporterConfig{Driver: cfg.Driver, Catalog: cfg.Catalog, FingerprintLimiter: cfg.FingerprintLimiter, CrawlerName: cfg.CrawlerName, FFmpegPath: cfg.FFmpegPath, FFprobePath: cfg.FFprobePath, CommonThumbDir: cfg.CommonThumbDir, PreviewEnabled: cfg.PreviewEnabled, HTTPClient: cfg.HTTPClient, DownloadTimeout: cfg.DownloadTimeout}}
 	return &Crawler{cfg: cfg, Importer: importer}
 }
 

@@ -40,10 +40,10 @@ const (
 )
 
 type ImporterConfig struct {
-	Driver                                                                *Driver
-	Catalog                                                               *catalog.Catalog
-	FingerprintLimiter                                                    *tasklimit.Limiter
-	CrawlerName, FFmpegPath, FFprobePath, CommonThumbDir, LocalPreviewDir string
+	Driver                                               *Driver
+	Catalog                                              *catalog.Catalog
+	FingerprintLimiter                                   *tasklimit.Limiter
+	CrawlerName, FFmpegPath, FFprobePath, CommonThumbDir string
 	// PreviewEnabled reads the global preview switch; nil means enabled.
 	PreviewEnabled  func() bool
 	HTTPClient      *http.Client

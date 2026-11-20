@@ -32,7 +32,9 @@ duplicate decisions. For this reason, a scan's total `duplicateCount` is not
 necessarily the number of newly created records.
 
 `reason` is one of `content_hash`, `file_name_size`, `sampled_sha256`,
-`title_duration_thumbnail`, `content_frames`, or `unknown`. `content_hash`
+`title_duration_thumbnail`, `content_signature`, or `unknown`. Older records
+may also carry `content_frames`, the retired rule that compared teaser frames
+with SSIM. `content_hash`
 means the provider hash strings matched; no algorithm is inferred from hash
 length. `size_bytes` and snapshot `sizeBytes` retain the reported value,
 without claiming independent size verification. `unknown` is used when an
@@ -77,17 +79,19 @@ today's catalog metadata. Sources without known directory metadata omit these fi
 names the final survivor **at the time of the decision**. For a transitive
 A -> B -> C merge, A records its A-B comparison and retains B's snapshot even
 though C survives. B's record supplies the next edge. Scores keep their original
-`leftId`/`rightId` orientation, including directional cross-match counts.
+`leftId`/`rightId` orientation.
 `selected_snapshot` and `evidence.selectedVideoId` identify the original channel
 winner explained by `selection_reason`; a later channel may replace it.
 Historical records are not rewritten when canonical references later change.
 
 Evidence version 1 uses the current rules: title similarity >= 0.90, thumbnail
-SSIM >= 0.95 and duration tolerance 2 seconds; aligned content needs at least
-6 valid comparisons and median SSIM >= 0.80. Cross matching needs equal durations,
-at least 8 valid frames on each side and >= 75% strong matches in both directions
-(frame SSIM >= 0.95). Content candidates must be at least 120 seconds long.
-Increment `EvidenceVersion` when changing the meaning of these rules or scores.
+SSIM >= 0.95 and duration tolerance 2 seconds. A `content_signature` match is a
+strong `mediasig` comparison: at least 3 matching windows and 60% of at least
+6 comparable frames within hash distance 10, plus a median distance of at most
+4 when either signature is static. `evidence.match.signature` keeps the counts.
+Signature candidates must be at least 30 seconds long. Increment
+`EvidenceVersion` when changing the meaning of an existing reason or score; a
+new rule gets a new reason instead.
 
 From the project root, for example:
 

@@ -74,41 +74,6 @@ func MatchNear(left, right Candidate, compare ImageComparator) (Match, bool, err
 	}, true, nil
 }
 
-// ContentEligible reports whether a candidate is long enough for duration to
-// carry signal. Callers use it to avoid extracting signatures needlessly.
-func ContentEligible(c Candidate) bool {
-	return c.DurationSeconds >= mediasim.ContentDuplicateMinDurationSeconds
-}
-
-// MatchContent compares frame signatures sampled at the same duration-derived
-// offsets. Aligned frames decide first; when both durations are exactly equal,
-// a bidirectional cross match recovers teasers whose segments were shifted.
-func MatchContent(left, right Candidate, leftSignature, rightSignature *mediasim.FrameSignature) (Match, bool) {
-	if !ContentEligible(left) || !ContentEligible(right) || !durationsWithinTolerance(left, right) ||
-		leftSignature == nil || rightSignature == nil {
-		return Match{}, false
-	}
-	aligned := mediasim.CompareFrameSignatures(leftSignature, rightSignature)
-	if aligned.IsContentDuplicate() {
-		return Match{
-			Stage: StageContent, Reason: ReasonContent, LeftID: left.ID, RightID: right.ID,
-			Score: aligned.MedianSSIM, Comparisons: aligned.Comparisons,
-		}, true
-	}
-	if left.DurationSeconds != right.DurationSeconds {
-		return Match{}, false
-	}
-	cross := mediasim.CompareFrameSignaturesCross(leftSignature, rightSignature)
-	if !cross.IsContentDuplicate() {
-		return Match{}, false
-	}
-	return Match{
-		Stage: StageContent, Reason: ReasonContent, LeftID: left.ID, RightID: right.ID,
-		Score: cross.MedianBest, Comparisons: min(cross.LeftFrames, cross.RightFrames),
-		Cross: true, CrossDetails: &cross,
-	}, true
-}
-
 // SignatureEligible reports whether a candidate is long enough for its
 // signature verdict to be trusted.
 func SignatureEligible(c Candidate) bool {

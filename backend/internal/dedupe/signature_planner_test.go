@@ -85,19 +85,6 @@ func TestSignatureChannelMergesStarIntoLargestFile(t *testing.T) {
 	}
 }
 
-func TestSignatureChannelIsNotPartOfDefaultChannels(t *testing.T) {
-	plan, err := Build(context.Background(), []Candidate{
-		signedCandidate("a", 100, windowSignature(1, 2, 3, 4)),
-		signedCandidate("b", 200, windowSignature(1, 2, 3, 4)),
-	}, Options{})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	if plan.Stats.Signature.Candidates != 0 || len(plan.Actions) != 0 {
-		t.Fatalf("default channels evaluated signatures: %+v", plan.Stats.Signature)
-	}
-}
-
 func TestSignatureEligibleStartsAtMinDuration(t *testing.T) {
 	minimum := int(mediasig.MinDuration / time.Second)
 	if !SignatureEligible(Candidate{DurationSeconds: minimum}) || SignatureEligible(Candidate{DurationSeconds: minimum - 1}) {

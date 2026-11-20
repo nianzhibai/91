@@ -85,7 +85,6 @@ func collectPreviewAssetPaths(
 		}
 		candidates := append([]string{}, mediaasset.PreviewPathCandidates(previewRoot, videoID)...)
 		candidates = append(candidates, mediaasset.ThumbnailAssetPathCandidates(previewRoot, videoID)...)
-		candidates = append(candidates, mediaasset.FrameSignaturePath(previewRoot, videoID))
 		if strings.TrimSpace(previewLocal) != "" {
 			if absolute, ok := localpath.Managed(previewRoot, previewLocal); ok {
 				candidates = append(candidates, absolute)

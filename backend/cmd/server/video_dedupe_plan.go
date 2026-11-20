@@ -11,22 +11,26 @@ import (
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/dedupe"
 	"github.com/nianzhibai/91/backend/internal/mediaasset"
-	"github.com/nianzhibai/91/backend/internal/mediasim"
 	"github.com/nianzhibai/91/backend/internal/persistence"
 )
 
-// contentSignatureExtractor allows channel tests to inject deterministic
-// signatures; production uses ffmpeg.
-var contentSignatureExtractor = mediasim.ExtractTeaserFrameSignature
-
 func (a *App) buildDuplicateMaintenancePlan(ctx context.Context, localDir string, videos []*catalog.Video, channels dedupe.Channels) (dedupe.Plan, error) {
+	ids := make([]string, 0, len(videos))
+	for _, video := range videos {
+		if video != nil && strings.TrimSpace(video.ID) != "" {
+			ids = append(ids, video.ID)
+		}
+	}
+	signatures, err := a.cat.LoadVideoSignatures(ctx, ids)
+	if err != nil {
+		return dedupe.Plan{}, err
+	}
 	candidates := make([]dedupe.Candidate, 0, len(videos))
 	for _, video := range videos {
 		if video == nil || strings.TrimSpace(video.ID) == "" {
 			continue
 		}
 		thumbnailPath, _ := localGeneratedThumbnailPath(localDir, video)
-		teaserPath, _ := localGeneratedPreviewPath(localDir, video)
 		candidates = append(candidates, dedupe.Candidate{
 			ID:              video.ID,
 			Title:           video.Title,
@@ -38,55 +42,22 @@ func (a *App) buildDuplicateMaintenancePlan(ctx context.Context, localDir string
 			CreatedAt:       video.CreatedAt,
 			Revision:        catalog.DuplicateRevision(video),
 			ThumbnailPath:   thumbnailPath,
-			TeaserPath:      teaserPath,
+			Signature:       signatures[video.ID],
 		})
 	}
 
-	ffmpegPath := ""
-	if a != nil && a.cfg != nil {
-		ffmpegPath = a.cfg.Preview.FFmpegPath
-	}
-	loadSignature := func(ctx context.Context, candidate dedupe.Candidate) (*mediasim.FrameSignature, error) {
-		cachePath := mediaasset.FrameSignaturePath(localDir, candidate.ID)
-		if signature, cached := mediasim.LoadCachedTeaserSignature(cachePath, candidate.TeaserPath); cached {
-			return signature, nil
-		}
-		signature, err := contentSignatureExtractor(ctx, ffmpegPath, candidate.TeaserPath)
-		if err != nil {
-			return nil, err
-		}
-		if signature != nil && signature.InformativeFrames() >= mediasim.ContentDuplicateMinComparisons {
-			if err := mediasim.StoreCachedTeaserSignature(cachePath, candidate.TeaserPath, signature); err != nil {
-				log.Printf("[dedupe-maintenance] content signature cache write id=%s: %v", candidate.ID, err)
-			}
-		}
-		return signature, nil
-	}
-
-	plan, err := dedupe.Build(ctx, candidates, dedupe.Options{
-		Channels:             channels,
-		LoadContentSignature: loadSignature,
-	})
+	plan, err := dedupe.Build(ctx, candidates, dedupe.Options{Channels: channels})
 	if err != nil {
 		return dedupe.Plan{}, err
 	}
 	for _, issue := range plan.Issues {
-		switch issue.Stage {
-		case dedupe.StageNear:
-			log.Printf("[dedupe-maintenance] thumbnail ssim failed left=%s right=%s: %v", issue.LeftID, issue.RightID, issue.Err)
-		case dedupe.StageContent:
-			log.Printf("[dedupe-maintenance] content signature failed id=%s: %v", issue.VideoID, issue.Err)
-		}
+		log.Printf("[dedupe-maintenance] thumbnail ssim failed left=%s right=%s: %v", issue.LeftID, issue.RightID, issue.Err)
 	}
 	for _, match := range plan.Matches {
-		if match.Stage != dedupe.StageContent {
-			continue
+		if c := match.Signature; c != nil {
+			log.Printf("[dedupe-maintenance] signature duplicate matched left=%s right=%s frames=%d/%d windows=%d/%d median_distance=%d static=%v",
+				match.LeftID, match.RightID, c.MatchedFrames, c.Frames, c.MatchedWindows, c.Windows, c.MedianDistance, c.Static)
 		}
-		if match.Cross {
-			log.Printf("[dedupe-maintenance] content duplicate matched (cross) left=%s right=%s median_best=%.3f comparisons=%d", match.LeftID, match.RightID, match.Score, match.Comparisons)
-			continue
-		}
-		log.Printf("[dedupe-maintenance] content duplicate matched left=%s right=%s median_ssim=%.3f comparisons=%d", match.LeftID, match.RightID, match.Score, match.Comparisons)
 	}
 	return plan, nil
 }

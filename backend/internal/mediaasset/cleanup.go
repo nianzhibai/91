@@ -30,7 +30,6 @@ func RemoveGeneratedVideoAssets(localDir, videoID, previewLocal string) error {
 	}
 	candidates = append(candidates, PreviewPathCandidates(localDir, videoID)...)
 	candidates = append(candidates, ThumbnailAssetPathCandidates(localDir, videoID)...)
-	candidates = append(candidates, FrameSignaturePath(localDir, videoID))
 
 	seen := make(map[string]struct{}, len(candidates))
 	for _, candidate := range candidates {

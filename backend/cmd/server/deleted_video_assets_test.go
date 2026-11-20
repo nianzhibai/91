@@ -42,7 +42,7 @@ func seedDeferredVideoAssets(t *testing.T) (*App, *catalog.Video, []string) {
 	dir := app.cfg.Storage.LocalPreviewDir
 	paths := []string{
 		mediaasset.PreviewPath(dir, video.ID), mediaasset.ThumbnailPath(dir, video.ID),
-		mediaasset.ShortsBackgroundPath(dir, video.ID), mediaasset.FrameSignaturePath(dir, video.ID),
+		mediaasset.ShortsBackgroundPath(dir, video.ID),
 	}
 	for _, path := range paths {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/dedupe"
 	"github.com/nianzhibai/91/backend/internal/preview"
 )
@@ -63,18 +64,27 @@ func TestSignatureChannelFindsReencodedTeaserCopies(t *testing.T) {
 
 	now := time.Date(2026, 11, 21, 0, 0, 0, 0, time.UTC)
 	var candidates []dedupe.Candidate
+	teasers := make(map[string]string)
 	for i, input := range []struct{ id, path string }{
 		{"original", source}, {"copy", letterboxed}, {"other", other},
 	} {
 		teaser := filepath.Join(dir, input.id+"-teaser.mp4")
 		makeTeaser(t, ffmpeg, input.path, teaser)
+		teasers[input.id] = teaser
 		candidates = append(candidates, dedupe.Candidate{
 			ID: input.id, DurationSeconds: testDurationSeconds + i%2, Size: int64(100 * (3 - i)),
-			CreatedAt: now, Revision: input.id, TeaserPath: teaser,
+			CreatedAt: now, Revision: input.id,
 		})
 	}
 
-	attachSignatures(context.Background(), ffmpeg, 2, candidates, pairedCandidates(candidates))
+	cat, err := catalog.Open(filepath.Join(dir, "catalog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+	if err := attachSignatures(context.Background(), cat, ffmpeg, 2, candidates, teasers); err != nil {
+		t.Fatalf("attach signatures: %v", err)
+	}
 	plan, err := dedupe.Build(context.Background(), candidates, dedupe.Options{Channels: dedupe.ChannelSignature})
 	if err != nil {
 		t.Fatalf("Build: %v", err)

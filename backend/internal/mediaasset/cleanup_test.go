@@ -20,7 +20,6 @@ func TestRemoveGeneratedVideoAssetsRemovesOwnedFilesOnly(t *testing.T) {
 		PreviewPath(root, "video-a"),
 		ThumbnailPath(root, "video-a"),
 		ShortsBackgroundPath(root, "video-a"),
-		FrameSignaturePath(root, "video-a"),
 		outside,
 	}
 	for _, path := range paths {

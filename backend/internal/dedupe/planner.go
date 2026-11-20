@@ -11,12 +11,10 @@ import (
 )
 
 type ImageComparator func(leftPath, rightPath string) (float64, error)
-type SignatureLoader func(context.Context, Candidate) (*mediasim.FrameSignature, error)
 
 type Options struct {
-	Channels             Channels
-	CompareImages        ImageComparator
-	LoadContentSignature SignatureLoader
+	Channels      Channels
+	CompareImages ImageComparator
 }
 
 type plannerState struct {
@@ -67,11 +65,6 @@ func Build(ctx context.Context, candidates []Candidate, options Options) (Plan, 
 	}
 	if options.Channels.includes(ChannelNear) {
 		if err := state.planNear(ctx, ordered, options.CompareImages); err != nil {
-			return Plan{}, err
-		}
-	}
-	if options.Channels.includes(ChannelContent) {
-		if err := state.planContent(ctx, ordered, options.LoadContentSignature); err != nil {
 			return Plan{}, err
 		}
 	}
@@ -255,99 +248,6 @@ func (s *plannerState) planNear(ctx context.Context, candidates []Candidate, com
 		}
 		s.plan.Stats.Near.Groups++
 		s.plan.Stats.Near.Deleted += s.markGroup(StageNear, plain, canonical)
-	}
-	return nil
-}
-
-func (s *plannerState) planContent(ctx context.Context, candidates []Candidate, load SignatureLoader) error {
-	content := make([]Candidate, 0, len(candidates))
-	for _, candidate := range candidates {
-		if !s.alive[candidate.ID] || !ContentEligible(candidate) || strings.TrimSpace(candidate.TeaserPath) == "" {
-			continue
-		}
-		content = append(content, candidate)
-	}
-	sort.Slice(content, func(i, j int) bool {
-		if content[i].DurationSeconds != content[j].DurationSeconds {
-			return content[i].DurationSeconds < content[j].DurationSeconds
-		}
-		return earlier(content[i], content[j])
-	})
-	s.plan.Stats.Content.Candidates = len(content)
-	if len(content) < 2 {
-		return nil
-	}
-	if load == nil {
-		return fmt.Errorf("dedupe: content channel requires a signature loader")
-	}
-
-	sigs := make(map[int]*mediasim.FrameSignature)
-	failed := make(map[int]bool)
-	ensureSignature := func(i int) *mediasim.FrameSignature {
-		if signature, ok := sigs[i]; ok {
-			return signature
-		}
-		if failed[i] {
-			return nil
-		}
-		signature, err := load(ctx, content[i])
-		if err != nil || signature == nil || signature.InformativeFrames() < mediasim.ContentDuplicateMinComparisons {
-			failed[i] = true
-			s.plan.Stats.Content.ExtractFailed++
-			if err != nil {
-				s.plan.Issues = append(s.plan.Issues, Issue{Stage: StageContent, VideoID: content[i].ID, Err: err})
-			}
-			return nil
-		}
-		sigs[i] = signature
-		s.plan.Stats.Content.Extracted++
-		return signature
-	}
-
-	sets := newDisjointSet(len(content))
-	windowStart := 0
-	for i := range content {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		for windowStart < i && content[i].DurationSeconds-content[windowStart].DurationSeconds > mediasim.NearDuplicateDurationToleranceSeconds {
-			delete(sigs, windowStart)
-			delete(failed, windowStart)
-			windowStart++
-		}
-		if windowStart == i {
-			continue
-		}
-		rightSignature := ensureSignature(i)
-		if rightSignature == nil {
-			continue
-		}
-		for j := windowStart; j < i; j++ {
-			leftSignature := ensureSignature(j)
-			if leftSignature == nil {
-				continue
-			}
-			s.plan.Stats.Content.Comparisons++
-			match, matched := MatchContent(content[j], content[i], leftSignature, rightSignature)
-			if !matched {
-				continue
-			}
-			sets.union(i, j)
-			if match.Cross {
-				s.plan.Stats.Content.CrossMatched++
-			}
-			s.plan.Matches = append(s.plan.Matches, match)
-		}
-	}
-
-	groups := groupedCandidates(content, sets)
-	for _, group := range groups {
-		canonical := selectCanonical(group, betterPerceptualCanonical)
-		if canonical.ID == "" {
-			continue
-		}
-		s.plan.Stats.Content.Groups++
-		s.plan.Stats.Content.Deleted += s.markGroup(StageContent, group, canonical)
 	}
 	return nil
 }

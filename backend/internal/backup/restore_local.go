@@ -341,7 +341,6 @@ func moveLocalVideoAssets(root, oldID, newID string) error {
 		{oldPaths: mediaasset.PreviewPathCandidates(root, oldID), newPath: mediaasset.PreviewPath(root, newID)},
 		{oldPaths: mediaasset.ThumbnailPathCandidates(root, oldID), newPath: mediaasset.ThumbnailPath(root, newID)},
 		{oldPaths: []string{mediaasset.ShortsBackgroundPath(root, oldID)}, newPath: mediaasset.ShortsBackgroundPath(root, newID)},
-		{oldPaths: []string{mediaasset.FrameSignaturePath(root, oldID)}, newPath: mediaasset.FrameSignaturePath(root, newID)},
 	}
 	for _, group := range groups {
 		moved := false

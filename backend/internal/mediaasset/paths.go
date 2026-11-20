@@ -38,10 +38,6 @@ func ThumbnailAssetPathCandidates(localDir, videoID string) []string {
 	return append(paths, ShortsBackgroundPath(localDir, videoID))
 }
 
-// FrameSignaturePath 内容级查重的 teaser 帧签名缓存文件路径。
-func FrameSignaturePath(localDir, videoID string) string {
-	return filepath.Join(localDir, "framesigs", safeFilename(videoID, ".fsig"))
-}
 
 func PreviewFilename(videoID string) string {
 	return safeFilename(videoID, ".mp4")
