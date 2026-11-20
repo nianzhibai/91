@@ -409,6 +409,19 @@ func TestWorkerWaitsOutCooldownSharedWithOtherWorkers(t *testing.T) {
 	}
 }
 
+func TestWorkerSkipsFingerprintedVideoWithoutReadingTheDrive(t *testing.T) {
+	cat := openTestCatalog(t)
+	video := seedPendingVideo(t, cat, "done", 10)
+	if _, err := cat.UpdateVideoFingerprintForSource(context.Background(), video, "s2:abc", "ready", ""); err != nil {
+		t.Fatal(err)
+	}
+	drv := &fakeDrive{}
+	worker := NewWorker(cat, drv, Config{})
+	if worker.processQueued(context.Background(), video) || drv.streamCalls != 0 {
+		t.Fatalf("worker read the drive for a fingerprinted video: calls=%d", drv.streamCalls)
+	}
+}
+
 func openTestCatalog(t *testing.T) *catalog.Catalog {
 	t.Helper()
 	cat, err := catalog.Open(filepath.Join(t.TempDir(), "catalog.db"))

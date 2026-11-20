@@ -112,7 +112,9 @@ func (w *Worker) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case v := <-w.ch:
-			w.processQueued(ctx, v)
+			if !w.processQueued(ctx, v) {
+				continue
+			}
 			select {
 			case <-ctx.Done():
 				return
@@ -169,45 +171,47 @@ func (w *Worker) WaitIdle(ctx context.Context) error {
 	}
 }
 
-func (w *Worker) processQueued(ctx context.Context, v *catalog.Video) {
+// processQueued reports whether it read the drive, so Run paces only work
+// that reached the provider.
+func (w *Worker) processQueued(ctx context.Context, v *catalog.Video) bool {
 	if v == nil {
-		return
+		return false
 	}
 	if w.Catalog == nil || w.Drive == nil || v.ID == "" {
 		w.queue.release(v.ID)
-		return
+		return false
 	}
 	ctx = applog.WithFields(applog.NewTask(ctx, "fingerprint", w.Drive.ID()), applog.Fields{VideoID: v.ID, FileID: v.FileID})
 	// A cooling drive waits before taking task admission or shared budget.
 	if err := w.Cooldown.Wait(ctx); err != nil {
 		w.queue.release(v.ID)
-		return
+		return false
 	}
 	if w.TaskGuard != nil {
 		release := w.TaskGuard()
 		if release == nil {
 			w.queue.release(v.ID)
-			return
+			return false
 		}
 		defer release()
 	}
 	defer func() { w.queue.release(v.ID); w.notifyStatus(true) }()
 	if err := ctx.Err(); err != nil {
-		return
+		return false
 	}
 	current, err := w.Catalog.GetVideo(ctx, v.ID)
 	if err != nil {
 		if ctx.Err() == nil {
 			applog.Error(ctx, "Read queued video failed", err, applog.Fields{Stage: "lookup"})
 		}
-		return
+		return false
 	}
 	if current.DriveID != w.Drive.ID() || dedupe.IsCurrentFingerprint(current.SampledSHA256) || current.Hidden {
-		return
+		return false
 	}
 	release, err := w.Config.Limiter.AcquireAfter(ctx, w.Cooldown)
 	if err != nil {
-		return
+		return false
 	}
 	w.activity.start(current)
 	w.notifyStatus(true)
@@ -215,25 +219,25 @@ func (w *Worker) processQueued(ctx context.Context, v *catalog.Video) {
 	sum, err := compute(ctx, w.Drive, current, w.Config, w.http)
 	release()
 	if ctx.Err() != nil {
-		return
+		return true
 	}
 	if err != nil {
 		if w.pauseForProviderError(ctx, err) {
 			// The video stays pending, and the reconciler queues it again.
-			return
+			return true
 		}
 		applog.Error(ctx, "Fingerprint computation failed", err, applog.Fields{Stage: "compute"})
 		_, _ = w.Catalog.UpdateVideoFingerprintForSource(ctx, current, "", "failed", err.Error())
-		return
+		return true
 	}
 	replaced, err := w.Catalog.UpdateVideoFingerprintForSource(ctx, current, sum, "ready", "")
 	if err != nil {
 		applog.Error(ctx, "Save fingerprint failed", err, applog.Fields{Stage: "save"})
-		return
+		return true
 	}
 	if !replaced {
 		applog.Info(ctx, "Fingerprint ready", applog.Fields{})
-		return
+		return true
 	}
 	applog.Info(ctx, "Source replaced in place; regenerating its assets", applog.Fields{})
 	if w.OnContentReplaced != nil {
@@ -241,6 +245,7 @@ func (w *Worker) processQueued(ctx context.Context, v *catalog.Video) {
 			w.OnContentReplaced(updated)
 		}
 	}
+	return true
 }
 
 // pauseForProviderError pauses the drive's provider work and reports true when

@@ -2065,6 +2065,11 @@ func (a *App) enqueueAllPendingFingerprints(ctx context.Context) {
 	}
 	a.mu.Unlock()
 	for driveID, worker := range workers {
+		// A busy or cooling worker still holds the pending rows it was given.
+		// Rows it dropped are listed again once it is idle.
+		if fingerprintTaskBusy(worker.Status()) {
+			continue
+		}
 		a.scheduleFingerprintBackfill(ctx, driveID, worker)
 	}
 }
