@@ -27,6 +27,8 @@ func TestOpenAPIMatchesClientDTOs(t *testing.T) {
 	}
 	for name, dto := range map[string]any{
 		"MergedVideo": catalog.MergedVideo{}, "MergedVideoList": catalog.MergedVideoList{}, "MergedSourceDeleteRequest": mergedSourceDeleteRequest{},
+		"DuplicateReviewList": duplicateReviewList{}, "DuplicateReview": duplicateReviewDTO{}, "DuplicateReviewEvidence": duplicateReviewEvidenceDTO{},
+		"DuplicateReviewMergeRequest": duplicateReviewMergeRequest{}, "DuplicateReviewDismissRequest": duplicateReviewDismissRequest{},
 		"VideoDeletionPreview": catalog.VideoDeletionPreview{}, "deleteVideoReq": catalog.VideoDeletionOptions{},
 		"VideoList": VideoListDTO{}, "VideoDTO": VideoDTO{}, "VideoCardDTO": VideoCardDTO{},
 		"VideoDetailDTO": VideoDetailDTO{}, "videoFeedResponse": videoFeedResponse{},

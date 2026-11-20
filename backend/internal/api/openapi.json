@@ -7684,6 +7684,187 @@
           }
         }
       }
+    },
+    "/admin/api/duplicate-reviews": {
+      "get": {
+        "operationId": "get_admin_api_duplicate_reviews",
+        "summary": "List video pairs that perceptual matching left for review",
+        "tags": [
+          "Management"
+        ],
+        "x-role": "admin",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DuplicateReviewList"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/admin/api/duplicate-reviews/merge": {
+      "post": {
+        "operationId": "post_admin_api_duplicate_reviews_merge",
+        "summary": "Merge a reviewed pair into the kept video",
+        "tags": [
+          "Management"
+        ],
+        "x-role": "admin",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DuplicateReviewMergeRequest"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          },
+          "400": {
+            "description": "Both video IDs are required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The pair is not pending review.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A video changed since the pair was reviewed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DuplicateReviewMergeRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/api/duplicate-reviews/dismiss": {
+      "post": {
+        "operationId": "post_admin_api_duplicate_reviews_dismiss",
+        "summary": "Record that a reviewed pair is not a duplicate",
+        "tags": [
+          "Management"
+        ],
+        "x-role": "admin",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DuplicateReviewDismissRequest"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          },
+          "400": {
+            "description": "Both video IDs are required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The pair is not pending review.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DuplicateReviewDismissRequest"
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -12046,6 +12227,134 @@
         "required": [
           "videoId",
           "sourceState"
+        ]
+      },
+      "DuplicateReviewList": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DuplicateReview"
+            }
+          },
+          "total": {
+            "type": "integer"
+          },
+          "page": {
+            "type": "integer"
+          },
+          "size": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size"
+        ]
+      },
+      "DuplicateReview": {
+        "type": "object",
+        "properties": {
+          "left": {
+            "$ref": "#/components/schemas/adminVideoDTO"
+          },
+          "right": {
+            "$ref": "#/components/schemas/adminVideoDTO"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/DuplicateReviewEvidence"
+          },
+          "firstSeenAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "left",
+          "right",
+          "evidence",
+          "firstSeenAt"
+        ]
+      },
+      "DuplicateReviewEvidence": {
+        "type": "object",
+        "properties": {
+          "leftId": {
+            "type": "string"
+          },
+          "rightId": {
+            "type": "string"
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "none",
+              "probable",
+              "strong"
+            ]
+          },
+          "windows": {
+            "type": "integer"
+          },
+          "matchedWindows": {
+            "type": "integer"
+          },
+          "frames": {
+            "type": "integer"
+          },
+          "matchedFrames": {
+            "type": "integer"
+          },
+          "medianDistance": {
+            "type": "integer"
+          },
+          "static": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "leftId",
+          "rightId",
+          "verdict",
+          "windows",
+          "matchedWindows",
+          "frames",
+          "matchedFrames",
+          "medianDistance",
+          "static"
+        ]
+      },
+      "DuplicateReviewMergeRequest": {
+        "type": "object",
+        "properties": {
+          "keepVideoId": {
+            "type": "string"
+          },
+          "mergeVideoId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "keepVideoId",
+          "mergeVideoId"
+        ]
+      },
+      "DuplicateReviewDismissRequest": {
+        "type": "object",
+        "properties": {
+          "leftVideoId": {
+            "type": "string"
+          },
+          "rightVideoId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "leftVideoId",
+          "rightVideoId"
         ]
       }
     },

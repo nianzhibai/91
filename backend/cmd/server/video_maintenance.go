@@ -80,6 +80,9 @@ func (a *App) cleanupDuplicateVideoAssets(ctx context.Context) error {
 		}
 		log.Printf("[dedupe-maintenance] plan changed before commit; rebuilding attempt=%d/%d: %v", attempt+1, maxPlanAttempts, err)
 	}
+	if err := a.replaceDuplicateReviews(ctx, plan.Reviews); err != nil {
+		return err
+	}
 	stats.ExactGroups = plan.Stats.Exact.Groups
 	stats.ExactDeleted = plan.Stats.Exact.Deleted
 	stats.NearCandidates = plan.Stats.Near.Candidates

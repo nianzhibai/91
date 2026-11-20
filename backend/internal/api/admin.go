@@ -91,19 +91,22 @@ type AdminServer struct {
 	// OnPrepareDriveDelete cancels all work for the drive and returns only after
 	// every tracked task has exited. The destructive lease is already blocking
 	// new admissions when this hook runs.
-	OnPrepareDriveDelete           func(ctx context.Context, driveID string) error
-	OnDriveDeleteCleanup           func(ctx context.Context, driveID string) (int, error)
-	OnDriveRemoved                 func(driveID string)
-	OnScanRequested                func(context.Context, string) bool
-	OnCrawlerRunRequested          func(context.Context, string) (string, error)
-	OnCrawlerTaskCancel            func(string, string) bool
-	OnCrawlerUploadRequested       func(driveID string) (bool, string)
-	OnStopDriveTasks               func(driveID string) bool
-	OnStopAllTasks                 func() int
-	OnRegenPreview                 func(videoID string)
-	OnRegenAllPreviews             func()
-	OnDriveGenerationRequested     func(context.Context, string, DriveGenerationKind) (DriveGenerationResult, error)
-	OnDeleteMergedSource           func(context.Context, string, string) error
+	OnPrepareDriveDelete       func(ctx context.Context, driveID string) error
+	OnDriveDeleteCleanup       func(ctx context.Context, driveID string) (int, error)
+	OnDriveRemoved             func(driveID string)
+	OnScanRequested            func(context.Context, string) bool
+	OnCrawlerRunRequested      func(context.Context, string) (string, error)
+	OnCrawlerTaskCancel        func(string, string) bool
+	OnCrawlerUploadRequested   func(driveID string) (bool, string)
+	OnStopDriveTasks           func(driveID string) bool
+	OnStopAllTasks             func() int
+	OnRegenPreview             func(videoID string)
+	OnRegenAllPreviews         func()
+	OnDriveGenerationRequested func(context.Context, string, DriveGenerationKind) (DriveGenerationResult, error)
+	OnDeleteMergedSource       func(context.Context, string, string) error
+	// OnMergeDuplicateReview merges a confirmed review pair (keep, merge) and
+	// cleans up the merged video's generated assets.
+	OnMergeDuplicateReview         func(context.Context, string, string) error
 	OnDeleteVideo                  func(ctx context.Context, videoID string, options catalog.VideoDeletionOptions) (DeleteVideoResult, error)
 	OnStartBlacklistSourceDelete   func(BlacklistSourceDeleteRequest) bool
 	GetBlacklistSourceDeleteStatus func() BlacklistSourceDeleteStatus
@@ -298,6 +301,9 @@ func (a *AdminServer) Register(r chi.Router, adminRoutes ...func(chi.Router)) {
 			r.Get("/merged-videos", a.handleMergedVideos)
 			r.Get("/merged-videos/{id}", a.handleMergedVideo)
 			r.Delete("/merged-videos/{id}/source", a.handleDeleteMergedSource)
+			r.Get("/duplicate-reviews", a.handleDuplicateReviews)
+			r.Post("/duplicate-reviews/merge", a.handleMergeDuplicateReview)
+			r.Post("/duplicate-reviews/dismiss", a.handleDismissDuplicateReview)
 			// 用户主动拉黑的来源。
 			r.Get("/blacklist", a.handleListBlacklist)
 			r.Get("/blacklist/source-delete/status", a.handleBlacklistSourceDeleteStatus)

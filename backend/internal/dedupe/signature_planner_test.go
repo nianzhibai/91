@@ -53,12 +53,15 @@ func TestSignatureChannelMergesOnlyDirectStrongMatches(t *testing.T) {
 		t.Fatalf("evidence = %+v, want the direct strong match with c", evidence)
 	}
 
-	reviews := map[string]mediasig.Verdict{}
-	for _, review := range plan.Reviews {
-		reviews[review.LeftID+"-"+review.RightID] = review.Signature.Verdict
+	// a-b was strong but b merged into c, and a-c is only probable. Both point
+	// at the surviving pair a-c, which keeps the stronger a-b evidence.
+	if len(plan.Reviews) != 1 {
+		t.Fatalf("reviews = %+v, want one review of the surviving pair", plan.Reviews)
 	}
-	if len(reviews) != 2 || reviews["a-b"] != mediasig.VerdictStrong || reviews["a-c"] != mediasig.VerdictProbable {
-		t.Fatalf("reviews = %v, want the unmerged strong a-b and probable a-c", reviews)
+	review := plan.Reviews[0]
+	if review.LeftID != "a" || review.RightID != "c" || review.Match.LeftID != "a" || review.Match.RightID != "b" ||
+		review.Match.Signature.Verdict != mediasig.VerdictStrong {
+		t.Fatalf("review = %+v, want survivors a-c with the strong a-b evidence", review)
 	}
 	if stats := plan.Stats.Signature; stats.Candidates != 3 || stats.Comparisons != 3 || stats.Groups != 1 || stats.Deleted != 1 {
 		t.Fatalf("stats = %+v", stats)
@@ -89,5 +92,32 @@ func TestSignatureEligibleStartsAtMinDuration(t *testing.T) {
 	minimum := int(mediasig.MinDuration / time.Second)
 	if !SignatureEligible(Candidate{DurationSeconds: minimum}) || SignatureEligible(Candidate{DurationSeconds: minimum - 1}) {
 		t.Fatalf("eligibility must start at %ds", minimum)
+	}
+}
+
+func TestSignatureChannelSkipsDistinctPairs(t *testing.T) {
+	candidates := []Candidate{
+		signedCandidate("a", 100, windowSignature(1, 2, 3, 4)),
+		signedCandidate("b", 200, windowSignature(1, 2, 3, 4)),
+		signedCandidate("c", 300, windowSignature(1, 2, 7, 8)),
+	}
+	distinct := func(left, right string) bool {
+		return (left == "a" && right == "b") || (left == "b" && right == "a")
+	}
+	plan, err := Build(context.Background(), candidates, Options{Channels: ChannelSignature, Distinct: distinct})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Actions) != 0 {
+		t.Fatalf("actions = %#v, want the distinct pair kept apart", plan.Actions)
+	}
+	// a-c and b-c are probable; a-b is neither compared nor reviewed.
+	if len(plan.Reviews) != 2 || plan.Stats.Signature.Comparisons != 2 {
+		t.Fatalf("reviews = %+v comparisons = %d", plan.Reviews, plan.Stats.Signature.Comparisons)
+	}
+	for _, review := range plan.Reviews {
+		if review.LeftID == "a" && review.RightID == "b" {
+			t.Fatalf("distinct pair reviewed: %+v", review)
+		}
 	}
 }

@@ -194,7 +194,7 @@ func printPlan(plan dedupe.Plan, videosByID map[string]*catalog.Video) {
 		}
 	}
 	for _, review := range plan.Reviews {
-		c := review.Signature
+		c := review.Match.Signature
 		fmt.Printf("[待复核 %s 帧 %d/%d 窗 %d/%d 中位距离 %d static=%v] %s %q <-> %s %q\n",
 			c.Verdict, c.MatchedFrames, c.Frames, c.MatchedWindows, c.Windows, c.MedianDistance, c.Static,
 			review.LeftID, videoTitle(videosByID[review.LeftID]), review.RightID, videoTitle(videosByID[review.RightID]))

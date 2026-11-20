@@ -24,6 +24,7 @@ from its tombstones or crawler seen entries.
 | `crawler` | `skipped_import` | An exact or perceptual match prevented import |
 | `maintenance` | `merged` | Server maintenance committed its merge plan |
 | `command` | `merged` | `dedupe-dryrun -apply` committed its merge plan |
+| `review` | `merged` | An administrator merged a pair from the duplicate review list; `selection_reason` is `manual_review` |
 
 Read-only planning does not write records. Records never act as tombstones,
 admission blockers or canonical redirects. Identity-only re-observations of an

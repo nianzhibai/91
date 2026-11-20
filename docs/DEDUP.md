@@ -51,7 +51,7 @@ flowchart LR
 | 判定 | 条件 | 处理 |
 |------|------|------|
 | strong | ≥3 个窗命中，且 ≥60% 可比帧距离 ≤10；画面静态（多数窗彼此相似）时还要求帧距离中位数 ≤4 | 只合并到与自己直接命中的保留项，不走传递闭包 |
-| probable | 2 个窗命中，或静态画面未达到更严的帧距离 | 列入 `Plan.Reviews`，不合并 |
+| probable | 2 个窗命中，或静态画面未达到更严的帧距离 | 列入[待复核](#待复核-api)，不合并 |
 
 纯色、黑场和大部分是黑边的帧不参与比较；可比帧少于 6 不判重；30 秒以下的视频不参与签名比对。固定机位录像的不同片段帧帧相似，帧距离中位数约 8；同一视频的转发不超过 4。阈值经一个约 1.4 万视频的真实库校准，抽样目检均为同一视频。
 
@@ -117,6 +117,18 @@ Planner 跑完全部通道后会压缩 canonical 链。例如精确通道先得�
 管理员调用 `GET /admin/api/merged-videos` 分页查询（`page`、`size`，可按 `canonicalVideoId`、`driveId`、`sourceState` 筛选）。`GET /admin/api/merged-videos/{id}` 按副本原 ID 返回来源快照、`sourceRevision` 及当前是否有活动视频共用源文件。来源状态 `recorded` 表示已记录，`gone` 表示确认消失，`replaced` 表示该位置的文件已经改变。
 
 `DELETE /admin/api/merged-videos/{id}/source` 接收 `{"sourceRevision":"…"}`。核对来源后删除物理文件，保留旧 ID 映射；同一版本重试返回成功。缺少版本返回 400，未知 ID 返回 404。版本过期、共享源文件、文件被替换、身份无法核实或另一次删除正在执行，返回 409 和具体错误码。管理统计 `GET /admin/api/videos/stats` 的 `merged` 按已合并的原 ID 计数。
+
+## 待复核 API
+
+签名通道不确定的配对不会自动合并，而是由每轮维护写入 `duplicate_reviews`。包括 probable 配对，以及 strong 但没有和保留项直接命中的配对。配对指向本轮之后存活的视频，同一对只保留最强的证据，上一轮出现过的配对保留首次出现时间。
+
+| 接口 | 作用 |
+|------|------|
+| `GET /admin/api/duplicate-reviews?page=&size=` | 分页列出双方都可见的待复核配对，最新的在前；每项包含两个视频和比对证据（命中窗数、帧数、帧距离中位数、是否静态） |
+| `POST /admin/api/duplicate-reviews/merge` | `{"keepVideoId","mergeVideoId"}`，按自动合并的同一事务把后者并入前者，判重记录的来源为 `review`；配对不在待复核中返回 404，视频在此期间变化返回 409 |
+| `POST /admin/api/duplicate-reviews/dismiss` | `{"leftVideoId","rightVideoId"}`，记为"不是重复"；之后的维护既不合并也不再列出这一对 |
+
+驳回记录只保存在本机，不进入备份；其中任一视频删除后，驳回记录在下一轮维护时清除。
 
 ## 用户删除
 

@@ -1,6 +1,7 @@
 package mediasig
 
 import (
+	"encoding/json"
 	"math/rand"
 	"testing"
 	"time"
@@ -129,5 +130,23 @@ func TestCompareIgnoresUninformativeFrames(t *testing.T) {
 	}
 	if got := Compare(original, copy); got.Verdict != VerdictNone || got.Frames >= MinComparableFrames {
 		t.Fatalf("comparison = %+v, want too little evidence", got)
+	}
+}
+
+func TestComparisonJSONRoundTrip(t *testing.T) {
+	for _, verdict := range []Verdict{VerdictNone, VerdictProbable, VerdictStrong} {
+		original := Comparison{Verdict: verdict, Windows: 4, MatchedWindows: 3, Frames: 20, MatchedFrames: 15, MedianDistance: 4, Static: true}
+		data, err := json.Marshal(original)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded Comparison
+		if err := json.Unmarshal(data, &decoded); err != nil || decoded != original {
+			t.Fatalf("decoded = %+v err = %v from %s", decoded, err, data)
+		}
+	}
+	var verdict Verdict
+	if err := json.Unmarshal([]byte(`"certain"`), &verdict); err == nil {
+		t.Fatal("unknown verdict decoded")
 	}
 }

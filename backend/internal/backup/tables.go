@@ -153,6 +153,9 @@ var catalogTables = []catalogTable{
 
 	// A catalog trigger drops the jobs of video IDs the restore makes live.
 	{name: "duplicate_asset_cleanup_jobs", kind: localRows},
+	// Pending pairs are recomputed by maintenance; dismissals are decisions
+	// about this deployment's rows.
+	{name: "duplicate_reviews", kind: localRows},
 	{name: "video_source_removals", kind: localRows},
 	{name: "video_dedup_representatives", kind: derivedRows},
 }

@@ -246,6 +246,20 @@ CREATE TABLE IF NOT EXISTS duplicate_asset_cleanup_jobs (
 CREATE INDEX IF NOT EXISTS idx_duplicate_asset_cleanup_jobs_updated
     ON duplicate_asset_cleanup_jobs(updated_at, video_id);
 
+-- Video pairs perceptual matching could not settle. Maintenance replaces the
+-- pending rows on every run; dismissed rows record a person's "not a
+-- duplicate" decision and keep the pair out of later plans.
+CREATE TABLE IF NOT EXISTS duplicate_reviews (
+    left_video_id  TEXT NOT NULL,
+    right_video_id TEXT NOT NULL,
+    status         TEXT NOT NULL CHECK (status IN ('pending', 'dismissed')),
+    evidence       TEXT NOT NULL DEFAULT '{}',
+    first_seen_at  INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL,
+    PRIMARY KEY (left_video_id, right_video_id),
+    CHECK (left_video_id < right_video_id)
+);
+
 -- 网盘账户
 CREATE TABLE IF NOT EXISTS drives (
     id            TEXT PRIMARY KEY,

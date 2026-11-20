@@ -366,8 +366,9 @@ func main() {
 		OnDriveGenerationRequested: func(reqCtx context.Context, driveID string, kind api.DriveGenerationKind) (api.DriveGenerationResult, error) {
 			return app.requestDriveGeneration(reqCtx, ctx, driveID, kind)
 		},
-		OnDeleteVideo:        app.deleteVideo,
-		OnDeleteMergedSource: app.deleteMergedSource,
+		OnDeleteVideo:          app.deleteVideo,
+		OnDeleteMergedSource:   app.deleteMergedSource,
+		OnMergeDuplicateReview: app.mergeDuplicateReview,
 		OnStartBlacklistSourceDelete: func(req api.BlacklistSourceDeleteRequest) bool {
 			return app.startBlacklistSourceDelete(ctx, req)
 		},

@@ -202,3 +202,43 @@ func TestCleanupBackfillsSignaturesOnlyWhilePreviewsEnabled(t *testing.T) {
 		t.Fatalf("merge = %+v err = %v, want backfilled signatures matched", merged, err)
 	}
 }
+
+func TestCleanupPublishesProbablePairsAndHonoursDismissals(t *testing.T) {
+	ctx := context.Background()
+	app, cat, localDir := openMaintenanceTestApp(t)
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	// b shares only the first two teaser windows with a: probable, not strong.
+	partial := contentSignature(600, 1, 0)
+	other := contentSignature(600, 2, 0)
+	for i := range partial.Frames {
+		if partial.Frames[i].Window >= 2 {
+			partial.Frames[i] = other.Frames[i]
+		}
+	}
+	seedSignedVideos(t, cat, localDir, []signedVideo{
+		{&catalog.Video{ID: "video-a", DriveID: "115", FileID: "a", Title: "a", Size: 200, DurationSeconds: 600, PublishedAt: now, CreatedAt: now}, contentSignature(600, 1, 0)},
+		{&catalog.Video{ID: "video-b", DriveID: "115", FileID: "b", Title: "b", Size: 100, DurationSeconds: 600, PublishedAt: now, CreatedAt: now.Add(time.Second)}, partial},
+	})
+
+	if err := app.cleanupDuplicateVideoAssets(ctx); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	reviews, err := cat.ListDuplicateReviews(ctx, 1, 10)
+	if err != nil || reviews.Total != 1 || reviews.Items[0].Left.ID != "video-a" || reviews.Items[0].Right.ID != "video-b" {
+		t.Fatalf("reviews = %+v err = %v, want the probable pair", reviews, err)
+	}
+	if err := cat.DismissDuplicateReview(ctx, "video-a", "video-b"); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.cleanupDuplicateVideoAssets(ctx); err != nil {
+		t.Fatalf("cleanup after dismissal: %v", err)
+	}
+	if reviews, _ := cat.ListDuplicateReviews(ctx, 1, 10); reviews.Total != 0 {
+		t.Fatalf("reviews = %+v, want the dismissed pair gone", reviews)
+	}
+	for _, id := range []string{"video-a", "video-b"} {
+		if _, err := cat.GetVideo(ctx, id); err != nil {
+			t.Fatalf("%s should survive: %v", id, err)
+		}
+	}
+}

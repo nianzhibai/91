@@ -46,7 +46,11 @@ func (a *App) buildDuplicateMaintenancePlan(ctx context.Context, localDir string
 		})
 	}
 
-	plan, err := dedupe.Build(ctx, candidates, dedupe.Options{Channels: channels})
+	distinct, err := a.cat.DismissedDuplicatePairs(ctx)
+	if err != nil {
+		return dedupe.Plan{}, err
+	}
+	plan, err := dedupe.Build(ctx, candidates, dedupe.Options{Channels: channels, Distinct: distinct})
 	if err != nil {
 		return dedupe.Plan{}, err
 	}
@@ -138,4 +142,35 @@ func (a *App) cleanupRetiredVideoAssets(ctx context.Context, localDir, id string
 	return a.cat.CleanupRetiredVideoAssets(ctx, id, func(preview string) error {
 		return mediaasset.RemoveGeneratedVideoAssets(localDir, id, preview)
 	})
+}
+
+// replaceDuplicateReviews publishes the pairs of the committed plan that a
+// person should judge.
+func (a *App) replaceDuplicateReviews(ctx context.Context, reviews []dedupe.Review) error {
+	if err := persistence.RLockContext(ctx); err != nil {
+		return err
+	}
+	defer persistence.RUnlock()
+	return a.cat.ReplaceDuplicateReviews(ctx, reviews)
+}
+
+// mergeDuplicateReview merges a confirmed review pair and removes the merged
+// video's generated assets, like an automatic merge.
+func (a *App) mergeDuplicateReview(ctx context.Context, keepID, mergeID string) error {
+	if err := persistence.RLockContext(ctx); err != nil {
+		return err
+	}
+	defer persistence.RUnlock()
+	if err := a.cat.MergeDuplicateReview(ctx, keepID, mergeID); err != nil {
+		return err
+	}
+	localDir := ""
+	if a.cfg != nil {
+		localDir = strings.TrimSpace(a.cfg.Storage.LocalPreviewDir)
+	}
+	if err := a.cleanupPendingDuplicateAssetsLocked(ctx, localDir); err != nil {
+		// The merge is committed; maintenance retries the cleanup jobs.
+		log.Printf("[duplicate-review] asset cleanup after merging %s into %s: %v", mergeID, keepID, err)
+	}
+	return nil
 }

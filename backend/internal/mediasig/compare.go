@@ -1,6 +1,7 @@
 package mediasig
 
 import (
+	"fmt"
 	"sort"
 	"time"
 )
@@ -59,6 +60,16 @@ func (v Verdict) String() string {
 }
 
 func (v Verdict) MarshalText() ([]byte, error) { return []byte(v.String()), nil }
+
+func (v *Verdict) UnmarshalText(text []byte) error {
+	for _, candidate := range []Verdict{VerdictNone, VerdictProbable, VerdictStrong} {
+		if candidate.String() == string(text) {
+			*v = candidate
+			return nil
+		}
+	}
+	return fmt.Errorf("mediasig: unknown verdict %q", text)
+}
 
 // Comparison is the evidence for a pair, taken from the direction with the
 // weaker result so that Compare(a, b) equals Compare(b, a).

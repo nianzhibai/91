@@ -113,15 +113,23 @@ type Stats struct {
 	Signature ChannelStats
 }
 
+// Review is a pair of surviving videos the planner did not merge but a person
+// should judge. Match is the observed comparison; one of its videos may have
+// been merged into LeftID or RightID by the same plan.
+type Review struct {
+	LeftID  string
+	RightID string
+	Match   Match
+}
+
 // Plan is the complete read-only result of a planner run. Redirects contains
 // every deleted ID mapped directly to its final surviving canonical ID.
-// Reviews are pairs the planner did not merge but a person should judge.
 type Plan struct {
 	Actions   []DeleteAction
 	Redirects map[string]string
 	Groups    []Group
 	Matches   []Match
-	Reviews   []Match
+	Reviews   []Review
 	Issues    []Issue
 	Stats     Stats
 }

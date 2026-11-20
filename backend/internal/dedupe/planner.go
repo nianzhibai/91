@@ -15,12 +15,17 @@ type ImageComparator func(leftPath, rightPath string) (float64, error)
 type Options struct {
 	Channels      Channels
 	CompareImages ImageComparator
+	// Distinct reports pairs a person judged not to be duplicates. The
+	// signature channel neither merges nor reviews them.
+	Distinct func(leftID, rightID string) bool
 }
 
 type plannerState struct {
 	candidates map[string]Candidate
 	alive      map[string]bool
 	redirects  map[string]string
+	distinct   func(leftID, rightID string) bool
+	reviews    []Match
 	plan       Plan
 }
 
@@ -34,10 +39,14 @@ func Build(ctx context.Context, candidates []Candidate, options Options) (Plan, 
 	if options.CompareImages == nil {
 		options.CompareImages = mediasim.ImageSSIM
 	}
+	if options.Distinct == nil {
+		options.Distinct = func(string, string) bool { return false }
+	}
 	state := plannerState{
 		candidates: make(map[string]Candidate, len(candidates)),
 		alive:      make(map[string]bool, len(candidates)),
 		redirects:  make(map[string]string),
+		distinct:   options.Distinct,
 		plan: Plan{
 			Redirects: make(map[string]string),
 			Stats:     Stats{Videos: len(candidates)},
@@ -285,6 +294,9 @@ func (s *plannerState) planSignature(ctx context.Context, candidates []Candidate
 			windowStart++
 		}
 		for j := windowStart; j < i; j++ {
+			if s.distinct(signed[j].ID, signed[i].ID) {
+				continue
+			}
 			stats.Comparisons++
 			match, verdict := MatchSignature(signed[j], signed[i])
 			switch verdict {
@@ -294,7 +306,7 @@ func (s *plannerState) planSignature(ctx context.Context, candidates []Candidate
 				strongKeys = append(strongKeys, key)
 				sets.union(i, j)
 			case mediasig.VerdictProbable:
-				s.plan.Reviews = append(s.plan.Reviews, match)
+				s.reviews = append(s.reviews, match)
 			}
 		}
 	}
@@ -338,7 +350,7 @@ func (s *plannerState) planSignature(ctx context.Context, candidates []Candidate
 		leftSurvivor, leftMerged := survivor[left]
 		rightSurvivor, rightMerged := survivor[right]
 		if !leftMerged || !rightMerged || leftSurvivor != rightSurvivor {
-			s.plan.Reviews = append(s.plan.Reviews, strong[key])
+			s.reviews = append(s.reviews, strong[key])
 		}
 	}
 	return nil
@@ -413,7 +425,50 @@ func (s *plannerState) finalize() error {
 		}
 		s.plan.Redirects[duplicate] = canonical
 	}
+	if err := s.finalizeReviews(resolve); err != nil {
+		return err
+	}
 	return s.attachEvidence()
+}
+
+// finalizeReviews points every review at the surviving videos and keeps the
+// strongest evidence per pair. Pairs that collapse into one video, or that a
+// person already judged distinct, are dropped.
+func (s *plannerState) finalizeReviews(resolve func(string) (string, error)) error {
+	index := make(map[[2]string]int)
+	for _, match := range s.reviews {
+		left, err := resolve(match.LeftID)
+		if err != nil {
+			return err
+		}
+		right, err := resolve(match.RightID)
+		if err != nil {
+			return err
+		}
+		if left == right || s.distinct(left, right) {
+			continue
+		}
+		if left > right {
+			left, right = right, left
+		}
+		key := [2]string{left, right}
+		if i, exists := index[key]; exists {
+			if reviewVerdict(match) > reviewVerdict(s.plan.Reviews[i].Match) {
+				s.plan.Reviews[i].Match = match
+			}
+			continue
+		}
+		index[key] = len(s.plan.Reviews)
+		s.plan.Reviews = append(s.plan.Reviews, Review{LeftID: left, RightID: right, Match: match})
+	}
+	return nil
+}
+
+func reviewVerdict(match Match) mediasig.Verdict {
+	if match.Signature == nil {
+		return mediasig.VerdictNone
+	}
+	return match.Signature.Verdict
 }
 
 func groupedNearCandidates(candidates []nearCandidate, sets *disjointSet) [][]nearCandidate {
