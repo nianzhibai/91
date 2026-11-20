@@ -93,7 +93,7 @@ func TestColorProbeErrorsPreserveGenerationRecovery(t *testing.T) {
 			writeExecutable(t, ffmpeg, fmt.Sprintf("#!/bin/sh\nprintf 'command\\n' >> %q\nprintf 'Invalid color space' >&2\nexit 1\n", commands))
 			writeExecutable(t, ffprobe, fmt.Sprintf("#!/bin/sh\nprintf 'probe\\n' >> %q\nprintf '%%s' %q >&2\nexit 1\n", probes, test.message))
 			gen := New(Config{FFmpegPath: ffmpeg, FFprobePath: ffprobe, LocalDir: filepath.Join(dir, "output")})
-			_, err := gen.Generate(context.Background(), &drives.StreamLink{URL: "source.mp4"}, 120)
+			_, err := gen.generatePath(context.Background(), &drives.StreamLink{URL: "source.mp4"}, 120)
 			if !drives.ErrorMentionsHTTPStatus(err, test.status) {
 				t.Fatalf("generation lost probe status %d: %v", test.status, err)
 			}
@@ -167,7 +167,7 @@ func TestUnrecoverableColorErrorUsesBoundedPreviewRetries(t *testing.T) {
 			writeExecutable(t, ffmpeg, fmt.Sprintf("#!/bin/sh\nprintf 'command\\n' >> %q\nprintf 'Invalid color space' >&2\nexit 1\n", commands))
 			writeExecutable(t, ffprobe, fmt.Sprintf("#!/bin/sh\nprintf 'probe\\n' >> %q\nprintf '%%s' '%s'\n", probes, test.probeJSON))
 			gen := New(Config{FFmpegPath: ffmpeg, FFprobePath: ffprobe, LocalDir: filepath.Join(dir, "output")})
-			if _, err := gen.Generate(context.Background(), &drives.StreamLink{URL: "source.mp4"}, 120); err == nil || !strings.Contains(err.Error(), "Invalid color space") {
+			if _, err := gen.generatePath(context.Background(), &drives.StreamLink{URL: "source.mp4"}, 120); err == nil || !strings.Contains(err.Error(), "Invalid color space") {
 				t.Fatalf("generation error = %v", err)
 			}
 			if got := countMarkerLines(t, commands); got != test.wantCalls {
@@ -228,7 +228,7 @@ func TestGenerateMediaWithReservedColorMetadata(t *testing.T) {
 	if info, err := os.Stat(cover); err != nil || info.Size() == 0 {
 		t.Fatalf("generated cover is missing or empty: %v", err)
 	}
-	preview, err := gen.Generate(ctx, link, 8)
+	preview, err := gen.generatePath(ctx, link, 8)
 	if err != nil {
 		t.Fatalf("generate preview: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestGenerateMediaWithChangingColorMetadata(t *testing.T) {
 	if info, err := os.Stat(cover); err != nil || info.Size() == 0 {
 		t.Fatalf("generated cover is missing or empty: %v", err)
 	}
-	preview, err := gen.Generate(ctx, link, 32)
+	preview, err := gen.generatePath(ctx, link, 32)
 	if err != nil {
 		t.Fatalf("generate preview with usable early segments: %v", err)
 	}

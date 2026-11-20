@@ -13,6 +13,7 @@ import (
 
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/mediasig"
 )
 
 func TestThumbWorkerUpdatesThumbnailAndDurationWithoutChangingPreviewStatus(t *testing.T) {
@@ -230,6 +231,25 @@ func TestPreviewWorkerGeneratesTeaserWithoutReplacingExistingThumbnail(t *testin
 	}
 	if got.PreviewLocal != video.ID+".mp4" {
 		t.Fatalf("preview local = %q, want portable teaser filename", got.PreviewLocal)
+	}
+}
+
+func TestPreviewWorkerStoresTeaserSignature(t *testing.T) {
+	ctx := context.Background()
+	cat, video := seedPreviewTestVideo(t, "signed-preview-video")
+	signature := &mediasig.Signature{Duration: time.Minute, Frames: []mediasig.Frame{
+		{At: 12 * time.Second, Hash: 0x1234, Informative: true},
+	}}
+	worker := NewWorker(&fakeTeaserGenerator{signature: signature}, cat, &previewFakeDrive{})
+
+	worker.process(ctx, video)
+
+	stored, err := cat.LoadVideoSignatures(ctx, []string{video.ID})
+	if err != nil {
+		t.Fatalf("load signatures: %v", err)
+	}
+	if got := stored[video.ID]; got == nil || got.Duration != time.Minute || len(got.Frames) != 1 || got.Frames[0] != signature.Frames[0] {
+		t.Fatalf("stored signature = %+v, want the teaser signature", got)
 	}
 }
 
@@ -1367,6 +1387,7 @@ type fakeTeaserGenerator struct {
 	generateErrs      []error
 	generatedURLs     []string
 	generatedDuration float64
+	signature         *mediasig.Signature
 }
 
 type blockingTeaserGenerator struct {
@@ -1378,17 +1399,17 @@ func (g *blockingTeaserGenerator) Probe(context.Context, *drives.StreamLink) (fl
 	return 60, nil
 }
 
-func (g *blockingTeaserGenerator) Generate(ctx context.Context, _ *drives.StreamLink, _ float64) (string, error) {
+func (g *blockingTeaserGenerator) Generate(ctx context.Context, _ *drives.StreamLink, _ float64) (Teaser, error) {
 	select {
 	case g.started <- struct{}{}:
 	case <-ctx.Done():
-		return "", ctx.Err()
+		return Teaser{}, ctx.Err()
 	}
 	select {
 	case <-g.release:
-		return "/tmp/source-teaser.mp4", nil
+		return Teaser{Path: "/tmp/source-teaser.mp4"}, nil
 	case <-ctx.Done():
-		return "", ctx.Err()
+		return Teaser{}, ctx.Err()
 	}
 }
 
@@ -1416,7 +1437,7 @@ func (g *fakeTeaserGenerator) Probe(context.Context, *drives.StreamLink) (float6
 	return 0, nil
 }
 
-func (g *fakeTeaserGenerator) Generate(_ context.Context, link *drives.StreamLink, duration float64) (string, error) {
+func (g *fakeTeaserGenerator) Generate(_ context.Context, link *drives.StreamLink, duration float64) (Teaser, error) {
 	g.generateCalls++
 	g.generatedDuration = duration
 	if link != nil {
@@ -1426,16 +1447,16 @@ func (g *fakeTeaserGenerator) Generate(_ context.Context, link *drives.StreamLin
 		err := g.generateErrs[0]
 		g.generateErrs = g.generateErrs[1:]
 		if err != nil {
-			return "", err
+			return Teaser{}, err
 		}
 	}
 	if g.generateErr != nil {
-		return "", g.generateErr
+		return Teaser{}, g.generateErr
 	}
-	return "/tmp/source-teaser.mp4", nil
+	return Teaser{Path: "/tmp/source-teaser.mp4", Signature: g.signature}, nil
 }
 
-func (g *fakeTeaserGenerator) GenerateWithLinkRefresh(ctx context.Context, first *drives.StreamLink, duration float64, _ func(context.Context) (*drives.StreamLink, error)) (string, error) {
+func (g *fakeTeaserGenerator) GenerateWithLinkRefresh(ctx context.Context, first *drives.StreamLink, duration float64, _ func(context.Context) (*drives.StreamLink, error)) (Teaser, error) {
 	return g.Generate(ctx, first, duration)
 }
 

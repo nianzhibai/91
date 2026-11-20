@@ -40,6 +40,9 @@ func (c *Catalog) migrate(ctx context.Context) error {
 	if err := c.addColumnIfMissing(ctx, "videos", "fingerprint_error", "TEXT DEFAULT ''"); err != nil {
 		return err
 	}
+	if err := c.addColumnIfMissing(ctx, "videos", "content_signature", "BLOB"); err != nil {
+		return err
+	}
 	if err := c.addColumnIfMissing(ctx, "videos", "file_name", "TEXT DEFAULT ''"); err != nil {
 		return err
 	}
@@ -917,6 +920,7 @@ var currentVideoColumnNames = []string{
 	"preview_local",
 	"preview_updated_at",
 	"preview_status",
+	"content_signature",
 	"views",
 	"last_viewed_at",
 	"favorites",
@@ -963,6 +967,7 @@ CREATE TABLE videos_schema_rebuild_new (
     preview_local      TEXT,
     preview_updated_at INTEGER DEFAULT 0,
     preview_status     TEXT DEFAULT 'pending',
+    content_signature  BLOB,
     views              INTEGER DEFAULT 0,
     last_viewed_at     INTEGER DEFAULT 0,
     favorites          INTEGER DEFAULT 0,

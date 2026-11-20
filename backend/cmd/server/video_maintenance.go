@@ -39,6 +39,16 @@ func (a *App) cleanupDuplicateVideoAssets(ctx context.Context) error {
 	if err := a.cleanupPendingDuplicateAssets(ctx, localDir); err != nil {
 		log.Printf("[dedupe-maintenance] retry pending asset cleanup: %v", err)
 	}
+	// Deriving signatures decodes teasers, which is preview work and stops
+	// with the global preview switch.
+	if a.previewEnabled() {
+		if err := a.backfillVideoSignatures(ctx, localDir); err != nil {
+			if ctx.Err() != nil {
+				return err
+			}
+			log.Printf("[dedupe-maintenance] signature backfill: %v", err)
+		}
+	}
 	// Content matching decodes teasers with ffmpeg, so it is preview work and
 	// stops with the global preview switch. Exact and near matching continue.
 	channels := dedupe.AllChannels

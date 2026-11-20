@@ -68,9 +68,9 @@ type finishingGenerator struct {
 	beforePreview func(context.Context) error
 }
 
-func (g *finishingGenerator) Generate(ctx context.Context, link *drives.StreamLink, duration float64) (string, error) {
+func (g *finishingGenerator) Generate(ctx context.Context, link *drives.StreamLink, duration float64) (preview.Teaser, error) {
 	if err := g.beforePreview(ctx); err != nil {
-		return "", err
+		return preview.Teaser{}, err
 	}
 	return g.serverFakeTeaserGenerator.Generate(ctx, link, duration)
 }

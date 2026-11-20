@@ -122,7 +122,7 @@ exec "$HLS_REAL_FFMPEG" "$@"
 	outputDir := t.TempDir()
 	gen := New(Config{FFmpegPath: wrapper, LocalDir: outputDir})
 	err = input.run(ctx, func(ctx context.Context, link *drives.StreamLink) error {
-		_, err := gen.Generate(ctx, link, 120)
+		_, err := gen.generatePath(ctx, link, 120)
 		if !drives.ErrorMentionsHTTPStatus(err, 412) || errors.Is(err, context.Canceled) {
 			t.Fatalf("decoder lost upstream rejection: %v", err)
 		}

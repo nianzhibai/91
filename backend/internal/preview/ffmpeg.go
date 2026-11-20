@@ -25,6 +25,7 @@ import (
 	"github.com/nianzhibai/91/backend/internal/drives"
 	"github.com/nianzhibai/91/backend/internal/localpath"
 	"github.com/nianzhibai/91/backend/internal/mediaasset"
+	"github.com/nianzhibai/91/backend/internal/mediasig"
 	"github.com/nianzhibai/91/backend/internal/persistence"
 	"github.com/nianzhibai/91/backend/internal/streamhttp"
 	"github.com/nianzhibai/91/backend/internal/tasklimit"
@@ -69,14 +70,23 @@ type ThumbnailGenerator interface {
 	GenerateThumbnail(ctx context.Context, link *drives.StreamLink, videoID string, duration float64) (string, error)
 }
 
+// Teaser is a generated teaser file and the perceptual signature sampled from
+// the source windows it shows.
+type Teaser struct {
+	Path string
+	// Signature is nil when the windows could not be sampled or the source is
+	// too short to compare. The teaser is usable either way.
+	Signature *mediasig.Signature
+}
+
 type TeaserGenerator interface {
 	Probe(ctx context.Context, link *drives.StreamLink) (float64, error)
-	Generate(ctx context.Context, link *drives.StreamLink, duration float64) (string, error)
+	Generate(ctx context.Context, link *drives.StreamLink, duration float64) (Teaser, error)
 	MoveToLocal(tmpPath, videoID string) (string, error)
 }
 
 type refreshingTeaserGenerator interface {
-	GenerateWithLinkRefresh(ctx context.Context, first *drives.StreamLink, duration float64, refreshAfterFailure func(context.Context) (*drives.StreamLink, error)) (string, error)
+	GenerateWithLinkRefresh(ctx context.Context, first *drives.StreamLink, duration float64, refreshAfterFailure func(context.Context) (*drives.StreamLink, error)) (Teaser, error)
 }
 
 func New(cfg Config) *Generator {
@@ -565,19 +575,19 @@ func preferredSourceDuration(probe localMediaProbe) float64 {
 
 // --- 预览视频 ---
 
-// Generate 拉取预览视频到本地临时文件，返回路径。
+// Generate 拉取预览视频到本地临时文件，并从各段采样感知签名。
 // 根据 Config.Segments 和视频时长决定是单段还是多段拼接。
-func (g *Generator) Generate(ctx context.Context, link *drives.StreamLink, duration float64) (string, error) {
+func (g *Generator) Generate(ctx context.Context, link *drives.StreamLink, duration float64) (Teaser, error) {
 	return g.GenerateWithLinkRefresh(ctx, link, duration, nil)
 }
 
-func (g *Generator) GenerateWithLinkRefresh(ctx context.Context, first *drives.StreamLink, duration float64, refreshAfterFailure func(context.Context) (*drives.StreamLink, error)) (string, error) {
+func (g *Generator) GenerateWithLinkRefresh(ctx context.Context, first *drives.StreamLink, duration float64, refreshAfterFailure func(context.Context) (*drives.StreamLink, error)) (Teaser, error) {
 	task := g.forTask()
-	path, err := task.generateSerialWithRefresh(ctx, duration, first, refreshAfterFailure)
+	teaser, err := task.generateSerialWithRefresh(ctx, duration, first, refreshAfterFailure)
 	if task.fallbackToCPU(ctx, err) {
-		path, err = task.generateSerialWithRefresh(ctx, duration, first, refreshAfterFailure)
+		teaser, err = task.generateSerialWithRefresh(ctx, duration, first, refreshAfterFailure)
 	}
-	return path, mediaInputError(ctx, err)
+	return teaser, mediaInputError(ctx, err)
 }
 
 type teaserSegmentCandidate struct {
@@ -600,16 +610,16 @@ func (g *Generator) generateSerialWithRefresh(
 	duration float64,
 	initialLink *drives.StreamLink,
 	refreshAfterFailure func(context.Context) (*drives.StreamLink, error),
-) (string, error) {
+) (Teaser, error) {
 	if err := os.MkdirAll(g.cfg.LocalDir, 0o755); err != nil {
-		return "", err
+		return Teaser{}, err
 	}
 
 	plan := buildTeaserPlan(g.cfg, duration)
 	starts := plan.starts
 	eachSec := plan.eachSec
 	if len(starts) == 0 {
-		return "", fmt.Errorf("video too short for %.0fs teaser segment", eachSec)
+		return Teaser{}, fmt.Errorf("video too short for %.0fs teaser segment", eachSec)
 	}
 
 	segmentCtx, cancelSegments := context.WithTimeout(ctx, g.segmentBudget)
@@ -638,7 +648,7 @@ func (g *Generator) generateSerialWithRefresh(
 segmentLoop:
 	for nextCandidate < len(candidates) && len(segmentResults) < targetSegments {
 		if err := ctx.Err(); err != nil {
-			return "", err
+			return Teaser{}, err
 		}
 		if segmentCtx.Err() != nil {
 			break
@@ -660,10 +670,10 @@ segmentLoop:
 			&colorRepair,
 		)
 		if err := ctx.Err(); err != nil && result.err != nil {
-			return "", err
+			return Teaser{}, err
 		}
 		if g.hardware != nil && hardwareFailure(result.err) {
-			return "", result.err
+			return Teaser{}, result.err
 		}
 		if segmentCtx.Err() == nil && refreshAfterFailure != nil && directMediaLinkRefreshAllowed(result.err) {
 			refreshed, refreshErr := refreshAfterFailure(segmentCtx)
@@ -687,16 +697,16 @@ segmentLoop:
 					lastErr = refreshErr
 					break segmentLoop
 				}
-				return "", refreshErr
+				return Teaser{}, refreshErr
 			}
 		}
 
 		if result.err != nil {
 			if g.hardware != nil && hardwareFailure(result.err) {
-				return "", result.err
+				return Teaser{}, result.err
 			}
 			if !teaserSegmentFallbackAllowed(result.err) {
-				return "", result.err
+				return Teaser{}, result.err
 			}
 			lastErr = result.err
 			continue
@@ -705,7 +715,7 @@ segmentLoop:
 		segmentResults = append(segmentResults, result)
 	}
 	if err := ctx.Err(); err != nil {
-		return "", err
+		return Teaser{}, err
 	}
 	if err := segmentCtx.Err(); err != nil && len(segmentResults) < targetSegments {
 		lastErr = fmt.Errorf("teaser segment budget exhausted: %w", err)
@@ -717,9 +727,9 @@ segmentLoop:
 		degradedRequired := requiredTeaserSegments(duration, targetSegments, true)
 		if lastErr == nil || len(segmentResults) < degradedRequired {
 			if lastErr != nil {
-				return "", fmt.Errorf("only generated %d/%d teaser segments: %w", len(segmentResults), targetSegments, lastErr)
+				return Teaser{}, fmt.Errorf("only generated %d/%d teaser segments: %w", len(segmentResults), targetSegments, lastErr)
 			}
-			return "", fmt.Errorf("only generated %d/%d teaser segments", len(segmentResults), targetSegments)
+			return Teaser{}, fmt.Errorf("only generated %d/%d teaser segments", len(segmentResults), targetSegments)
 		}
 		applog.Warn(ctx, fmt.Sprintf("[preview] degraded teaser accepted segments=%d/%d duration=%.1fs",
 			len(segmentResults), targetSegments, duration), lastErr, applog.Fields{Component: "preview", Stage: "segments"})
@@ -738,10 +748,11 @@ segmentLoop:
 	for i, result := range segmentResults {
 		segmentPaths[i] = result.path
 	}
+	signature := g.sampleSignature(ctx, duration, segmentResults, eachSec)
 
 	if len(segmentPaths) == 1 {
 		success = true
-		return segmentPaths[0], nil
+		return Teaser{Path: segmentPaths[0], Signature: signature}, nil
 	}
 
 	// Finishing uses only local files and gets its own budget. Derive it from
@@ -752,7 +763,7 @@ segmentLoop:
 
 	tmp, err := os.CreateTemp(g.cfg.LocalDir, "teaser-*.mp4")
 	if err != nil {
-		return "", err
+		return Teaser{}, err
 	}
 	tmpPath := tmp.Name()
 	tmp.Close()
@@ -760,19 +771,19 @@ segmentLoop:
 
 	list, err := os.CreateTemp(g.cfg.LocalDir, "teaser-concat-*.txt")
 	if err != nil {
-		return "", err
+		return Teaser{}, err
 	}
 	listPath := list.Name()
 	for _, p := range segmentPaths {
 		if _, err := fmt.Fprintf(list, "file '%s'\n", escapeConcatPath(p)); err != nil {
 			list.Close()
 			_ = os.Remove(listPath)
-			return "", err
+			return Teaser{}, err
 		}
 	}
 	if err := list.Close(); err != nil {
 		_ = os.Remove(listPath)
-		return "", err
+		return Teaser{}, err
 	}
 	defer os.Remove(listPath)
 
@@ -792,22 +803,51 @@ segmentLoop:
 		if finishCtx.Err() != nil {
 			err = finishCtx.Err()
 		}
-		return "", ffmpegCommandError("ffmpeg concat", err, out)
+		return Teaser{}, ffmpegCommandError("ffmpeg concat", err, out)
 	}
 	if info, statErr := os.Stat(tmpPath); statErr != nil || info.Size() == 0 {
 		_ = os.Remove(tmpPath)
-		return "", fmt.Errorf("ffmpeg concat produced empty file, stderr: %s", string(out))
+		return Teaser{}, fmt.Errorf("ffmpeg concat produced empty file, stderr: %s", string(out))
 	}
 	if err := g.validateGeneratedTeaser(finishCtx, tmpPath); err != nil {
 		_ = os.Remove(tmpPath)
-		return "", err
+		return Teaser{}, err
 	}
 
 	for _, p := range segmentPaths {
 		_ = os.Remove(p)
 	}
 	success = true
-	return tmpPath, nil
+	return Teaser{Path: tmpPath, Signature: signature}, nil
+}
+
+// sampleSignature samples the generated segments at the source windows they
+// actually show, including segments that fell back to another start. The
+// signature is optional: a failure is logged and the teaser stays usable.
+func (g *Generator) sampleSignature(ctx context.Context, duration float64, segments []teaserSegmentResult, eachSec float64) *mediasig.Signature {
+	source := secondsDuration(duration)
+	if source < mediasig.MinDuration {
+		return nil
+	}
+	clips := make([]mediasig.Clip, 0, len(segments))
+	for _, segment := range segments {
+		clips = append(clips, mediasig.Clip{
+			Path:   segment.path,
+			Window: mediasig.Window{Start: secondsDuration(segment.start), Duration: secondsDuration(eachSec)},
+		})
+	}
+	ctx, cancel := context.WithTimeout(ctx, g.finishTimeout)
+	defer cancel()
+	signature, err := mediasig.Extract(ctx, g.cfg.FFmpegPath, source, clips)
+	if err != nil {
+		applog.Warn(ctx, "[preview] teaser signature sampling failed", err, applog.Fields{Component: "preview", Stage: "signature"})
+		return nil
+	}
+	return signature
+}
+
+func secondsDuration(seconds float64) time.Duration {
+	return time.Duration(seconds * float64(time.Second))
 }
 
 func requiredTeaserSegments(duration float64, targetSegments int, degraded bool) int {
@@ -2109,7 +2149,7 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
 	}
 
 	// 2) 预览视频
-	tmp, err := w.generateTeaser(ctx, v, input, duration)
+	teaser, err := w.generateTeaser(ctx, v, input, duration)
 	if err != nil {
 		if ctx.Err() != nil {
 			return true
@@ -2125,7 +2165,7 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
 	ctx = context.WithoutCancel(ctx)
 	persistence.RLock()
 	defer persistence.RUnlock()
-	local, err := w.Gen.MoveToLocal(tmp, v.ID)
+	local, err := w.Gen.MoveToLocal(teaser.Path, v.ID)
 	if err != nil {
 		applog.Error(ctx, "Preview file move failed: "+v.Title, err, applog.Fields{Component: "preview", DriveID: generationDriveID(w.Drive), VideoID: v.ID, Stage: "move"})
 		w.Catalog.UpdatePreviewForSource(ctx, v, "", "failed")
@@ -2141,6 +2181,12 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
 	if previous, ok := localpath.Managed(filepath.Dir(local), v.PreviewLocal); ok {
 		removePreviousLocalTeaser(previous, local)
 	}
+	// A missing signature is derived from the saved teaser during maintenance.
+	if teaser.Signature != nil {
+		if err := w.Catalog.SetVideoSignatureForSource(ctx, v, teaser.Signature); err != nil {
+			applog.Warn(ctx, "Save teaser signature failed: "+v.Title, err, applog.Fields{Component: "preview", DriveID: generationDriveID(w.Drive), VideoID: v.ID, Stage: "signature"})
+		}
+	}
 	if w.OnPreviewReady != nil && v.ThumbnailURL == "" {
 		ready := *v
 		ready.PreviewLocal = reference
@@ -2151,21 +2197,21 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
 	return false
 }
 
-func (w *Worker) generateTeaser(ctx context.Context, v *catalog.Video, input *generationInput, duration float64) (string, error) {
-	var tmp string
+func (w *Worker) generateTeaser(ctx context.Context, v *catalog.Video, input *generationInput, duration float64) (Teaser, error) {
+	var teaser Teaser
 	err := input.run(ctx, func(ctx context.Context, link *drives.StreamLink) error {
 		var err error
 		if input.source == nil {
-			tmp, err = w.generateTeaserFromOriginal(ctx, v, link, duration)
+			teaser, err = w.generateTeaserFromOriginal(ctx, v, link, duration)
 		} else {
-			tmp, err = w.Gen.Generate(ctx, link, duration)
+			teaser, err = w.Gen.Generate(ctx, link, duration)
 		}
 		return err
 	})
-	return tmp, err
+	return teaser, err
 }
 
-func (w *Worker) generateTeaserFromOriginal(ctx context.Context, v *catalog.Video, link *drives.StreamLink, duration float64) (string, error) {
+func (w *Worker) generateTeaserFromOriginal(ctx context.Context, v *catalog.Video, link *drives.StreamLink, duration float64) (Teaser, error) {
 	gen, ok := w.Gen.(refreshingTeaserGenerator)
 	if !ok || w.Drive == nil || w.Drive.Kind() != "p115" {
 		return w.Gen.Generate(ctx, link, duration)

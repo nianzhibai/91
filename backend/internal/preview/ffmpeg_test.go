@@ -494,6 +494,9 @@ func newTeaserStubGenerator(t *testing.T, okSegments int) *Generator {
 out=""
 for arg in "$@"; do out="$arg"; done
 case " $* " in
+  *" -f rawvideo "*)
+    exit 0
+    ;;
   *" -f concat "*)
     printf 'concat-output' > "$out"
     exit 0
@@ -536,7 +539,7 @@ func TestGenerateAcceptsDegradedTeaserAndLogsIt(t *testing.T) {
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 
-	path, err := gen.Generate(context.Background(), link, 204)
+	path, err := gen.generatePath(context.Background(), link, 204)
 	if err != nil {
 		t.Fatalf("generate sequential: %v", err)
 	}
@@ -553,7 +556,7 @@ func TestGenerateRejectsTeaserBelowDegradedFloor(t *testing.T) {
 	gen := newTeaserStubGenerator(t, 1)
 	link := &drives.StreamLink{URL: filepath.Join(t.TempDir(), "video.mp4")}
 
-	_, err := gen.Generate(context.Background(), link, 204)
+	_, err := gen.generatePath(context.Background(), link, 204)
 	if err == nil {
 		t.Fatal("expected an error: one usable segment is below the degraded floor")
 	}
@@ -570,7 +573,7 @@ func TestGenerateKeepsFullPlanWhenEverySegmentWorks(t *testing.T) {
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 
-	path, err := gen.Generate(context.Background(), link, 204)
+	path, err := gen.generatePath(context.Background(), link, 204)
 	if err != nil {
 		t.Fatalf("generate sequential: %v", err)
 	}
@@ -585,7 +588,7 @@ func TestGenerateWithLinkRefreshDoesNotRefreshHealthyTask(t *testing.T) {
 	first := &drives.StreamLink{URL: filepath.Join(t.TempDir(), "video.mp4")}
 	refreshes := 0
 
-	path, err := gen.GenerateWithLinkRefresh(context.Background(), first, 204, func(context.Context) (*drives.StreamLink, error) {
+	path, err := gen.generatePathWithLinkRefresh(context.Background(), first, 204, func(context.Context) (*drives.StreamLink, error) {
 		refreshes++
 		return &drives.StreamLink{URL: filepath.Join(t.TempDir(), "refreshed.mp4")}, nil
 	})
@@ -642,7 +645,7 @@ printf 'segment-output' > "$out"
 	}
 	resultCh := make(chan result, 1)
 	go func() {
-		path, err := gen.Generate(
+		path, err := gen.generatePath(
 			ctx,
 			&drives.StreamLink{URL: filepath.Join(dir, "initial.mp4")},
 			204,
@@ -729,7 +732,7 @@ printf 'segment-output' > "$out"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	path, err := gen.Generate(
+	path, err := gen.generatePath(
 		ctx,
 		&drives.StreamLink{URL: filepath.Join(dir, "initial.mp4")},
 		204,
@@ -797,7 +800,7 @@ printf 'segment-output' > "$out"
 	}
 	gen := New(Config{FFmpegPath: ffmpeg, FFprobePath: ffprobe, LocalDir: filepath.Join(dir, "preview")})
 	refreshes := 0
-	path, err := gen.GenerateWithLinkRefresh(
+	path, err := gen.generatePathWithLinkRefresh(
 		context.Background(),
 		&drives.StreamLink{URL: filepath.Join(dir, "initial.mp4")},
 		204,

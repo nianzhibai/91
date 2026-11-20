@@ -26,6 +26,9 @@ func newTimeoutTeaserGenerator(t *testing.T, okSegments int, blockedStage string
 out=""
 for arg in "$@"; do out="$arg"; done
 case " $* " in
+  *" -f rawvideo "*)
+    exit 0
+    ;;
   *" -f concat "*)
     : > %[1]q/concat-started
     if [ %[3]q = concat ]; then exec sleep 30; fi
@@ -103,7 +106,7 @@ func TestGenerateFinishesUsableSegmentsAfterSegmentBudgetExpires(t *testing.T) {
 			fields := applog.Fields{Component: "preview", TaskID: "budget-task", DriveID: "drive-1", VideoID: "video-1", FileID: "file-1"}
 			ctx := applog.WithFields(context.Background(), fields)
 			refreshes := 0
-			path, err := gen.GenerateWithLinkRefresh(ctx, &drives.StreamLink{URL: "source.mp4"}, tc.duration,
+			path, err := gen.generatePathWithLinkRefresh(ctx, &drives.StreamLink{URL: "source.mp4"}, tc.duration,
 				func(context.Context) (*drives.StreamLink, error) {
 					refreshes++
 					return nil, errors.New("unexpected refresh after segment budget expired")
@@ -142,11 +145,17 @@ func TestGenerateFinishesUsableSegmentsAfterSegmentBudgetExpires(t *testing.T) {
 			if tc.duration >= 30 && tc.wantOutput != "" {
 				wantEntries = 2
 			}
-			if len(snapshot.Entries) != wantEntries {
-				t.Fatalf("entries = %+v, want %d warnings", snapshot.Entries, wantEntries)
-			}
 			fields.Stage = "segments"
+			var segmentEntries []applog.Entry
 			for _, entry := range snapshot.Entries {
+				if entry.Fields.Stage == fields.Stage {
+					segmentEntries = append(segmentEntries, entry)
+				}
+			}
+			if len(segmentEntries) != wantEntries {
+				t.Fatalf("entries = %+v, want %d segment warnings", snapshot.Entries, wantEntries)
+			}
+			for _, entry := range segmentEntries {
 				if entry.Level != applog.LevelWarning || entry.Fields != fields ||
 					!strings.Contains(entry.Error, "context deadline exceeded") {
 					t.Fatalf("segment diagnostic = %+v, want warning with task context and cause", entry)
@@ -161,7 +170,7 @@ func TestGenerateFinishesSegmentsWhenLinkRefreshUsesRemainingBudget(t *testing.T
 	gen := newTimeoutTeaserGenerator(t, 3, "refresh")
 	gen.segmentBudget = time.Second
 	refreshes := 0
-	path, err := gen.GenerateWithLinkRefresh(context.Background(), &drives.StreamLink{URL: "source.mp4"}, 204,
+	path, err := gen.generatePathWithLinkRefresh(context.Background(), &drives.StreamLink{URL: "source.mp4"}, 204,
 		func(ctx context.Context) (*drives.StreamLink, error) {
 			refreshes++
 			<-ctx.Done()
@@ -186,7 +195,7 @@ func TestGenerateFinishBudgetCoversConcatAndValidation(t *testing.T) {
 			gen.finishTimeout = 100 * time.Millisecond
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
-			path, err := gen.Generate(ctx, &drives.StreamLink{URL: "source.mp4"}, 204)
+			path, err := gen.generatePath(ctx, &drives.StreamLink{URL: "source.mp4"}, 204)
 			if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), tc.wantError) {
 				t.Fatalf("error = %v, want %s deadline", err, tc.wantError)
 			}
@@ -216,7 +225,7 @@ func TestGenerateCancellationStopsEveryStageWithoutDegradation(t *testing.T) {
 			var err error
 			go func() {
 				defer close(done)
-				path, err = gen.Generate(ctx, &drives.StreamLink{URL: "source.mp4"}, 204)
+				path, err = gen.generatePath(ctx, &drives.StreamLink{URL: "source.mp4"}, 204)
 			}()
 			t.Cleanup(func() {
 				cancel()

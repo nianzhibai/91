@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS videos (
     preview_local    TEXT,                      -- 相对于配置的预览目录的文件路径
     preview_updated_at INTEGER DEFAULT 0,       -- preview-only revision; unrelated metadata must not invalidate teaser caches
     preview_status   TEXT DEFAULT 'pending',    -- pending / ready / failed / disabled
+    content_signature BLOB,                     -- mediasig 感知签名；源文件内容变化时清空
     views            INTEGER DEFAULT 0,
     last_viewed_at   INTEGER DEFAULT 0,
     favorites        INTEGER DEFAULT 0,

@@ -39,11 +39,17 @@ func TestGenerateLogsDegradationAsWarningWithTaskContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.Entries) != 1 {
+	fields.Stage = "segments"
+	var degradations []applog.Entry
+	for _, entry := range snapshot.Entries {
+		if entry.Fields.Stage == fields.Stage {
+			degradations = append(degradations, entry)
+		}
+	}
+	if len(degradations) != 1 {
 		t.Fatalf("entries = %+v, want one degradation warning", snapshot.Entries)
 	}
-	entry := snapshot.Entries[0]
-	fields.Stage = "segments"
+	entry := degradations[0]
 	if entry.Level != applog.LevelWarning || entry.Fields != fields ||
 		!strings.Contains(entry.Message, "degraded teaser accepted segments=2/4") ||
 		!strings.Contains(entry.Error, "produced empty file") {

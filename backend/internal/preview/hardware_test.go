@@ -126,7 +126,7 @@ func TestGPUMidPreviewFailureRestartsWholeAssetWithCPU(t *testing.T) {
 			h.checked, h.enabled = true, true
 			h.backend = &hardwareBackend{kind: kind, device: "/dev/dri/renderD128"}
 			t.Setenv("GPU_TEST_FAIL", "segment")
-			path, err := gen.Generate(context.Background(), &drives.StreamLink{URL: "source.mp4"}, 300)
+			path, err := gen.generatePath(context.Background(), &drives.StreamLink{URL: "source.mp4"}, 300)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -168,7 +168,7 @@ func TestDisablingGPUOnlyAffectsSubsequentAssets(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, err := gen.Generate(ctx, &drives.StreamLink{URL: "source.mp4"}, 300)
+		_, err := gen.generatePath(ctx, &drives.StreamLink{URL: "source.mp4"}, 300)
 		done <- err
 	}()
 	for {

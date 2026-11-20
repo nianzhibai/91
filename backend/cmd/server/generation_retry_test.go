@@ -105,9 +105,9 @@ type failingRetryTeaserGenerator struct {
 	serverFakeTeaserGenerator
 }
 
-func (g *failingRetryTeaserGenerator) Generate(context.Context, *drives.StreamLink, float64) (string, error) {
+func (g *failingRetryTeaserGenerator) Generate(context.Context, *drives.StreamLink, float64) (preview.Teaser, error) {
 	g.record("attempt")
-	return "", errors.New("invalid media")
+	return preview.Teaser{}, errors.New("invalid media")
 }
 
 func TestFailedGenerationWaitsForNextScanBeforeRetryingAgain(t *testing.T) {

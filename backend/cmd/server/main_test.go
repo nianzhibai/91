@@ -4573,9 +4573,9 @@ func (g *serverFakeTeaserGenerator) Probe(context.Context, *drives.StreamLink) (
 	return 30, nil
 }
 
-func (g *serverFakeTeaserGenerator) Generate(context.Context, *drives.StreamLink, float64) (string, error) {
+func (g *serverFakeTeaserGenerator) Generate(context.Context, *drives.StreamLink, float64) (preview.Teaser, error) {
 	g.record("preview")
-	return "/tmp/source-teaser.mp4", nil
+	return preview.Teaser{Path: "/tmp/source-teaser.mp4"}, nil
 }
 
 func (g *serverFakeTeaserGenerator) MoveToLocal(_ string, videoID string) (string, error) {
