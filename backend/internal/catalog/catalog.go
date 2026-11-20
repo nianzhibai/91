@@ -15,6 +15,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/nianzhibai/91/backend/internal/dedupe"
 	"github.com/nianzhibai/91/backend/internal/driveevents"
 	"github.com/nianzhibai/91/backend/internal/tagging"
 )
@@ -267,7 +268,8 @@ func upsertVideoRow(ctx context.Context, exec videoRowExecer, v *Video) ([]strin
 	v.ContentHash = normalizeContentHash(v.ContentHash)
 	v.SampledSHA256 = normalizeContentHash(v.SampledSHA256)
 	fingerprintStatus := nullableStatus(v.FingerprintStatus)
-	if v.SampledSHA256 != "" && (v.FingerprintStatus == "" || v.FingerprintStatus == "pending") {
+	// An earlier scheme's fingerprint stays pending until the worker replaces it.
+	if dedupe.IsCurrentFingerprint(v.SampledSHA256) && (v.FingerprintStatus == "" || v.FingerprintStatus == "pending") {
 		fingerprintStatus = "ready"
 	}
 	storedTags := uniqueStrings(cleanLabels(v.Tags))
@@ -1461,7 +1463,7 @@ func markCrawlerSourceSeen(ctx context.Context, exec videoRowExecer, kind, drive
 	default:
 		return fmt.Errorf("catalog: unsupported crawler source status %q", status)
 	}
-	sampledSHA256 = normalizeContentHash(sampledSHA256)
+	sampledSHA256 = currentFingerprint(sampledSHA256)
 	if size < 0 {
 		size = 0
 	}
@@ -1605,7 +1607,7 @@ ON CONFLICT(id) DO UPDATE SET
   restore_payload    = excluded.restore_payload,
   asset_cleanup_after = excluded.asset_cleanup_after,
   deleted_at         = excluded.deleted_at`,
-		restoreVideo.ID, restoreVideo.DriveID, restoreVideo.FileID, restoreVideo.ParentID, restoreVideo.ContentHash, normalizeContentHash(restoreVideo.SampledSHA256),
+		restoreVideo.ID, restoreVideo.DriveID, restoreVideo.FileID, restoreVideo.ParentID, restoreVideo.ContentHash, currentFingerprint(restoreVideo.SampledSHA256),
 		restoreVideo.FileName, restoreVideo.Size,
 		options.Reason, restorePayload, unixMilliOrZero(options.AssetCleanupAfter), now); err != nil {
 		return err
@@ -2519,7 +2521,7 @@ func (c *Catalog) ListVideosNeedingFingerprint(ctx context.Context, driveID stri
 		`SELECT `+allVideoCols+` FROM videos
 		 WHERE drive_id = ?
 		   AND size_bytes > 0
-		   AND COALESCE(sampled_sha256, '') = ''
+		   AND NOT `+currentFingerprintSQL("sampled_sha256")+`
 		   AND COALESCE(fingerprint_status, 'pending') = 'pending'
 		   AND COALESCE(hidden, 0) = 0
 		 ORDER BY created_at ASC, id ASC
@@ -2550,7 +2552,7 @@ func (c *Catalog) ListVideosByFingerprintStatus(ctx context.Context, driveID, st
 	rows, err := c.db.QueryContext(ctx,
 		`SELECT `+allVideoCols+` FROM videos
 		 WHERE drive_id = ?
-		   AND COALESCE(sampled_sha256, '') = ''
+		   AND NOT `+currentFingerprintSQL("sampled_sha256")+`
 		   AND COALESCE(fingerprint_status, 'pending') = ?
 		   AND COALESCE(hidden, 0) = 0
 		 ORDER BY created_at ASC, id ASC
@@ -2576,6 +2578,8 @@ func (c *Catalog) ListVideosByFingerprintStatus(ctx context.Context, driveID, st
 // that it differed from the fingerprint set aside, so the row's generated
 // assets were cleared and must be regenerated. A row whose ready fingerprint
 // identifies blacklisted content moves to the blacklist and is not replaced.
+// Any other status keeps the stored fingerprint: an earlier scheme's value
+// still tells the row apart from other files until a current one replaces it.
 func (c *Catalog) UpdateVideoFingerprintForSource(ctx context.Context, source *Video, sampledSHA256, status, errText string) (replaced bool, resultErr error) {
 	defer c.notifyDriveWrite(&resultErr, "", driveevents.GenerationChanged)
 	sampledSHA256 = normalizeContentHash(sampledSHA256)
@@ -2595,7 +2599,12 @@ func (c *Catalog) UpdateVideoFingerprintForSource(ctx context.Context, source *V
 	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(previous_sampled_sha256, '') FROM videos WHERE "+where, match...).Scan(&previous); err != nil {
 		return false, err
 	}
-	parts := []string{"sampled_sha256 = ?", "fingerprint_status = ?", "fingerprint_error = ?", "updated_at = ?"}
+	parts := []string{"fingerprint_status = ?", "fingerprint_error = ?", "updated_at = ?"}
+	args := []any{status, errText, time.Now().UnixMilli()}
+	if status == "ready" {
+		parts = append(parts, "sampled_sha256 = ?")
+		args = append(args, sampledSHA256)
+	}
 	if status == "ready" && previous != "" {
 		parts = append(parts, "previous_sampled_sha256 = ''")
 		if replaced = previous != sampledSHA256; replaced {
@@ -2605,7 +2614,7 @@ func (c *Catalog) UpdateVideoFingerprintForSource(ctx context.Context, source *V
 			parts = append(parts, contentDerivedResets...)
 		}
 	}
-	args := append([]any{sampledSHA256, status, errText, time.Now().UnixMilli()}, match...)
+	args = append(args, match...)
 	if _, err := tx.ExecContext(ctx, "UPDATE videos SET "+strings.Join(parts, ", ")+" WHERE "+where, args...); err != nil {
 		return false, err
 	}
@@ -3238,12 +3247,12 @@ func (c *Catalog) countDriveAssetStats(ctx context.Context, driveID string) (Dri
 		        COUNT(CASE WHEN is_canonical = 1
 		                     AND COALESCE(thumbnail_url, '') != ''
 		                     AND COALESCE(duration_seconds, 0) <= 0 THEN 1 END) AS duration_pending_count,
-		        COUNT(CASE WHEN COALESCE(sampled_sha256, '') != ''
+		        COUNT(CASE WHEN ` + currentFingerprintSQL("sampled_sha256") + `
 		                      OR COALESCE(fingerprint_status, 'pending') = 'ready' THEN 1 END) AS ready_count,
 		        COUNT(CASE WHEN size_bytes > 0
-		                     AND COALESCE(sampled_sha256, '') = ''
+		                     AND NOT ` + currentFingerprintSQL("sampled_sha256") + `
 		                     AND COALESCE(fingerprint_status, 'pending') = 'pending' THEN 1 END) AS pending_count,
-		        COUNT(CASE WHEN COALESCE(sampled_sha256, '') = ''
+		        COUNT(CASE WHEN NOT ` + currentFingerprintSQL("sampled_sha256") + `
 		                     AND COALESCE(fingerprint_status, 'pending') = 'failed' THEN 1 END) AS failed_count
 		   FROM videos
 		  WHERE COALESCE(hidden, 0) = 0
@@ -3352,12 +3361,12 @@ func (c *Catalog) CountCrawlerAssets(ctx context.Context, crawlerID string, pref
 		                        AND COALESCE(asset_dup.preview_status, 'pending') = 'ready'
 		                  )
 		                     AND COALESCE(preview_status, 'pending') = 'failed' THEN 1 END) AS teaser_failed_count,
-		        COUNT(CASE WHEN COALESCE(sampled_sha256, '') != ''
+		        COUNT(CASE WHEN ` + currentFingerprintSQL("sampled_sha256") + `
 		                      OR COALESCE(fingerprint_status, 'pending') = 'ready' THEN 1 END) AS fingerprint_ready_count,
 		        COUNT(CASE WHEN size_bytes > 0
-		                     AND COALESCE(sampled_sha256, '') = ''
+		                     AND NOT ` + currentFingerprintSQL("sampled_sha256") + `
 		                     AND COALESCE(fingerprint_status, 'pending') = 'pending' THEN 1 END) AS fingerprint_pending_count,
-		        COUNT(CASE WHEN COALESCE(sampled_sha256, '') = ''
+		        COUNT(CASE WHEN NOT ` + currentFingerprintSQL("sampled_sha256") + `
 		                     AND COALESCE(fingerprint_status, 'pending') = 'failed' THEN 1 END) AS fingerprint_failed_count
 		   FROM videos
 		  WHERE COALESCE(hidden, 0) = 0
@@ -3416,7 +3425,7 @@ func (c *Catalog) CountVideosNeedingFingerprint(ctx context.Context, driveID str
 		`SELECT COUNT(*) FROM videos
 		 WHERE drive_id = ?
 		   AND size_bytes > 0
-		   AND COALESCE(sampled_sha256, '') = ''
+		   AND NOT `+currentFingerprintSQL("sampled_sha256")+`
 		   AND COALESCE(fingerprint_status, 'pending') = 'pending'
 		   AND COALESCE(hidden, 0) = 0`,
 		driveID).Scan(&count)

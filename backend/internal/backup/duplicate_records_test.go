@@ -245,3 +245,47 @@ func TestRestoreNormalizesArchivedProviderHashes(t *testing.T) {
 		t.Fatalf("restored hash = %q, err=%v; want abcdef", hash, err)
 	}
 }
+
+func TestRestoreRequeuesArchivedFingerprintsOfEarlierScheme(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "archive.db")
+	cat, err := catalog.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []*catalog.Video{
+		{ID: "legacy", DriveID: "cloud", FileID: "a", FileName: "a.mp4", Size: 123, FingerprintStatus: "ready"},
+		{ID: "current", DriveID: "cloud", FileID: "b", FileName: "b.mp4", Size: 456, SampledSHA256: "s2:abc", FingerprintStatus: "ready"},
+	} {
+		if err := cat.UpsertVideo(ctx, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := cat.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// The archive was written before the current sampling scheme.
+	if _, err := db.Exec(`UPDATE videos SET sampled_sha256 = 'abc', fingerprint_status = 'ready' WHERE id = 'legacy'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rewriteRestoredDatabase(ctx, path, catalogRewrite{
+		stagePreviewDir:   filepath.Join(dir, "stage-previews"),
+		sourcePreviewRoot: filepath.Join(dir, "source-previews"),
+		targetPreviewRoot: filepath.Join(dir, "target-previews"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The earlier fingerprint stays as evidence until the worker replaces it.
+	for id, want := range map[string][2]string{"legacy": {"abc", "pending"}, "current": {"s2:abc", "ready"}} {
+		var sampled, status string
+		if err := db.QueryRow(`SELECT sampled_sha256, fingerprint_status FROM videos WHERE id = ?`, id).Scan(&sampled, &status); err != nil || [2]string{sampled, status} != want {
+			t.Fatalf("restored %s fingerprint = %q/%q, err=%v; want %q", id, sampled, status, err, want)
+		}
+	}
+}

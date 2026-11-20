@@ -263,7 +263,7 @@ func (g *deletionGroup) blacklist(ctx context.Context, tx *sql.Tx, cleanupAfter 
 		for _, v := range slices.Concat(f.retired, f.skipped) {
 			if _, err := tx.ExecContext(ctx, `INSERT INTO deleted_videos(id, drive_id, file_id, file_name, parent_id, size_bytes, content_hash, sampled_sha256, deleted_at)
 					VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET blocks_content = 1`, v.ID, v.DriveID, v.FileID, v.FileName, v.ParentID, v.Size,
-				normalizeContentHash(v.ContentHash), normalizeContentHash(v.SampledSHA256), time.Now().UnixMilli()); err != nil {
+				normalizeContentHash(v.ContentHash), currentFingerprint(v.SampledSHA256), time.Now().UnixMilli()); err != nil {
 				return err
 			}
 		}
@@ -477,7 +477,7 @@ func blacklistRemovedSourceTx(ctx context.Context, tx *sql.Tx, v *Video) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO deleted_videos(id, drive_id, file_id, parent_id, file_name, size_bytes, content_hash, sampled_sha256, deleted_at)
 		VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET blocks_content = 1, restore_requested = 0`,
 		v.ID, v.DriveID, v.FileID, v.ParentID, v.FileName, v.Size,
-		normalizeContentHash(v.ContentHash), normalizeContentHash(v.SampledSHA256), time.Now().UnixMilli())
+		normalizeContentHash(v.ContentHash), currentFingerprint(v.SampledSHA256), time.Now().UnixMilli())
 	return err
 }
 

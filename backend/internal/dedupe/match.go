@@ -32,6 +32,18 @@ func ExactKeys(c Candidate) []ExactKey {
 	return keys
 }
 
+// SampledFingerprintPrefix starts every sampled fingerprint made by the
+// current sampling scheme. A fingerprint of an earlier scheme never equals a
+// current one, so the two schemes cannot confirm each other as duplicates.
+const SampledFingerprintPrefix = "s2:"
+
+// IsCurrentFingerprint reports whether sampled was made by the current
+// sampling scheme. A video keeps an earlier scheme's fingerprint only until
+// the fingerprint worker replaces it.
+func IsCurrentFingerprint(sampled string) bool {
+	return strings.HasPrefix(NormalizeHash(sampled), SampledFingerprintPrefix)
+}
+
 func NormalizeHash(hash string) string {
 	return strings.ToLower(strings.TrimSpace(hash))
 }

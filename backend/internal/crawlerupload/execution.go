@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/dedupe"
 	"github.com/nianzhibai/91/backend/internal/drives"
 	"github.com/nianzhibai/91/backend/internal/drives/pikpak"
 	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
@@ -329,7 +330,7 @@ func (m *Migrator) assetBlockReason(ctx context.Context, v *catalog.Video) (*upl
 	issue := func(reason, message string) *uploadjob.Issue {
 		return &uploadjob.Issue{Stage: "assets", Reason: reason, Message: message}
 	}
-	if !strings.EqualFold(strings.TrimSpace(v.FingerprintStatus), "ready") && strings.TrimSpace(v.SampledSHA256) == "" {
+	if !strings.EqualFold(strings.TrimSpace(v.FingerprintStatus), "ready") && !dedupe.IsCurrentFingerprint(v.SampledSHA256) {
 		if v.FingerprintStatus == "failed" {
 			return issue("fingerprint_failed", "指纹生成失败，请重试指纹生成"), nil
 		}

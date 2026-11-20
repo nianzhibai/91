@@ -51,7 +51,9 @@ plans are guarded by
 not counters, so views and reactions during planning do not invalidate them.
 
 Each row keeps source, canonical, matched and selected video snapshots and
-versioned JSON `evidence`. File names, titles, durations and hashes remain
+versioned JSON `evidence`. Snapshot fingerprints keep the sampling scheme they
+were made with; values without the current prefix are not comparable with
+live fingerprints. File names, titles, durations and hashes remain
 available after the live rows are renamed or removed. Counters, transient paths
 and observation timestamps are excluded from the snapshots. The record key
 covers the origin, outcome, snapshots and evidence: identical decisions update

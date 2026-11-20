@@ -480,13 +480,13 @@ func TestCompleteCrawlerRestoreRollsBackTagsAndSourceIdentity(t *testing.T) {
 	now := time.Now()
 	video := &Video{
 		ID: "scriptcrawler-crawler-restore-source-1", DriveID: "crawler-restore", FileID: "retained.mp4",
-		FileName: "retained.mp4", Title: "Retained", Size: 1024, SampledSHA256: "before",
+		FileName: "retained.mp4", Title: "Retained", Size: 1024, SampledSHA256: "s2:before",
 		Tags: []string{"保留标签", "已删除标签"}, PublishedAt: now, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := cat.UpsertVideo(ctx, video); err != nil {
 		t.Fatal(err)
 	}
-	if err := cat.MarkCrawlerSourceSeen(ctx, "scriptcrawler", video.DriveID, "source-1", "imported", video.ID, "before", video.Size); err != nil {
+	if err := cat.MarkCrawlerSourceSeen(ctx, "scriptcrawler", video.DriveID, "source-1", "imported", video.ID, "s2:before", video.Size); err != nil {
 		t.Fatal(err)
 	}
 	if err := cat.DeleteVideoWithTombstoneOptions(ctx, video.ID, DeleteVideoTombstoneOptions{}); err != nil {
@@ -505,7 +505,7 @@ WHEN OLD.restore_requested = 1
 BEGIN SELECT RAISE(ABORT, 'injected restore completion failure'); END`); err != nil {
 		t.Fatal(err)
 	}
-	video.SampledSHA256 = "after"
+	video.SampledSHA256 = "s2:after"
 	if err := cat.CompleteCrawlerRestore(ctx, video, "source-1"); err == nil {
 		t.Fatal("expected injected restore completion failure")
 	}
@@ -517,7 +517,7 @@ BEGIN SELECT RAISE(ABORT, 'injected restore completion failure'); END`); err != 
 		t.Fatalf("assignments escaped failed restore: count=%d err=%v", assignments, err)
 	}
 	var fingerprint string
-	if err := cat.db.QueryRowContext(ctx, `SELECT sampled_sha256 FROM crawler_seen_sources WHERE drive_id = ? AND source_id = ?`, video.DriveID, "source-1").Scan(&fingerprint); err != nil || fingerprint != "before" {
+	if err := cat.db.QueryRowContext(ctx, `SELECT sampled_sha256 FROM crawler_seen_sources WHERE drive_id = ? AND source_id = ?`, video.DriveID, "source-1").Scan(&fingerprint); err != nil || fingerprint != "s2:before" {
 		t.Fatalf("source identity escaped failed restore: fingerprint=%q err=%v", fingerprint, err)
 	}
 	if deleted, err := cat.IsVideoDeleted(ctx, video.ID); err != nil || !deleted {
@@ -697,7 +697,7 @@ func TestCompleteCrawlerRestorePreservesExistingVideo(t *testing.T) {
 			original := &Video{
 				ID: "scriptcrawler-crawler-partial-source-1", DriveID: "crawler-partial", FileID: "retained.mp4",
 				FileName: "retained.mp4", Title: "Original title", Size: 100,
-				SampledSHA256: "old-sample", PublishedAt: now, CreatedAt: now,
+				SampledSHA256: "s2:old-sample", PublishedAt: now, CreatedAt: now,
 			}
 			if err := cat.UpsertVideo(ctx, original); err != nil {
 				t.Fatal(err)
@@ -719,7 +719,7 @@ func TestCompleteCrawlerRestorePreservesExistingVideo(t *testing.T) {
 			partial := *original
 			partial.Title = "Edited title"
 			partial.ContentHash = "current-content"
-			partial.SampledSHA256 = "current-sample"
+			partial.SampledSHA256 = "s2:current-sample"
 			partial.DurationSeconds = 45
 			partial.ThumbnailURL = "/p/thumb/" + original.ID
 			partial.PreviewLocal = "/preview/current.mp4"

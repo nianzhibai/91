@@ -37,7 +37,7 @@ func admit(t *testing.T, cat *Catalog, v *Video) bool {
 func TestBlacklistedContentStaysOutFromEveryIngress(t *testing.T) {
 	ctx := context.Background()
 	cat := openCanonicalTestCatalog(t)
-	seedVideos(t, cat, &Video{ID: "A", DriveID: "one", FileID: "a", ContentHash: "h", SampledSHA256: "s", FileName: "a.mp4", Size: 10})
+	seedVideos(t, cat, &Video{ID: "A", DriveID: "one", FileID: "a", ContentHash: "h", SampledSHA256: "s2:s", FileName: "a.mp4", Size: 10})
 	blacklist(t, cat, "A")
 
 	if admit(t, cat, &Video{ID: "hash-copy", DriveID: "two", FileID: "x", ContentHash: "H", FileName: "x.mp4", Size: 10}) {
@@ -49,7 +49,7 @@ func TestBlacklistedContentStaysOutFromEveryIngress(t *testing.T) {
 	if !admit(t, cat, copy) {
 		t.Fatal("unrecognized copy was not admitted")
 	}
-	if replaced, err := cat.UpdateVideoFingerprintForSource(ctx, copy, "S", "ready", ""); err != nil || replaced {
+	if replaced, err := cat.UpdateVideoFingerprintForSource(ctx, copy, "S2:S", "ready", ""); err != nil || replaced {
 		t.Fatalf("fingerprint: replaced=%t err=%v", replaced, err)
 	}
 	if _, err := cat.GetVideo(ctx, copy.ID); !errors.Is(err, sql.ErrNoRows) {
@@ -60,7 +60,7 @@ func TestBlacklistedContentStaysOutFromEveryIngress(t *testing.T) {
 		t.Fatalf("copy entry reason=%q err=%v", reason, err)
 	}
 
-	crawled := &Video{ID: "crawl", DriveID: "crawler", SampledSHA256: "s", Size: 10}
+	crawled := &Video{ID: "crawl", DriveID: "crawler", SampledSHA256: "s2:s", Size: 10}
 	seen := CrawlerSourceSeen{Kind: "scriptcrawler", DriveID: "crawler", SourceID: "src", DiscoveryKey: "key"}
 	if skipped, err := cat.SkipBlacklistedCrawlerSource(ctx, crawled, seen); err != nil || !skipped {
 		t.Fatalf("crawler skip=%t err=%v", skipped, err)
@@ -69,7 +69,7 @@ func TestBlacklistedContentStaysOutFromEveryIngress(t *testing.T) {
 	if err != nil || len(ids) != 1 || ids[0] != "src" {
 		t.Fatalf("known crawler sources=%v err=%v", ids, err)
 	}
-	other := &Video{ID: "fresh", DriveID: "crawler", SampledSHA256: "t", Size: 10}
+	other := &Video{ID: "fresh", DriveID: "crawler", SampledSHA256: "s2:t", Size: 10}
 	if skipped, err := cat.SkipBlacklistedCrawlerSource(ctx, other, CrawlerSourceSeen{Kind: "scriptcrawler", DriveID: "crawler", SourceID: "other"}); err != nil || skipped {
 		t.Fatalf("unrelated crawler source skip=%t err=%v", skipped, err)
 	}
@@ -276,7 +276,7 @@ CREATE TABLE deleted_videos (
 	deleted_at      INTEGER NOT NULL
 );
 INSERT INTO deleted_videos (id, drive_id, file_id, content_hash, file_name, size_bytes, restore_payload, deleted_at)
-VALUES ('old', 'one', 'f', 'ABC', 'old.mp4', 10, '{"version":1,"video":{"id":"old","sampledSha256":"SAMPLE"}}', 1);`); err != nil {
+VALUES ('old', 'one', 'f', 'ABC', 'old.mp4', 10, '{"version":1,"video":{"id":"old","sampledSha256":"S2:SAMPLE"}}', 1);`); err != nil {
 		_ = db.Close()
 		t.Fatal(err)
 	}
@@ -289,7 +289,7 @@ VALUES ('old', 'one', 'f', 'ABC', 'old.mp4', 10, '{"version":1,"video":{"id":"ol
 	}
 	t.Cleanup(func() { _ = cat.Close() })
 	ctx := context.Background()
-	if skipped, err := cat.SkipBlacklistedCrawlerSource(ctx, &Video{SampledSHA256: "sample", Size: 10},
+	if skipped, err := cat.SkipBlacklistedCrawlerSource(ctx, &Video{SampledSHA256: "s2:sample", Size: 10},
 		CrawlerSourceSeen{Kind: "scriptcrawler", DriveID: "crawler", SourceID: "src"}); err != nil || !skipped {
 		t.Fatalf("migrated fingerprint skip=%t err=%v", skipped, err)
 	}

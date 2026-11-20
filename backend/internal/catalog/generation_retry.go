@@ -66,7 +66,7 @@ func (c *Catalog) ResetFailedGeneration(ctx context.Context, driveID string, kin
 			query: `UPDATE videos
 			   SET fingerprint_status = 'pending', fingerprint_error = '', updated_at = ?
 			 WHERE drive_id = ? AND fingerprint_status = 'failed'
-			   AND size_bytes > 0 AND COALESCE(sampled_sha256, '') = ''
+			   AND size_bytes > 0 AND NOT ` + currentFingerprintSQL("sampled_sha256") + `
 			   AND COALESCE(hidden, 0) = 0`,
 		},
 	}

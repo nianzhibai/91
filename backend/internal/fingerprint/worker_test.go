@@ -9,10 +9,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/dedupe"
 	"github.com/nianzhibai/91/backend/internal/drives"
 	"github.com/nianzhibai/91/backend/internal/tasklimit"
 )
@@ -64,23 +66,18 @@ func TestComputeRemoteUsesRangeSamples(t *testing.T) {
 	defer srv.Close()
 
 	drv := &fakeDrive{paths: map[string]string{"remote": srv.URL + "/video.mp4"}}
-	sum, err := Compute(ctx, drv, &catalog.Video{ID: "remote", FileID: "remote", Size: int64(len(data))}, Config{
-		SampleSizeBytes: 4,
-		FullHashMaxSize: 8,
-		HTTPClient:      srv.Client(),
-	}, srv.Client())
+	sum, err := Compute(ctx, drv, &catalog.Video{ID: "remote", FileID: "remote", Size: int64(len(data))}, Config{}, srv.Client())
 	if err != nil {
 		t.Fatalf("compute remote: %v", err)
 	}
-	if sum == "" {
-		t.Fatal("fingerprint should not be empty")
+	if !strings.HasPrefix(sum, dedupe.SampledFingerprintPrefix) {
+		t.Fatalf("fingerprint = %q, want the current scheme prefix", sum)
 	}
+	// Head, middle and tail of a 10 MiB file, 512 KiB each.
 	want := []string{
-		"bytes=0-3",
-		"bytes=2097151-2097154",
-		"bytes=4194302-4194305",
-		"bytes=6291453-6291456",
-		"bytes=8388604-8388607",
+		"bytes=0-524287",
+		"bytes=4980736-5505023",
+		"bytes=9961472-10485759",
 	}
 	if fmt.Sprint(ranges) != fmt.Sprint(want) {
 		t.Fatalf("ranges = %#v, want %#v", ranges, want)
@@ -129,7 +126,7 @@ func TestComputeRemoteFollowsWebDAV302WithoutImplicitReferer(t *testing.T) {
 		ID:     "remote",
 		FileID: "remote",
 		Size:   int64(len(data)),
-	}, Config{FullHashMaxSize: int64(len(data))}, nil)
+	}, Config{}, nil)
 	if err != nil {
 		t.Fatalf("compute redirected remote: %v", err)
 	}
@@ -148,11 +145,7 @@ func TestComputeRemote429ReturnsRateLimit(t *testing.T) {
 	defer srv.Close()
 
 	drv := &fakeDrive{paths: map[string]string{"remote": srv.URL + "/video.mp4"}}
-	_, err := Compute(ctx, drv, &catalog.Video{ID: "remote", FileID: "remote", Size: 1024 * 1024}, Config{
-		SampleSizeBytes: 4,
-		FullHashMaxSize: 8,
-		HTTPClient:      srv.Client(),
-	}, srv.Client())
+	_, err := Compute(ctx, drv, &catalog.Video{ID: "remote", FileID: "remote", Size: 1024 * 1024}, Config{}, srv.Client())
 	if err == nil {
 		t.Fatal("compute succeeded, want rate limit")
 	}
@@ -188,7 +181,7 @@ func TestComputeP115RefreshesRejectedRangeLinkOnce(t *testing.T) {
 	}}
 	sum, err := Compute(ctx, drv, &catalog.Video{
 		ID: "p115-refresh", FileID: "remote", Size: int64(len(data)),
-	}, Config{FullHashMaxSize: int64(len(data))}, ready.Client())
+	}, Config{}, ready.Client())
 	if err != nil {
 		t.Fatalf("Compute: %v", err)
 	}
@@ -210,7 +203,7 @@ func TestComputeP115PersistentRangeForbiddenReturnsRateLimit(t *testing.T) {
 	drv := &fakeDrive{kind: "p115", streamURLs: []string{rejected.URL, rejected.URL}}
 	_, err := Compute(ctx, drv, &catalog.Video{
 		ID: "p115-persistent-403", FileID: "remote", Size: 10,
-	}, Config{FullHashMaxSize: 10}, rejected.Client())
+	}, Config{}, rejected.Client())
 	if err == nil {
 		t.Fatal("Compute succeeded, want rate limit")
 	}
@@ -253,7 +246,6 @@ func TestWorkerP115PersistentRangeForbiddenKeepsFingerprintPending(t *testing.T)
 	}
 	drv := &fakeDrive{kind: "p115", streamURLs: []string{rejected.URL, rejected.URL}}
 	worker := NewWorker(cat, drv, Config{
-		FullHashMaxSize:   10,
 		RateLimitCooldown: time.Millisecond,
 		HTTPClient:        rejected.Client(),
 	})
@@ -325,8 +317,7 @@ func TestWorkerProviderStatusCoolsDownOnlyForItsKind(t *testing.T) {
 			cat := openTestCatalog(t)
 			video := seedPendingVideo(t, cat, "status-"+tc.kind, 10)
 			worker := NewWorker(cat, &fakeDrive{kind: tc.kind, paths: map[string]string{"remote": unavailable.URL}}, Config{
-				FullHashMaxSize: 10,
-				HTTPClient:      unavailable.Client(),
+				HTTPClient: unavailable.Client(),
 			})
 			worker.processQueued(ctx, video)
 
@@ -361,7 +352,7 @@ func TestComputeStalledRemoteReadTimesOut(t *testing.T) {
 	start := time.Now()
 	_, err := Compute(context.Background(), &fakeDrive{paths: map[string]string{"remote": srv.URL}}, &catalog.Video{
 		ID: "stalled", FileID: "remote", Size: 10,
-	}, Config{FullHashMaxSize: 10, StallTimeout: 50 * time.Millisecond}, srv.Client())
+	}, Config{StallTimeout: 50 * time.Millisecond}, srv.Client())
 	if !errors.Is(err, errStalled) || !transientTransportError(err) {
 		t.Fatalf("error = %v, want a transient stall", err)
 	}
@@ -386,7 +377,7 @@ func TestComputeSlowProgressingReadIsNotStalled(t *testing.T) {
 
 	sum, err := Compute(context.Background(), &fakeDrive{paths: map[string]string{"remote": srv.URL}}, &catalog.Video{
 		ID: "slow", FileID: "remote", Size: int64(len(data)),
-	}, Config{FullHashMaxSize: 10, StallTimeout: 80 * time.Millisecond}, srv.Client())
+	}, Config{StallTimeout: 80 * time.Millisecond}, srv.Client())
 	if err != nil || sum == "" {
 		t.Fatalf("slow read = %q/%v, want a fingerprint", sum, err)
 	}
@@ -438,6 +429,90 @@ func seedPendingVideo(t *testing.T, cat *catalog.Catalog, id string, size int64)
 		t.Fatal(err)
 	}
 	return video
+}
+
+func TestSampleRangesCoverHeadMiddleAndTail(t *testing.T) {
+	whole := sampleCount * sampleSize
+	if got := sampleRanges(whole); len(got) != 1 || got[0] != (byteRange{start: 0, length: whole}) {
+		t.Fatalf("ranges for %d bytes = %+v, want the whole file", whole, got)
+	}
+	size := whole + 1
+	got := sampleRanges(size)
+	want := []byteRange{
+		{start: 0, length: sampleSize},
+		{start: (size - sampleSize) / 2, length: sampleSize},
+		{start: size - sampleSize, length: sampleSize},
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("ranges for %d bytes = %+v, want %+v", size, got, want)
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i].start < got[i-1].start+got[i-1].length {
+			t.Fatalf("samples overlap: %+v", got)
+		}
+	}
+}
+
+func TestComputeDetectsDifferentTail(t *testing.T) {
+	dir := t.TempDir()
+	data := make([]byte, 4*1024*1024)
+	for i := range data {
+		data[i] = byte(i % 251)
+	}
+	truncated := append([]byte(nil), data...)
+	// A download that stopped early leaves the tail unwritten.
+	clear(truncated[len(truncated)-1024:])
+	sums := make([]string, 0, 2)
+	for name, body := range map[string][]byte{"complete": data, "truncated": truncated} {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		sum, err := Compute(context.Background(), &fakeDrive{paths: map[string]string{"f": path}}, &catalog.Video{FileID: "f", Size: int64(len(body))}, Config{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sums = append(sums, sum)
+	}
+	if sums[0] == sums[1] {
+		t.Fatal("files differing only in the tail got the same fingerprint")
+	}
+}
+
+func TestComputeRejectsSourceWithAnotherSize(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "clip.mp4")
+	if err := os.WriteFile(path, []byte("grown clip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Compute(context.Background(), &fakeDrive{paths: map[string]string{"f": path}}, &catalog.Video{FileID: "f", Size: 4}, Config{}, nil)
+	if !errors.Is(err, errSizeChanged) {
+		t.Fatalf("local error = %v, want size changed", err)
+	}
+
+	data := make([]byte, 4*1024*1024)
+	for _, tc := range []struct {
+		name         string
+		contentRange func(start, end int) string
+		sizeChanged  bool
+	}{
+		{name: "other total", sizeChanged: true, contentRange: func(start, end int) string { return fmt.Sprintf("bytes %d-%d/%d", start, end, len(data)+1) }},
+		{name: "other range", contentRange: func(start, end int) string { return fmt.Sprintf("bytes %d-%d/%d", start+1, end+1, len(data)) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var start, end int
+				_, _ = fmt.Sscanf(r.Header.Get("Range"), "bytes=%d-%d", &start, &end)
+				w.Header().Set("Content-Range", tc.contentRange(start, end))
+				w.WriteHeader(http.StatusPartialContent)
+				_, _ = w.Write(data[start : end+1])
+			}))
+			defer srv.Close()
+			_, err := Compute(context.Background(), &fakeDrive{paths: map[string]string{"f": srv.URL}}, &catalog.Video{FileID: "f", Size: int64(len(data))}, Config{}, srv.Client())
+			if err == nil || errors.Is(err, errSizeChanged) != tc.sizeChanged {
+				t.Fatalf("Compute error = %v, want rejection with sizeChanged=%v", err, tc.sizeChanged)
+			}
+		})
+	}
 }
 
 type fakeDrive struct {

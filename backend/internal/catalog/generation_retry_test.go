@@ -36,10 +36,10 @@ func TestResetFailedGenerationSelectsEligibleWork(t *testing.T) {
 	for _, query := range []string{
 		`UPDATE videos SET thumbnail_status = 'ready', preview_status = 'ready', fingerprint_status = 'ready',
 		 thumbnail_url = '/p/thumb/ready', thumbnail_updated_at = 123, preview_local = '/ready.mp4',
-		 preview_updated_at = 456, sampled_sha256 = 'ready-hash', duration_seconds = 30 WHERE id = 'ready'`,
+		 preview_updated_at = 456, sampled_sha256 = 's2:ready-hash', duration_seconds = 30 WHERE id = 'ready'`,
 		`UPDATE videos SET thumbnail_status = 'pending', preview_status = 'pending', fingerprint_status = 'pending' WHERE id = 'pending'`,
 		`UPDATE videos SET hidden = 1 WHERE id = 'hidden'`,
-		`UPDATE videos SET thumbnail_status = 'skipped', preview_status = 'disabled', sampled_sha256 = 'existing-hash' WHERE id = 'disabled'`,
+		`UPDATE videos SET thumbnail_status = 'skipped', preview_status = 'disabled', sampled_sha256 = 's2:existing-hash' WHERE id = 'disabled'`,
 		`UPDATE videos SET thumbnail_url = '/p/thumb/probe', thumbnail_updated_at = 789, thumbnail_status = 'ready' WHERE id = 'probe'`,
 		`UPDATE videos SET size_bytes = 0 WHERE id = 'unknown-size'`,
 		// The materialized representative flag is maintained by deduplication.
@@ -89,7 +89,7 @@ func TestResetFailedGenerationSelectsEligibleWork(t *testing.T) {
 		t.Fatalf("fingerprint failure was not cleared: %+v, %v", failed, err)
 	}
 	ready, err := cat.GetVideo(ctx, "ready")
-	if err != nil || ready.ThumbnailUpdatedAt.UnixMilli() != 123 || ready.PreviewUpdatedAt.UnixMilli() != 456 || ready.SampledSHA256 != "ready-hash" {
+	if err != nil || ready.ThumbnailUpdatedAt.UnixMilli() != 123 || ready.PreviewUpdatedAt.UnixMilli() != 456 || ready.SampledSHA256 != "s2:ready-hash" {
 		t.Fatalf("ready assets changed: %+v, %v", ready, err)
 	}
 	probe, err := cat.GetVideo(ctx, "probe")

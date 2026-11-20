@@ -200,7 +200,7 @@ func mergeAndRetireDuplicateVideoTx(ctx context.Context, tx *sql.Tx, duplicate *
 	if _, err := tx.ExecContext(ctx, `INSERT INTO merged_videos
 		(video_id,canonical_video_id,drive_id,file_id,parent_id,file_name,size_bytes,content_hash,sampled_sha256,source_mod_time,merge_reason,merged_at)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, duplicate.ID, canonicalID, duplicate.DriveID, duplicate.FileID, duplicate.ParentID,
-		duplicate.FileName, duplicate.Size, duplicate.ContentHash, duplicate.SampledSHA256, duplicate.SourceModTime, reason, time.Now().UnixMilli()); err != nil {
+		duplicate.FileName, duplicate.Size, duplicate.ContentHash, currentFingerprint(duplicate.SampledSHA256), duplicate.SourceModTime, reason, time.Now().UnixMilli()); err != nil {
 		return err
 	}
 	if err := deleteVideoRowTx(ctx, tx, duplicate.ID); err != nil {

@@ -267,6 +267,9 @@ CREATE TABLE IF NOT EXISTS deleted_videos (
 	if _, err := c.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_videos_directory ON videos(drive_id, parent_id)`); err != nil {
 		return err
 	}
+	if err := c.retireLegacyFingerprintsOnce(ctx); err != nil {
+		return err
+	}
 	if err := c.ensureCanonicalVideoMaterialization(ctx); err != nil {
 		return err
 	}
