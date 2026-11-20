@@ -31,7 +31,7 @@ func TestGenerateLogsDegradationAsWarningWithTaskContext(t *testing.T) {
 	gen := newTeaserStubGenerator(t, 2)
 	fields := applog.Fields{Component: "preview", TaskID: "degraded-task", DriveID: "drive-1", VideoID: "video-1", FileID: "file-1"}
 	ctx := applog.WithFields(context.Background(), fields)
-	_, err := gen.Generate(ctx, &drives.StreamLink{URL: filepath.Join(t.TempDir(), "source.mp4")}, 204)
+	_, err := gen.generatePath(ctx, &drives.StreamLink{URL: filepath.Join(t.TempDir(), "source.mp4")}, 204)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,8 +65,8 @@ func TestPreviewWorkerLogsFinalOutcomeAtItsOwnLevel(t *testing.T) {
 		status  string
 		message string
 	}{
-		{name: "ready", level: applog.LevelInfo, status: "ready", message: "Preview ready"},
-		{name: "failed", cause: fmt.Errorf("only generated 1/4 teaser segments: %w", context.DeadlineExceeded), level: applog.LevelError, status: "failed", message: "Preview generation failed"},
+		{name: "ready", level: applog.LevelInfo, status: "ready", message: "Media ready"},
+		{name: "failed", cause: fmt.Errorf("only generated 1/4 teaser segments: %w", context.DeadlineExceeded), level: applog.LevelError, status: "failed", message: "Media generation failed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store, _ := capturePreviewLogs(t)

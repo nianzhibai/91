@@ -11,6 +11,7 @@ import (
 	"github.com/nianzhibai/91/backend/internal/dedupe"
 	"github.com/nianzhibai/91/backend/internal/localpath"
 	"github.com/nianzhibai/91/backend/internal/mediaasset"
+	"github.com/nianzhibai/91/backend/internal/persistence"
 )
 
 type duplicateVideoMaintenanceStats struct {
@@ -38,16 +39,6 @@ func (a *App) cleanupDuplicateVideoAssets(ctx context.Context) error {
 	}
 	if err := a.cleanupPendingDuplicateAssets(ctx, localDir); err != nil {
 		log.Printf("[dedupe-maintenance] retry pending asset cleanup: %v", err)
-	}
-	// Deriving signatures decodes teasers, which is preview work and stops
-	// with the global preview switch.
-	if a.previewEnabled() {
-		if err := a.backfillVideoSignatures(ctx, localDir); err != nil {
-			if ctx.Err() != nil {
-				return err
-			}
-			log.Printf("[dedupe-maintenance] signature backfill: %v", err)
-		}
 	}
 	// Matching only compares stored signatures, so every channel runs even
 	// while previews are disabled.
@@ -98,6 +89,35 @@ func (a *App) cleanupDuplicateVideoAssets(ctx context.Context) error {
 	log.Printf("[dedupe-maintenance] videos=%d exact_groups=%d exact_deleted=%d near_candidates=%d near_ssim_comparisons=%d near_groups=%d near_deleted=%d signature_candidates=%d signature_comparisons=%d signature_groups=%d signature_deleted=%d signature_reviews=%d",
 		stats.VideosScanned, stats.ExactGroups, stats.ExactDeleted, stats.NearCandidates, stats.NearSSIMComparisons, stats.NearGroups, stats.NearDeleted,
 		stats.SignatureCandidates, stats.SignatureComparisons, stats.SignatureGroups, stats.SignatureDeleted, stats.SignatureReviews)
+	if err := a.renewStaleMedia(ctx); err != nil && ctx.Err() == nil {
+		log.Printf("[dedupe-maintenance] renew stale media: %v", err)
+	}
+	return nil
+}
+
+// mediaRenewalBatch bounds how many stale media jobs one maintenance run
+// queues. A library-wide renewal, such as after a change of the teaser plan,
+// then proceeds over several days without holding up the nightly pipeline,
+// which waits for the generation queues it started.
+const mediaRenewalBatch = 1000
+
+// renewStaleMedia queues the next batch of stale media jobs. They run after
+// maintenance, and their signatures join the next deduplication.
+func (a *App) renewStaleMedia(ctx context.Context) error {
+	if err := persistence.RLockContext(ctx); err != nil {
+		return err
+	}
+	videos, err := a.cat.PromoteStaleMedia(ctx, mediaRenewalBatch)
+	persistence.RUnlock()
+	if err != nil {
+		return err
+	}
+	for _, video := range videos {
+		a.enqueueUploadedVideo(ctx, video)
+	}
+	if len(videos) > 0 {
+		log.Printf("[dedupe-maintenance] queued %d media renewals", len(videos))
+	}
 	return nil
 }
 

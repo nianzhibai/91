@@ -176,19 +176,23 @@ type Video struct {
 	PreviewLocal       string    `json:"previewLocal"` // relative to <storage.data_dir>/previews
 	PreviewUpdatedAt   time.Time `json:"previewUpdatedAt"`
 	PreviewStatus      string    `json:"previewStatus"`
-	Views              int       `json:"views"`
-	LastViewedAt       time.Time `json:"lastViewedAt"`
-	Favorites          int       `json:"favorites"`
-	Comments           int       `json:"comments"`
-	Likes              int       `json:"likes"`
-	LastLikedAt        time.Time `json:"lastLikedAt"`
-	Dislikes           int       `json:"dislikes"`
-	Hidden             bool      `json:"hidden"`
-	SizeUnavailable    bool      `json:"-"`
-	Badges             []string  `json:"badges"`
-	PublishedAt        time.Time `json:"publishedAt"`
-	CreatedAt          time.Time `json:"createdAt"`
-	UpdatedAt          time.Time `json:"updatedAt"`
+	// MediaStatus is the state of the media job that samples the perceptual
+	// signature and renews the teaser: pending, ready, failed, or stale when
+	// a renewal is due but left to maintenance batches.
+	MediaStatus     string    `json:"mediaStatus"`
+	Views           int       `json:"views"`
+	LastViewedAt    time.Time `json:"lastViewedAt"`
+	Favorites       int       `json:"favorites"`
+	Comments        int       `json:"comments"`
+	Likes           int       `json:"likes"`
+	LastLikedAt     time.Time `json:"lastLikedAt"`
+	Dislikes        int       `json:"dislikes"`
+	Hidden          bool      `json:"hidden"`
+	SizeUnavailable bool      `json:"-"`
+	Badges          []string  `json:"badges"`
+	PublishedAt     time.Time `json:"publishedAt"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
 }
 
 // VideoSummary is the public card-sized projection of a video. List feeds use
@@ -722,7 +726,7 @@ var contentDerivedResets = []string{
 	"duration_seconds = 0",
 	"thumbnail_url = ''", "thumbnail_updated_at = 0", "thumbnail_status = 'pending'", "thumbnail_failures = 0",
 	"preview_file_id = ''", "preview_local = ''", "preview_updated_at = 0", "preview_status = 'pending'",
-	"content_signature = NULL",
+	"content_signature = NULL", "media_status = 'pending'",
 }
 
 // Workers can commit results only while the row still refers to the bytes
@@ -905,38 +909,9 @@ func (c *Catalog) CountTags(ctx context.Context, labels []string) ([]TagStat, er
 	return out, nil
 }
 
-// ListVideosByPreviewStatus 按预览状态列出全部视频，通常用于启动补扫
-func (c *Catalog) ListVideosByPreviewStatus(ctx context.Context, driveID, status string, limit int) ([]*Video, error) {
-	if limit <= 0 {
-		limit = 10000
-	}
-	rows, err := c.db.QueryContext(ctx,
-		`SELECT `+allVideoCols+` FROM videos
-		 WHERE drive_id = ? AND preview_status = ?
-		   AND COALESCE(hidden, 0) = 0
-		   AND `+uniqueVideoWhereSQL+`
-		 ORDER BY created_at ASC LIMIT ?`,
-		driveID, status, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []*Video
-	for rows.Next() {
-		v, err := scanVideo(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, v)
-	}
-	return out, nil
-}
-
 // ListVideosByThumbnailStatus 按封面（thumbnail）状态列出某 drive 下的视频。
 //
-// 与 ListVideosByPreviewStatus 的区别在 status 字段名：封面用 thumbnail_status，
-// 预览用 preview_status；两个 worker 是独立的。本接口主要用于 admin "重生失败
-// 封面"操作 —— 把状态为 failed 的封面挑出来重新入队。
+// 主要用于 admin "重生失败封面"操作 —— 把状态为 failed 的封面挑出来重新入队。
 func (c *Catalog) ListVideosByThumbnailStatus(ctx context.Context, driveID, status string, limit int) ([]*Video, error) {
 	if limit <= 0 {
 		limit = 10000
@@ -2202,6 +2177,7 @@ UPDATE videos
 	       preview_updated_at = 0,
 	       preview_status = 'pending',
 	       content_signature = NULL,
+	       media_status = 'pending',
 	       updated_at = ?
  WHERE id = ?`, source.Size, FormatSourceModTime(source.ModTime), time.Now().UnixMilli(), id)
 	return err
@@ -4209,6 +4185,7 @@ COALESCE(sampled_sha256, ''), COALESCE(fingerprint_status, 'pending'), COALESCE(
 COALESCE(parent_id, ''), COALESCE(ancestor_dir_ids, ''), COALESCE(ancestor_dir_names, ''), COALESCE(dir_name, ''), title, COALESCE(author, ''), COALESCE(tags, '[]'),
 duration_seconds, COALESCE(size_bytes, 0), COALESCE(ext, ''), COALESCE(thumbnail_url, ''), COALESCE(thumbnail_updated_at, 0),
 COALESCE(preview_file_id, ''), COALESCE(preview_local, ''), COALESCE(preview_updated_at, 0), COALESCE(preview_status, 'pending'),
+COALESCE(media_status, 'pending'),
 	views, COALESCE(last_viewed_at, 0), favorites, comments, likes, COALESCE(last_liked_at, 0), dislikes,
 	COALESCE(hidden, 0), COALESCE(badges, '[]'),
 	published_at, created_at, updated_at
@@ -4323,6 +4300,7 @@ func scanVideo(row rowScanner) (*Video, error) {
 		&v.ParentID, &ancestorDirIDsJSON, &ancestorDirNamesJSON, &v.DirName, &v.Title, &v.Author, &tagsJSON,
 		&v.DurationSeconds, &v.Size, &v.Ext, &v.ThumbnailURL, &thumbnailUpdatedAt,
 		&v.PreviewFileID, &v.PreviewLocal, &previewUpdatedAt, &v.PreviewStatus,
+		&v.MediaStatus,
 		&v.Views, &lastViewedAt, &v.Favorites, &v.Comments, &v.Likes, &lastLikedAt, &v.Dislikes,
 		&hidden, &badgesJSON,
 		&publishedAt, &createdAt, &updatedAt,

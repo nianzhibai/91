@@ -9,11 +9,11 @@ import (
 // generatePath and generatePathWithLinkRefresh serve tests that only check
 // the teaser file.
 func (g *Generator) generatePath(ctx context.Context, link *drives.StreamLink, duration float64) (string, error) {
-	teaser, err := g.Generate(ctx, link, duration)
-	return teaser.Path, err
+	media, err := g.Generate(ctx, link, duration, MediaRequest{Teaser: true})
+	return media.TeaserPath, err
 }
 
 func (g *Generator) generatePathWithLinkRefresh(ctx context.Context, first *drives.StreamLink, duration float64, refresh func(context.Context) (*drives.StreamLink, error)) (string, error) {
-	teaser, err := g.GenerateWithLinkRefresh(ctx, first, duration, refresh)
-	return teaser.Path, err
+	media, err := g.GenerateWithLinkRefresh(ctx, first, duration, MediaRequest{Teaser: true}, refresh)
+	return media.TeaserPath, err
 }

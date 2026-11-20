@@ -89,7 +89,9 @@ func TestCancelBlacklistDuringGraceKeepsAssetsAndSkipsRegeneration(t *testing.T)
 	if err != nil || restored.PreviewLocal != video.PreviewLocal || restored.PreviewStatus != "ready" || restored.ThumbnailURL != video.ThumbnailURL {
 		t.Fatalf("restored video = %#v, %v", restored, err)
 	}
-	if worker.Status().QueueLength != 0 || thumbWorker.Status().QueueLength != 0 || invalidations != 1 {
+	// The retained teaser and thumbnail stay; the recreated row only needs its
+	// signature sampled again.
+	if worker.Status().QueueLength != 1 || thumbWorker.Status().QueueLength != 0 || invalidations != 1 {
 		t.Fatalf("undo generation queues = %d/%d, tag invalidations=%d", worker.Status().QueueLength, thumbWorker.Status().QueueLength, invalidations)
 	}
 	if err := app.cleanupExpiredDeletedVideoAssets(ctx, time.Now().Add(time.Hour)); err != nil {

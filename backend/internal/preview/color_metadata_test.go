@@ -156,9 +156,10 @@ func TestUnrecoverableColorErrorUsesBoundedPreviewRetries(t *testing.T) {
 		name, probeJSON string
 		wantCalls       int
 	}{
-		{"unsupported codec", `{"streams":[{"index":0,"codec_name":"av1","color_space":"reserved"}]}`, 9},
-		{"valid metadata", `{"streams":[{"index":0,"codec_name":"h264","color_space":"bt709"}]}`, 9},
-		{"repair still fails", `{"streams":[{"index":0,"codec_name":"h264","color_space":"reserved"}]}`, 10},
+		// One attempt per planned and fallback start of a 120-second video.
+		{"unsupported codec", `{"streams":[{"index":0,"codec_name":"av1","color_space":"reserved"}]}`, 10},
+		{"valid metadata", `{"streams":[{"index":0,"codec_name":"h264","color_space":"bt709"}]}`, 10},
+		{"repair still fails", `{"streams":[{"index":0,"codec_name":"h264","color_space":"reserved"}]}`, 11},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			dir := t.TempDir()

@@ -253,22 +253,49 @@ func TestPreviewWorkerStoresTeaserSignature(t *testing.T) {
 	}
 }
 
-func TestPreviewWorkerNotifiesDependentThumbnailAfterReady(t *testing.T) {
+func TestMediaJobHandsMissingThumbnailToThumbnailWorker(t *testing.T) {
 	ctx := context.Background()
-	cat, video := seedPreviewTestVideo(t, "preview-ready-notifies-thumbnail")
+	cat, video := seedPreviewTestVideo(t, "media-without-thumbnail")
 	worker := NewWorker(&fakeTeaserGenerator{}, cat, &previewFakeDrive{})
-	var notified *catalog.Video
-	worker.OnPreviewReady = func(video *catalog.Video) {
-		notified = video
+	var handedOff *catalog.Video
+	worker.OnThumbnailMissing = func(video *catalog.Video) {
+		handedOff = video
 	}
 
 	worker.process(ctx, video)
 
-	if notified == nil || notified.ID != video.ID {
-		t.Fatalf("notified video = %#v, want %s", notified, video.ID)
+	if handedOff == nil || handedOff.ID != video.ID {
+		t.Fatalf("handed off video = %#v, want %s", handedOff, video.ID)
 	}
-	if notified.PreviewStatus != "ready" || notified.PreviewLocal == "" {
-		t.Fatalf("notified preview status=%q local=%q", notified.PreviewStatus, notified.PreviewLocal)
+	if handedOff.PreviewStatus != "ready" || handedOff.PreviewLocal == "" {
+		t.Fatalf("handed off preview status=%q local=%q", handedOff.PreviewStatus, handedOff.PreviewLocal)
+	}
+}
+
+func TestMediaJobSavesThumbnailFromItsSegments(t *testing.T) {
+	ctx := context.Background()
+	cat, video := seedPreviewTestVideo(t, "media-with-thumbnail")
+	thumbnail := filepath.Join(t.TempDir(), "thumb.jpg")
+	if err := os.WriteFile(thumbnail, []byte("jpeg"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gen := &fakeTeaserGenerator{thumbnailPath: thumbnail}
+	worker := NewWorker(gen, cat, &previewFakeDrive{})
+	worker.OnThumbnailMissing = func(video *catalog.Video) {
+		t.Errorf("thumbnail handed off although the job produced one: %s", video.ID)
+	}
+
+	worker.process(ctx, video)
+
+	if len(gen.requests) != 1 || !gen.requests[0].Thumbnail {
+		t.Fatalf("requests = %+v, want the missing thumbnail requested", gen.requests)
+	}
+	got, err := cat.GetVideo(ctx, video.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ThumbnailURL != "/p/thumb/"+video.ID || got.PreviewStatus != "ready" {
+		t.Fatalf("thumbnail = %q preview = %q, want both from one job", got.ThumbnailURL, got.PreviewStatus)
 	}
 }
 
@@ -1303,7 +1330,11 @@ func seedPreviewTestVideo(t *testing.T, id string) (*catalog.Catalog, *catalog.V
 	if err := cat.UpsertVideo(ctx, video); err != nil {
 		t.Fatalf("seed video: %v", err)
 	}
-	return cat, video
+	stored, err := cat.GetVideo(ctx, id)
+	if err != nil {
+		t.Fatalf("load seeded video: %v", err)
+	}
+	return cat, stored
 }
 
 type fakeThumbGenerator struct {
@@ -1388,6 +1419,8 @@ type fakeTeaserGenerator struct {
 	generatedURLs     []string
 	generatedDuration float64
 	signature         *mediasig.Signature
+	thumbnailPath     string
+	requests          []MediaRequest
 }
 
 type blockingTeaserGenerator struct {
@@ -1399,18 +1432,22 @@ func (g *blockingTeaserGenerator) Probe(context.Context, *drives.StreamLink) (fl
 	return 60, nil
 }
 
-func (g *blockingTeaserGenerator) Generate(ctx context.Context, _ *drives.StreamLink, _ float64) (Teaser, error) {
+func (g *blockingTeaserGenerator) Generate(ctx context.Context, _ *drives.StreamLink, _ float64, _ MediaRequest) (Media, error) {
 	select {
 	case g.started <- struct{}{}:
 	case <-ctx.Done():
-		return Teaser{}, ctx.Err()
+		return Media{}, ctx.Err()
 	}
 	select {
 	case <-g.release:
-		return Teaser{Path: "/tmp/source-teaser.mp4"}, nil
+		return Media{TeaserPath: "/tmp/source-teaser.mp4"}, nil
 	case <-ctx.Done():
-		return Teaser{}, ctx.Err()
+		return Media{}, ctx.Err()
 	}
+}
+
+func (g *blockingTeaserGenerator) MoveThumbnailToLocal(_ string, videoID string) (string, error) {
+	return "/tmp/" + videoID + ".jpg", nil
 }
 
 func (g *blockingTeaserGenerator) MoveToLocal(_ string, videoID string) (string, error) {
@@ -1437,8 +1474,9 @@ func (g *fakeTeaserGenerator) Probe(context.Context, *drives.StreamLink) (float6
 	return 0, nil
 }
 
-func (g *fakeTeaserGenerator) Generate(_ context.Context, link *drives.StreamLink, duration float64) (Teaser, error) {
+func (g *fakeTeaserGenerator) Generate(_ context.Context, link *drives.StreamLink, duration float64, request MediaRequest) (Media, error) {
 	g.generateCalls++
+	g.requests = append(g.requests, request)
 	g.generatedDuration = duration
 	if link != nil {
 		g.generatedURLs = append(g.generatedURLs, link.URL)
@@ -1447,17 +1485,28 @@ func (g *fakeTeaserGenerator) Generate(_ context.Context, link *drives.StreamLin
 		err := g.generateErrs[0]
 		g.generateErrs = g.generateErrs[1:]
 		if err != nil {
-			return Teaser{}, err
+			return Media{}, err
 		}
 	}
 	if g.generateErr != nil {
-		return Teaser{}, g.generateErr
+		return Media{}, g.generateErr
 	}
-	return Teaser{Path: "/tmp/source-teaser.mp4", Signature: g.signature}, nil
+	media := Media{Signature: g.signature}
+	if request.Teaser {
+		media.TeaserPath = "/tmp/source-teaser.mp4"
+	}
+	if request.Thumbnail && g.thumbnailPath != "" {
+		media.ThumbnailPath = g.thumbnailPath
+	}
+	return media, nil
 }
 
-func (g *fakeTeaserGenerator) GenerateWithLinkRefresh(ctx context.Context, first *drives.StreamLink, duration float64, _ func(context.Context) (*drives.StreamLink, error)) (Teaser, error) {
-	return g.Generate(ctx, first, duration)
+func (g *fakeTeaserGenerator) GenerateWithLinkRefresh(ctx context.Context, first *drives.StreamLink, duration float64, request MediaRequest, _ func(context.Context) (*drives.StreamLink, error)) (Media, error) {
+	return g.Generate(ctx, first, duration, request)
+}
+
+func (g *fakeTeaserGenerator) MoveThumbnailToLocal(path string, videoID string) (string, error) {
+	return path, nil
 }
 
 func (g *fakeTeaserGenerator) MoveToLocal(_ string, videoID string) (string, error) {

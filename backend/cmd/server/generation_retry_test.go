@@ -48,8 +48,10 @@ func TestScanRetriesFailedGenerationAfterCleanup(t *testing.T) {
 		wantState  scanjob.State
 		wantQueues [3]int
 	}{
-		{"enabled", true, true, false, false, scanjob.Succeeded, [3]int{1, 1, 1}},
-		{"preview disabled", false, true, false, false, scanjob.Succeeded, [3]int{1, 0, 1}},
+		// The retried media job also makes the missing thumbnail, and it
+		// samples the signature while previews are disabled.
+		{"enabled", true, true, false, false, scanjob.Succeeded, [3]int{0, 1, 1}},
+		{"preview disabled", false, true, false, false, scanjob.Succeeded, [3]int{0, 1, 1}},
 		{"workers unavailable", true, false, false, false, scanjob.Succeeded, [3]int{}},
 		{"discovery failed", true, true, true, false, scanjob.Failed, [3]int{}},
 		{"canceled", true, true, false, true, scanjob.Canceled, [3]int{}},
@@ -105,9 +107,9 @@ type failingRetryTeaserGenerator struct {
 	serverFakeTeaserGenerator
 }
 
-func (g *failingRetryTeaserGenerator) Generate(context.Context, *drives.StreamLink, float64) (preview.Teaser, error) {
+func (g *failingRetryTeaserGenerator) Generate(context.Context, *drives.StreamLink, float64, preview.MediaRequest) (preview.Media, error) {
 	g.record("attempt")
-	return preview.Teaser{}, errors.New("invalid media")
+	return preview.Media{}, errors.New("invalid media")
 }
 
 func TestFailedGenerationWaitsForNextScanBeforeRetryingAgain(t *testing.T) {

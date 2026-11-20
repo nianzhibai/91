@@ -2298,12 +2298,18 @@ func TestRequeueInactivePreviews(t *testing.T) {
 		}
 	}
 
-	pending, err := cat.ListVideosByPreviewStatus(ctx, "d", "pending", 0)
+	due, err := cat.ListVideosNeedingMedia(ctx, "d", true)
 	if err != nil {
-		t.Fatalf("list pending previews: %v", err)
+		t.Fatalf("list media work: %v", err)
 	}
-	if len(pending) != 2 {
-		t.Fatalf("pending previews = %#v, want skipped and disabled previews", pending)
+	pending := 0
+	for _, video := range due {
+		if video.PreviewStatus == "pending" {
+			pending++
+		}
+	}
+	if pending != 2 {
+		t.Fatalf("pending previews = %d, want skipped and disabled previews", pending)
 	}
 }
 

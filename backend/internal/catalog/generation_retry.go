@@ -55,10 +55,16 @@ func (c *Catalog) ResetFailedGeneration(ctx context.Context, driveID string, kin
 		},
 		{
 			name: "previews", enabled: kinds.Previews, count: &counts.Previews,
+			// Previews and signatures come from one media job; a retry
+			// admits the failed teaser or the failed job.
 			query: `UPDATE videos
-			   SET preview_status = 'pending', preview_file_id = '', preview_local = '',
-			       preview_updated_at = 0, updated_at = ?
-			 WHERE drive_id = ? AND preview_status = 'failed'
+			   SET preview_file_id = CASE WHEN preview_status = 'failed' THEN '' ELSE preview_file_id END,
+			       preview_local = CASE WHEN preview_status = 'failed' THEN '' ELSE preview_local END,
+			       preview_updated_at = CASE WHEN preview_status = 'failed' THEN 0 ELSE preview_updated_at END,
+			       preview_status = CASE WHEN preview_status = 'failed' THEN 'pending' ELSE preview_status END,
+			       media_status = CASE WHEN media_status = 'failed' THEN 'pending' ELSE media_status END,
+			       updated_at = ?
+			 WHERE drive_id = ? AND (preview_status = 'failed' OR media_status = 'failed')
 			   AND COALESCE(hidden, 0) = 0 AND ` + uniqueVideoWhereSQL,
 		},
 		{

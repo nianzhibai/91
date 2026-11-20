@@ -17,10 +17,6 @@ const (
 	// SampleInterval is the spacing of sampled frames inside a window.
 	SampleInterval = 500 * time.Millisecond
 
-	// teaserEdgeGuard skips teaser frames next to segment boundaries, where
-	// segments fade in and out.
-	teaserEdgeGuard = 250 * time.Millisecond
-
 	extractTimeout = 2 * time.Minute
 )
 
@@ -78,47 +74,6 @@ func Extract(ctx context.Context, ffmpegPath string, duration time.Duration, cli
 			}
 			signature.Frames = append(signature.Frames, newFrame(clip.Window.Start+offset, i, gray))
 		}
-	}
-	return finish(signature)
-}
-
-// FromTeaser derives a signature from an existing teaser whose consecutive
-// segments show the given source windows. It lets libraries reuse teasers
-// generated before signatures existed. The windows must be the ones the
-// teaser was actually cut from; a segment that came from elsewhere simply
-// fails to match.
-func FromTeaser(ctx context.Context, ffmpegPath, teaserPath string, duration time.Duration, windows []Window) (*Signature, error) {
-	if len(windows) == 0 {
-		return nil, errors.New("mediasig: no teaser windows")
-	}
-	var stdout bytes.Buffer
-	args := []string{
-		"-hide_banner", "-loglevel", "error", "-nostdin",
-		"-i", teaserPath,
-		"-map", "0:v:0",
-		"-vf", sampleFilter,
-		"-f", "rawvideo", "pipe:1",
-	}
-	if err := runFFmpeg(ctx, ffmpegPath, args, &stdout); err != nil {
-		return nil, err
-	}
-
-	signature := &Signature{Duration: duration}
-	window, windowStart := 0, time.Duration(0)
-	for j, gray := range splitFrames(stdout.Bytes()) {
-		at := time.Duration(j) * SampleInterval
-		for window < len(windows) && at >= windowStart+windows[window].Duration {
-			windowStart += windows[window].Duration
-			window++
-		}
-		if window == len(windows) {
-			break
-		}
-		offset := at - windowStart
-		if offset < teaserEdgeGuard || offset > windows[window].Duration-teaserEdgeGuard {
-			continue
-		}
-		signature.Frames = append(signature.Frames, newFrame(windows[window].Start+offset, window, gray))
 	}
 	return finish(signature)
 }

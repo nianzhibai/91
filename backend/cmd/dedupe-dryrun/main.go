@@ -1,8 +1,7 @@
 // dedupe-dryrun：预演/执行夜间维护的感知签名查重通道。分组、canonical 选择
 // 和最终删除计划与生产共用 internal/dedupe。
 //
-// 签名优先读取库内已存的；缺失的从本地 teaser 按主选段临时推导，只在内存中
-// 使用，不写回数据库。
+// 签名来自库内由媒体任务写入的记录；还没有签名的视频不参与比对。
 //
 // 默认只读，不写库、不删文件；加 -apply 后一次性提交完整计划，再幂等清理
 // 本地生成资产。原始媒体源始终不在清理范围内。
@@ -22,22 +21,17 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/dedupe"
 	"github.com/nianzhibai/91/backend/internal/localpath"
 	"github.com/nianzhibai/91/backend/internal/mediaasset"
-	"github.com/nianzhibai/91/backend/internal/mediasig"
-	"github.com/nianzhibai/91/backend/internal/preview"
 )
 
 func main() {
 	dbPath := flag.String("db", "data/91.db", "sqlite path")
 	localDir := flag.String("local-dir", "data/previews", "本地预览目录(storage.data_dir 下的 previews)")
-	ffmpegPath := flag.String("ffmpeg", "ffmpeg", "ffmpeg 路径")
-	workers := flag.Int("workers", 4, "从 teaser 推导缺失签名的并发数")
 	apply := flag.Bool("apply", false, "真正执行：合并重复项（默认只读预演）")
 	flag.Parse()
 
@@ -58,8 +52,8 @@ func main() {
 		log.Fatalf("local dir: %v", err)
 	}
 
-	candidates, teasers, videosByID := signatureCandidates(localAbs, videos)
-	if err := attachSignatures(ctx, cat, *ffmpegPath, *workers, candidates, teasers); err != nil {
+	candidates, videosByID := signatureCandidates(localAbs, videos)
+	if err := attachSignatures(ctx, cat, candidates); err != nil {
 		log.Fatalf("load signatures: %v", err)
 	}
 	plan, err := dedupe.Build(ctx, candidates, dedupe.Options{Channels: dedupe.ChannelSignature})
@@ -77,11 +71,9 @@ func main() {
 	fmt.Printf("\n已合并 %d 个重复视频。\n", len(plan.Actions))
 }
 
-// signatureCandidates returns the videos long enough for a signature verdict,
-// with the local teaser of each that has one.
-func signatureCandidates(localDir string, videos []*catalog.Video) ([]dedupe.Candidate, map[string]string, map[string]*catalog.Video) {
+// signatureCandidates returns the videos long enough for a signature verdict.
+func signatureCandidates(localDir string, videos []*catalog.Video) ([]dedupe.Candidate, map[string]*catalog.Video) {
 	candidates := make([]dedupe.Candidate, 0, len(videos))
-	teasers := make(map[string]string)
 	videosByID := make(map[string]*catalog.Video, len(videos))
 	for _, video := range videos {
 		if video == nil {
@@ -101,20 +93,14 @@ func signatureCandidates(localDir string, videos []*catalog.Video) ([]dedupe.Can
 		if !dedupe.SignatureEligible(candidate) {
 			continue
 		}
-		if strings.TrimSpace(video.PreviewStatus) == "ready" {
-			if teaser, ok := existingPreviewPath(localDir, video.PreviewLocal); ok {
-				teasers[video.ID] = teaser
-			}
-		}
 		candidates = append(candidates, candidate)
 		videosByID[video.ID] = video
 	}
-	return candidates, teasers, videosByID
+	return candidates, videosByID
 }
 
-// attachSignatures sets the stored signature of every candidate and derives
-// the missing ones from local teasers without storing them.
-func attachSignatures(ctx context.Context, cat *catalog.Catalog, ffmpegPath string, workers int, candidates []dedupe.Candidate, teasers map[string]string) error {
+// attachSignatures sets the stored signature of every candidate.
+func attachSignatures(ctx context.Context, cat *catalog.Catalog, candidates []dedupe.Candidate) error {
 	ids := make([]string, len(candidates))
 	for i := range candidates {
 		ids[i] = candidates[i].ID
@@ -123,47 +109,10 @@ func attachSignatures(ctx context.Context, cat *catalog.Catalog, ffmpegPath stri
 	if err != nil {
 		return err
 	}
-	var missing []int
 	for i := range candidates {
-		if signature := stored[candidates[i].ID]; signature != nil {
-			candidates[i].Signature = signature
-		} else if teasers[candidates[i].ID] != "" {
-			missing = append(missing, i)
-		}
+		candidates[i].Signature = stored[candidates[i].ID]
 	}
-	fmt.Fprintf(os.Stderr, "candidates=%d stored_signatures=%d deriving_from_teasers=%d\n", len(candidates), len(stored), len(missing))
-
-	jobs := make(chan int)
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	derived, failed := 0, 0
-	for range max(1, workers) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := range jobs {
-				candidate := &candidates[i]
-				duration := float64(candidate.DurationSeconds)
-				signature, err := mediasig.FromTeaser(ctx, ffmpegPath, teasers[candidate.ID],
-					time.Duration(candidate.DurationSeconds)*time.Second, preview.TeaserSourceWindows(duration))
-				mu.Lock()
-				if err != nil {
-					failed++
-					fmt.Fprintf(os.Stderr, "  derive failed id=%s: %v\n", candidate.ID, err)
-				} else {
-					candidate.Signature = signature
-					derived++
-				}
-				mu.Unlock()
-			}
-		}()
-	}
-	for _, i := range missing {
-		jobs <- i
-	}
-	close(jobs)
-	wg.Wait()
-	fmt.Fprintf(os.Stderr, "derived=%d failed=%d\n", derived, failed)
+	fmt.Fprintf(os.Stderr, "candidates=%d signatures=%d\n", len(candidates), len(stored))
 	return nil
 }
 

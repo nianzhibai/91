@@ -33,17 +33,30 @@ func TestGenerateSamplesSignatureFromSegmentWindows(t *testing.T) {
 	}
 
 	gen := New(Config{FFmpegPath: ffmpeg, FFprobePath: ffprobe, Width: 160, LocalDir: filepath.Join(dir, "output")})
-	teaser, err := gen.Generate(ctx, &drives.StreamLink{URL: source}, duration)
+	media, err := gen.Generate(ctx, &drives.StreamLink{URL: source}, duration, MediaRequest{Teaser: true, Thumbnail: true})
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Remove(teaser.Path) })
-	if teaser.Signature == nil {
-		t.Fatal("teaser has no signature")
+	t.Cleanup(func() { _ = os.Remove(media.TeaserPath); _ = os.Remove(media.ThumbnailPath) })
+	if media.Signature == nil || media.TeaserPath == "" || media.ThumbnailPath == "" {
+		t.Fatalf("media = %+v, want teaser, thumbnail and signature from one pass", media)
+	}
+	if info, err := os.Stat(media.ThumbnailPath); err != nil || info.Size() == 0 {
+		t.Fatalf("thumbnail missing: %v", err)
+	}
+	if err := gen.validateGeneratedTeaser(ctx, media.TeaserPath); err != nil {
+		t.Fatalf("teaser invalid: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, "output"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("output files = %v, want only the teaser and the thumbnail", entries)
 	}
 
 	windows := TeaserSourceWindows(duration)
-	for _, frame := range teaser.Signature.Frames {
+	for _, frame := range media.Signature.Frames {
 		window := windows[frame.Window]
 		if frame.At < window.Start || frame.At >= window.Start+window.Duration {
 			t.Fatalf("frame at %v lies outside its window %+v", frame.At, window)
@@ -57,7 +70,39 @@ func TestGenerateSamplesSignatureFromSegmentWindows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sample source: %v", err)
 	}
-	if got := mediasig.Compare(teaser.Signature, direct); got.Verdict != mediasig.VerdictStrong {
+	if got := mediasig.Compare(media.Signature, direct); got.Verdict != mediasig.VerdictStrong {
 		t.Fatalf("teaser signature vs source = %+v, want strong", got)
+	}
+}
+
+func TestGenerateWithoutTeaserKeepsOnlyThumbnailAndSignature(t *testing.T) {
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg unavailable")
+	}
+	ffprobe, err := exec.LookPath("ffprobe")
+	if err != nil {
+		t.Skip("ffprobe unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.mp4")
+	if out, err := exec.CommandContext(ctx, ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+		"-f", "lavfi", "-i", "mandelbrot=size=240x180:rate=10:maxiter=150:end_pts=60", "-t", "60",
+		"-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", source).CombinedOutput(); err != nil {
+		t.Fatalf("make source: %v: %s", err, out)
+	}
+	gen := New(Config{FFmpegPath: ffmpeg, FFprobePath: ffprobe, Width: 160, LocalDir: filepath.Join(dir, "output")})
+	media, err := gen.Generate(ctx, &drives.StreamLink{URL: source}, 60, MediaRequest{Thumbnail: true})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if media.TeaserPath != "" || media.ThumbnailPath == "" || media.Signature == nil {
+		t.Fatalf("media = %+v, want thumbnail and signature only", media)
+	}
+	entries, _ := os.ReadDir(filepath.Join(dir, "output"))
+	if len(entries) != 1 {
+		t.Fatalf("output files = %v, want only the thumbnail", entries)
 	}
 }

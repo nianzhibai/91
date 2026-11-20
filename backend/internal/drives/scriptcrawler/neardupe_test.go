@@ -30,12 +30,12 @@ func seedSignedCandidate(t *testing.T, cat *catalog.Catalog, id string, duration
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := cat.SetVideoSignatureForSource(ctx, stored, signature); err != nil {
+	if err := cat.CompleteMediaForSource(ctx, stored, signature); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestNearDuplicateSkipsSignatureSamplingWhilePreviewsDisabled(t *testing.T) {
+func TestNearDuplicateSamplesOnlyWhenSignaturesExist(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	cat, err := catalog.Open(filepath.Join(dir, "catalog.db"))
@@ -53,19 +53,23 @@ func TestNearDuplicateSkipsSignatureSamplingWhilePreviewsDisabled(t *testing.T) 
 	if err := os.WriteFile(ffmpegPath, []byte("#!/bin/sh\ntouch '"+marker+"'\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	seedSignedCandidate(t, cat, "candidate", 600, &mediasig.Signature{Duration: 600 * time.Second, Frames: []mediasig.Frame{{Informative: true}}})
+	importer := &Importer{cfg: ImporterConfig{Driver: New(Config{ID: "crawler", RootDir: dir}), Catalog: cat, FFmpegPath: ffmpegPath}}
 	source := &catalog.Video{ID: "source", Title: "New title", DurationSeconds: 600}
-	for _, enabled := range []bool{false, true} {
-		_ = os.Remove(marker)
-		importer := &Importer{cfg: ImporterConfig{
-			Driver: New(Config{ID: "crawler", RootDir: dir}), Catalog: cat, FFmpegPath: ffmpegPath,
-			PreviewEnabled: func() bool { return enabled },
-		}}
-		match, err := importer.findNearDuplicateVideo(ctx, source, "", sourcePath)
-		_, statErr := os.Stat(marker)
-		if err != nil || match != nil || (statErr == nil) != enabled {
-			t.Fatalf("enabled=%v match=%v err=%v sampled=%v", enabled, match, err, statErr == nil)
-		}
+
+	// Without stored signatures to compare, the download is not sampled.
+	seedSignedCandidate(t, cat, "unsigned", 600, nil)
+	if match, err := importer.findNearDuplicateVideo(ctx, source, "", sourcePath); err != nil || match != nil {
+		t.Fatalf("match = %v err = %v", match, err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("sampled the download without signatures to compare")
+	}
+	seedSignedCandidate(t, cat, "candidate", 600, &mediasig.Signature{Duration: 600 * time.Second, Frames: []mediasig.Frame{{Informative: true}}})
+	if match, err := importer.findNearDuplicateVideo(ctx, source, "", sourcePath); err != nil || match != nil {
+		t.Fatalf("match = %v err = %v", match, err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal("did not sample the download against a stored signature")
 	}
 }
 

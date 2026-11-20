@@ -11,6 +11,7 @@ import (
 
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/dedupe"
+	"github.com/nianzhibai/91/backend/internal/mediasig"
 	"github.com/nianzhibai/91/backend/internal/preview"
 )
 
@@ -24,23 +25,6 @@ func runFFmpeg(t *testing.T, ffmpeg string, args ...string) {
 	}
 }
 
-// makeTeaser cuts faded segments at the primary teaser plan, like the
-// preview generator does.
-func makeTeaser(t *testing.T, ffmpeg, source, teaser string) {
-	t.Helper()
-	var args, filters []string
-	concat := ""
-	for i, window := range preview.TeaserSourceWindows(testDurationSeconds) {
-		args = append(args, "-ss", fmt.Sprintf("%.3f", window.Start.Seconds()), "-t", "3", "-i", source)
-		filters = append(filters, fmt.Sprintf("[%d:v]setpts=PTS-STARTPTS,fade=t=in:st=0:d=0.2,fade=t=out:st=2.8:d=0.2[v%d]", i, i))
-		concat += fmt.Sprintf("[v%d]", i)
-	}
-	filters = append(filters, concat+fmt.Sprintf("concat=n=%d:v=1:a=0[out]", len(filters)))
-	args = append(args, "-filter_complex", strings.Join(filters, ";"), "-map", "[out]",
-		"-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", teaser)
-	runFFmpeg(t, ffmpeg, args...)
-}
-
 func fractal(t *testing.T, ffmpeg, path string, startX float64) {
 	t.Helper()
 	source := fmt.Sprintf("mandelbrot=size=240x180:rate=5:maxiter=150:start_x=%g:end_pts=%d", startX, testDurationSeconds)
@@ -48,11 +32,27 @@ func fractal(t *testing.T, ffmpeg, path string, startX float64) {
 		"-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", path)
 }
 
-func TestSignatureChannelFindsReencodedTeaserCopies(t *testing.T) {
+// sampleSource samples a file at the teaser windows, as a media job does.
+func sampleSource(t *testing.T, ffmpeg, path string, duration int) *mediasig.Signature {
+	t.Helper()
+	windows := preview.TeaserSourceWindows(float64(duration))
+	clips := make([]mediasig.Clip, 0, len(windows))
+	for _, window := range windows {
+		clips = append(clips, mediasig.Clip{Path: path, Offset: window.Start, Window: window})
+	}
+	signature, err := mediasig.Extract(context.Background(), ffmpeg, time.Duration(duration)*time.Second, clips)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signature
+}
+
+func TestDryRunPlansFromStoredSignatures(t *testing.T) {
 	ffmpeg, err := exec.LookPath("ffmpeg")
 	if err != nil {
 		t.Skip("ffmpeg not installed")
 	}
+	ctx := context.Background()
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source.mp4")
 	fractal(t, ffmpeg, source, -0.743643887037151)
@@ -62,30 +62,41 @@ func TestSignatureChannelFindsReencodedTeaserCopies(t *testing.T) {
 	other := filepath.Join(dir, "other.mp4")
 	fractal(t, ffmpeg, other, -1.25)
 
-	now := time.Date(2026, 11, 21, 0, 0, 0, 0, time.UTC)
-	var candidates []dedupe.Candidate
-	teasers := make(map[string]string)
-	for i, input := range []struct{ id, path string }{
-		{"original", source}, {"copy", letterboxed}, {"other", other},
-	} {
-		teaser := filepath.Join(dir, input.id+"-teaser.mp4")
-		makeTeaser(t, ffmpeg, input.path, teaser)
-		teasers[input.id] = teaser
-		candidates = append(candidates, dedupe.Candidate{
-			ID: input.id, DurationSeconds: testDurationSeconds + i%2, Size: int64(100 * (3 - i)),
-			CreatedAt: now, Revision: input.id,
-		})
-	}
-
 	cat, err := catalog.Open(filepath.Join(dir, "catalog.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cat.Close() })
-	if err := attachSignatures(context.Background(), cat, ffmpeg, 2, candidates, teasers); err != nil {
+	for i, input := range []struct{ id, path string }{
+		{"original", source}, {"copy", letterboxed}, {"other", other}, {"unsampled", source},
+	} {
+		duration := testDurationSeconds + i%2
+		video := &catalog.Video{ID: input.id, DriveID: "drive", FileID: input.id, Title: input.id,
+			Size: int64(100 * (4 - i)), DurationSeconds: duration}
+		if err := cat.UpsertVideo(ctx, video); err != nil {
+			t.Fatal(err)
+		}
+		if input.id == "unsampled" {
+			continue
+		}
+		stored, err := cat.GetVideo(ctx, input.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cat.CompleteMediaForSource(ctx, stored, sampleSource(t, ffmpeg, input.path, duration)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	videos, err := cat.ListVideoMaintenanceCandidates(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates, _ := signatureCandidates(dir, videos)
+	if err := attachSignatures(ctx, cat, candidates); err != nil {
 		t.Fatalf("attach signatures: %v", err)
 	}
-	plan, err := dedupe.Build(context.Background(), candidates, dedupe.Options{Channels: dedupe.ChannelSignature})
+	plan, err := dedupe.Build(ctx, candidates, dedupe.Options{Channels: dedupe.ChannelSignature})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}

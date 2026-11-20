@@ -40,7 +40,7 @@ func (g *dependentCoverGenerator) GenerateThumbnail(ctx context.Context, _ *driv
 	}
 }
 
-func TestGenerationWaitIncludesCoverScheduledByPreviewCompletion(t *testing.T) {
+func TestGenerationWaitIncludesCoverHandedOffByMediaJob(t *testing.T) {
 	for _, allDrives := range []bool{false, true} {
 		name := "single drive"
 		if allDrives {
@@ -53,7 +53,7 @@ func TestGenerationWaitIncludesCoverScheduledByPreviewCompletion(t *testing.T) {
 			coverGen := &dependentCoverGenerator{started: make(chan struct{}), release: make(chan struct{})}
 			cover := preview.NewThumbWorker(coverGen, app.cat, drv)
 			teaser := preview.NewWorker(&serverFakeTeaserGenerator{}, app.cat, drv)
-			teaser.OnPreviewReady = func(ready *catalog.Video) {
+			teaser.OnThumbnailMissing = func(ready *catalog.Video) {
 				if !cover.EnqueueFollowUp(ready) {
 					t.Error("dependent cover enqueue failed")
 				}

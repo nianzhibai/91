@@ -226,8 +226,9 @@ func (a *App) runScanWithTaskContext(ctx context.Context, driveID string) (repor
 	// generation. Recurring queue admission only picks up pending work, so a
 	// retry that fails again remains failed until the next scan or manual retry.
 	if _, err := a.resetFailedGeneration(ctx, driveID, catalog.GenerationKinds{
-		Thumbnails:   thumbnailWorker != nil,
-		Previews:     previewWorker != nil && a.previewEnabled(),
+		Thumbnails: thumbnailWorker != nil,
+		// Media jobs also sample signatures while previews are disabled.
+		Previews:     previewWorker != nil,
 		Fingerprints: fingerprintWorker != nil,
 	}); err != nil {
 		report.AddIssue("generation_retry", err)
@@ -238,7 +239,7 @@ func (a *App) runScanWithTaskContext(ctx context.Context, driveID string) (repor
 	}
 	finishEnqueue := a.beginDriveResourceEnqueue(driveID)
 	defer finishEnqueue()
-	enqueueNewScanVideos(result.NewVideos, thumbnailWorker, fingerprintWorker)
+	enqueueNewScanVideos(result.NewVideos, previewWorker, thumbnailWorker, fingerprintWorker, a.previewEnabled())
 	a.enqueueFingerprintBackfill(ctx, driveID, fingerprintWorker)
 	a.enqueueDriveGeneration(ctx, driveID, previewWorker, thumbnailWorker)
 	return report
@@ -336,8 +337,10 @@ func missingFileCleanupMode(snapshot scanner.Snapshot) catalog.MissingFileCleanu
 
 func enqueueNewScanVideos(
 	videos []*catalog.Video,
+	mediaWorker *preview.Worker,
 	thumbnailWorker *preview.ThumbWorker,
 	fingerprintWorker *fingerprint.Worker,
+	previewsEnabled bool,
 ) {
 	for _, video := range videos {
 		if video == nil {
@@ -346,9 +349,7 @@ func enqueueNewScanVideos(
 		if fingerprintWorker != nil {
 			fingerprintWorker.Enqueue(video)
 		}
-		if thumbnailWorker != nil && video.ThumbnailURL == "" {
-			thumbnailWorker.Enqueue(video)
-		}
+		enqueueVideoGeneration(mediaWorker, thumbnailWorker, video, previewsEnabled)
 	}
 }
 

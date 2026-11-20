@@ -33,19 +33,63 @@ func (a *App) enqueueUploadedVideo(ctx context.Context, v *catalog.Video) {
 	fingerprintWorker := a.fingerprintWorkers[v.DriveID]
 	a.mu.Unlock()
 
-	if thumbWorker != nil && v.ThumbnailURL == "" {
-		thumbWorker.Enqueue(v)
-	}
-	if worker != nil && a.previewEnabled() && v.PreviewStatus != "ready" {
-		worker.Enqueue(v)
-	}
+	enqueueVideoGeneration(worker, thumbWorker, v, a.previewEnabled())
 	if fingerprintWorker != nil && v.FingerprintStatus != "ready" {
 		fingerprintWorker.Enqueue(v)
 	}
 }
 
+// linkThumbnailHandOff passes videos a media job left without a thumbnail to
+// the drive's thumbnail worker.
+func linkThumbnailHandOff(media *preview.Worker, thumbnails *preview.ThumbWorker) {
+	if media == nil || thumbnails == nil {
+		return
+	}
+	media.OnThumbnailMissing = func(video *catalog.Video) {
+		if !thumbnails.EnqueueFollowUp(video) {
+			log.Printf("[thumb] dependent enqueue full drive=%s video=%s; remains pending for the next reconciliation", video.DriveID, video.ID)
+		}
+	}
+}
+
+// thumbnailsWithoutMediaJob lists the drive's videos the thumbnail worker
+// must cover: a due media job makes the thumbnail from the segments it reads.
+func (a *App) thumbnailsWithoutMediaJob(ctx context.Context, driveID string) ([]*catalog.Video, error) {
+	listed, err := a.cat.ListVideosNeedingThumbnail(ctx, driveID, 0)
+	if err != nil {
+		return nil, err
+	}
+	previews := a.previewEnabled()
+	pending := listed[:0]
+	for _, v := range listed {
+		if !v.MediaWants(previews).Any() {
+			pending = append(pending, v)
+		}
+	}
+	return pending, nil
+}
+
+// enqueueVideoGeneration routes a video to its media job, which also makes a
+// missing thumbnail, or to the thumbnail worker when no media job is due.
+func enqueueVideoGeneration(media *preview.Worker, thumbnails *preview.ThumbWorker, v *catalog.Video, previewsEnabled bool) {
+	if v == nil {
+		return
+	}
+	if media != nil && v.MediaWants(previewsEnabled).Any() {
+		media.Enqueue(v)
+		return
+	}
+	if thumbnails != nil && v.ThumbnailURL == "" {
+		thumbnails.Enqueue(v)
+	}
+}
+
 func (a *App) regenPreview(ctx context.Context, videoID string) {
 	if !a.previewEnabled() {
+		return
+	}
+	if err := a.cat.RequestMediaRenewal(ctx, []string{videoID}); err != nil {
+		log.Printf("[preview] request renewal video=%s: %v", videoID, err)
 		return
 	}
 	v, err := a.cat.GetVideo(ctx, videoID)
@@ -74,6 +118,14 @@ func (a *App) regenAllPreviews(ctx context.Context) {
 	items, total, err := a.cat.ListVideos(ctx, catalog.ListParams{Page: 1, PageSize: 1000000})
 	if err != nil {
 		log.Printf("[preview] list all videos for regen: %v", err)
+		return
+	}
+	ids := make([]string, 0, len(items))
+	for _, v := range items {
+		ids = append(ids, v.ID)
+	}
+	if err := a.cat.RequestMediaRenewal(ctx, ids); err != nil {
+		log.Printf("[preview] request renewal of all videos: %v", err)
 		return
 	}
 	log.Printf("[preview] enqueue all visible videos for regen count=%d total=%d", len(items), total)

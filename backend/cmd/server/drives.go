@@ -1212,11 +1212,6 @@ func (a *App) newDriveGenerationWorkers(drv drives.Drive) (*preview.Worker, *pre
 	thumbnailLimiter, previewLimiter, fingerprintLimiter := a.generationLimits()
 	previewWorker.Limiter = previewLimiter
 	thumbWorker.Limiter = thumbnailLimiter
-	previewWorker.OnPreviewReady = func(video *catalog.Video) {
-		if !thumbWorker.EnqueueFollowUp(video) {
-			log.Printf("[thumb] dependent enqueue full drive=%s video=%s; remains pending for the next reconciliation", drv.ID(), video.ID)
-		}
-	}
 	// Every worker reading this drive pauses together when the provider throttles.
 	cooldownWait := drives.CooldownFor(drv.Kind())
 	cooldown := &tasklimit.Cooldown{}
@@ -1226,8 +1221,7 @@ func (a *App) newDriveGenerationWorkers(drv drives.Drive) (*preview.Worker, *pre
 	fingerprintWorker.Cooldown = cooldown
 	fingerprintWorker.OnContentReplaced = func(video *catalog.Video) {
 		// A full queue leaves the row pending for the next reconciliation.
-		previewWorker.Enqueue(video)
-		thumbWorker.Enqueue(video)
+		enqueueVideoGeneration(previewWorker, thumbWorker, video, a.previewEnabled())
 	}
 	driveID := drv.ID()
 	notifyStatus := func(immediate bool) { a.notifyDriveRuntime(driveID, immediate) }
@@ -1343,7 +1337,6 @@ func (a *App) attachScriptCrawler(d *catalog.Drive, drv *scriptcrawler.Driver) {
 		ScriptPath:         scriptPath,
 		WorkDir:            workDir,
 		CommonThumbDir:     a.commonThumbsDir(),
-		PreviewEnabled:     a.previewEnabled,
 		ProxyURL:           proxyURL,
 		ConfigJSON:         configJSON,
 		FeedID:             d.Credentials["feed_id"],
@@ -1382,6 +1375,7 @@ func (a *App) registerPreviewWorkers(ctx context.Context, driveID string, worker
 }
 
 func (a *App) registerPreviewWorkersWithOptions(ctx context.Context, driveID string, worker *preview.Worker, thumbWorker *preview.ThumbWorker, fingerprintWorker *fingerprint.Worker, cancel context.CancelFunc, enqueue bool) {
+	linkThumbnailHandOff(worker, thumbWorker)
 	gate := a.driveOperationGate(driveID)
 	backfillCtx := withDriveTaskAdmission(ctx, gate, gate.currentGeneration())
 	a.mu.Lock()
@@ -1978,16 +1972,16 @@ func (a *App) enqueueRegisteredDriveGenerationAndWait(ctx context.Context) error
 	return ctx.Err()
 }
 
+// enqueuePending admits every video of the drive whose media job is due:
+// a pending job for the signature, or a pending teaser while previews are
+// enabled.
 func (a *App) enqueuePending(ctx context.Context, driveID string, w *preview.Worker) {
-	if !a.previewEnabled() {
-		return
-	}
 	release, _, admitted := a.driveOperationGate(driveID).beginTask(ctx, driveTaskScopePreview)
 	if !admitted {
 		return
 	}
 	defer release()
-	pending, err := a.cat.ListVideosByPreviewStatus(ctx, driveID, "pending", 0)
+	pending, err := a.cat.ListVideosNeedingMedia(ctx, driveID, a.previewEnabled())
 	if err != nil {
 		log.Printf("[preview] list pending %s: %v", driveID, err)
 		return
@@ -1995,11 +1989,8 @@ func (a *App) enqueuePending(ctx context.Context, driveID string, w *preview.Wor
 	if len(pending) == 0 {
 		return
 	}
-	log.Printf("[preview] enqueue %d pending videos for drive=%s", len(pending), driveID)
+	log.Printf("[preview] enqueue %d pending media jobs for drive=%s", len(pending), driveID)
 	for _, v := range pending {
-		if !a.previewEnabled() {
-			return
-		}
 		if !w.EnqueueBlocking(ctx, v) {
 			log.Printf("[preview] enqueue pending canceled for drive=%s", driveID)
 			return
@@ -2010,14 +2001,14 @@ func (a *App) enqueuePending(ctx context.Context, driveID string, w *preview.Wor
 func (a *App) enqueueDriveGeneration(ctx context.Context, driveID string, worker *preview.Worker, thumbWorker *preview.ThumbWorker) {
 	finishEnqueue := a.beginDriveResourceEnqueue(driveID)
 	defer finishEnqueue()
-	// Thumbnail generation is independent of the global preview switch.
+	// Media jobs run whatever the preview switch; they also make the missing
+	// thumbnails of their videos.
+	if worker != nil {
+		a.enqueuePending(ctx, driveID, worker)
+	}
 	if thumbWorker != nil {
 		a.enqueueThumbnails(ctx, driveID, thumbWorker)
 	}
-	if worker == nil || !a.previewEnabled() {
-		return
-	}
-	a.enqueuePending(ctx, driveID, worker)
 }
 
 func (a *App) enqueueThumbnails(ctx context.Context, driveID string, w *preview.ThumbWorker) {
@@ -2026,7 +2017,7 @@ func (a *App) enqueueThumbnails(ctx context.Context, driveID string, w *preview.
 		return
 	}
 	defer release()
-	pending, err := a.cat.ListVideosNeedingThumbnail(ctx, driveID, 0)
+	pending, err := a.thumbnailsWithoutMediaJob(ctx, driveID)
 	if err != nil {
 		log.Printf("[thumb] list pending %s: %v", driveID, err)
 		return

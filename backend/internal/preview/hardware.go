@@ -175,7 +175,7 @@ func (h *Hardware) probeCandidates(ctx context.Context, candidates []*hardwareBa
 		link := &drives.StreamLink{URL: source}
 		err := gen.generateThumbnailAtOffset(probeCtx, link, filepath.Join(dir, "cover.jpg"), 0, &sourceColorRepair{})
 		if err == nil {
-			_, err = gen.generateSingleSegment(probeCtx, 0, 0, 0.4, true, link, &sourceColorRepair{})
+			_, _, err = gen.generateSingleSegment(probeCtx, 0, 0, 0.4, true, true, link, &sourceColorRepair{})
 		}
 		cancel()
 		if err == nil {
@@ -249,6 +249,18 @@ func (g *Generator) segmentFilter(fade bool, duration float64) string {
 		filter = g.hardware.downloadFilter(g.cfg.Width) + "," + filter + "," + g.hardware.encoderInputFilter()
 	}
 	return filter
+}
+
+// segmentThumbnailGraph decodes a segment once into the encoded segment and a
+// thumbnail taken from its middle, before any fade.
+func (g *Generator) segmentThumbnailGraph(fade bool, eachSec float64) string {
+	decode, encoderInput := "", ""
+	if g.hardware != nil {
+		decode = g.hardware.downloadFilter(g.cfg.Width) + ","
+		encoderInput = "," + g.hardware.encoderInputFilter()
+	}
+	return fmt.Sprintf("[0:v:0]%ssplit=2[s][t];[s]%s%s[segment];[t]trim=start=%.3f,setpts=PTS-STARTPTS,%s[thumb]",
+		decode, teaserSegmentVideoFilter(g.cfg.Width, fade, eachSec), encoderInput, eachSec/2, thumbnailVideoFilter(g.cfg.Width))
 }
 
 func (g *Generator) encoderOptions() []string {

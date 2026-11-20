@@ -392,8 +392,9 @@ func TestReconcileLocalGeneratedAssetsAdmitsRepairedWorkBeforeReturning(t *testi
 			stored.PreviewLocal,
 		)
 	}
-	if got := thumbnailWorker.Status().QueueLength; got != 1 {
-		t.Fatalf("thumbnail queue length on return = %d, want admitted 1", got)
+	// The media job regenerates the teaser and the thumbnail together.
+	if got := thumbnailWorker.Status().QueueLength; got != 0 {
+		t.Fatalf("thumbnail queue length on return = %d, want 0", got)
 	}
 	if got := previewWorker.Status().QueueLength; got != 1 {
 		t.Fatalf("preview queue length on return = %d, want admitted 1", got)

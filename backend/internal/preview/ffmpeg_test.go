@@ -51,34 +51,34 @@ func TestNewDefaultsToThreeSecondTeaserSegments(t *testing.T) {
 	}
 }
 
-func TestMediumVideoPreviewPlanUsesFourThreeSecondSegments(t *testing.T) {
-	plan := buildTeaserPlan(Config{DurationSeconds: 3, Segments: 3}, 300)
-	if len(plan.starts) != 4 {
-		t.Fatalf("segments = %d, want 4", len(plan.starts))
-	}
-	if plan.eachSec != 3 {
-		t.Fatalf("eachSec = %.2f, want 3", plan.eachSec)
-	}
-	want := []float64{15, 95, 175, 255}
-	for i := range want {
-		if math.Abs(plan.starts[i]-want[i]) > 0.001 {
-			t.Fatalf("start[%d] = %.2f, want %.2f", i, plan.starts[i], want[i])
+func TestLongVideoPreviewPlanUsesFixedFractions(t *testing.T) {
+	for _, duration := range []float64{30, 300, 599, 601, 3600} {
+		plan := buildTeaserPlan(Config{DurationSeconds: 3, Segments: 3}, duration)
+		if len(plan.starts) != 4 || plan.eachSec != 3 {
+			t.Fatalf("duration %.0f: plan = %+v, want four 3-second segments", duration, plan)
+		}
+		for i, fraction := range longVideoSegmentFractions {
+			want := duration * fraction
+			if math.Abs(plan.starts[i]-want) > 0.001 {
+				t.Fatalf("duration %.0f: start[%d] = %.2f, want %.2f", duration, i, plan.starts[i], want)
+			}
+			if plan.starts[i]+plan.eachSec > duration-1 {
+				t.Fatalf("duration %.0f: segment %d ends too close to the end", duration, i)
+			}
 		}
 	}
 }
 
-func TestLongVideoPreviewPlanUsesFourThreeSecondSegments(t *testing.T) {
-	plan := buildTeaserPlan(Config{DurationSeconds: 15, Segments: 3}, 601)
-	if len(plan.starts) != 4 {
-		t.Fatalf("segments = %d, want 4", len(plan.starts))
-	}
-	if plan.eachSec != 3 {
-		t.Fatalf("eachSec = %.2f, want 3", plan.eachSec)
-	}
-	want := []float64{120.2, 240.4, 360.6, 480.8}
-	for i := range want {
-		if math.Abs(plan.starts[i]-want[i]) > 0.001 {
-			t.Fatalf("start[%d] = %.2f, want %.2f", i, plan.starts[i], want[i])
+func TestPreviewPlanIsContinuousInDuration(t *testing.T) {
+	// Copies within the duplicate duration tolerance must be sampled at
+	// nearly the same moments, including around former bucket boundaries.
+	for _, base := range []float64{120, 599, 600, 1800} {
+		left := buildTeaserPlan(Config{}, base)
+		right := buildTeaserPlan(Config{}, base+2)
+		for i := range left.starts {
+			if delta := math.Abs(left.starts[i] - right.starts[i]); delta > 2 {
+				t.Fatalf("duration %.0f vs %.0f: start[%d] differs by %.2fs", base, base+2, i, delta)
+			}
 		}
 	}
 }
@@ -914,7 +914,7 @@ func TestGenerateMediaWithLimitedFFmpegThreads(t *testing.T) {
 		if err := gen.generateThumbnailAtOffset(ctx, link, filepath.Join(dir, "cover.jpg"), 0, &sourceColorRepair{}); err != nil {
 			t.Fatalf("thumbnail threads=%d: %v", threads, err)
 		}
-		if _, err := gen.generateSingleSegment(ctx, 0, 0, 1, false, link, &sourceColorRepair{}); err != nil {
+		if _, _, err := gen.generateSingleSegment(ctx, 0, 0, 1, false, false, link, &sourceColorRepair{}); err != nil {
 			t.Fatalf("preview threads=%d: %v", threads, err)
 		}
 	}

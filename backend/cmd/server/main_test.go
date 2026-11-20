@@ -2022,9 +2022,11 @@ func TestFailedThumbnailsDoNotBlockPreviewGeneration(t *testing.T) {
 			t.Fatalf("get video: %v", err)
 		}
 		if got.PreviewStatus == "ready" {
+			// A ready preview grants the failed thumbnail one new attempt,
+			// which follows the preview.
 			events := gen.Events()
-			if len(events) != 1 || events[0] != "preview:"+video.ID {
-				t.Fatalf("events = %#v, want preview only", events)
+			if len(events) == 0 || events[0] != "preview:"+video.ID || len(events) > 2 {
+				t.Fatalf("events = %#v, want the preview first", events)
 			}
 			return
 		}
@@ -2156,6 +2158,7 @@ func TestEnqueueUploadedVideoQueuesLocalGenerationByDefault(t *testing.T) {
 	drv := &serverLocalUploadFakeDrive{}
 	worker := preview.NewWorker(gen, cat, drv)
 	thumbWorker := preview.NewThumbWorker(gen, cat, drv)
+	linkThumbnailHandOff(worker, thumbWorker)
 	go worker.Run(ctx)
 	go thumbWorker.Run(ctx)
 	app.mu.Lock()
@@ -2237,8 +2240,9 @@ func TestRestoreDeletedVideoQueuesDerivedAssetsAndInvalidatesTags(t *testing.T) 
 	if got := worker.Status().QueueLength; got != 1 {
 		t.Fatalf("preview queue length = %d, want 1", got)
 	}
-	if got := thumbWorker.Status().QueueLength; got != 1 {
-		t.Fatalf("thumbnail queue length = %d, want 1", got)
+	// The media job makes the missing thumbnail.
+	if got := thumbWorker.Status().QueueLength; got != 0 {
+		t.Fatalf("thumbnail queue length = %d, want 0", got)
 	}
 	if tagInvalidations != 1 {
 		t.Fatalf("tag cache invalidations = %d, want 1", tagInvalidations)
@@ -4573,9 +4577,19 @@ func (g *serverFakeTeaserGenerator) Probe(context.Context, *drives.StreamLink) (
 	return 30, nil
 }
 
-func (g *serverFakeTeaserGenerator) Generate(context.Context, *drives.StreamLink, float64) (preview.Teaser, error) {
+// Generate produces the teaser only: thumbnails stay with the thumbnail
+// worker so tests can observe both kinds of work.
+func (g *serverFakeTeaserGenerator) Generate(_ context.Context, _ *drives.StreamLink, _ float64, request preview.MediaRequest) (preview.Media, error) {
+	if !request.Teaser {
+		g.record("media")
+		return preview.Media{}, nil
+	}
 	g.record("preview")
-	return preview.Teaser{Path: "/tmp/source-teaser.mp4"}, nil
+	return preview.Media{TeaserPath: "/tmp/source-teaser.mp4"}, nil
+}
+
+func (g *serverFakeTeaserGenerator) MoveThumbnailToLocal(path string, _ string) (string, error) {
+	return path, nil
 }
 
 func (g *serverFakeTeaserGenerator) MoveToLocal(_ string, videoID string) (string, error) {
@@ -4885,5 +4899,20 @@ func seedGenerationDrive(t *testing.T, cat *catalog.Catalog, driveID string) {
 		RootID: "0",
 	}); err != nil {
 		t.Fatalf("seed drive: %v", err)
+	}
+}
+
+// markMediaDone settles the media jobs of seeded videos in tests about other
+// generation work, as if their signatures had been sampled.
+func markMediaDone(t *testing.T, cat *catalog.Catalog, ids ...string) {
+	t.Helper()
+	for _, id := range ids {
+		video, err := cat.GetVideo(context.Background(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cat.CompleteMediaForSource(context.Background(), video, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

@@ -44,10 +44,8 @@ type ImporterConfig struct {
 	Catalog                                              *catalog.Catalog
 	FingerprintLimiter                                   *tasklimit.Limiter
 	CrawlerName, FFmpegPath, FFprobePath, CommonThumbDir string
-	// PreviewEnabled reads the global preview switch; nil means enabled.
-	PreviewEnabled  func() bool
-	HTTPClient      *http.Client
-	DownloadTimeout time.Duration
+	HTTPClient                                           *http.Client
+	DownloadTimeout                                      time.Duration
 }
 type Importer struct {
 	cfg         ImporterConfig

@@ -7,7 +7,6 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -61,7 +60,7 @@ func seedSignedVideos(t *testing.T, cat *catalog.Catalog, localDir string, seeds
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := cat.SetVideoSignatureForSource(ctx, stored, seed.signature); err != nil {
+		if err := cat.CompleteMediaForSource(ctx, stored, seed.signature); err != nil {
 			t.Fatalf("signature %s: %v", video.ID, err)
 		}
 	}
@@ -165,41 +164,6 @@ func TestCleanupDuplicateVideoAssetsResolvesCanonicalAcrossChannels(t *testing.T
 	jobs, err := cat.ListDuplicateAssetCleanupJobs(ctx, 10)
 	if err != nil || len(jobs) != 0 {
 		t.Fatalf("asset cleanup jobs = %#v, err = %v", jobs, err)
-	}
-}
-
-func TestCleanupBackfillsSignaturesOnlyWhilePreviewsEnabled(t *testing.T) {
-	ctx := context.Background()
-	app, cat, localDir := openMaintenanceTestApp(t)
-	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
-	seedSignedVideos(t, cat, localDir, []signedVideo{
-		{video: &catalog.Video{ID: "video-a", DriveID: "115", FileID: "a", Title: "unrelated a", Size: 200, DurationSeconds: 600, PublishedAt: now, CreatedAt: now}},
-		{video: &catalog.Video{ID: "video-b", DriveID: "115", FileID: "b", Title: "unrelated b", Size: 100, DurationSeconds: 600, PublishedAt: now, CreatedAt: now.Add(time.Second)}},
-	})
-	var calls atomic.Int32
-	restore := signatureFromTeaser
-	signatureFromTeaser = func(context.Context, string, string, time.Duration, []mediasig.Window) (*mediasig.Signature, error) {
-		calls.Add(1)
-		return contentSignature(600, 5, 0), nil
-	}
-	t.Cleanup(func() { signatureFromTeaser = restore })
-
-	app.previewGate.Set(false)
-	if err := app.cleanupDuplicateVideoAssets(ctx); err != nil {
-		t.Fatalf("disabled maintenance: %v", err)
-	}
-	if calls.Load() != 0 {
-		t.Fatalf("disabled previews decoded %d teasers", calls.Load())
-	}
-	app.previewGate.Set(true)
-	if err := app.cleanupDuplicateVideoAssets(ctx); err != nil {
-		t.Fatalf("enabled maintenance: %v", err)
-	}
-	if calls.Load() != 2 {
-		t.Fatalf("decoded %d teasers, want both missing signatures", calls.Load())
-	}
-	if merged, err := cat.GetMergedVideo(ctx, "video-b"); err != nil || merged.CanonicalVideoID != "video-a" {
-		t.Fatalf("merge = %+v err = %v, want backfilled signatures matched", merged, err)
 	}
 }
 

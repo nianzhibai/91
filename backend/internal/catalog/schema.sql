@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS videos (
     preview_updated_at INTEGER DEFAULT 0,       -- preview-only revision; unrelated metadata must not invalidate teaser caches
     preview_status   TEXT DEFAULT 'pending',    -- pending / ready / failed / disabled
     content_signature BLOB,                     -- mediasig 感知签名；源文件内容变化时清空
+    media_status     TEXT DEFAULT 'pending',    -- 媒体任务（签名与预览）：pending / ready / failed / stale（待分批续期）
     views            INTEGER DEFAULT 0,
     last_viewed_at   INTEGER DEFAULT 0,
     favorites        INTEGER DEFAULT 0,

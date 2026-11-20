@@ -68,11 +68,11 @@ type finishingGenerator struct {
 	beforePreview func(context.Context) error
 }
 
-func (g *finishingGenerator) Generate(ctx context.Context, link *drives.StreamLink, duration float64) (preview.Teaser, error) {
+func (g *finishingGenerator) Generate(ctx context.Context, link *drives.StreamLink, duration float64, request preview.MediaRequest) (preview.Media, error) {
 	if err := g.beforePreview(ctx); err != nil {
-		return preview.Teaser{}, err
+		return preview.Media{}, err
 	}
-	return g.serverFakeTeaserGenerator.Generate(ctx, link, duration)
+	return g.serverFakeTeaserGenerator.Generate(ctx, link, duration, request)
 }
 func (g *finishingGenerator) MoveToLocal(_ string, id string) (string, error) {
 	path := filepath.Join(g.dir, id+".mp4")
@@ -148,6 +148,7 @@ send(c,"stopped")
 			gen := &finishingGenerator{dir: root}
 			worker := preview.NewWorker(gen, cat, source)
 			thumb := preview.NewThumbWorker(gen, cat, source)
+			linkThumbnailHandOff(worker, thumb)
 			app.workers = map[string]*preview.Worker{source.ID(): worker}
 			app.thumbWorkers = map[string]*preview.ThumbWorker{source.ID(): thumb}
 			app.cancels = map[string]context.CancelFunc{source.ID(): workerCancel}
@@ -351,6 +352,7 @@ print(json.dumps(dict(type="error", request_id=c["request_id"], scope="source", 
 			gen := &finishingGenerator{dir: root, beforePreview: func(ctx context.Context) error { return ctx.Err() }}
 			worker := preview.NewWorker(gen, cat, source)
 			thumb := preview.NewThumbWorker(gen, cat, source)
+			linkThumbnailHandOff(worker, thumb)
 			fp := fingerprint.NewWorker(cat, source, fingerprint.Config{})
 			app.workers = map[string]*preview.Worker{source.ID(): worker}
 			app.thumbWorkers = map[string]*preview.ThumbWorker{source.ID(): thumb}

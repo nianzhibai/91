@@ -38,7 +38,6 @@ func ThumbnailAssetPathCandidates(localDir, videoID string) []string {
 	return append(paths, ShortsBackgroundPath(localDir, videoID))
 }
 
-
 func PreviewFilename(videoID string) string {
 	return safeFilename(videoID, ".mp4")
 }

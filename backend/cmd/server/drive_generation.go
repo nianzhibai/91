@@ -45,11 +45,19 @@ func (a *App) driveGenerationWork(driveID string, kind api.DriveGenerationKind) 
 	case api.DriveGenerationThumbnails:
 		if thumbWorker != nil {
 			return driveGenerationWork{
-				busy: previewTaskBusy(thumbWorker.Status()), kinds: catalog.GenerationKinds{Thumbnails: true},
+				busy:  previewTaskBusy(thumbWorker.Status()) || (previewWorker != nil && previewTaskBusy(previewWorker.Status())),
+				kinds: catalog.GenerationKinds{Thumbnails: true},
 				load: func(ctx context.Context) ([]*catalog.Video, error) {
 					return a.cat.ListVideosNeedingThumbnail(ctx, driveID, 0)
 				},
-				enqueue: thumbWorker.EnqueueBlocking,
+				// A due media job makes the thumbnail from the segments it
+				// reads anyway; only the rest need the thumbnail worker.
+				enqueue: func(ctx context.Context, video *catalog.Video) bool {
+					if previewWorker != nil && video.MediaWants(a.previewEnabled()).Any() {
+						return previewWorker.EnqueueBlocking(ctx, video)
+					}
+					return thumbWorker.EnqueueBlocking(ctx, video)
+				},
 			}, nil
 		}
 	case api.DriveGenerationPreviews:
@@ -60,7 +68,7 @@ func (a *App) driveGenerationWork(driveID string, kind api.DriveGenerationKind) 
 			return driveGenerationWork{
 				busy: previewTaskBusy(previewWorker.Status()), kinds: catalog.GenerationKinds{Previews: true},
 				load: func(ctx context.Context) ([]*catalog.Video, error) {
-					return a.cat.ListVideosByPreviewStatus(ctx, driveID, "pending", 0)
+					return a.cat.ListVideosNeedingMedia(ctx, driveID, true)
 				},
 				enqueue: previewWorker.EnqueueBlocking,
 			}, nil

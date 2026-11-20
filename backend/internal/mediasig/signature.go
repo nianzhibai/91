@@ -58,11 +58,12 @@ func (s *Signature) InformativeFrames() int {
 	return n
 }
 
-// SignatureFormat is the first byte of every encoded signature and versions
-// the encoding. Bump it when the sampling or
+// SignatureFormat is the first byte of every encoded signature. It versions
+// the encoding and the sampling positions: format 2 samples the fixed
+// fractions of preview.longVideoSegmentFractions. Bump it when the sampling or
 // hashing changes so that stored signatures of the old scheme are rejected
 // and recomputed instead of compared against incompatible ones.
-const SignatureFormat = 1
+const SignatureFormat = 2
 
 // MarshalBinary encodes the signature compactly for storage: about 13 bytes
 // per frame.

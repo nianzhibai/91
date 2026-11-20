@@ -70,23 +70,35 @@ type ThumbnailGenerator interface {
 	GenerateThumbnail(ctx context.Context, link *drives.StreamLink, videoID string, duration float64) (string, error)
 }
 
-// Teaser is a generated teaser file and the perceptual signature sampled from
-// the source windows it shows.
-type Teaser struct {
-	Path string
+// MediaRequest selects what a media job produces besides the perceptual
+// signature, which is always sampled from the segments.
+type MediaRequest struct {
+	Teaser    bool
+	Thumbnail bool
+}
+
+// Media is the result of one pass over a video's teaser segments. Paths are
+// temporary files the caller moves into place; each is empty when it was not
+// requested or could not be produced.
+type Media struct {
+	TeaserPath    string
+	ThumbnailPath string
 	// Signature is nil when the windows could not be sampled or the source is
-	// too short to compare. The teaser is usable either way.
+	// too short to compare.
 	Signature *mediasig.Signature
 }
 
-type TeaserGenerator interface {
+// MediaGenerator produces a video's teaser, thumbnail and signature from one
+// set of segment reads.
+type MediaGenerator interface {
 	Probe(ctx context.Context, link *drives.StreamLink) (float64, error)
-	Generate(ctx context.Context, link *drives.StreamLink, duration float64) (Teaser, error)
+	Generate(ctx context.Context, link *drives.StreamLink, duration float64, request MediaRequest) (Media, error)
 	MoveToLocal(tmpPath, videoID string) (string, error)
+	MoveThumbnailToLocal(tmpPath, videoID string) (string, error)
 }
 
-type refreshingTeaserGenerator interface {
-	GenerateWithLinkRefresh(ctx context.Context, first *drives.StreamLink, duration float64, refreshAfterFailure func(context.Context) (*drives.StreamLink, error)) (Teaser, error)
+type refreshingMediaGenerator interface {
+	GenerateWithLinkRefresh(ctx context.Context, first *drives.StreamLink, duration float64, request MediaRequest, refreshAfterFailure func(context.Context) (*drives.StreamLink, error)) (Media, error)
 }
 
 func New(cfg Config) *Generator {
@@ -148,12 +160,18 @@ func buildTeaserPlan(cfg Config, duration float64) teaserPlan {
 	}
 }
 
+// longVideoSegmentFractions place the four segments of a video at least 30
+// seconds long. The positions are fixed fractions of the duration, so videos
+// of nearly equal duration are sampled at nearly the same moments: the
+// perceptual signatures of re-encoded copies depend on it. Changing them
+// requires renewing every stored signature (bump mediasig.SignatureFormat).
+var longVideoSegmentFractions = []float64{0.15, 0.38, 0.62, 0.85}
+
 // pickSegmentStarts 根据视频总时长选出 N 段起点秒数（按时间升序）
 //
 // 规则：
-//   - duration < 30s → 最多 3 段；不足 3 秒时用完整短视频作为单段
-//   - 30s ≤ duration < 10min → 4 段：前段跳过片头、末段避开片尾
-//   - duration ≥ 10min → 固定 4 段，按 20% ~ 80% 等距分布
+//   - duration < 30s → 最多 3 段，从 10% 起；不足 3 秒时用完整短视频作为单段
+//   - duration ≥ 30s → 固定 4 段，起点在时长的 15% / 38% / 62% / 85%
 func pickSegmentStarts(duration float64, n int, eachSec float64) []float64 {
 	if n <= 0 {
 		n = 1
@@ -184,57 +202,10 @@ func pickSegmentStarts(duration float64, n int, eachSec float64) []float64 {
 	}
 
 	// 余量：保证最后一段结束前留 1 秒，避免切到文件末尾
-	usable := duration - eachSec - 1
-	if usable < 0 {
-		usable = 0
-	}
-
-	if duration < 600 {
-		// 30s ~ 10min：20% 起，均匀分段
-		starts := make([]float64, 0, n)
-		// 保证第一段跳过片头（>= 5% 或 3s）
-		firstMin := math.Max(3, duration*0.05)
-		// 最后一段结束 <= 85%，避开结尾
-		lastMax := duration * 0.85
-		if lastMax < firstMin {
-			lastMax = firstMin
-		}
-		if n == 1 {
-			return []float64{duration * 0.25}
-		}
-		step := (lastMax - firstMin) / float64(n-1)
-		for i := 0; i < n; i++ {
-			s := firstMin + step*float64(i)
-			if s > usable {
-				s = usable
-			}
-			starts = append(starts, s)
-		}
-		return starts
-	}
-
-	// 长视频：按 20% / 50% / 80% 布置
-	if n == 1 {
-		return []float64{duration * 0.3}
-	}
-	starts := make([]float64, 0, n)
-	pct := make([]float64, 0, n)
-	// 均匀在 [0.2, 0.8] 区间取 N 个点
-	lo, hi := 0.2, 0.8
-	if n == 1 {
-		pct = append(pct, 0.3)
-	} else {
-		step := (hi - lo) / float64(n-1)
-		for i := 0; i < n; i++ {
-			pct = append(pct, lo+step*float64(i))
-		}
-	}
-	for _, p := range pct {
-		s := duration * p
-		if s > usable {
-			s = usable
-		}
-		starts = append(starts, s)
+	usable := math.Max(0, duration-eachSec-1)
+	starts := make([]float64, 0, len(longVideoSegmentFractions))
+	for _, fraction := range longVideoSegmentFractions {
+		starts = append(starts, math.Min(duration*fraction, usable))
 	}
 	return starts
 }
@@ -575,19 +546,19 @@ func preferredSourceDuration(probe localMediaProbe) float64 {
 
 // --- 预览视频 ---
 
-// Generate 拉取预览视频到本地临时文件，并从各段采样感知签名。
-// 根据 Config.Segments 和视频时长决定是单段还是多段拼接。
-func (g *Generator) Generate(ctx context.Context, link *drives.StreamLink, duration float64) (Teaser, error) {
-	return g.GenerateWithLinkRefresh(ctx, link, duration, nil)
+// Generate reads the teaser segments of a video once and produces the
+// requested teaser and thumbnail together with the perceptual signature.
+func (g *Generator) Generate(ctx context.Context, link *drives.StreamLink, duration float64, request MediaRequest) (Media, error) {
+	return g.GenerateWithLinkRefresh(ctx, link, duration, request, nil)
 }
 
-func (g *Generator) GenerateWithLinkRefresh(ctx context.Context, first *drives.StreamLink, duration float64, refreshAfterFailure func(context.Context) (*drives.StreamLink, error)) (Teaser, error) {
+func (g *Generator) GenerateWithLinkRefresh(ctx context.Context, first *drives.StreamLink, duration float64, request MediaRequest, refreshAfterFailure func(context.Context) (*drives.StreamLink, error)) (Media, error) {
 	task := g.forTask()
-	teaser, err := task.generateSerialWithRefresh(ctx, duration, first, refreshAfterFailure)
+	media, err := task.generateSerialWithRefresh(ctx, duration, request, first, refreshAfterFailure)
 	if task.fallbackToCPU(ctx, err) {
-		teaser, err = task.generateSerialWithRefresh(ctx, duration, first, refreshAfterFailure)
+		media, err = task.generateSerialWithRefresh(ctx, duration, request, first, refreshAfterFailure)
 	}
-	return teaser, mediaInputError(ctx, err)
+	return media, mediaInputError(ctx, err)
 }
 
 type teaserSegmentCandidate struct {
@@ -597,8 +568,9 @@ type teaserSegmentCandidate struct {
 
 type teaserSegmentResult struct {
 	teaserSegmentCandidate
-	path string
-	err  error
+	path      string
+	thumbnail string
+	err       error
 }
 
 // generateSerialWithRefresh generates at most one teaser segment at a time.
@@ -608,33 +580,44 @@ type teaserSegmentResult struct {
 func (g *Generator) generateSerialWithRefresh(
 	ctx context.Context,
 	duration float64,
+	request MediaRequest,
 	initialLink *drives.StreamLink,
 	refreshAfterFailure func(context.Context) (*drives.StreamLink, error),
-) (Teaser, error) {
+) (Media, error) {
 	if err := os.MkdirAll(g.cfg.LocalDir, 0o755); err != nil {
-		return Teaser{}, err
+		return Media{}, err
 	}
 
 	plan := buildTeaserPlan(g.cfg, duration)
 	starts := plan.starts
 	eachSec := plan.eachSec
 	if len(starts) == 0 {
-		return Teaser{}, fmt.Errorf("video too short for %.0fs teaser segment", eachSec)
+		return Media{}, fmt.Errorf("video too short for %.0fs teaser segment", eachSec)
 	}
 
 	segmentCtx, cancelSegments := context.WithTimeout(ctx, g.segmentBudget)
 	defer cancelSegments()
 
-	generatedPaths := make([]string, 0, len(starts))
-	success := false
+	// Segment files never outlive the job; the teaser and thumbnail returned
+	// to the caller are removed from this list once they are handed over.
+	generatedPaths := make([]string, 0, len(starts)+1)
 	defer func() {
-		if success {
-			return
-		}
 		for _, p := range generatedPaths {
 			_ = os.Remove(p)
 		}
 	}()
+	keep := func(path string) {
+		for i, p := range generatedPaths {
+			if p == path {
+				generatedPaths = append(generatedPaths[:i], generatedPaths[i+1:]...)
+				return
+			}
+		}
+	}
+	thumbnailIndex := -1
+	if request.Thumbnail {
+		thumbnailIndex = middleSegment(duration, starts, eachSec)
+	}
 
 	candidates := teaserCandidateStarts(duration, starts, eachSec)
 	targetSegments := len(starts)
@@ -648,7 +631,7 @@ func (g *Generator) generateSerialWithRefresh(
 segmentLoop:
 	for nextCandidate < len(candidates) && len(segmentResults) < targetSegments {
 		if err := ctx.Err(); err != nil {
-			return Teaser{}, err
+			return Media{}, err
 		}
 		if segmentCtx.Err() != nil {
 			break
@@ -660,20 +643,22 @@ segmentLoop:
 		nextCandidate++
 
 		result := teaserSegmentResult{teaserSegmentCandidate: candidate}
-		result.path, result.err = g.generateSingleSegment(
+		withThumbnail := candidate.index == thumbnailIndex
+		result.path, result.thumbnail, result.err = g.generateSingleSegment(
 			segmentCtx,
 			candidate.index,
 			candidate.start,
 			eachSec,
 			fadeSegments,
+			withThumbnail,
 			currentLink,
 			&colorRepair,
 		)
 		if err := ctx.Err(); err != nil && result.err != nil {
-			return Teaser{}, err
+			return Media{}, err
 		}
 		if g.hardware != nil && hardwareFailure(result.err) {
-			return Teaser{}, result.err
+			return Media{}, result.err
 		}
 		if segmentCtx.Err() == nil && refreshAfterFailure != nil && directMediaLinkRefreshAllowed(result.err) {
 			refreshed, refreshErr := refreshAfterFailure(segmentCtx)
@@ -683,12 +668,13 @@ segmentLoop:
 			switch {
 			case refreshErr == nil:
 				currentLink = refreshed
-				result.path, result.err = g.generateSingleSegment(
+				result.path, result.thumbnail, result.err = g.generateSingleSegment(
 					segmentCtx,
 					candidate.index,
 					candidate.start,
 					eachSec,
 					fadeSegments,
+					withThumbnail,
 					currentLink,
 					&colorRepair,
 				)
@@ -697,25 +683,28 @@ segmentLoop:
 					lastErr = refreshErr
 					break segmentLoop
 				}
-				return Teaser{}, refreshErr
+				return Media{}, refreshErr
 			}
 		}
 
 		if result.err != nil {
 			if g.hardware != nil && hardwareFailure(result.err) {
-				return Teaser{}, result.err
+				return Media{}, result.err
 			}
 			if !teaserSegmentFallbackAllowed(result.err) {
-				return Teaser{}, result.err
+				return Media{}, result.err
 			}
 			lastErr = result.err
 			continue
 		}
 		generatedPaths = append(generatedPaths, result.path)
+		if result.thumbnail != "" {
+			generatedPaths = append(generatedPaths, result.thumbnail)
+		}
 		segmentResults = append(segmentResults, result)
 	}
 	if err := ctx.Err(); err != nil {
-		return Teaser{}, err
+		return Media{}, err
 	}
 	if err := segmentCtx.Err(); err != nil && len(segmentResults) < targetSegments {
 		lastErr = fmt.Errorf("teaser segment budget exhausted: %w", err)
@@ -727,9 +716,9 @@ segmentLoop:
 		degradedRequired := requiredTeaserSegments(duration, targetSegments, true)
 		if lastErr == nil || len(segmentResults) < degradedRequired {
 			if lastErr != nil {
-				return Teaser{}, fmt.Errorf("only generated %d/%d teaser segments: %w", len(segmentResults), targetSegments, lastErr)
+				return Media{}, fmt.Errorf("only generated %d/%d teaser segments: %w", len(segmentResults), targetSegments, lastErr)
 			}
-			return Teaser{}, fmt.Errorf("only generated %d/%d teaser segments", len(segmentResults), targetSegments)
+			return Media{}, fmt.Errorf("only generated %d/%d teaser segments", len(segmentResults), targetSegments)
 		}
 		applog.Warn(ctx, fmt.Sprintf("[preview] degraded teaser accepted segments=%d/%d duration=%.1fs",
 			len(segmentResults), targetSegments, duration), lastErr, applog.Fields{Component: "preview", Stage: "segments"})
@@ -748,11 +737,21 @@ segmentLoop:
 	for i, result := range segmentResults {
 		segmentPaths[i] = result.path
 	}
-	signature := g.sampleSignature(ctx, duration, segmentResults, eachSec)
+	media := Media{Signature: g.sampleSignature(ctx, duration, segmentResults, eachSec)}
+	for _, result := range segmentResults {
+		if result.thumbnail != "" {
+			media.ThumbnailPath = result.thumbnail
+			keep(result.thumbnail)
+		}
+	}
+	if !request.Teaser {
+		return media, nil
+	}
 
 	if len(segmentPaths) == 1 {
-		success = true
-		return Teaser{Path: segmentPaths[0], Signature: signature}, nil
+		media.TeaserPath = segmentPaths[0]
+		keep(media.TeaserPath)
+		return media, nil
 	}
 
 	// Finishing uses only local files and gets its own budget. Derive it from
@@ -763,7 +762,7 @@ segmentLoop:
 
 	tmp, err := os.CreateTemp(g.cfg.LocalDir, "teaser-*.mp4")
 	if err != nil {
-		return Teaser{}, err
+		return Media{}, err
 	}
 	tmpPath := tmp.Name()
 	tmp.Close()
@@ -771,19 +770,19 @@ segmentLoop:
 
 	list, err := os.CreateTemp(g.cfg.LocalDir, "teaser-concat-*.txt")
 	if err != nil {
-		return Teaser{}, err
+		return Media{}, err
 	}
 	listPath := list.Name()
 	for _, p := range segmentPaths {
 		if _, err := fmt.Fprintf(list, "file '%s'\n", escapeConcatPath(p)); err != nil {
 			list.Close()
 			_ = os.Remove(listPath)
-			return Teaser{}, err
+			return Media{}, err
 		}
 	}
 	if err := list.Close(); err != nil {
 		_ = os.Remove(listPath)
-		return Teaser{}, err
+		return Media{}, err
 	}
 	defer os.Remove(listPath)
 
@@ -803,22 +802,31 @@ segmentLoop:
 		if finishCtx.Err() != nil {
 			err = finishCtx.Err()
 		}
-		return Teaser{}, ffmpegCommandError("ffmpeg concat", err, out)
+		return Media{}, ffmpegCommandError("ffmpeg concat", err, out)
 	}
 	if info, statErr := os.Stat(tmpPath); statErr != nil || info.Size() == 0 {
 		_ = os.Remove(tmpPath)
-		return Teaser{}, fmt.Errorf("ffmpeg concat produced empty file, stderr: %s", string(out))
+		return Media{}, fmt.Errorf("ffmpeg concat produced empty file, stderr: %s", string(out))
 	}
 	if err := g.validateGeneratedTeaser(finishCtx, tmpPath); err != nil {
 		_ = os.Remove(tmpPath)
-		return Teaser{}, err
+		return Media{}, err
 	}
 
-	for _, p := range segmentPaths {
-		_ = os.Remove(p)
+	media.TeaserPath = tmpPath
+	return media, nil
+}
+
+// middleSegment returns the index of the planned segment closest to the
+// middle of the video, which supplies the thumbnail.
+func middleSegment(duration float64, starts []float64, eachSec float64) int {
+	best := -1
+	for i, start := range starts {
+		if best < 0 || math.Abs(start+eachSec/2-duration/2) < math.Abs(starts[best]+eachSec/2-duration/2) {
+			best = i
+		}
 	}
-	success = true
-	return Teaser{Path: tmpPath, Signature: signature}, nil
+	return best
 }
 
 // sampleSignature samples the generated segments at the source windows they
@@ -866,24 +874,36 @@ func requiredTeaserSegments(duration float64, targetSegments int, degraded bool)
 	return targetSegments
 }
 
-func (g *Generator) generateSingleSegment(ctx context.Context, index int, start, eachSec float64, fade bool, link *drives.StreamLink, colorRepair *sourceColorRepair) (string, error) {
+// generateSingleSegment encodes one teaser segment. withThumbnail also writes
+// a thumbnail from the middle of the segment in the same read; a thumbnail
+// that could not be written is returned empty without failing the segment.
+func (g *Generator) generateSingleSegment(ctx context.Context, index int, start, eachSec float64, fade, withThumbnail bool, link *drives.StreamLink, colorRepair *sourceColorRepair) (string, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, teaserSegmentTimeout)
 	defer cancel()
 
 	ffmpegLink, cleanup, err := prepareFFmpegLink(ctx, link)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer cleanup()
 
-	seg, err := os.CreateTemp(g.cfg.LocalDir, fmt.Sprintf("teaser-seg-%d-*.mp4", index))
+	segPath, err := reserveTemp(g.cfg.LocalDir, fmt.Sprintf("teaser-seg-%d-*.mp4", index))
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	segPath := seg.Name()
-	seg.Close()
-
-	filter := g.segmentFilter(fade, eachSec)
+	thumbPath := ""
+	if withThumbnail {
+		if thumbPath, err = reserveTemp(g.cfg.LocalDir, fmt.Sprintf("thumb-seg-%d-*.jpg", index)); err != nil {
+			_ = os.Remove(segPath)
+			return "", "", err
+		}
+	}
+	removeOutputs := func() {
+		_ = os.Remove(segPath)
+		if thumbPath != "" {
+			_ = os.Remove(thumbPath)
+		}
+	}
 
 	args := []string{
 		"-hide_banner",
@@ -897,11 +917,18 @@ func (g *Generator) generateSingleSegment(ctx context.Context, index int, start,
 		"-t", fmt.Sprintf("%.2f", eachSec),
 	)
 	args = append(args, g.hardware.inputOptions()...)
-	outputArgs := []string{
-		"-threads", strconv.Itoa(g.cfg.FFmpegThreads),
-		"-an",
-		"-vf", filter,
+	outputArgs := []string{"-threads", strconv.Itoa(g.cfg.FFmpegThreads)}
+	if thumbPath != "" {
+		// The segment stays the last output, after the thumbnail.
+		outputArgs = append(outputArgs,
+			"-filter_complex", g.segmentThumbnailGraph(fade, eachSec),
+			"-map", "[thumb]", "-frames:v", "1", "-q:v", "3", "-y", thumbPath,
+			"-map", "[segment]",
+		)
+	} else {
+		outputArgs = append(outputArgs, "-vf", g.segmentFilter(fade, eachSec))
 	}
+	outputArgs = append(outputArgs, "-an")
 	outputArgs = append(outputArgs, g.encoderOptions()...)
 	outputArgs = append(outputArgs,
 		"-movflags", "+faststart",
@@ -909,18 +936,38 @@ func (g *Generator) generateSingleSegment(ctx context.Context, index int, start,
 	)
 	out, err := g.runMediaCommand(ctx, link, ffmpegLink, args, outputArgs, colorRepair)
 	if err != nil {
-		_ = os.Remove(segPath)
-		return "", g.processingError(ffmpegCommandError("ffmpeg segment", err, out))
+		removeOutputs()
+		return "", "", g.processingError(ffmpegCommandError("ffmpeg segment", err, out))
 	}
 	if info, statErr := os.Stat(segPath); statErr != nil || info.Size() == 0 {
-		_ = os.Remove(segPath)
-		return "", g.processingError(fmt.Errorf("ffmpeg segment produced empty file, stderr: %s", string(out)))
+		removeOutputs()
+		return "", "", g.processingError(fmt.Errorf("ffmpeg segment produced empty file, stderr: %s", string(out)))
 	}
 	if err := g.validateGeneratedTeaser(ctx, segPath); err != nil {
-		_ = os.Remove(segPath)
-		return "", g.processingError(err)
+		removeOutputs()
+		return "", "", g.processingError(err)
 	}
-	return segPath, nil
+	if thumbPath != "" {
+		if info, statErr := os.Stat(thumbPath); statErr != nil || info.Size() == 0 {
+			_ = os.Remove(thumbPath)
+			thumbPath = ""
+		}
+	}
+	return segPath, thumbPath, nil
+}
+
+// reserveTemp returns the name of a new empty file in dir.
+func reserveTemp(dir, pattern string) (string, error) {
+	file, err := os.CreateTemp(dir, pattern)
+	if err != nil {
+		return "", err
+	}
+	name := file.Name()
+	if err := file.Close(); err != nil {
+		_ = os.Remove(name)
+		return "", err
+	}
+	return name, nil
 }
 
 func teaserSegmentFallbackAllowed(err error) bool {
@@ -1193,6 +1240,19 @@ func ffmpegOutputLooksRateLimited(output []byte) bool {
 
 // --- 本地落盘 ---
 
+// MoveThumbnailToLocal moves a generated thumbnail to the video's thumbnail
+// path and returns it.
+func (g *Generator) MoveThumbnailToLocal(tmpPath, videoID string) (string, error) {
+	dst := mediaasset.ThumbnailPath(g.cfg.LocalDir, videoID)
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return "", err
+	}
+	if err := replaceFile(tmpPath, dst); err != nil {
+		return "", err
+	}
+	return dst, nil
+}
+
 // MoveToLocal 把临时文件改名到稳定位置，返回最终路径
 func (g *Generator) MoveToLocal(tmpPath, videoID string) (string, error) {
 	if err := os.MkdirAll(g.cfg.LocalDir, 0o755); err != nil {
@@ -1244,16 +1304,18 @@ func copyFile(src, dst string) error {
 
 // --- Worker ---
 
+// Worker runs a drive's media jobs: each reads a video's teaser segments once
+// for the signature, the teaser and a missing thumbnail.
 type Worker struct {
-	Gen     TeaserGenerator
+	Gen     MediaGenerator
 	Catalog *catalog.Catalog
 	Drive   drives.Drive
-	// Gate is the shared preview switch, checked at admission. Disabling it
-	// cancels this worker's running tasks; nil enables standalone workers.
+	// Gate is the shared preview switch. Jobs run either way; it decides
+	// whether they produce teasers. Nil enables standalone workers.
 	Gate *Gate
-	// OnPreviewReady lets the application schedule dependent local-asset work
-	// without coupling this worker to a concrete thumbnail worker.
-	OnPreviewReady func(*catalog.Video)
+	// OnThumbnailMissing receives videos a job left without a thumbnail, so
+	// the application can hand them to the thumbnail worker.
+	OnThumbnailMissing func(*catalog.Video)
 	// OnStatusChanged runs after a queue, activity or cooldown transition.
 	OnStatusChanged func(bool)
 	// TaskGuard holds application-level task admission for the complete provider
@@ -1273,7 +1335,7 @@ type Worker struct {
 	activities taskActivities
 }
 
-func NewWorker(gen TeaserGenerator, cat *catalog.Catalog, drv drives.Drive) *Worker {
+func NewWorker(gen MediaGenerator, cat *catalog.Catalog, drv drives.Drive) *Worker {
 	return &Worker{
 		Gen:     gen,
 		Catalog: cat,
@@ -1288,7 +1350,7 @@ func NewWorker(gen TeaserGenerator, cat *catalog.Catalog, drv drives.Drive) *Wor
 
 func (w *Worker) Enqueue(v *catalog.Video) bool {
 	defer w.notifyStatus(false)
-	if v == nil || !w.enabled() {
+	if v == nil {
 		return false
 	}
 	if !w.queue.reserve(v) {
@@ -1305,7 +1367,7 @@ func (w *Worker) Enqueue(v *catalog.Video) bool {
 
 func (w *Worker) EnqueueBlocking(ctx context.Context, v *catalog.Video) bool {
 	defer w.notifyStatus(false)
-	if v == nil || !w.enabled() {
+	if v == nil {
 		return false
 	}
 	if !w.queue.reserve(v) {
@@ -1759,51 +1821,28 @@ func (w *Worker) processQueued(ctx context.Context, v *catalog.Video) {
 
 // prepareQueued waits in the dispatcher and transfers admission/resource
 // ownership to the returned task. No processing goroutine exists before this
-// succeeds, even when a drive has thousands of queued videos. The gate cancels
-// the task, from slot waiting through generation, when previews are disabled.
-//
-// A video the gate stopped is admitted again in place when the switch has been
-// re-enabled meanwhile, because the resume scan may have seen its reservation
-// and skipped it. The dispatcher already holds the video, so this needs no
-// queue space; the dispatcher cannot block on its own queue.
+// succeeds, even when a drive has thousands of queued videos. Without a task
+// the queue reservation is released.
 func (w *Worker) prepareQueued(ctx context.Context, v *catalog.Video) func() {
 	if v == nil {
 		return nil
-	}
-	for {
-		run, gated := w.admitQueued(ctx, v)
-		if run != nil || !gated || ctx.Err() != nil || !w.enabled() || !w.queue.reserve(v) {
-			return run
-		}
-	}
-}
-
-// admitQueued makes one admission attempt. Without a task it has released the
-// reservation, and gated reports whether the gate stopped the attempt.
-func (w *Worker) admitQueued(ctx context.Context, v *catalog.Video) (run func(), gated bool) {
-	taskCtx, stopTask, admitted := w.Gate.admit(ctx)
-	if !admitted {
-		w.releaseQueued(v)
-		return nil, true
 	}
 	prepared := false
 	taskRelease := func() {}
 	defer func() {
 		if !prepared {
-			gated = taskCtx.Err() != nil && ctx.Err() == nil
 			taskRelease()
-			stopTask()
 			w.releaseQueued(v)
 		}
 	}()
-	if w.Catalog == nil || v.ID == "" || taskCtx.Err() != nil {
-		return nil, false
+	if w.Catalog == nil || v.ID == "" || ctx.Err() != nil {
+		return nil
 	}
-	taskCtx = applog.WithFields(applog.NewTask(taskCtx, "preview", generationDriveID(w.Drive)), applog.Fields{VideoID: v.ID, FileID: v.FileID})
+	taskCtx := applog.WithFields(applog.NewTask(ctx, "preview", generationDriveID(w.Drive)), applog.Fields{VideoID: v.ID, FileID: v.FileID})
 	if w.TaskGuard != nil {
 		release := w.TaskGuard()
 		if release == nil {
-			return nil, false
+			return nil
 		}
 		taskRelease = release
 	}
@@ -1812,30 +1851,22 @@ func (w *Worker) admitQueued(ctx context.Context, v *catalog.Video) (run func(),
 		if taskCtx.Err() == nil {
 			applog.Error(taskCtx, "Read queued video failed", err, applog.Fields{Stage: "lookup"})
 		}
-		return nil, false
+		return nil
 	}
 	if current.Hidden || current.DriveID != generationDriveID(w.Drive) {
-		return nil, false
+		return nil
 	}
 	release, err := w.Limiter.AcquireAfter(taskCtx, w.Cooldown)
 	if err != nil {
-		return nil, false
+		return nil
 	}
 	prepared = true
 	return func() {
-		defer stopTask()
 		defer taskRelease()
 		defer release()
-		// A task the gate stopped before it started is retried like an
-		// interrupted one. The task goroutine may block on the queue, and
-		// admission refuses the retry while the switch stays off.
-		retry := true
-		if taskCtx.Err() == nil {
-			w.activities.start(current)
-			w.notifyStatus(true)
-			defer func() { w.activities.done(current.ID); w.notifyStatus(true) }()
-			retry = w.process(taskCtx, current)
-		}
+		w.activities.start(current)
+		w.notifyStatus(true)
+		retry := w.process(taskCtx, current)
 		release()
 		// Release before requeueing because videoQueue deduplicates reserved
 		// IDs. Keep activity visible throughout the transition for admission.
@@ -1843,7 +1874,9 @@ func (w *Worker) admitQueued(ctx context.Context, v *catalog.Video) (run func(),
 		if retry && ctx.Err() == nil {
 			w.EnqueueBlocking(ctx, current)
 		}
-	}, false
+		w.activities.done(current.ID)
+		w.notifyStatus(true)
+	}
 }
 
 func (w *Worker) releaseQueued(v *catalog.Video) {
@@ -2111,12 +2144,18 @@ func (w *ThumbWorker) retryThumbnailWithFreshOriginal(ctx context.Context, v *ca
 	return w.generateThumbnailFromLink(ctx, v, refreshed, duration)
 }
 
-// process returns true when the current video must be retried after the shared
-// drive cooldown or an interruption. Permanent media errors transition to
-// failed and return false; successful work also returns false.
+// process runs the media job for v: one pass over the teaser segments yields
+// the perceptual signature, the teaser while previews are enabled, and a
+// missing thumbnail. It returns true when v must be retried after the shared
+// drive cooldown or an interruption; settled outcomes return false.
 func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
 	if w.skipIfRateLimited(v) {
 		return true
+	}
+	previews := w.enabled()
+	if !v.MediaWants(previews).Any() {
+		w.handOffThumbnail(v)
+		return false
 	}
 	// An interrupted task is neither a media failure nor a provider cooldown:
 	// the video stays pending and is retried once its context allows it.
@@ -2128,13 +2167,14 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
 		if w.pauseForRecoverableError(err, "streamURL", v.Title) {
 			return true
 		}
-		applog.Error(ctx, "Preview stream link failed: "+v.Title, err, applog.Fields{Component: "preview", DriveID: generationDriveID(w.Drive), VideoID: v.ID, FileID: v.FileID, Stage: "streamURL"})
-		w.Catalog.UpdatePreviewForSource(ctx, v, "", "failed")
+		applog.Error(ctx, "Media stream link failed: "+v.Title, err, w.logFields(v, "streamURL"))
+		w.failMedia(ctx, v, v.MediaWants(previews))
 		return false
 	}
-
 	defer input.Close()
-	// Metadata failures do not prevent generation with the unknown-duration plan.
+
+	// Metadata failures do not prevent a teaser with the unknown-duration
+	// plan, but a signature needs the duration.
 	duration, probeErr := input.probe(ctx, func(ctx context.Context, link *drives.StreamLink) (float64, error) {
 		return probeSourceDuration(ctx, w.Catalog, v, w.Gen, link)
 	})
@@ -2145,11 +2185,22 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
 		if w.pauseForRecoverableError(probeErr, "probe", v.Title) {
 			return true
 		}
-		applog.Error(ctx, "Preview duration probe failed: "+v.Title, probeErr, applog.Fields{Component: "preview", DriveID: generationDriveID(w.Drive), VideoID: v.ID, Stage: "probe"})
+		applog.Error(ctx, "Media duration probe failed: "+v.Title, probeErr, w.logFields(v, "probe"))
+	}
+	// The probe stores the duration on v, which decides the signature.
+	wants := v.MediaWants(previews)
+	if !wants.Any() {
+		// A pending job for a video too short to sample has nothing to do
+		// until previews are enabled.
+		if v.MediaStatus == "pending" {
+			_ = w.Catalog.CompleteMediaForSource(ctx, v, nil)
+		}
+		w.handOffThumbnail(v)
+		return false
 	}
 
-	// 2) 预览视频
-	teaser, err := w.generateTeaser(ctx, v, input, duration)
+	request := MediaRequest{Teaser: wants.Teaser, Thumbnail: v.ThumbnailURL == ""}
+	media, err := w.generateMedia(ctx, v, input, duration, request)
 	if err != nil {
 		if ctx.Err() != nil {
 			return true
@@ -2157,66 +2208,129 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
 		if w.pauseForRecoverableError(err, "generate", v.Title) {
 			return true
 		}
-		applog.Error(ctx, "Preview generation failed: "+v.Title, err, applog.Fields{Component: "preview", DriveID: generationDriveID(w.Drive), VideoID: v.ID, FileID: v.FileID, Stage: "generate"})
-		w.Catalog.UpdatePreviewForSource(ctx, v, "", "failed")
-		return false
-	}
-	// The teaser exists; saving it is cheaper than discarding finished work.
-	ctx = context.WithoutCancel(ctx)
-	persistence.RLock()
-	defer persistence.RUnlock()
-	local, err := w.Gen.MoveToLocal(teaser.Path, v.ID)
-	if err != nil {
-		applog.Error(ctx, "Preview file move failed: "+v.Title, err, applog.Fields{Component: "preview", DriveID: generationDriveID(w.Drive), VideoID: v.ID, Stage: "move"})
-		w.Catalog.UpdatePreviewForSource(ctx, v, "", "failed")
+		applog.Error(ctx, "Media generation failed: "+v.Title, err, w.logFields(v, "generate"))
+		w.failMedia(ctx, v, wants)
+		w.handOffThumbnail(v)
 		return false
 	}
 
+	// The outputs exist; saving them is cheaper than discarding finished work.
+	ctx = context.WithoutCancel(ctx)
+	persistence.RLock()
+	defer persistence.RUnlock()
+	if media.TeaserPath != "" {
+		w.saveTeaser(ctx, v, media.TeaserPath)
+	}
+	w.completeMedia(ctx, v, wants, duration, media.Signature)
+	if media.ThumbnailPath != "" {
+		w.saveThumbnail(ctx, v, media.ThumbnailPath)
+	}
+	w.handOffThumbnail(v)
+	applog.Info(ctx, fmt.Sprintf("Media ready: %s (duration=%.1fs teaser=%v sampled=%v thumbnail=%v)",
+		v.Title, duration, media.TeaserPath != "", media.Signature != nil, media.ThumbnailPath != ""),
+		applog.Fields{Component: "preview", DriveID: generationDriveID(w.Drive), VideoID: v.ID})
+	return false
+}
+
+func (w *Worker) logFields(v *catalog.Video, stage string) applog.Fields {
+	return applog.Fields{Component: "preview", DriveID: generationDriveID(w.Drive), VideoID: v.ID, FileID: v.FileID, Stage: stage}
+}
+
+// completeMedia records the job's signature. A long video whose segments
+// could not be sampled fails the job so a retry admits it again; a job that
+// only renewed the teaser keeps an existing signature when sampling failed.
+func (w *Worker) completeMedia(ctx context.Context, v *catalog.Video, wants catalog.MediaWants, duration float64, signature *mediasig.Signature) {
+	var err error
+	switch {
+	case signature != nil || (wants.Signature && secondsDuration(duration) < mediasig.MinDuration):
+		err = w.Catalog.CompleteMediaForSource(ctx, v, signature)
+	case wants.Signature:
+		err = w.Catalog.MarkMediaFailedForSource(ctx, v)
+	}
+	if err != nil {
+		applog.Warn(ctx, "Save media signature failed: "+v.Title, err, w.logFields(v, "signature"))
+	}
+}
+
+// failMedia settles a failed media job so the video is not queued again until
+// a retry resets it. A failed renewal keeps the teaser the video already has.
+func (w *Worker) failMedia(ctx context.Context, v *catalog.Video, wants catalog.MediaWants) {
+	if wants.Teaser && v.PreviewStatus != "ready" {
+		_ = w.Catalog.UpdatePreviewForSource(ctx, v, "", "failed")
+	}
+	if v.MediaStatus == "pending" {
+		_ = w.Catalog.MarkMediaFailedForSource(ctx, v)
+	}
+}
+
+func (w *Worker) saveTeaser(ctx context.Context, v *catalog.Video, path string) {
+	local, err := w.Gen.MoveToLocal(path, v.ID)
+	if err != nil {
+		_ = os.Remove(path)
+		applog.Error(ctx, "Preview file move failed: "+v.Title, err, w.logFields(v, "move"))
+		if v.PreviewStatus != "ready" {
+			_ = w.Catalog.UpdatePreviewForSource(ctx, v, "", "failed")
+		}
+		return
+	}
 	reference := filepath.Base(local)
 	if err := w.Catalog.UpdatePreviewForSource(ctx, v, reference, "ready"); err != nil {
 		w.discardUnsavedTeaser(ctx, v.ID, local)
-		applog.Error(ctx, "Save preview metadata failed: "+v.Title, err, applog.Fields{Component: "preview", DriveID: generationDriveID(w.Drive), VideoID: v.ID, Stage: "save"})
-		return false
+		applog.Error(ctx, "Save preview metadata failed: "+v.Title, err, w.logFields(v, "save"))
+		return
 	}
 	if previous, ok := localpath.Managed(filepath.Dir(local), v.PreviewLocal); ok {
 		removePreviousLocalTeaser(previous, local)
 	}
-	// A missing signature is derived from the saved teaser during maintenance.
-	if teaser.Signature != nil {
-		if err := w.Catalog.SetVideoSignatureForSource(ctx, v, teaser.Signature); err != nil {
-			applog.Warn(ctx, "Save teaser signature failed: "+v.Title, err, applog.Fields{Component: "preview", DriveID: generationDriveID(w.Drive), VideoID: v.ID, Stage: "signature"})
-		}
-	}
-	if w.OnPreviewReady != nil && v.ThumbnailURL == "" {
-		ready := *v
-		ready.PreviewLocal = reference
-		ready.PreviewStatus = "ready"
-		w.OnPreviewReady(&ready)
-	}
-	applog.Info(ctx, fmt.Sprintf("Preview ready: %s (duration=%.1fs)", v.Title, duration), applog.Fields{Component: "preview", DriveID: generationDriveID(w.Drive), VideoID: v.ID})
-	return false
+	v.PreviewLocal, v.PreviewStatus = reference, "ready"
 }
 
-func (w *Worker) generateTeaser(ctx context.Context, v *catalog.Video, input *generationInput, duration float64) (Teaser, error) {
-	var teaser Teaser
+func (w *Worker) saveThumbnail(ctx context.Context, v *catalog.Video, path string) {
+	local, err := w.Gen.MoveThumbnailToLocal(path, v.ID)
+	if err != nil {
+		_ = os.Remove(path)
+		applog.Error(ctx, "Thumbnail file move failed: "+v.Title, err, w.logFields(v, "thumbnail"))
+		return
+	}
+	url := "/p/thumb/" + v.ID
+	if err := w.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{
+		ExpectedSource: v, ThumbnailURL: url, ThumbnailStatus: "ready",
+	}); err != nil {
+		_ = os.Remove(local)
+		applog.Error(ctx, "Save thumbnail metadata failed: "+v.Title, err, w.logFields(v, "thumbnail"))
+		return
+	}
+	v.ThumbnailURL = url
+}
+
+// handOffThumbnail passes a video the media job left without a thumbnail to
+// the thumbnail worker.
+func (w *Worker) handOffThumbnail(v *catalog.Video) {
+	if v != nil && v.ThumbnailURL == "" && w.OnThumbnailMissing != nil {
+		w.OnThumbnailMissing(v)
+	}
+}
+
+func (w *Worker) generateMedia(ctx context.Context, v *catalog.Video, input *generationInput, duration float64, request MediaRequest) (Media, error) {
+	var media Media
 	err := input.run(ctx, func(ctx context.Context, link *drives.StreamLink) error {
 		var err error
 		if input.source == nil {
-			teaser, err = w.generateTeaserFromOriginal(ctx, v, link, duration)
+			media, err = w.generateMediaFromOriginal(ctx, v, link, duration, request)
 		} else {
-			teaser, err = w.Gen.Generate(ctx, link, duration)
+			media, err = w.Gen.Generate(ctx, link, duration, request)
 		}
 		return err
 	})
-	return teaser, err
+	return media, err
 }
 
-func (w *Worker) generateTeaserFromOriginal(ctx context.Context, v *catalog.Video, link *drives.StreamLink, duration float64) (Teaser, error) {
-	gen, ok := w.Gen.(refreshingTeaserGenerator)
+func (w *Worker) generateMediaFromOriginal(ctx context.Context, v *catalog.Video, link *drives.StreamLink, duration float64, request MediaRequest) (Media, error) {
+	gen, ok := w.Gen.(refreshingMediaGenerator)
 	if !ok || w.Drive == nil || w.Drive.Kind() != "p115" {
-		return w.Gen.Generate(ctx, link, duration)
+		return w.Gen.Generate(ctx, link, duration, request)
 	}
-	return gen.GenerateWithLinkRefresh(ctx, link, duration, func(ctx context.Context) (*drives.StreamLink, error) {
+	return gen.GenerateWithLinkRefresh(ctx, link, duration, request, func(ctx context.Context) (*drives.StreamLink, error) {
 		return w.Drive.StreamURL(ctx, v.FileID)
 	})
 }

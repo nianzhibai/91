@@ -47,12 +47,17 @@ func seedGenerationRequestVideo(t *testing.T, app *App, id, state string) *catal
 	if err := app.cat.UpsertVideo(context.Background(), v); err != nil {
 		t.Fatal(err)
 	}
+	markMediaDone(t, app.cat, id)
 	if state == "failed" {
 		if err := app.cat.UpdateVideoMeta(context.Background(), id, catalog.VideoMetaPatch{ThumbnailStatus: "failed"}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	return v
+	stored, err := app.cat.GetVideo(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return stored
 }
 
 func waitGenerationRequestProducer(t *testing.T, app *App) {
@@ -122,13 +127,14 @@ func TestDriveGenerationRequestResumesPendingAndFailedResourcesOfOnlyItsKind(t *
 				api.DriveGenerationPreviews:     app.workers["drive-id"].Status().QueueLength,
 				api.DriveGenerationFingerprints: app.fingerprintWorkers["drive-id"].Status().QueueLength,
 			}
+			want := map[api.DriveGenerationKind]int{kind: 2}
+			if kind == api.DriveGenerationThumbnails {
+				// The pending teaser's media job makes its thumbnail.
+				want = map[api.DriveGenerationKind]int{api.DriveGenerationThumbnails: 1, api.DriveGenerationPreviews: 1}
+			}
 			for queuedKind, length := range queues {
-				want := 0
-				if queuedKind == kind {
-					want = 2
-				}
-				if length != want {
-					t.Fatalf("%s queue=%d, want %d", queuedKind, length, want)
+				if length != want[queuedKind] {
+					t.Fatalf("%s queue=%d, want %d", queuedKind, length, want[queuedKind])
 				}
 			}
 			failed, err := app.cat.GetVideo(ctx, "failed")
@@ -185,7 +191,8 @@ func TestDriveGenerationRequestReportsBusyWithoutResettingFailures(t *testing.T)
 
 func TestDriveGenerationRequestsAllowIndependentKindsWhileScanning(t *testing.T) {
 	app := newGenerationRequestApp(t)
-	seedGenerationRequestVideo(t, app, "pending", "pending")
+	// Failed work keeps each kind in its own queue.
+	seedGenerationRequestVideo(t, app, "failed", "failed")
 	app.scanQueued = map[string]bool{"drive-id": true}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -293,7 +300,8 @@ func TestAcceptedDriveGenerationSurvivesHTTPContextCancellation(t *testing.T) {
 		t.Fatalf("result=%+v, err=%v", result, err)
 	}
 	waitGenerationRequestProducer(t, app)
-	if app.thumbWorkers["drive-id"].Status().QueueLength != 1 {
+	// The pending teaser's media job makes the thumbnail.
+	if app.thumbWorkers["drive-id"].Status().QueueLength+app.workers["drive-id"].Status().QueueLength != 1 {
 		t.Fatal("HTTP context cancellation discarded accepted work")
 	}
 }

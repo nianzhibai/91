@@ -48,6 +48,12 @@ func TestGlobalPreviewHotReloadBackfillsEverySource(t *testing.T) {
 		if err := cat.UpsertVideo(ctx, video); err != nil {
 			t.Fatal(err)
 		}
+		// Only the teaser is outstanding; signature jobs run regardless of
+		// the switch.
+		markMediaDone(t, cat, video.ID)
+		if video, err = cat.GetVideo(ctx, video.ID); err != nil {
+			t.Fatal(err)
+		}
 		worker := preview.NewWorker(&serverFakeTeaserGenerator{}, cat, &serverFakeDrive{})
 		worker.Gate = &app.previewGate
 		app.workers[driveID] = worker
