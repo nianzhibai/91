@@ -13,6 +13,7 @@ const (
 	ReasonSampledSHA256 = "sampled_sha256"
 	ReasonTitleThumb    = "title_duration_thumbnail"
 	ReasonContent       = "content_frames"
+	ReasonSignature     = "content_signature"
 )
 
 // Evidence keeps the actual matching edge separate from the eventual survivor.

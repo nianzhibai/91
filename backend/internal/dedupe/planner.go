@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/nianzhibai/91/backend/internal/mediasig"
 	"github.com/nianzhibai/91/backend/internal/mediasim"
 )
 
@@ -71,6 +72,11 @@ func Build(ctx context.Context, candidates []Candidate, options Options) (Plan, 
 	}
 	if options.Channels.includes(ChannelContent) {
 		if err := state.planContent(ctx, ordered, options.LoadContentSignature); err != nil {
+			return Plan{}, err
+		}
+	}
+	if options.Channels.includes(ChannelSignature) {
+		if err := state.planSignature(ctx, ordered); err != nil {
 			return Plan{}, err
 		}
 	}
@@ -346,6 +352,98 @@ func (s *plannerState) planContent(ctx context.Context, candidates []Candidate, 
 	return nil
 }
 
+// planSignature merges strong pairs only, and only into a canonical the member
+// matched directly. Transitive closure would let a chain of similar videos
+// merge two that never matched each other; such pairs and probable pairs are
+// left for review instead.
+func (s *plannerState) planSignature(ctx context.Context, candidates []Candidate) error {
+	signed := make([]Candidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if s.alive[candidate.ID] && SignatureEligible(candidate) &&
+			candidate.Signature.InformativeFrames() >= mediasig.MinComparableFrames {
+			signed = append(signed, candidate)
+		}
+	}
+	sort.Slice(signed, func(i, j int) bool {
+		if signed[i].DurationSeconds != signed[j].DurationSeconds {
+			return signed[i].DurationSeconds < signed[j].DurationSeconds
+		}
+		return earlier(signed[i], signed[j])
+	})
+	stats := &s.plan.Stats.Signature
+	stats.Candidates = len(signed)
+
+	strong := make(map[uint64]Match)
+	var strongKeys []uint64
+	sets := newDisjointSet(len(signed))
+	windowStart := 0
+	for i := range signed {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		for windowStart < i && signed[i].DurationSeconds-signed[windowStart].DurationSeconds > mediasim.NearDuplicateDurationToleranceSeconds {
+			windowStart++
+		}
+		for j := windowStart; j < i; j++ {
+			stats.Comparisons++
+			match, verdict := MatchSignature(signed[j], signed[i])
+			switch verdict {
+			case mediasig.VerdictStrong:
+				key := pairKey(i, j)
+				strong[key] = match
+				strongKeys = append(strongKeys, key)
+				sets.union(i, j)
+			case mediasig.VerdictProbable:
+				s.plan.Reviews = append(s.plan.Reviews, match)
+			}
+		}
+	}
+
+	// survivor records the canonical each merged candidate joined. A strong
+	// pair is settled when both sides end up with the same survivor.
+	survivor := make(map[int]int)
+	for _, remaining := range groupIndices(len(signed), sets) {
+		for len(remaining) > 1 {
+			canonical := remaining[0]
+			for _, k := range remaining[1:] {
+				if betterPerceptualCanonical(signed[k], signed[canonical]) {
+					canonical = k
+				}
+			}
+			star := []Candidate{signed[canonical]}
+			rest := make([]int, 0, len(remaining))
+			for _, k := range remaining {
+				if k == canonical {
+					continue
+				}
+				match, direct := strong[pairKey(k, canonical)]
+				if !direct {
+					rest = append(rest, k)
+					continue
+				}
+				survivor[k] = canonical
+				s.plan.Matches = append(s.plan.Matches, match)
+				star = append(star, signed[k])
+			}
+			if len(star) > 1 {
+				survivor[canonical] = canonical
+				stats.Groups++
+				stats.Deleted += s.markGroup(StageSignature, star, signed[canonical])
+			}
+			remaining = rest
+		}
+	}
+	for _, key := range strongKeys {
+		left, right := int(key>>32), int(uint32(key))
+		leftSurvivor, leftMerged := survivor[left]
+		rightSurvivor, rightMerged := survivor[right]
+		if !leftMerged || !rightMerged || leftSurvivor != rightSurvivor {
+			s.plan.Reviews = append(s.plan.Reviews, strong[key])
+		}
+	}
+	return nil
+}
+
 func (s *plannerState) markGroup(stage Stage, group []Candidate, canonical Candidate) int {
 	members := make([]string, 0, len(group))
 	for _, candidate := range group {
@@ -419,39 +517,42 @@ func (s *plannerState) finalize() error {
 }
 
 func groupedNearCandidates(candidates []nearCandidate, sets *disjointSet) [][]nearCandidate {
-	byRoot := make(map[int][]nearCandidate)
-	for i, candidate := range candidates {
-		root := sets.find(i)
-		byRoot[root] = append(byRoot[root], candidate)
-	}
-	roots := make([]int, 0, len(byRoot))
-	for root, group := range byRoot {
-		if len(group) > 1 {
-			roots = append(roots, root)
+	return groupedBy(candidates, sets)
+}
+
+func groupedCandidates(candidates []Candidate, sets *disjointSet) [][]Candidate {
+	return groupedBy(candidates, sets)
+}
+
+func groupedBy[T any](items []T, sets *disjointSet) [][]T {
+	indices := groupIndices(len(items), sets)
+	groups := make([][]T, 0, len(indices))
+	for _, members := range indices {
+		group := make([]T, len(members))
+		for i, member := range members {
+			group[i] = items[member]
 		}
-	}
-	sort.Ints(roots)
-	groups := make([][]nearCandidate, 0, len(roots))
-	for _, root := range roots {
-		groups = append(groups, byRoot[root])
+		groups = append(groups, group)
 	}
 	return groups
 }
 
-func groupedCandidates(candidates []Candidate, sets *disjointSet) [][]Candidate {
-	byRoot := make(map[int][]Candidate)
-	for i, candidate := range candidates {
+// groupIndices returns the connected components with more than one member,
+// ordered by root, each listing its members in index order.
+func groupIndices(n int, sets *disjointSet) [][]int {
+	byRoot := make(map[int][]int)
+	for i := range n {
 		root := sets.find(i)
-		byRoot[root] = append(byRoot[root], candidate)
+		byRoot[root] = append(byRoot[root], i)
 	}
 	roots := make([]int, 0, len(byRoot))
-	for root, group := range byRoot {
-		if len(group) > 1 {
+	for root, members := range byRoot {
+		if len(members) > 1 {
 			roots = append(roots, root)
 		}
 	}
 	sort.Ints(roots)
-	groups := make([][]Candidate, 0, len(roots))
+	groups := make([][]int, 0, len(roots))
 	for _, root := range roots {
 		groups = append(groups, byRoot[root])
 	}

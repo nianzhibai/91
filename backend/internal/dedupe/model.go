@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/nianzhibai/91/backend/internal/mediasig"
 	"github.com/nianzhibai/91/backend/internal/mediasim"
 )
 
@@ -16,6 +17,9 @@ const (
 	StageExact   Stage = "exact"
 	StageNear    Stage = "near"
 	StageContent Stage = "content"
+	// StageSignature compares perceptual signatures. It will replace
+	// StageContent once signatures are generated for every video.
+	StageSignature Stage = "signature"
 )
 
 // Channels selects which maintenance channels a planner run evaluates.
@@ -25,6 +29,9 @@ const (
 	ChannelExact Channels = 1 << iota
 	ChannelNear
 	ChannelContent
+	// ChannelSignature is evaluated only when selected explicitly; production
+	// maintenance keeps ChannelContent until signatures replace it.
+	ChannelSignature
 
 	AllChannels = ChannelExact | ChannelNear | ChannelContent
 )
@@ -50,6 +57,7 @@ type Candidate struct {
 	Revision        string
 	ThumbnailPath   string
 	TeaserPath      string
+	Signature       *mediasig.Signature
 }
 
 // DeleteAction removes VideoID in favor of CanonicalVideoID. CanonicalVideoID
@@ -88,6 +96,8 @@ type Match struct {
 	// CrossDetails preserves both directional counts; MedianBest alone is not
 	// the criterion used to accept a cross match.
 	CrossDetails *mediasim.FrameSignatureCrossComparison `json:"crossDetails,omitempty"`
+	// Signature is the evidence of a signature-channel pair.
+	Signature *mediasig.Comparison `json:"signature,omitempty"`
 }
 
 // Issue is a non-fatal media comparison problem. The affected candidate or
@@ -111,19 +121,22 @@ type ChannelStats struct {
 }
 
 type Stats struct {
-	Videos  int
-	Exact   ChannelStats
-	Near    ChannelStats
-	Content ChannelStats
+	Videos    int
+	Exact     ChannelStats
+	Near      ChannelStats
+	Content   ChannelStats
+	Signature ChannelStats
 }
 
 // Plan is the complete read-only result of a planner run. Redirects contains
 // every deleted ID mapped directly to its final surviving canonical ID.
+// Reviews are pairs the planner did not merge but a person should judge.
 type Plan struct {
 	Actions   []DeleteAction
 	Redirects map[string]string
 	Groups    []Group
 	Matches   []Match
+	Reviews   []Match
 	Issues    []Issue
 	Stats     Stats
 }

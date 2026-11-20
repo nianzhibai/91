@@ -3,7 +3,9 @@ package dedupe
 import (
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/nianzhibai/91/backend/internal/mediasig"
 	"github.com/nianzhibai/91/backend/internal/mediasim"
 )
 
@@ -105,6 +107,27 @@ func MatchContent(left, right Candidate, leftSignature, rightSignature *mediasim
 		Score: cross.MedianBest, Comparisons: min(cross.LeftFrames, cross.RightFrames),
 		Cross: true, CrossDetails: &cross,
 	}, true
+}
+
+// SignatureEligible reports whether a candidate is long enough for its
+// signature verdict to be trusted.
+func SignatureEligible(c Candidate) bool {
+	return time.Duration(c.DurationSeconds)*time.Second >= mediasig.MinDuration
+}
+
+// MatchSignature compares the perceptual signatures of two candidates whose
+// durations are within tolerance. The returned match carries the comparison
+// whatever its verdict; callers act on the verdict.
+func MatchSignature(left, right Candidate) (Match, mediasig.Verdict) {
+	if !SignatureEligible(left) || !SignatureEligible(right) || !durationsWithinTolerance(left, right) ||
+		left.Signature == nil || right.Signature == nil {
+		return Match{}, mediasig.VerdictNone
+	}
+	comparison := mediasig.Compare(left.Signature, right.Signature)
+	return Match{
+		Stage: StageSignature, Reason: ReasonSignature, LeftID: left.ID, RightID: right.ID,
+		Score: comparison.FrameRatio(), Comparisons: comparison.Frames, Signature: &comparison,
+	}, comparison.Verdict
 }
 
 func sampledKey(size int64, sampled string) string {
