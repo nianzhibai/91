@@ -1369,16 +1369,6 @@ func TestDriveGenerationStatusIncludesQueuedCrawlerUploadBeforeProgress(t *testi
 	}
 }
 
-func TestGuangYaPanGenerationCooldowns(t *testing.T) {
-	drv := &serverFakeKindDrive{id: "gy", kind: "guangyapan"}
-	if got := generationCooldownForDrive(drv); got != 10*time.Minute {
-		t.Fatalf("generation cooldown = %s, want 10m", got)
-	}
-	if got := fingerprintConfigForDrive(drv).RateLimitCooldown; got != 10*time.Minute {
-		t.Fatalf("fingerprint cooldown = %s, want 10m", got)
-	}
-}
-
 func TestRunCrawlerMigrationAfterManualCrawlRequiresCrawlerUploadTarget(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")

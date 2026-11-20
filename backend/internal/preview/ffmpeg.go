@@ -1225,9 +1225,12 @@ type Worker struct {
 	ch      chan *catalog.Video
 	queue   videoQueue
 
+	// RateLimitCooldown is the pause when a throttling error gives no retry time.
 	RateLimitCooldown time.Duration
-	rateLimit         rateLimitState
-	activities        taskActivities
+	// Cooldown is shared by all workers of the drive. The application injects
+	// it before Run starts; standalone workers get their own.
+	Cooldown   *tasklimit.Cooldown
+	activities taskActivities
 }
 
 func NewWorker(gen TeaserGenerator, cat *catalog.Catalog, drv drives.Drive) *Worker {
@@ -1237,8 +1240,9 @@ func NewWorker(gen TeaserGenerator, cat *catalog.Catalog, drv drives.Drive) *Wor
 		Drive:   drv,
 		// Standalone workers default to one slot. The application injects its
 		// shared preview budget before Run starts.
-		Limiter: tasklimit.New(1),
-		ch:      make(chan *catalog.Video, defaultWorkerQueueSize),
+		Limiter:  tasklimit.New(1),
+		Cooldown: &tasklimit.Cooldown{},
+		ch:       make(chan *catalog.Video, defaultWorkerQueueSize),
 	}
 }
 
@@ -1302,23 +1306,17 @@ type ThumbWorker struct {
 	activeThumbnailID string
 	followUps         map[string]*catalog.Video
 
+	// RateLimitCooldown is the pause when a throttling error gives no retry time.
 	RateLimitCooldown time.Duration
-	rateLimit         rateLimitState
-	activity          taskActivity
+	// Cooldown is shared by all workers of the drive; see Worker.Cooldown.
+	Cooldown *tasklimit.Cooldown
+	activity taskActivity
 }
 
 const (
-	defaultTransientMediaCooldown         = 5 * time.Minute
-	defaultGenerationRateLimitCooldown    = 5 * time.Minute
 	defaultThumbTransientMediaMaxFailures = 3
 	defaultWorkerQueueSize                = 10000
 )
-
-type rateLimitState struct {
-	mu          sync.Mutex
-	until       time.Time
-	lastSkipLog time.Time
-}
 
 type TaskStatus struct {
 	State         string
@@ -1469,49 +1467,12 @@ func (a *taskActivities) snapshot() (string, []string) {
 	return currentTitle, activeIDs
 }
 
-func (s *rateLimitState) active(now time.Time) (time.Time, bool, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.until.IsZero() || !now.Before(s.until) {
-		return time.Time{}, false, false
-	}
-	shouldLog := s.lastSkipLog.IsZero() || now.Sub(s.lastSkipLog) >= 5*time.Minute
-	if shouldLog {
-		s.lastSkipLog = now
-	}
-	return s.until, true, shouldLog
-}
-
-func (s *rateLimitState) pause(now time.Time, d time.Duration) time.Time {
-	if d <= 0 {
-		d = defaultTransientMediaCooldown
-	}
-	until := now.Add(d)
-	s.mu.Lock()
-	if until.After(s.until) {
-		s.until = until
-	} else {
-		until = s.until
-	}
-	s.lastSkipLog = time.Time{}
-	s.mu.Unlock()
-	return until
-}
-
-func (s *rateLimitState) coolingUntil(now time.Time) (time.Time, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.until.IsZero() || !now.Before(s.until) {
-		return time.Time{}, false
-	}
-	return s.until, true
-}
-
 func NewThumbWorker(gen ThumbnailGenerator, cat *catalog.Catalog, drv drives.Drive) *ThumbWorker {
 	return &ThumbWorker{
 		Gen:        gen,
 		Catalog:    cat,
 		Drive:      drv,
+		Cooldown:   &tasklimit.Cooldown{},
 		ch:         make(chan *catalog.Video, defaultWorkerQueueSize),
 		durationCh: make(chan durationTask, defaultWorkerQueueSize),
 	}
@@ -1579,7 +1540,7 @@ func (w *Worker) Status() TaskStatus {
 		return TaskStatus{State: "idle"}
 	}
 	currentTitle, activeIDs := w.activities.snapshot()
-	return taskStatus(currentTitle, len(activeIDs) > 0, &w.rateLimit, w.queue.lengthExcludingIDs(activeIDs))
+	return taskStatus(currentTitle, len(activeIDs) > 0, w.Cooldown, w.queue.lengthExcludingIDs(activeIDs))
 }
 
 func (w *Worker) ActiveVideoIDs() []string {
@@ -1598,7 +1559,7 @@ func (w *ThumbWorker) Status() TaskStatus {
 	if currentID != "" {
 		queued = max(0, queued-1)
 	}
-	return taskStatus(currentTitle, currentID != "", &w.rateLimit, queued)
+	return taskStatus(currentTitle, currentID != "", w.Cooldown, queued)
 }
 
 // WaitIdle 阻塞直到 worker 队列为空且当前没有正在处理的任务。
@@ -1651,7 +1612,7 @@ func waitQueueIdle(ctx context.Context, queues ...*videoQueue) error {
 	}
 }
 
-func taskStatus(currentTitle string, active bool, rateLimit *rateLimitState, queueLength int) TaskStatus {
+func taskStatus(currentTitle string, active bool, cooldown *tasklimit.Cooldown, queueLength int) TaskStatus {
 	if queueLength < 0 {
 		queueLength = 0
 	}
@@ -1659,7 +1620,7 @@ func taskStatus(currentTitle string, active bool, rateLimit *rateLimitState, que
 		State:       "idle",
 		QueueLength: queueLength,
 	}
-	if until, ok := rateLimit.coolingUntil(time.Now()); ok {
+	if until, ok := cooldown.Until(time.Now()); ok {
 		status.State = "cooling"
 		status.CooldownUntil = until
 		return status
@@ -1816,8 +1777,8 @@ func (w *Worker) admitQueued(ctx context.Context, v *catalog.Video) (run func(),
 	if current.Hidden || current.DriveID != generationDriveID(w.Drive) {
 		return nil, false
 	}
-	release, ok := acquireGenerationSlot(taskCtx, w.Limiter, &w.rateLimit, "preview", w.Drive)
-	if !ok {
+	release, err := w.Limiter.AcquireAfter(taskCtx, w.Cooldown)
+	if err != nil {
 		return nil, false
 	}
 	prepared = true
@@ -1888,7 +1849,7 @@ func (w *ThumbWorker) processQueuedTask(ctx context.Context, v *catalog.Video, d
 	if err := ctx.Err(); err != nil {
 		return
 	}
-	if release, ok := acquireGenerationSlot(ctx, w.Limiter, &w.rateLimit, "thumb", w.Drive); ok {
+	if release, err := w.Limiter.AcquireAfter(ctx, w.Cooldown); err == nil {
 		w.activity.start(v)
 		w.notifyStatus(true)
 		activityStarted = true
@@ -1927,56 +1888,12 @@ func (w *ThumbWorker) finishQueued(ctx context.Context, v *catalog.Video, retry,
 	w.followUpMu.Unlock()
 }
 
-// Cooldown can begin while another task waits for the global budget. Recheck
-// after acquisition and release immediately if this drive must still wait.
-func acquireGenerationSlot(ctx context.Context, limiter *tasklimit.Limiter, state *rateLimitState, label string, drive drives.Drive) (func(), bool) {
-	for waitForRateLimitCooldown(ctx, state, label, drive) {
-		release, err := limiter.Acquire(ctx)
-		if err != nil {
-			return nil, false
-		}
-		if _, cooling := state.coolingUntil(time.Now()); !cooling {
-			return release, true
-		}
-		release()
-	}
-	return nil, false
-}
-
-func waitForRateLimitCooldown(ctx context.Context, state *rateLimitState, label string, drive drives.Drive) bool {
-	driveID := ""
-	if drive != nil {
-		driveID = drive.ID()
-	}
-	for {
-		until, ok := state.coolingUntil(time.Now())
-		if !ok {
-			return true
-		}
-		wait := time.Until(until)
-		if wait <= 0 {
-			continue
-		}
-		log.Printf("[%s] drive=%s cooling down until=%s; wait before next task", label, driveID, until.Format(time.RFC3339))
-		timer := time.NewTimer(wait)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return false
-		case <-timer.C:
-		}
-	}
-}
-
 func (w *Worker) skipIfRateLimited(v *catalog.Video) bool {
-	until, ok, shouldLog := w.rateLimit.active(time.Now())
-	if !ok {
-		return false
+	until, ok := w.Cooldown.Until(time.Now())
+	if ok {
+		log.Printf("[preview] drive=%s cooling down until=%s; keep queued video pending", generationDriveID(w.Drive), until.Format(time.RFC3339))
 	}
-	if shouldLog {
-		log.Printf("[preview] drive=%s rate-limited until=%s; skip queued videos and keep them pending", w.Drive.ID(), until.Format(time.RFC3339))
-	}
-	return true
+	return ok
 }
 
 func (w *Worker) pauseForRateLimit(err error, step, title string) bool {
@@ -1984,13 +1901,7 @@ func (w *Worker) pauseForRateLimit(err error, step, title string) bool {
 	if !ok {
 		return false
 	}
-	if wait <= 0 {
-		wait = w.RateLimitCooldown
-		if wait <= 0 {
-			wait = defaultGenerationRateLimitCooldown
-		}
-	}
-	until := w.rateLimit.pause(time.Now(), wait)
+	until := pauseDrive(w.Cooldown, wait, w.RateLimitCooldown)
 	w.notifyStatus(true)
 	log.Printf("[preview] drive=%s rate-limited until=%s step=%s video=%s: %v", w.Drive.ID(), until.Format(time.RFC3339), step, title, err)
 	return true
@@ -2003,21 +1914,18 @@ func (w *Worker) pauseForRecoverableError(err error, step, title string) bool {
 	if !driveErrorShouldCooldown(w.Drive, err) {
 		return false
 	}
-	until := w.rateLimit.pause(time.Now(), w.RateLimitCooldown)
+	until := pauseDrive(w.Cooldown, 0, w.RateLimitCooldown)
 	w.notifyStatus(true)
 	log.Printf("[preview] drive=%s transient media source error until=%s step=%s video=%s: %v", w.Drive.ID(), until.Format(time.RFC3339), step, title, err)
 	return true
 }
 
 func (w *ThumbWorker) skipIfRateLimited(v *catalog.Video) bool {
-	until, ok, shouldLog := w.rateLimit.active(time.Now())
-	if !ok {
-		return false
+	until, ok := w.Cooldown.Until(time.Now())
+	if ok {
+		log.Printf("[thumb] drive=%s cooling down until=%s; keep queued thumbnail pending", generationDriveID(w.Drive), until.Format(time.RFC3339))
 	}
-	if shouldLog {
-		log.Printf("[thumb] drive=%s rate-limited until=%s; skip queued thumbnails and keep them pending", w.Drive.ID(), until.Format(time.RFC3339))
-	}
-	return true
+	return ok
 }
 
 // pauseForProviderError shares provider cooldowns with metadata work without
@@ -2027,13 +1935,7 @@ func (w *ThumbWorker) pauseForProviderError(err error, step, title string) bool 
 	if !limited && !driveErrorShouldCooldown(w.Drive, err) {
 		return false
 	}
-	if wait <= 0 {
-		wait = w.RateLimitCooldown
-		if wait <= 0 {
-			wait = defaultGenerationRateLimitCooldown
-		}
-	}
-	until := w.rateLimit.pause(time.Now(), wait)
+	until := pauseDrive(w.Cooldown, wait, w.RateLimitCooldown)
 	w.notifyStatus(true)
 	log.Printf("[thumb] drive=%s provider error cooldown until=%s step=%s video=%s: %v", generationDriveID(w.Drive), until.Format(time.RFC3339), step, title, err)
 	return true
@@ -2069,25 +1971,21 @@ func (w *ThumbWorker) pauseForRecoverableError(ctx context.Context, v *catalog.V
 	return w.pauseForProviderError(err, step, title)
 }
 
+// pauseDrive pauses the drive for the provider's retry time, or for the
+// worker's configured cooldown when the provider gave none.
+func pauseDrive(cooldown *tasklimit.Cooldown, retryAfter, configured time.Duration) time.Time {
+	wait := retryAfter
+	if wait <= 0 {
+		wait = configured
+	}
+	if wait <= 0 {
+		wait = drives.DefaultCooldown
+	}
+	return cooldown.Pause(time.Now(), wait)
+}
+
 func driveErrorShouldCooldown(d drives.Drive, err error) bool {
-	if d == nil || err == nil {
-		return false
-	}
-	switch d.Kind() {
-	case "p115":
-		return drives.ErrorMentionsHTTPStatus(err, http.StatusMethodNotAllowed, http.StatusTooManyRequests)
-	case "pikpak":
-		return drives.ErrorMentionsHTTPStatus(err, http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, 509)
-	case "p123":
-		return drives.ErrorMentionsHTTPStatus(err, http.StatusForbidden, http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout)
-	case "wopan":
-		return drives.ErrorMentionsHTTPStatus(err, http.StatusForbidden, http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, 509)
-	case "guangyapan":
-		return drives.ErrorMentionsHTTPStatus(err, http.StatusForbidden, http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, 509)
-	case "googledrive":
-		return drives.ErrorMentionsHTTPStatus(err, http.StatusForbidden, http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout)
-	}
-	return false
+	return d != nil && drives.ShouldCooldown(d.Kind(), err)
 }
 
 func (w *ThumbWorker) process(ctx context.Context, v *catalog.Video) bool {

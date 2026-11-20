@@ -449,9 +449,8 @@ func (a *App) removeProviderSource(ctx context.Context, v *catalog.Video, check 
 				return catalog.ErrMergedSourceReplaced
 			}
 		case check == mergedSource && v.SampledSHA256 != "":
-			cfg := fingerprintConfigForDrive(drv)
-			_, _, cfg.Limiter = a.generationLimits()
-			sum, err := fingerprint.Compute(ctx, drv, v, cfg, nil)
+			_, _, limiter := a.generationLimits()
+			sum, err := fingerprint.Compute(ctx, drv, v, fingerprint.Config{Limiter: limiter}, nil)
 			if err != nil {
 				return fmt.Errorf("%w: %v", catalog.ErrMergedSourceUnverified, err)
 			}

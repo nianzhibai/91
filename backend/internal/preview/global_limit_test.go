@@ -168,32 +168,3 @@ func TestGlobalBudgetWaitKeepsMediaQueuedAndCancellationKeepsPending(t *testing.
 		})
 	}
 }
-
-func TestCooldownDoesNotOccupyGlobalPreviewSlot(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	limiter := tasklimit.New(1)
-	var cooling, healthy rateLimitState
-	cooling.pause(time.Now(), time.Minute)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		if release, ok := acquireGenerationSlot(ctx, limiter, &cooling, "preview", nil); ok {
-			release()
-			t.Error("cooling task acquired a slot")
-		}
-	}()
-	healthyCtx, stop := context.WithTimeout(ctx, time.Second)
-	defer stop()
-	release, ok := acquireGenerationSlot(healthyCtx, limiter, &healthy, "preview", nil)
-	if !ok {
-		t.Fatal("cooling drive blocked healthy drive")
-	}
-	release()
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("cooldown did not cancel")
-	}
-}

@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/nianzhibai/91/backend/internal/applog"
@@ -25,16 +26,19 @@ import (
 const (
 	defaultSampleSizeBytes int64 = 512 * 1024
 	defaultFullHashMaxSize int64 = 8 * 1024 * 1024
-	defaultCooldown              = 5 * time.Minute
+	defaultStallTimeout          = time.Minute
 	defaultWorkerQueueSize       = 10000
 )
 
 type Config struct {
-	Limiter           *tasklimit.Limiter
-	SampleSizeBytes   int64
-	FullHashMaxSize   int64
+	Limiter         *tasklimit.Limiter
+	SampleSizeBytes int64
+	FullHashMaxSize int64
+	// RateLimitCooldown is the pause when a throttling error gives no retry time.
 	RateLimitCooldown time.Duration
-	HTTPClient        *http.Client
+	// StallTimeout ends a remote read that receives no data for this long.
+	StallTimeout time.Duration
+	HTTPClient   *http.Client
 }
 
 type Worker struct {
@@ -47,11 +51,13 @@ type Worker struct {
 	// its source was replaced in place. Its generated assets were cleared and
 	// need to be scheduled again.
 	OnContentReplaced func(*catalog.Video)
+	// Cooldown is shared by all workers of the drive. The application injects
+	// it before Run starts; standalone workers get their own.
+	Cooldown *tasklimit.Cooldown
 
 	ch       chan *catalog.Video
 	queue    videoQueue
 	activity taskActivity
-	cooldown cooldownState
 	http     *http.Client
 }
 
@@ -74,14 +80,15 @@ func NewWorker(cat *catalog.Catalog, drv drives.Drive, cfg Config) *Worker {
 		cfg.FullHashMaxSize = defaultFullHashMaxSize
 	}
 	if cfg.RateLimitCooldown <= 0 {
-		cfg.RateLimitCooldown = defaultCooldown
+		cfg.RateLimitCooldown = drives.DefaultCooldown
 	}
 	return &Worker{
-		Catalog: cat,
-		Drive:   drv,
-		Config:  cfg,
-		ch:      make(chan *catalog.Video, defaultWorkerQueueSize),
-		http:    hc,
+		Catalog:  cat,
+		Drive:    drv,
+		Config:   cfg,
+		Cooldown: &tasklimit.Cooldown{},
+		ch:       make(chan *catalog.Video, defaultWorkerQueueSize),
+		http:     hc,
 	}
 }
 
@@ -145,7 +152,7 @@ func (w *Worker) Status() TaskStatus {
 		CurrentTitle: currentTitle,
 		QueueLength:  w.queue.lengthExcluding(currentID),
 	}
-	if until, ok := w.cooldown.active(time.Now()); ok {
+	if until, ok := w.Cooldown.Until(time.Now()); ok {
 		status.State = "cooling"
 		status.CooldownUntil = until
 		return status
@@ -191,6 +198,11 @@ func (w *Worker) processQueued(ctx context.Context, v *catalog.Video) {
 		return
 	}
 	ctx = applog.WithFields(applog.NewTask(ctx, "fingerprint", w.Drive.ID()), applog.Fields{VideoID: v.ID, FileID: v.FileID})
+	// A cooling drive waits before taking task admission or shared budget.
+	if err := w.Cooldown.Wait(ctx); err != nil {
+		w.queue.release(v.ID)
+		return
+	}
 	if w.TaskGuard != nil {
 		release := w.TaskGuard()
 		if release == nil {
@@ -213,7 +225,7 @@ func (w *Worker) processQueued(ctx context.Context, v *catalog.Video) {
 	if current.DriveID != w.Drive.ID() || current.SampledSHA256 != "" || current.FingerprintStatus == "ready" || current.Hidden {
 		return
 	}
-	release, err := w.Config.Limiter.Acquire(ctx)
+	release, err := w.Config.Limiter.AcquireAfter(ctx, w.Cooldown)
 	if err != nil {
 		return
 	}
@@ -221,24 +233,13 @@ func (w *Worker) processQueued(ctx context.Context, v *catalog.Video) {
 	w.notifyStatus(true)
 	defer w.activity.done()
 	sum, err := compute(ctx, w.Drive, current, w.Config, w.http)
-	release() // Provider cooldown must not occupy a global slot.
+	release()
 	if ctx.Err() != nil {
 		return
 	}
 	if err != nil {
-		var rl *drives.RateLimitError
-		if errors.As(err, &rl) {
-			wait := rl.RetryAfter
-			if wait <= 0 {
-				wait = w.Config.RateLimitCooldown
-			}
-			until := time.Now().Add(wait)
-			w.cooldown.set(until)
-			w.notifyStatus(true)
-			applog.Warn(ctx, fmt.Sprintf("Fingerprint rate limited; cooling down for %s", wait), err, applog.Fields{Stage: "compute"})
-			sleepContext(ctx, wait)
-			w.cooldown.clear(until)
-			w.notifyStatus(true)
+		if w.pauseForProviderError(ctx, err) {
+			// The video stays pending, and the reconciler queues it again.
 			return
 		}
 		applog.Error(ctx, "Fingerprint computation failed", err, applog.Fields{Stage: "compute"})
@@ -260,6 +261,28 @@ func (w *Worker) processQueued(ctx context.Context, v *catalog.Video) {
 			w.OnContentReplaced(updated)
 		}
 	}
+}
+
+// pauseForProviderError pauses the drive's provider work and reports true when
+// err says nothing about the file itself: the provider is throttling or briefly
+// unavailable, or the read timed out or lost its connection.
+func (w *Worker) pauseForProviderError(ctx context.Context, err error) bool {
+	wait, limited := drives.RateLimitRetryAfter(err)
+	if !limited && !drives.ShouldCooldown(w.Drive.Kind(), err) && !transientTransportError(err) {
+		return false
+	}
+	if wait <= 0 {
+		wait = w.Config.RateLimitCooldown
+	}
+	until := w.Cooldown.Pause(time.Now(), wait)
+	w.notifyStatus(true)
+	applog.Warn(ctx, "Fingerprint paused; drive cooling down until "+until.Format(time.RFC3339), err, applog.Fields{Stage: "compute"})
+	return true
+}
+
+func transientTransportError(err error) bool {
+	var timeout interface{ Timeout() bool }
+	return (errors.As(err, &timeout) && timeout.Timeout()) || errors.Is(err, syscall.ECONNRESET)
 }
 
 func Compute(ctx context.Context, drv drives.Drive, v *catalog.Video, cfg Config, hc *http.Client) (string, error) {
@@ -288,8 +311,8 @@ func compute(ctx context.Context, drv drives.Drive, v *catalog.Video, cfg Config
 	if cfg.FullHashMaxSize <= 0 {
 		cfg.FullHashMaxSize = defaultFullHashMaxSize
 	}
-	if cfg.RateLimitCooldown <= 0 {
-		cfg.RateLimitCooldown = defaultCooldown
+	if cfg.StallTimeout <= 0 {
+		cfg.StallTimeout = defaultStallTimeout
 	}
 	if hc == nil {
 		hc = streamhttp.NewClient(0)
@@ -305,12 +328,10 @@ func compute(ctx context.Context, drv drives.Drive, v *catalog.Video, cfg Config
 	h := sha256.New()
 	writeHashHeader(h, v.Size, ranges)
 	for _, r := range ranges {
-		data, err := readRange(ctx, hc, link, r)
-		if err != nil && isP115ForbiddenRangeError(drv, err) {
+		data, err := readRange(ctx, hc, link, r, cfg.StallTimeout)
+		if isP115ForbiddenRangeError(drv, err) {
 			// A 115 signed CDN URL can be rejected before its advertised expiry.
-			// Refresh it once and retry the same byte range. A second rejection is
-			// classified as temporary below so the worker cools down rather than
-			// permanently failing the video or repeatedly requesting new links.
+			// Refresh it once and retry the same byte range.
 			refreshed, refreshErr := drv.StreamURL(ctx, v.FileID)
 			if refreshErr != nil {
 				err = fmt.Errorf("fingerprint: refresh stream url after range rejection: %w", refreshErr)
@@ -318,11 +339,16 @@ func compute(ctx context.Context, drv drives.Drive, v *catalog.Video, cfg Config
 				err = errors.New("fingerprint: refreshed stream url is empty")
 			} else {
 				link = refreshed
-				data, err = readRange(ctx, hc, link, r)
+				data, err = readRange(ctx, hc, link, r, cfg.StallTimeout)
+			}
+			if isP115ForbiddenRangeError(drv, err) {
+				// A second rejection is throttling, so the drive cools down rather
+				// than failing the video or requesting new links again.
+				err = &drives.RateLimitError{Provider: "p115", Err: err}
 			}
 		}
 		if err != nil {
-			return "", classifyP115FingerprintError(drv, cfg.RateLimitCooldown, err)
+			return "", err
 		}
 		if int64(len(data)) != r.length {
 			return "", fmt.Errorf("fingerprint: short sample at %d: got %d want %d", r.start, len(data), r.length)
@@ -360,46 +386,6 @@ func isP115ForbiddenRangeError(drv drives.Drive, err error) bool {
 	return errors.As(err, &responseErr) && responseErr.status == http.StatusForbidden
 }
 
-func classifyP115FingerprintError(drv drives.Drive, cooldown time.Duration, err error) error {
-	if drv == nil || !strings.EqualFold(drv.Kind(), "p115") || err == nil {
-		return err
-	}
-	var rateLimit *drives.RateLimitError
-	if errors.As(err, &rateLimit) {
-		return err
-	}
-
-	recoverable := false
-	var responseErr *rangeResponseError
-	if errors.As(err, &responseErr) {
-		recoverable = responseErr.status == http.StatusForbidden ||
-			responseErr.status == http.StatusMethodNotAllowed ||
-			responseErr.status == http.StatusTooManyRequests
-	}
-	var timeoutError interface{ Timeout() bool }
-	if errors.As(err, &timeoutError) && timeoutError.Timeout() {
-		recoverable = true
-	}
-	if !recoverable {
-		text := strings.ToLower(err.Error())
-		recoverable = strings.Contains(text, "tls handshake timeout") ||
-			strings.Contains(text, "i/o timeout") ||
-			strings.Contains(text, "connection timed out") ||
-			strings.Contains(text, "connection reset by peer")
-	}
-	if !recoverable {
-		return err
-	}
-	if cooldown <= 0 {
-		cooldown = defaultCooldown
-	}
-	return &drives.RateLimitError{
-		Provider:   "p115",
-		RetryAfter: cooldown,
-		Err:        err,
-	}
-}
-
 func sampleRanges(size, sampleSize, fullHashMax int64) []byteRange {
 	if size <= fullHashMax {
 		return []byteRange{{start: 0, length: size}}
@@ -427,10 +413,10 @@ func writeHashHeader(w io.Writer, size int64, ranges []byteRange) {
 	_, _ = fmt.Fprintf(w, "video-site-sampled-sha256-v1\nsize=%d\nsamples=%d\n", size, len(ranges))
 }
 
-func readRange(ctx context.Context, hc *http.Client, link *drives.StreamLink, r byteRange) ([]byte, error) {
+func readRange(ctx context.Context, hc *http.Client, link *drives.StreamLink, r byteRange, stall time.Duration) ([]byte, error) {
 	u, err := url.Parse(link.URL)
 	if err == nil && (u.Scheme == "http" || u.Scheme == "https") {
-		return readHTTPRange(ctx, hc, link, r)
+		return readHTTPRange(ctx, hc, link, r, stall)
 	}
 	path := link.URL
 	if err == nil && u.Scheme == "file" {
@@ -456,7 +442,32 @@ func readLocalRange(path string, r byteRange) ([]byte, error) {
 	return buf, nil
 }
 
-func readHTTPRange(ctx context.Context, hc *http.Client, link *drives.StreamLink, r byteRange) ([]byte, error) {
+// errStalled marks a remote read that received no data within the stall
+// timeout. It is a timeout, so the drive cools down and the video is retried.
+var errStalled = stalledError{}
+
+type stalledError struct{}
+
+func (stalledError) Error() string { return "remote read stalled" }
+func (stalledError) Timeout() bool { return true }
+
+// readHTTPRange ends the request when the response stops making progress.
+// The client has no overall timeout because samples can be large on slow
+// links, and a connection that stops sending would otherwise hold the worker
+// and its shared budget until shutdown.
+func readHTTPRange(ctx context.Context, hc *http.Client, link *drives.StreamLink, r byteRange, stall time.Duration) ([]byte, error) {
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	watchdog := time.AfterFunc(stall, func() { cancel(errStalled) })
+	defer watchdog.Stop()
+	data, err := fetchHTTPRange(ctx, hc, link, r, func() { watchdog.Reset(stall) })
+	if err != nil && errors.Is(context.Cause(ctx), errStalled) {
+		return nil, fmt.Errorf("fingerprint: sample at %d received no data for %s: %w", r.start, stall, errStalled)
+	}
+	return data, err
+}
+
+func fetchHTTPRange(ctx context.Context, hc *http.Client, link *drives.StreamLink, r byteRange, progress func()) ([]byte, error) {
 	end := r.start + r.length - 1
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, link.URL, nil)
 	if err != nil {
@@ -473,6 +484,8 @@ func readHTTPRange(ctx context.Context, hc *http.Client, link *drives.StreamLink
 		return nil, fmt.Errorf("fingerprint: read remote sample: %w", err)
 	}
 	defer resp.Body.Close()
+	progress()
+	body := progressReader{r: resp.Body, progress: progress}
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return nil, &drives.RateLimitError{
 			Provider:   "fingerprint",
@@ -482,7 +495,7 @@ func readHTTPRange(ctx context.Context, hc *http.Client, link *drives.StreamLink
 	}
 	if resp.StatusCode != http.StatusPartialContent {
 		if resp.StatusCode == http.StatusOK && r.start == 0 {
-			data, err := io.ReadAll(io.LimitReader(resp.Body, r.length+1))
+			data, err := io.ReadAll(io.LimitReader(body, r.length+1))
 			if err != nil {
 				return nil, err
 			}
@@ -490,72 +503,22 @@ func readHTTPRange(ctx context.Context, hc *http.Client, link *drives.StreamLink
 				return data, nil
 			}
 		}
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-		if remoteRangeResponseLooksRateLimited(link.URL, resp.StatusCode, body) {
-			return nil, &drives.RateLimitError{
-				Provider:   "fingerprint",
-				RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
-				Err:        fmt.Errorf("remote sample rate limited: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body))),
-			}
-		}
 		return nil, &rangeResponseError{status: resp.StatusCode, start: r.start, end: end}
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, r.length))
+	return io.ReadAll(io.LimitReader(body, r.length))
 }
 
-func remoteRangeResponseLooksRateLimited(rawURL string, status int, body []byte) bool {
-	if status == http.StatusTooManyRequests {
-		return true
-	}
-	if isWopanMediaURL(rawURL) && (status == http.StatusForbidden || status == http.StatusTooManyRequests ||
-		status == http.StatusInternalServerError || status == http.StatusBadGateway ||
-		status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout ||
-		status == 509) {
-		return true
-	}
-	if isGuangYaPanMediaURL(rawURL) && (status == http.StatusForbidden || status == http.StatusTooManyRequests ||
-		status == http.StatusInternalServerError || status == http.StatusBadGateway ||
-		status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout ||
-		status == 509) {
-		return true
-	}
-	if status == http.StatusForbidden && isGoogleDriveMediaURL(rawURL) {
-		return true
-	}
-	return false
+type progressReader struct {
+	r        io.Reader
+	progress func()
 }
 
-func isWopanMediaURL(rawURL string) bool {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return false
+func (p progressReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	if n > 0 {
+		p.progress()
 	}
-	host := strings.ToLower(u.Hostname())
-	path := strings.ToLower(u.Path)
-	return (strings.HasSuffix(host, "pan.wo.cn") ||
-		strings.HasSuffix(host, "smartont.net") ||
-		strings.Contains(host, "wo.cn")) &&
-		strings.Contains(path, "/openapi/download")
-}
-
-func isGuangYaPanMediaURL(rawURL string) bool {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return false
-	}
-	host := strings.ToLower(u.Hostname())
-	return strings.HasSuffix(host, "guangyacdn.com") ||
-		strings.HasSuffix(host, "guangyapan.com")
-}
-
-func isGoogleDriveMediaURL(rawURL string) bool {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return false
-	}
-	host := strings.ToLower(u.Host)
-	path := strings.ToLower(u.Path)
-	return strings.Contains(host, "googleapis.com") && strings.Contains(path, "/drive/")
+	return n, err
 }
 
 func parseRetryAfter(raw string) time.Duration {
@@ -573,20 +536,6 @@ func parseRetryAfter(raw string) time.Duration {
 		}
 	}
 	return 0
-}
-
-func sleepContext(ctx context.Context, d time.Duration) bool {
-	if d <= 0 {
-		return true
-	}
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
 }
 
 type taskActivity struct {
@@ -618,34 +567,6 @@ func (a *taskActivity) current() (string, string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.currentID, a.currentTitle
-}
-
-type cooldownState struct {
-	mu    sync.Mutex
-	until time.Time
-}
-
-func (s *cooldownState) set(until time.Time) {
-	s.mu.Lock()
-	s.until = until
-	s.mu.Unlock()
-}
-
-func (s *cooldownState) clear(until time.Time) {
-	s.mu.Lock()
-	if s.until.Equal(until) {
-		s.until = time.Time{}
-	}
-	s.mu.Unlock()
-}
-
-func (s *cooldownState) active(now time.Time) (time.Time, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.until.IsZero() || !s.until.After(now) {
-		return time.Time{}, false
-	}
-	return s.until, true
 }
 
 type videoQueue struct {

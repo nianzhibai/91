@@ -34,6 +34,7 @@ import (
 	"github.com/nianzhibai/91/backend/internal/fingerprint"
 	"github.com/nianzhibai/91/backend/internal/preview"
 	"github.com/nianzhibai/91/backend/internal/readretry"
+	"github.com/nianzhibai/91/backend/internal/tasklimit"
 )
 
 // guangYaPanLegacyRootPath keeps existing path-based mounts working until the
@@ -1216,13 +1217,13 @@ func (a *App) newDriveGenerationWorkers(drv drives.Drive) (*preview.Worker, *pre
 			log.Printf("[thumb] dependent enqueue full drive=%s video=%s; remains pending for the next reconciliation", drv.ID(), video.ID)
 		}
 	}
-	if cooldown := generationCooldownForDrive(drv); cooldown > 0 {
-		previewWorker.RateLimitCooldown = cooldown
-		thumbWorker.RateLimitCooldown = cooldown
-	}
-	fingerprintCfg := fingerprintConfigForDrive(drv)
-	fingerprintCfg.Limiter = fingerprintLimiter
-	fingerprintWorker := fingerprint.NewWorker(a.cat, drv, fingerprintCfg)
+	// Every worker reading this drive pauses together when the provider throttles.
+	cooldownWait := drives.CooldownFor(drv.Kind())
+	cooldown := &tasklimit.Cooldown{}
+	previewWorker.RateLimitCooldown, previewWorker.Cooldown = cooldownWait, cooldown
+	thumbWorker.RateLimitCooldown, thumbWorker.Cooldown = cooldownWait, cooldown
+	fingerprintWorker := fingerprint.NewWorker(a.cat, drv, fingerprint.Config{Limiter: fingerprintLimiter, RateLimitCooldown: cooldownWait})
+	fingerprintWorker.Cooldown = cooldown
 	fingerprintWorker.OnContentReplaced = func(video *catalog.Video) {
 		// A full queue leaves the row pending for the next reconciliation.
 		previewWorker.Enqueue(video)
@@ -1257,17 +1258,6 @@ func (a *App) newDriveGenerationWorkers(drv drives.Drive) (*preview.Worker, *pre
 		return release
 	}
 	return previewWorker, thumbWorker, fingerprintWorker
-}
-
-func generationCooldownForDrive(drv drives.Drive) time.Duration {
-	if drv == nil {
-		return 0
-	}
-	switch strings.ToLower(drv.Kind()) {
-	case "wopan", "guangyapan":
-		return 10 * time.Minute
-	}
-	return 0
 }
 
 func (a *App) startDriveGenerationWorkers(ctx context.Context, driveID string, drv drives.Drive, enqueue bool) {
@@ -1305,20 +1295,6 @@ func (a *App) uploadWorkDir(kind string) string {
 		kind = "generic"
 	}
 	return filepath.Join(filepath.Dir(a.cfg.Storage.LocalPreviewDir), "upload-tmp", kind)
-}
-
-func fingerprintConfigForDrive(drv drives.Drive) fingerprint.Config {
-	cfg := fingerprint.Config{RateLimitCooldown: 5 * time.Minute}
-	if drv == nil {
-		return cfg
-	}
-	switch strings.ToLower(drv.Kind()) {
-	case "p115", "p123", "onedrive", "wopan", "guangyapan":
-		cfg.RateLimitCooldown = 10 * time.Minute
-	case "pikpak":
-		cfg.RateLimitCooldown = 5 * time.Minute
-	}
-	return cfg
 }
 
 // scriptCrawlerRootDir 是所有通用脚本爬虫 drive 共享的根目录。

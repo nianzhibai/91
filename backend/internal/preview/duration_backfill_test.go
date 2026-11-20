@@ -141,7 +141,7 @@ func TestDurationBackfillProviderErrorsCooldownWithoutThumbnailRetries(t *testin
 		{
 			name: "PikPak probe unavailable", kind: "pikpak",
 			cause: ffmpegCommandError("ffprobe", errors.New("exit status 1"), []byte("Server returned 503 Service Unavailable")),
-			want:  defaultTransientMediaCooldown,
+			want:  drives.DefaultCooldown,
 		},
 		{
 			name: "Wopan probe forbidden", kind: "wopan",

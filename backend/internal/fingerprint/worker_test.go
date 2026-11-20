@@ -208,10 +208,9 @@ func TestComputeP115PersistentRangeForbiddenReturnsRateLimit(t *testing.T) {
 	t.Cleanup(rejected.Close)
 
 	drv := &fakeDrive{kind: "p115", streamURLs: []string{rejected.URL, rejected.URL}}
-	cooldown := 123 * time.Millisecond
 	_, err := Compute(ctx, drv, &catalog.Video{
 		ID: "p115-persistent-403", FileID: "remote", Size: 10,
-	}, Config{FullHashMaxSize: 10, RateLimitCooldown: cooldown}, rejected.Client())
+	}, Config{FullHashMaxSize: 10}, rejected.Client())
 	if err == nil {
 		t.Fatal("Compute succeeded, want rate limit")
 	}
@@ -219,8 +218,8 @@ func TestComputeP115PersistentRangeForbiddenReturnsRateLimit(t *testing.T) {
 	if !errors.As(err, &rateLimit) {
 		t.Fatalf("error = %T %[1]v, want RateLimitError", err)
 	}
-	if rateLimit.Provider != "p115" || rateLimit.RetryAfter != cooldown {
-		t.Fatalf("rate limit = %#v, want p115 cooldown %s", rateLimit, cooldown)
+	if rateLimit.Provider != "p115" || rateLimit.RetryAfter != 0 {
+		t.Fatalf("rate limit = %#v, want p115 without a provider retry time", rateLimit)
 	}
 	if drv.streamCalls != 2 {
 		t.Fatalf("StreamURL calls = %d, want exactly one refresh", drv.streamCalls)
@@ -307,46 +306,138 @@ func TestWorkerSchedulesAssetsWhenVerificationFindsNewBytes(t *testing.T) {
 	}
 }
 
-func TestWopanRemoteRangeErrorsLookRateLimited(t *testing.T) {
+func TestWorkerProviderStatusCoolsDownOnlyForItsKind(t *testing.T) {
+	ctx := context.Background()
+	unavailable := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(unavailable.Close)
+
 	for _, tc := range []struct {
-		rawURL string
-		status int
+		kind        string
+		wantStatus  string
+		wantCooling bool
 	}{
-		{rawURL: "https://gxdownload.pan.wo.cn:8445/openapi/download?fid=encoded", status: http.StatusForbidden},
-		{rawURL: "https://du.smartont.net:8445/openapi/download?fid=encoded", status: http.StatusServiceUnavailable},
-		{rawURL: "https://du.smartont.net:8445/openapi/download?fid=encoded", status: 509},
+		{kind: "pikpak", wantStatus: "pending", wantCooling: true},
+		{kind: "webdav", wantStatus: "failed", wantCooling: false},
 	} {
-		if !remoteRangeResponseLooksRateLimited(tc.rawURL, tc.status, nil) {
-			t.Fatalf("remoteRangeResponseLooksRateLimited(%q, %d) = false, want true", tc.rawURL, tc.status)
-		}
-	}
-	if remoteRangeResponseLooksRateLimited("https://example.com/video.mp4", http.StatusForbidden, nil) {
-		t.Fatal("generic 403 should not be treated as wopan rate limit")
+		t.Run(tc.kind, func(t *testing.T) {
+			cat := openTestCatalog(t)
+			video := seedPendingVideo(t, cat, "status-"+tc.kind, 10)
+			worker := NewWorker(cat, &fakeDrive{kind: tc.kind, paths: map[string]string{"remote": unavailable.URL}}, Config{
+				FullHashMaxSize: 10,
+				HTTPClient:      unavailable.Client(),
+			})
+			worker.processQueued(ctx, video)
+
+			got, err := cat.GetVideo(ctx, video.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.FingerprintStatus != tc.wantStatus {
+				t.Fatalf("fingerprint status = %q, want %q", got.FingerprintStatus, tc.wantStatus)
+			}
+			if cooling := worker.Status().State == "cooling"; cooling != tc.wantCooling {
+				t.Fatalf("cooling = %v, want %v", cooling, tc.wantCooling)
+			}
+		})
 	}
 }
 
-func TestGuangYaPanRemoteRangeErrorsLookRateLimited(t *testing.T) {
-	for _, tc := range []struct {
-		rawURL string
-		status int
-	}{
-		{rawURL: "https://txgz02-httpdown.guangyacdn.com/download/?fid=encoded", status: http.StatusForbidden},
-		{rawURL: "https://txgz02-httpdown.guangyacdn.com/download/?fid=encoded", status: http.StatusServiceUnavailable},
-		{rawURL: "https://txgz02-httpdown.guangyacdn.com/download/?fid=encoded", status: 509},
-	} {
-		if !remoteRangeResponseLooksRateLimited(tc.rawURL, tc.status, nil) {
-			t.Fatalf("remoteRangeResponseLooksRateLimited(%q, %d) = false, want true", tc.rawURL, tc.status)
+func TestComputeStalledRemoteReadTimesOut(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Range", "bytes 0-9/10")
+		w.WriteHeader(http.StatusPartialContent)
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
 		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
+
+	start := time.Now()
+	_, err := Compute(context.Background(), &fakeDrive{paths: map[string]string{"remote": srv.URL}}, &catalog.Video{
+		ID: "stalled", FileID: "remote", Size: 10,
+	}, Config{FullHashMaxSize: 10, StallTimeout: 50 * time.Millisecond}, srv.Client())
+	if !errors.Is(err, errStalled) || !transientTransportError(err) {
+		t.Fatalf("error = %v, want a transient stall", err)
 	}
-	if remoteRangeResponseLooksRateLimited("https://example.com/video.mp4", http.StatusForbidden, nil) {
-		t.Fatal("generic 403 should not be treated as guangyapan rate limit")
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("stalled read returned after %s", elapsed)
 	}
 }
 
-func TestGoogleDriveRemoteRangeForbiddenLooksRateLimitedByURL(t *testing.T) {
-	if !remoteRangeResponseLooksRateLimited("https://www.googleapis.com/drive/v3/files/file-1?alt=media", http.StatusForbidden, nil) {
-		t.Fatal("google drive media 403 should be treated as rate limit by URL and status")
+func TestComputeSlowProgressingReadIsNotStalled(t *testing.T) {
+	data := []byte("0123456789")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Range", "bytes 0-9/10")
+		w.WriteHeader(http.StatusPartialContent)
+		for _, b := range data {
+			// Each gap is under the stall timeout, but the whole read exceeds it.
+			time.Sleep(20 * time.Millisecond)
+			_, _ = w.Write([]byte{b})
+			w.(http.Flusher).Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	sum, err := Compute(context.Background(), &fakeDrive{paths: map[string]string{"remote": srv.URL}}, &catalog.Video{
+		ID: "slow", FileID: "remote", Size: int64(len(data)),
+	}, Config{FullHashMaxSize: 10, StallTimeout: 80 * time.Millisecond}, srv.Client())
+	if err != nil || sum == "" {
+		t.Fatalf("slow read = %q/%v, want a fingerprint", sum, err)
 	}
+}
+
+func TestWorkerWaitsOutCooldownSharedWithOtherWorkers(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "clip.mp4")
+	if err := os.WriteFile(path, []byte("clip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cat := openTestCatalog(t)
+	video := seedPendingVideo(t, cat, "shared-cooldown", 4)
+	drv := &fakeDrive{paths: map[string]string{"remote": path}}
+	worker := NewWorker(cat, drv, Config{})
+	// Another worker of the same drive was throttled.
+	shared := &tasklimit.Cooldown{}
+	until := shared.Pause(time.Now(), 50*time.Millisecond)
+	worker.Cooldown = shared
+
+	worker.processQueued(ctx, video)
+
+	if time.Now().Before(until) {
+		t.Fatal("fingerprint read the drive during its cooldown")
+	}
+	got, err := cat.GetVideo(ctx, video.ID)
+	if err != nil || got.FingerprintStatus != "ready" || drv.streamCalls != 1 {
+		t.Fatalf("video=%+v calls=%d err=%v, want ready after the cooldown", got, drv.streamCalls, err)
+	}
+}
+
+func openTestCatalog(t *testing.T) *catalog.Catalog {
+	t.Helper()
+	cat, err := catalog.Open(filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+	return cat
+}
+
+func seedPendingVideo(t *testing.T, cat *catalog.Catalog, id string, size int64) *catalog.Video {
+	t.Helper()
+	video := &catalog.Video{
+		ID: id, DriveID: "fake", FileID: "remote", Title: id, Size: size,
+		FingerprintStatus: "pending", PublishedAt: time.Now(), CreatedAt: time.Now(),
+	}
+	if err := cat.UpsertVideo(context.Background(), video); err != nil {
+		t.Fatal(err)
+	}
+	return video
 }
 
 type fakeDrive struct {
