@@ -16,13 +16,13 @@ func seedBackupDuplicateRecord(t *testing.T, cat *catalog.Catalog, id string, oc
 		t.Fatal(err)
 	}
 	if err := cat.UpsertVideo(ctx, &catalog.Video{
-		ID: "kept-" + id, DriveID: "cloud", FileID: "kept-" + id, FileName: id + ".mp4", Size: 123,
+		ID: "kept-" + id, DriveID: "cloud", FileID: "kept-" + id, FileName: id + ".mp4", Size: 123, ContentHash: id,
 		ParentID: "cloud-parent", DirName: "Originals", AncestorDirIDs: []string{"0", "cloud-parent"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	for range occurrences {
-		inserted, err := cat.InsertScannedVideo(ctx, &catalog.Video{ID: id, DriveID: "local-upload", FileID: id, FileName: id + ".mp4", Size: 123}, nil)
+		inserted, err := cat.InsertScannedVideo(ctx, &catalog.Video{ID: id, DriveID: "local-upload", FileID: id, FileName: id + ".mp4", Size: 123, ContentHash: id}, nil)
 		if err != nil || inserted {
 			t.Fatalf("seed duplicate record: inserted=%v err=%v", inserted, err)
 		}

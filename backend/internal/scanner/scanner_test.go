@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -693,7 +694,9 @@ func TestRunSkipsDuplicateFileHashes(t *testing.T) {
 	}
 }
 
-func TestRunSkipsDuplicateFileNamesWithSameSizeWhenHashesMissing(t *testing.T) {
+// A file name and size match is provisional: the copy is admitted so its
+// fingerprint can decide, and the public list hides it meanwhile.
+func TestRunAdmitsSameNameAndSizeCopiesWhenHashesMissing(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
 	if err != nil {
@@ -737,15 +740,24 @@ func TestRunSkipsDuplicateFileNamesWithSameSizeWhenHashesMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
-	if stats.Added != 2 {
-		t.Fatalf("added = %d, want 2", stats.Added)
+	if stats.Added != 3 {
+		t.Fatalf("added = %d, want 3", stats.Added)
 	}
-	wantAdded := []string{"fake-drive-file-1", "fake-drive-file-3"}
+	wantAdded := []string{"fake-drive-file-1", "fake-drive-file-2", "fake-drive-file-3"}
 	if !sameStrings(addedIDs, wantAdded) {
 		t.Fatalf("on new ids = %#v, want %#v", addedIDs, wantAdded)
 	}
-	if _, err := cat.GetVideo(ctx, "fake-drive-file-2"); err != sql.ErrNoRows {
-		t.Fatalf("duplicate video lookup error = %v, want sql.ErrNoRows", err)
+	listed, _, err := cat.ListVideos(ctx, catalog.ListParams{PageSize: 10, SkipTotal: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listedIDs := make([]string, 0, len(listed))
+	for _, v := range listed {
+		listedIDs = append(listedIDs, v.ID)
+	}
+	slices.Sort(listedIDs)
+	if want := []string{"fake-drive-file-1", "fake-drive-file-3"}; !sameStrings(listedIDs, want) {
+		t.Fatalf("listed ids = %#v, want %#v while the copy awaits its fingerprint", listedIDs, want)
 	}
 }
 

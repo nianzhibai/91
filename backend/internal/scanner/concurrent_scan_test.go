@@ -87,10 +87,12 @@ func TestConcurrentScansAdmitAndDispatchEachSharedVideoOnce(t *testing.T) {
 		duplicates += got.result.Duplicates
 		generated += len(got.result.NewVideos)
 	}
-	wantNew := scanCount + 2
-	if added != wantNew || generated != wantNew || int(callbacks.Load()) != wantNew || duplicates != 2*(scanCount-1) {
+	// Only the hash copy is an exact duplicate. Name copies are admitted so
+	// their fingerprints can decide.
+	wantNew := 2*scanCount + 1
+	if added != wantNew || generated != wantNew || int(callbacks.Load()) != wantNew || duplicates != scanCount-1 {
 		t.Fatalf("added=%d generation=%d callbacks=%d duplicates=%d, want %d/%d/%d/%d",
-			added, generated, callbacks.Load(), duplicates, wantNew, wantNew, wantNew, 2*(scanCount-1))
+			added, generated, callbacks.Load(), duplicates, wantNew, wantNew, wantNew, scanCount-1)
 	}
 	stored := 0
 	for i := range scanCount {

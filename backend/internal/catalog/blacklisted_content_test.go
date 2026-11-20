@@ -140,9 +140,11 @@ func TestFileNameMatchRequiresAgreeingSignals(t *testing.T) {
 	assertCanonicalFlag(t, cat, "Y", true)
 	assertCanonicalFlag(t, cat, "D", false)
 
-	if admit(t, cat, &Video{ID: "N", DriveID: "three", FileID: "n", FileName: "1.mp4", Size: 10}) {
-		t.Fatal("unproven name and size copy was admitted")
+	// A name and size copy is admitted and stays hidden until its fingerprint decides.
+	if !admit(t, cat, &Video{ID: "N", DriveID: "three", FileID: "n", FileName: "1.mp4", Size: 10, CreatedAt: base.Add(4 * time.Millisecond)}) {
+		t.Fatal("name and size copy was skipped before its fingerprint could decide")
 	}
+	assertCanonicalFlag(t, cat, "N", false)
 
 	blacklist(t, cat, "A")
 	for _, id := range []string{"X", "Y"} {
@@ -157,14 +159,17 @@ func TestFileNameMatchRequiresAgreeingSignals(t *testing.T) {
 
 func TestScanAdmitsSameNameWithDifferentHashOnOneDrive(t *testing.T) {
 	cat := openCanonicalTestCatalog(t)
-	seedVideos(t, cat, &Video{ID: "A", DriveID: "one", FileID: "a", ContentHash: "x", FileName: "1.mp4", Size: 10})
-	if !admit(t, cat, &Video{ID: "Z", DriveID: "one", FileID: "z", ContentHash: "z", FileName: "1.mp4", Size: 10}) {
+	base := time.UnixMilli(1_800_000_000_000)
+	seedVideos(t, cat, &Video{ID: "A", DriveID: "one", FileID: "a", ContentHash: "x", FileName: "1.mp4", Size: 10, CreatedAt: base})
+	if !admit(t, cat, &Video{ID: "Z", DriveID: "one", FileID: "z", ContentHash: "z", FileName: "1.mp4", Size: 10, CreatedAt: base.Add(time.Millisecond)}) {
 		t.Fatal("same-drive file with a different provider hash was skipped")
 	}
-	// Without comparable signals the match stays a provisional duplicate.
-	if admit(t, cat, &Video{ID: "W", DriveID: "two", FileID: "w", FileName: "1.mp4", Size: 10}) {
-		t.Fatal("unproven copy on another drive was admitted")
+	// Without comparable signals the match stays provisional: the copy is
+	// admitted but hidden until its fingerprint decides.
+	if !admit(t, cat, &Video{ID: "W", DriveID: "two", FileID: "w", FileName: "1.mp4", Size: 10, CreatedAt: base.Add(2 * time.Millisecond)}) {
+		t.Fatal("copy on another drive was skipped before its fingerprint could decide")
 	}
+	assertCanonicalFlag(t, cat, "W", false)
 }
 
 func TestDeletionIncludesCopiesAwaitingUsableSize(t *testing.T) {

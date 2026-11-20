@@ -28,8 +28,6 @@ func TestScanDuplicateRecordsPreserveBasisAndCoalesce(t *testing.T) {
 		name, sourceHash, canonicalHash, reason string
 	}{
 		{"hash takes precedence", " SAME ", "same", dedupe.ReasonContentHash},
-		{"different provider hashes", "provider-a", "provider-b", dedupe.ReasonFileNameSize},
-		{"missing hashes", "", "", dedupe.ReasonFileNameSize},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cat := duplicateRecordTestCatalog(t)
@@ -62,13 +60,11 @@ func TestScanDuplicateRecordsPreserveBasisAndCoalesce(t *testing.T) {
 			if reason != tc.reason || origin != DuplicateOriginScan || outcome != DuplicateOutcomeSkipped || occurrences != 3 || count != 1 || first <= 0 || last < first {
 				t.Fatalf("record = %s/%s/%s occurrences=%d count=%d times=%d,%d", reason, origin, outcome, occurrences, count, first, last)
 			}
-			if tc.name == "missing hashes" {
-				// Removing migration-only wrappers must not change existing decision keys.
-				const expectedKey = "eee2cd7f4122f622d40770774b0d996e10d2019f14e05a52611d8af83a3e8422"
-				var key string
-				if err := cat.db.QueryRow(`SELECT record_key FROM duplicate_records`).Scan(&key); err != nil || key != expectedKey {
-					t.Fatalf("decision key changed: key=%s err=%v", key, err)
-				}
+			// Existing decision keys must not change.
+			const expectedKey = "87e32ece49401f124df45489b4ac0702758613cec3d6f3f5d3257433a8549125"
+			var key string
+			if err := cat.db.QueryRow(`SELECT record_key FROM duplicate_records`).Scan(&key); err != nil || key != expectedKey {
+				t.Fatalf("decision key changed: key=%s err=%v", key, err)
 			}
 			var snapshot duplicateSnapshot
 			if err := json.Unmarshal([]byte(sourceJSON), &snapshot); err != nil {
@@ -109,14 +105,14 @@ func TestScanDuplicateRecordsPreserveBasisAndCoalesce(t *testing.T) {
 func TestScanDuplicateAuditFailureDoesNotReportSuccess(t *testing.T) {
 	cat := duplicateRecordTestCatalog(t)
 	ctx := context.Background()
-	canonical := &Video{ID: "kept", DriveID: "a", FileID: "kept", FileName: "same.mp4", Size: 100}
+	canonical := &Video{ID: "kept", DriveID: "a", FileID: "kept", FileName: "same.mp4", Size: 100, ContentHash: "hash"}
 	if err := cat.UpsertVideo(ctx, canonical); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := cat.db.Exec(`CREATE TRIGGER fail_duplicate_record BEFORE INSERT ON duplicate_records BEGIN SELECT RAISE(ABORT, 'audit failed'); END`); err != nil {
 		t.Fatal(err)
 	}
-	source := &Video{ID: "skipped", DriveID: "b", FileID: "skipped", FileName: "same.mp4", Size: 100}
+	source := &Video{ID: "skipped", DriveID: "b", FileID: "skipped", FileName: "same.mp4", Size: 100, ContentHash: "hash"}
 	if inserted, err := cat.InsertScannedVideo(ctx, source, nil); err == nil || inserted {
 		t.Fatalf("audit failure hidden: inserted=%v err=%v", inserted, err)
 	}
@@ -334,11 +330,11 @@ func TestDuplicateRecordsPersistAcrossReopen(t *testing.T) {
 		}
 	})
 	ctx := context.Background()
-	canonical := &Video{ID: "kept", DriveID: "drive-a", FileID: "kept", FileName: "same.mp4", Size: 100}
+	canonical := &Video{ID: "kept", DriveID: "drive-a", FileID: "kept", FileName: "same.mp4", Size: 100, ContentHash: "hash"}
 	if err := cat.UpsertVideo(ctx, canonical); err != nil {
 		t.Fatal(err)
 	}
-	source := &Video{ID: "skipped", DriveID: "drive-b", FileID: "skipped", FileName: "same.mp4", Size: 100}
+	source := &Video{ID: "skipped", DriveID: "drive-b", FileID: "skipped", FileName: "same.mp4", Size: 100, ContentHash: "hash"}
 	if inserted, err := cat.InsertScannedVideo(ctx, source, nil); err != nil || inserted {
 		t.Fatalf("initial decision: inserted=%v err=%v", inserted, err)
 	}

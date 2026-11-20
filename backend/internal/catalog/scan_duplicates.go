@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"strings"
 
 	"github.com/nianzhibai/91/backend/internal/dedupe"
 	"github.com/nianzhibai/91/backend/internal/driveevents"
@@ -90,9 +89,6 @@ func recordScannedDuplicate(ctx context.Context, exec videoRowExecer, source, du
 		return errors.New("catalog: scan duplicate requires both videos")
 	}
 	reason := exactDuplicateReason(source, duplicate)
-	if reason == "" && weakDuplicate(source, duplicate) {
-		reason = dedupe.ReasonFileNameSize
-	}
 	if reason == "" {
 		return errors.New("catalog: scan duplicate snapshots do not match the scan policy")
 	}
@@ -105,41 +101,18 @@ type scanDuplicateQuerier interface {
 }
 
 // findScannedVideoDuplicate applies the exact identity rule shared with crawler
-// ingress and maintenance. Scan additionally treats a matching file name and
-// size as a provisional signal before a fingerprint exists: the file is only
-// skipped, never tombstoned, and is admitted once the matched row disappears.
+// ingress and maintenance. A matching file name and size alone does not skip a
+// file: it is admitted, the public list hides it while the match is open, and
+// its fingerprint confirms or rules out the match.
 func findScannedVideoDuplicate(ctx context.Context, query scanDuplicateQuerier, v *Video, seenFileIDs map[string]struct{}) (*Video, error) {
-	// Only active conditions enter the predicate: a constant branch in the OR
-	// stops SQLite from using the hash, fingerprint and name/size indexes.
-	var clauses []string
-	var args []any
-	exactWhere, exactArgs, hasExact := equivalentVideoLookupWhere(v)
-	if hasExact {
-		clauses = append(clauses, exactWhere)
-		args = append(args, exactArgs...)
-	}
-	hasName := v.FileName != "" && v.Size > 0
-	if hasName {
-		// The SQL form of weakDuplicate against the incoming observation.
-		sampled, hash := normalizeContentHash(v.SampledSHA256), normalizeContentHash(v.ContentHash)
-		clauses = append(clauses, `(file_name = ? AND size_bytes = ?
-			AND (COALESCE(sampled_sha256, '') = '' OR ? = '' OR sampled_sha256 = ?)
-			AND (drive_id != ? OR COALESCE(content_hash, '') = '' OR ? = '' OR content_hash = ?))`)
-		args = append(args, v.FileName, v.Size, sampled, sampled, v.DriveID, hash, hash)
-	}
-	if len(clauses) == 0 {
+	where, args, ok := equivalentVideoLookupWhere(v)
+	if !ok {
 		return nil, nil
-	}
-	order := "created_at ASC, id ASC"
-	if hasExact && hasName {
-		// Exact matches sort before provisional name/size matches.
-		order = "CASE WHEN " + exactWhere + " THEN 0 ELSE 1 END, " + order
-		args = append(args, exactArgs...)
 	}
 	rows, err := query.QueryContext(ctx, `SELECT `+allVideoCols+` FROM videos
 WHERE `+duplicateLookupScope+`
-  AND (`+strings.Join(clauses, " OR ")+`)
-ORDER BY `+order, args...)
+  AND (`+where+`)
+ORDER BY created_at ASC, id ASC`, args...)
 	if err != nil {
 		return nil, err
 	}

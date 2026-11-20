@@ -67,8 +67,9 @@ func TestInsertScannedVideoCoordinatesConcurrentCatalogs(t *testing.T) {
 					inserted++
 				}
 			}
+			// A file name and size match alone never skips a file.
 			want := 1
-			if match == "distinct" {
+			if match != "hash" {
 				want = scans
 			}
 			var stored int
@@ -130,16 +131,21 @@ func TestScannedVideoDuplicatePolicyPreservesLiveSources(t *testing.T) {
 				if hash != "" {
 					v.FileName = "renamed.mp4"
 				}
+				wantID, wantInserted := tc.wantID, tc.inserted
+				if hash == "" {
+					// A file name and size match is not exact; the file is admitted.
+					wantID, wantInserted = "", true
+				}
 				duplicate, err := cat.FindScannedVideoDuplicate(ctx, v, tc.seen)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if tc.wantID == "" && duplicate != nil || tc.wantID != "" && (duplicate == nil || duplicate.ID != tc.wantID) {
-					t.Fatalf("duplicate=%+v, want %q", duplicate, tc.wantID)
+				if wantID == "" && duplicate != nil || wantID != "" && (duplicate == nil || duplicate.ID != wantID) {
+					t.Fatalf("duplicate=%+v, want %q", duplicate, wantID)
 				}
 				inserted, err := cat.InsertScannedVideo(ctx, v, tc.seen)
-				if err != nil || inserted != tc.inserted {
-					t.Fatalf("inserted=%t error=%v, want inserted=%t", inserted, err, tc.inserted)
+				if err != nil || inserted != wantInserted {
+					t.Fatalf("inserted=%t error=%v, want inserted=%t", inserted, err, wantInserted)
 				}
 			})
 		}

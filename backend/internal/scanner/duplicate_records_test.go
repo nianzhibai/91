@@ -32,14 +32,14 @@ func TestScanRecordsDuplicatesForNewAndExistingSources(t *testing.T) {
 			}
 			defer cat.Close()
 			if err := cat.UpsertVideo(ctx, &catalog.Video{
-				ID: "kept", DriveID: "other", FileID: "kept", FileName: "same.mp4", Title: "Kept", Size: 123,
+				ID: "kept", DriveID: "other", FileID: "kept", FileName: "same.mp4", Title: "Kept", Size: 123, ContentHash: "shared",
 				ParentID: "other-parent", DirName: "Originals", AncestorDirIDs: []string{"other-root", "other-parent"},
 			}); err != nil {
 				t.Fatal(err)
 			}
 			if existing {
 				if err := cat.UpsertVideo(ctx, &catalog.Video{
-					ID: "fake-drive-file", DriveID: "drive", FileID: "file", FileName: "same.mp4", Title: "same", Size: 123,
+					ID: "fake-drive-file", DriveID: "drive", FileID: "file", FileName: "same.mp4", Title: "same", Size: 123, ContentHash: "shared",
 					ParentID: "old-parent", DirName: "Old", AncestorDirIDs: []string{"root", "old-parent"},
 				}); err != nil {
 					t.Fatal(err)
@@ -48,7 +48,7 @@ func TestScanRecordsDuplicatesForNewAndExistingSources(t *testing.T) {
 			drive := &scannerTreeFakeDrive{entries: map[string][]drives.Entry{
 				"root":         {{ID: "category", Name: "Category", IsDir: true}},
 				"category":     {{ID: "/library/a|b", Name: "Clips", IsDir: true}},
-				"/library/a|b": {{ID: "file", Name: "same.mp4", Size: 123, ParentID: "stale-provider-parent"}},
+				"/library/a|b": {{ID: "file", Name: "same.mp4", Size: 123, Hash: "shared", ParentID: "stale-provider-parent"}},
 			}}
 			scanner := New(cat, drive, []string{".mp4"}, nil, nil)
 			for range 2 {
@@ -67,7 +67,7 @@ func TestScanRecordsDuplicatesForNewAndExistingSources(t *testing.T) {
 			if err := db.QueryRow(`SELECT reason,outcome,file_id,occurrences FROM duplicate_records`).Scan(&reason, &gotOutcome, &fileID, &count); err != nil {
 				t.Fatal(err)
 			}
-			if reason != "file_name_size" || gotOutcome != outcome || fileID != "file" || count != 2 {
+			if reason != "content_hash" || gotOutcome != outcome || fileID != "file" || count != 2 {
 				t.Fatalf("record = %s/%s/%s occurrences=%d", reason, gotOutcome, fileID, count)
 			}
 			var key, sourceJSON string
@@ -97,7 +97,7 @@ func TestScanRecordsDuplicatesForNewAndExistingSources(t *testing.T) {
 
 			drive.entries = map[string][]drives.Entry{
 				"root":  {{ID: "moved", Name: "Moved", IsDir: true}},
-				"moved": {{ID: "file", Name: "same.mp4", Size: 123}},
+				"moved": {{ID: "file", Name: "same.mp4", Size: 123, Hash: "shared"}},
 			}
 			for range 2 {
 				result, err := scanner.Scan(ctx, "root")

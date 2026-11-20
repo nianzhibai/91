@@ -41,11 +41,12 @@ internal caller supplies no matching evidence.
 All entry points share one policy. Exact identity is a matching provider hash
 or a matching size plus sampled fingerprint (`dedupe.ExactKeys`); perceptual
 pairs use `dedupe.MatchNear` and `dedupe.MatchContent`. Hidden rows and rows
-without a file never act as duplicate partners. Scan alone also uses
-`file_name_size` before a fingerprint exists. It only skips the new file,
-which is admitted once the matched row disappears. Crawler ingress always
-keeps the admitted copy; only maintenance retires existing rows, where the
-larger file wins a perceptual match. Merge plans are guarded by
+without a file never act as duplicate partners. Scan skips only exact
+duplicates; a file name and size match is admitted and left to its
+fingerprint. Older scan records with reason `file_name_size` remain as
+history. Crawler ingress always keeps the admitted copy; only maintenance
+retires existing rows, where the larger file wins a perceptual match. Merge
+plans are guarded by
 `catalog.DuplicateRevision`, which covers matching inputs and asset state but
 not counters, so views and reactions during planning do not invalidate them.
 

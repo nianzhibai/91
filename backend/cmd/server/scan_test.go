@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -57,16 +58,29 @@ func TestScanReplacementSurvivesFirstScanAndRetainsLiveDeduplication(t *testing.
 				{ID: "replacement", Name: "clip.mp4", Hash: hash, Size: 123},
 				{ID: "another-copy", Name: "clip.mp4", Hash: hash, Size: 123},
 			}
+			// A provider hash skips the copy. A name and size match admits it, and
+			// the public list hides it until fingerprints decide.
+			wantAdded, wantDuplicates := 1, 1
+			if hash == "" {
+				wantAdded, wantDuplicates = 2, 0
+			}
 			result := app.runScan(ctx, drv.ID())
-			if result.State != scanjob.Succeeded || result.AddedCount != 1 || result.DuplicateCount != 1 {
+			if result.State != scanjob.Succeeded || result.AddedCount != wantAdded || result.DuplicateCount != wantDuplicates {
 				t.Fatalf("unexpected result: %+v", result)
 			}
 			items, err := app.cat.ListVideosByDrive(ctx, drv.ID())
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(items) != 1 || items[0].FileID != "replacement" {
+			if len(items) != wantAdded || !slices.ContainsFunc(items, func(v *catalog.Video) bool { return v.FileID == "replacement" }) {
 				t.Fatalf("first scan must retain the live replacement: %+v", items)
+			}
+			listed, _, err := app.cat.ListVideos(ctx, catalog.ListParams{PageSize: 10, SkipTotal: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(listed) != 1 {
+				t.Fatalf("listed %d videos, want one card for the copies", len(listed))
 			}
 			again := app.runScan(ctx, drv.ID())
 			if again.AddedCount != 0 || again.State != scanjob.Succeeded {
