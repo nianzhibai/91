@@ -136,7 +136,7 @@ func (s *Server) handleVideoFeed(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, videoFeedResponse{
-		Items:      mapVideoSummaries(videos),
+		Items:      mapVideoSummaries(videos, s.previewsEnabled()),
 		Total:      len(videoIDs),
 		FeedToken:  feedToken,
 		NextCursor: nextCursor,

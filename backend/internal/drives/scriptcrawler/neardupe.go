@@ -38,7 +38,8 @@ func (c *Importer) recordSkippedDuplicate(ctx context.Context, source, canonical
 // findNearDuplicateVideo 在导入前查找库内近重复视频，两条通道：
 //  1. 标题相似 + 封面 SSIM（同源重发场景）；
 //  2. 内容级：时长几乎相等时比较候选 teaser 与本地新视频的对齐帧
-//     （跨源不同压制场景，标题和封面通常完全对不上）。
+//     （跨源不同压制场景，标题和封面通常完全对不上）。它依赖预览视频，
+//     全局预览开关关闭时跳过，不再为每个新视频运行 ffmpeg。
 func (c *Importer) findNearDuplicateVideo(ctx context.Context, source *catalog.Video, sourceThumbPath, sourceVideoPath string) (*nearDuplicateMatch, error) {
 	if c == nil || c.cfg.Catalog == nil || source == nil {
 		return nil, nil
@@ -57,6 +58,9 @@ func (c *Importer) findNearDuplicateVideo(ctx context.Context, source *catalog.V
 
 	if match := c.findTitleThumbDuplicate(source, sourceThumbPath, candidates); match != nil {
 		return match, nil
+	}
+	if c.cfg.PreviewEnabled != nil && !c.cfg.PreviewEnabled() {
+		return nil, nil
 	}
 	return c.findContentDuplicate(ctx, source, sourceVideoPath, candidates)
 }

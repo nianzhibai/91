@@ -300,10 +300,13 @@ func (s *Server) videoByPublicID(ctx context.Context, id string) (*catalog.Video
 }
 
 func (s *Server) mapSharedVideoDetail(ctx context.Context, v *catalog.Video, shareID string) VideoDetailDTO {
-	dto := mapVideo(v)
+	previews := s.previewsEnabled()
+	dto := mapVideo(v, previews)
 	dto.Href = ""
 	dto.Thumbnail = s.sharedThumbnailURL(v, shareID)
-	dto.PreviewSrc = sharedAssetURL(shareID, "preview", v.PreviewUpdatedAt)
+	if previews {
+		dto.PreviewSrc = sharedAssetURL(shareID, "preview", v.PreviewUpdatedAt)
+	}
 	dto.SourceLabel = s.videoSourceLabel(ctx, v)
 	return VideoDetailDTO{
 		VideoDTO:    dto,
@@ -367,7 +370,7 @@ func (s *Server) serveUploadedVideo(w http.ResponseWriter, r *http.Request, v *c
 }
 
 func (s *Server) servePreviewVideo(w http.ResponseWriter, r *http.Request, v *catalog.Video) {
-	if v == nil || v.Hidden || v.PreviewStatus != "ready" {
+	if !s.previewsEnabled() || v == nil || v.Hidden || v.PreviewStatus != "ready" {
 		httpapi.Error(w, "preview not ready", http.StatusNotFound)
 		return
 	}

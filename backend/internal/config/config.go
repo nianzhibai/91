@@ -183,6 +183,8 @@ type Generation struct {
 }
 
 type Preview struct {
+	// Enabled is the hot-reloadable lightweight switch: off stops preview
+	// generation and every task derived from previews, and stops serving them.
 	Enabled         bool   `yaml:"enabled"`
 	FFmpegPath      string `yaml:"ffmpeg_path"`
 	FFprobePath     string `yaml:"ffprobe_path"`

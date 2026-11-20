@@ -8270,7 +8270,8 @@
             "type": "integer"
           },
           "previewSrc": {
-            "type": "string"
+            "type": "string",
+            "description": "Teaser URL; empty while the global preview switch is off."
           },
           "previewStrategy": {
             "type": "string",
@@ -8463,7 +8464,8 @@
             "type": "integer"
           },
           "previewSrc": {
-            "type": "string"
+            "type": "string",
+            "description": "Teaser URL; empty while the global preview switch is off."
           },
           "previewStrategy": {
             "type": "string",
@@ -8550,7 +8552,8 @@
             "type": "string"
           },
           "previewSrc": {
-            "type": "string"
+            "type": "string",
+            "description": "Present exactly when preview=1 is requested; empty while the global preview switch is off."
           },
           "publishedAt": {
             "type": "string",
@@ -8639,7 +8642,8 @@
             "type": "integer"
           },
           "previewSrc": {
-            "type": "string"
+            "type": "string",
+            "description": "Teaser URL; empty while the global preview switch is off."
           },
           "previewStrategy": {
             "type": "string",
@@ -8757,7 +8761,8 @@
             "type": "integer"
           },
           "previewSrc": {
-            "type": "string"
+            "type": "string",
+            "description": "Teaser URL; empty while the global preview switch is off."
           },
           "previewStrategy": {
             "type": "string",

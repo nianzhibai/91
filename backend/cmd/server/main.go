@@ -292,8 +292,8 @@ func main() {
 			_, err := app.deleteVideo(reqCtx, videoID, catalog.VideoDeletionOptions{})
 			return err
 		},
-		GetTheme:          func() string { return app.Theme() },
-		GetPreviewEnabled: app.previewEnabled,
+		GetTheme:       func() string { return app.Theme() },
+		PreviewEnabled: app.previewEnabled,
 	}
 	app.onTagsChanged = apiServer.InvalidateTagCache
 
@@ -306,6 +306,7 @@ func main() {
 		BackupTransfers:        backupTransferManager,
 		Logs:                   logStore,
 		ConfigManager:          configManager,
+		PreviewEnabled:         app.previewEnabled,
 		GPU:                    app.generationHardware(),
 		VersionFilePath:        versionFilePath,
 		ImageVersion:           imageVersion,

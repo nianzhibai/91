@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
+	"maps"
 
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/config"
@@ -61,20 +63,40 @@ func (a *App) generationHardware() *preview.Hardware {
 }
 
 func (a *App) previewEnabled() bool {
-	return !a.previewDisabled.Load()
+	return a.previewGate.Enabled()
 }
 
-// Publish before queue admission: Manager invokes live callbacks before exposing
-// its new snapshot. Workers and crawler uploads share this atomic projection.
+// applyPreviewEnabled runs before Manager publishes the new snapshot, so queue
+// admission observes the switch first. Disabling the gate cancels running
+// previews; enabling catches up on the work skipped while off.
 func (a *App) applyPreviewEnabled(ctx context.Context, enabled bool) {
-	wasDisabled := a.previewDisabled.Swap(!enabled)
-	if !enabled || !wasDisabled {
-		return
+	if a.previewGate.Set(enabled) && enabled {
+		go a.resumePreviewGeneration(ctx)
+	}
+}
+
+// resumePreviewGeneration repairs local preview references, which nightly
+// maintenance skips while previews are off, then admits pending previews for
+// every attached drive. Drives attached after this snapshot run their own
+// initial pending scan with the switch already on.
+func (a *App) resumePreviewGeneration(ctx context.Context) {
+	if a.cfg != nil && a.cat != nil {
+		if _, err := a.reconcileMissingLocalPreviewFiles(ctx); err != nil && ctx.Err() == nil {
+			log.Printf("[preview] reconcile local previews after enabling: %v", err)
+		}
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	for driveID, worker := range a.workers {
-		a.scheduleDriveGenerationEnqueue(ctx, driveID, worker, nil)
+	workers := maps.Clone(a.workers)
+	a.mu.Unlock()
+	for driveID, worker := range workers {
+		go func() {
+			taskCtx, done := a.registerDriveTaskContextWaiting(ctx, driveID, driveTaskScopePreview)
+			defer done()
+			if taskCtx.Err() != nil {
+				return
+			}
+			a.enqueueDriveGeneration(taskCtx, driveID, worker, nil)
+		}()
 	}
 }
 

@@ -152,7 +152,7 @@ func TestVideoURLsEscapePathSegments(t *testing.T) {
 		UpdatedAt:          updated,
 	}
 
-	dto := mapVideo(v)
+	dto := mapVideo(v, true)
 	if dto.Href != "/video/wopan-drive-fid%2Fwith%20space" {
 		t.Fatalf("href = %q, want escaped video id", dto.Href)
 	}
@@ -161,6 +161,9 @@ func TestVideoURLsEscapePathSegments(t *testing.T) {
 	}
 	if dto.Thumbnail != "/p/thumb/wopan-drive-fid%2Fwith%20space?v=1778863000123" {
 		t.Fatalf("thumbnail = %q, want escaped video id", dto.Thumbnail)
+	}
+	if disabled := mapVideo(v, false); disabled.PreviewSrc != "" || disabled.Thumbnail != dto.Thumbnail {
+		t.Fatalf("disabled previews still linked a teaser: %+v", disabled)
 	}
 	if got := videoSource(v); got != "/p/stream/drive-1/fid%2Fwith%20space" {
 		t.Fatalf("video source = %q, want escaped file id", got)
@@ -171,7 +174,7 @@ func TestVideoDTOOmitsRetiredQualityMetadata(t *testing.T) {
 	encoded, err := json.Marshal(mapVideo(&catalog.Video{
 		ID:    "video-1",
 		Title: "Video",
-	}))
+	}, true))
 	if err != nil {
 		t.Fatalf("marshal video DTO: %v", err)
 	}
@@ -574,19 +577,16 @@ func TestVideoSourceUsesLocalUploadRoute(t *testing.T) {
 	}
 }
 
-func TestPreviewURLIncludesPreviewRevision(t *testing.T) {
-	got := previewURL(&catalog.Video{
-		ID:               "video-1",
-		PreviewUpdatedAt: time.UnixMilli(1778863000123),
-	})
+func TestPreviewSrcIncludesPreviewRevision(t *testing.T) {
+	got := previewSrc("video-1", time.UnixMilli(1778863000123), true)
 
 	if got != "/p/preview/video-1?v=1778863000123" {
 		t.Fatalf("preview URL = %q, want versioned URL", got)
 	}
 }
 
-func TestPreviewURLFallsBackWithoutPreviewRevision(t *testing.T) {
-	got := previewURL(&catalog.Video{ID: "video-1"})
+func TestPreviewSrcFallsBackWithoutPreviewRevision(t *testing.T) {
+	got := previewSrc("video-1", time.Time{}, true)
 
 	if got != "/p/preview/video-1" {
 		t.Fatalf("preview URL = %q, want unversioned URL", got)
@@ -1659,6 +1659,13 @@ func TestHandlePreviewIgnoresRemotePreviewFileIDAndServesLocalFile(t *testing.T)
 	server.handlePreview(staleRR, staleReq)
 	if got := staleRR.Header().Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("stale Cache-Control = %q, want no-store", got)
+	}
+
+	server.PreviewEnabled = func() bool { return false }
+	disabledRR := httptest.NewRecorder()
+	server.handlePreview(disabledRR, requestWithRouteParam(http.MethodGet, "/p/preview/video-1", "videoID", "video-1", strings.NewReader(``)))
+	if disabledRR.Code != http.StatusNotFound {
+		t.Fatalf("disabled previews served a teaser: status = %d", disabledRR.Code)
 	}
 }
 

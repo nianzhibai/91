@@ -49,7 +49,7 @@ func TestGlobalPreviewHotReloadBackfillsEverySource(t *testing.T) {
 			t.Fatal(err)
 		}
 		worker := preview.NewWorker(&serverFakeTeaserGenerator{}, cat, &serverFakeDrive{})
-		worker.Enabled = app.previewEnabled
+		worker.Gate = &app.previewGate
 		app.workers[driveID] = worker
 		app.enqueueDriveGeneration(ctx, driveID, worker, nil)
 		app.enqueueUploadedVideo(ctx, video)
@@ -75,7 +75,48 @@ func TestGlobalPreviewHotReloadBackfillsEverySource(t *testing.T) {
 		t.Fatal(err)
 	}
 	late, _, _ := app.newDriveGenerationWorkers(&serverFakeDrive{})
-	if late.Enabled == nil || late.Enabled() {
+	if late.Gate != &app.previewGate || late.Gate.Enabled() {
 		t.Fatal("late attached worker ignored global switch")
+	}
+}
+
+func TestPreviewSwitchDefersLocalPreviewReconciliationUntilEnabled(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	root := t.TempDir()
+	cat, err := catalog.Open(filepath.Join(root, "catalog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+	seedGenerationDrive(t, cat, "storage")
+	now := time.Now()
+	if err := cat.UpsertVideo(ctx, &catalog.Video{
+		ID: "missing", DriveID: "storage", FileID: "source", Title: "Missing",
+		PreviewLocal: filepath.Join(root, "missing.mp4"), PreviewStatus: "ready",
+		PublishedAt: now, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{cat: cat, cfg: &config.Config{Storage: config.Storage{LocalPreviewDir: root}}, workers: make(map[string]*preview.Worker)}
+	worker := preview.NewWorker(&serverFakeTeaserGenerator{}, cat, &serverFakeDrive{})
+	worker.Gate = &app.previewGate
+	app.workers["storage"] = worker
+	app.applyPreviewEnabled(ctx, false)
+
+	if _, err := app.reconcileLocalGeneratedAssets(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := cat.GetVideo(ctx, "missing"); err != nil || got.PreviewStatus != "ready" {
+		t.Fatalf("disabled maintenance touched previews: %+v, %v", got, err)
+	}
+
+	app.applyPreviewEnabled(ctx, true)
+	for worker.Status().QueueLength != 1 && ctx.Err() == nil {
+		time.Sleep(time.Millisecond)
+	}
+	got, err := cat.GetVideo(ctx, "missing")
+	if err != nil || got.PreviewStatus != "pending" || got.PreviewLocal != "" || worker.Status().QueueLength != 1 {
+		t.Fatalf("enabling did not repair and requeue the preview: %+v, %v, queue=%d", got, err, worker.Status().QueueLength)
 	}
 }

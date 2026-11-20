@@ -1208,9 +1208,9 @@ type Worker struct {
 	Gen     TeaserGenerator
 	Catalog *catalog.Catalog
 	Drive   drives.Drive
-	// Enabled reads the shared runtime policy at admission and task start.
-	// Nil enables standalone workers. Already running tasks may finish.
-	Enabled func() bool
+	// Gate is the shared preview switch, checked at admission. Disabling it
+	// cancels this worker's running tasks; nil enables standalone workers.
+	Gate *Gate
 	// OnPreviewReady lets the application schedule dependent local-asset work
 	// without coupling this worker to a concrete thumbnail worker.
 	OnPreviewReady func(*catalog.Video)
@@ -1277,7 +1277,7 @@ func (w *Worker) EnqueueBlocking(ctx context.Context, v *catalog.Video) bool {
 }
 
 func (w *Worker) enabled() bool {
-	return w.Enabled == nil || w.Enabled()
+	return w.Gate.Enabled()
 }
 
 type ThumbWorker struct {
@@ -1758,57 +1758,83 @@ func (w *Worker) processQueued(ctx context.Context, v *catalog.Video) {
 
 // prepareQueued waits in the dispatcher and transfers admission/resource
 // ownership to the returned task. No processing goroutine exists before this
-// succeeds, even when a drive has thousands of queued videos.
+// succeeds, even when a drive has thousands of queued videos. The gate cancels
+// the task, from slot waiting through generation, when previews are disabled.
+//
+// A video the gate stopped is admitted again in place when the switch has been
+// re-enabled meanwhile, because the resume scan may have seen its reservation
+// and skipped it. The dispatcher already holds the video, so this needs no
+// queue space; the dispatcher cannot block on its own queue.
 func (w *Worker) prepareQueued(ctx context.Context, v *catalog.Video) func() {
 	if v == nil {
 		return nil
+	}
+	for {
+		run, gated := w.admitQueued(ctx, v)
+		if run != nil || !gated || ctx.Err() != nil || !w.enabled() || !w.queue.reserve(v) {
+			return run
+		}
+	}
+}
+
+// admitQueued makes one admission attempt. Without a task it has released the
+// reservation, and gated reports whether the gate stopped the attempt.
+func (w *Worker) admitQueued(ctx context.Context, v *catalog.Video) (run func(), gated bool) {
+	taskCtx, stopTask, admitted := w.Gate.admit(ctx)
+	if !admitted {
+		w.releaseQueued(v)
+		return nil, true
 	}
 	prepared := false
 	taskRelease := func() {}
 	defer func() {
 		if !prepared {
-			w.queue.release(v)
+			gated = taskCtx.Err() != nil && ctx.Err() == nil
 			taskRelease()
-			w.notifyStatus(true)
+			stopTask()
+			w.releaseQueued(v)
 		}
 	}()
-	if w.Catalog == nil || v.ID == "" || ctx.Err() != nil || !w.enabled() {
-		return nil
+	if w.Catalog == nil || v.ID == "" || taskCtx.Err() != nil {
+		return nil, false
 	}
-	ctx = applog.WithFields(applog.NewTask(ctx, "preview", generationDriveID(w.Drive)), applog.Fields{VideoID: v.ID, FileID: v.FileID})
+	taskCtx = applog.WithFields(applog.NewTask(taskCtx, "preview", generationDriveID(w.Drive)), applog.Fields{VideoID: v.ID, FileID: v.FileID})
 	if w.TaskGuard != nil {
 		release := w.TaskGuard()
 		if release == nil {
-			return nil
+			return nil, false
 		}
 		taskRelease = release
 	}
-	current, err := w.Catalog.GetVideo(ctx, v.ID)
+	current, err := w.Catalog.GetVideo(taskCtx, v.ID)
 	if err != nil {
-		if ctx.Err() == nil {
-			applog.Error(ctx, "Read queued video failed", err, applog.Fields{Stage: "lookup"})
+		if taskCtx.Err() == nil {
+			applog.Error(taskCtx, "Read queued video failed", err, applog.Fields{Stage: "lookup"})
 		}
-		return nil
+		return nil, false
 	}
 	if current.Hidden || current.DriveID != generationDriveID(w.Drive) {
-		return nil
+		return nil, false
 	}
-	release, ok := acquireGenerationSlot(ctx, w.Limiter, &w.rateLimit, "preview", w.Drive)
+	release, ok := acquireGenerationSlot(taskCtx, w.Limiter, &w.rateLimit, "preview", w.Drive)
 	if !ok {
-		return nil
+		return nil, false
 	}
 	prepared = true
 	return func() {
+		defer stopTask()
 		defer taskRelease()
 		defer release()
-		if ctx.Err() != nil || !w.enabled() {
-			w.queue.release(v)
-			return
+		// A task the gate stopped before it started is retried like an
+		// interrupted one. The task goroutine may block on the queue, and
+		// admission refuses the retry while the switch stays off.
+		retry := true
+		if taskCtx.Err() == nil {
+			w.activities.start(current)
+			w.notifyStatus(true)
+			defer func() { w.activities.done(current.ID); w.notifyStatus(true) }()
+			retry = w.process(taskCtx, current)
 		}
-		w.activities.start(current)
-		w.notifyStatus(true)
-		defer func() { w.activities.done(current.ID); w.notifyStatus(true) }()
-		retry := w.process(ctx, current)
 		release()
 		// Release before requeueing because videoQueue deduplicates reserved
 		// IDs. Keep activity visible throughout the transition for admission.
@@ -1816,7 +1842,12 @@ func (w *Worker) prepareQueued(ctx context.Context, v *catalog.Video) func() {
 		if retry && ctx.Err() == nil {
 			w.EnqueueBlocking(ctx, current)
 		}
-	}
+	}, false
+}
+
+func (w *Worker) releaseQueued(v *catalog.Video) {
+	w.queue.release(v)
+	w.notifyStatus(true)
 }
 
 func (w *ThumbWorker) processQueued(ctx context.Context, v *catalog.Video) {
@@ -2143,14 +2174,19 @@ func (w *ThumbWorker) retryThumbnailWithFreshOriginal(ctx context.Context, v *ca
 }
 
 // process returns true when the current video must be retried after the shared
-// drive cooldown. Permanent media errors transition to failed and return
-// false; successful work also returns false.
+// drive cooldown or an interruption. Permanent media errors transition to
+// failed and return false; successful work also returns false.
 func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
 	if w.skipIfRateLimited(v) {
 		return true
 	}
+	// An interrupted task is neither a media failure nor a provider cooldown:
+	// the video stays pending and is retried once its context allows it.
 	input, err := resolveGenerationInput(ctx, w.Drive, v.FileID)
 	if err != nil {
+		if ctx.Err() != nil {
+			return true
+		}
 		if w.pauseForRecoverableError(err, "streamURL", v.Title) {
 			return true
 		}
@@ -2165,6 +2201,9 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
 		return probeSourceDuration(ctx, w.Catalog, v, w.Gen, link)
 	})
 	if probeErr != nil {
+		if ctx.Err() != nil {
+			return true
+		}
 		if w.pauseForRecoverableError(probeErr, "probe", v.Title) {
 			return true
 		}
@@ -2174,6 +2213,9 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
 	// 2) 预览视频
 	tmp, err := w.generateTeaser(ctx, v, input, duration)
 	if err != nil {
+		if ctx.Err() != nil {
+			return true
+		}
 		if w.pauseForRecoverableError(err, "generate", v.Title) {
 			return true
 		}
@@ -2181,6 +2223,8 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
 		w.Catalog.UpdatePreviewForSource(ctx, v, "", "failed")
 		return false
 	}
+	// The teaser exists; saving it is cheaper than discarding finished work.
+	ctx = context.WithoutCancel(ctx)
 	persistence.RLock()
 	defer persistence.RUnlock()
 	local, err := w.Gen.MoveToLocal(tmp, v.ID)

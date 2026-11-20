@@ -143,7 +143,7 @@ send(c,"stopped")
 			registry.Set(source.ID(), source)
 			registry.Set(target.ID(), target)
 			app := &App{cat: cat, registry: registry, cfg: &config.Config{Storage: config.Storage{LocalPreviewDir: root}}}
-			app.previewDisabled.Store(mode == "preview_disabled")
+			app.previewGate.Set(mode != "preview_disabled")
 			workerCtx, workerCancel := context.WithCancel(ctx)
 			gen := &finishingGenerator{dir: root}
 			worker := preview.NewWorker(gen, cat, source)

@@ -411,7 +411,7 @@ func (s *Server) mapShortsItems(
 	driveLabels := make(map[string]string)
 	out := make([]ShortsItemDTO, 0, len(videos))
 	for index, video := range videos {
-		dto := mapVideo(video)
+		dto := mapVideo(video, s.previewsEnabled())
 		videoSrc, sizeBytes := s.videoSourceAndSize(video)
 		durationSeconds := video.DurationSeconds
 		if s.Proxy != nil && s.Proxy.HasPlaybackProvider(video.DriveID) {

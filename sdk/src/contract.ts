@@ -835,6 +835,7 @@ export type Schemas = {
     playbackUrl?: string;
     poster: string;
     previewDuration: number;
+    /** Teaser URL; empty while the global preview switch is off. */
     previewSrc: string;
     previewStrategy: "teaser-file";
     publishedAt: string;
@@ -1003,6 +1004,7 @@ export type Schemas = {
     id: string;
     likes: number;
     previewDuration: number;
+    /** Teaser URL; empty while the global preview switch is off. */
     previewSrc: string;
     previewStrategy: "teaser-file";
     /** Publication date in YYYY-MM-DD format. */
@@ -1025,6 +1027,7 @@ export type Schemas = {
     /** Official-client page path. Custom clients should route by id. */
     href: string;
     id: string;
+    /** Present exactly when preview=1 is requested; empty while the global preview switch is off. */
     previewSrc?: string;
     /** Publication date in YYYY-MM-DD format. */
     publishedAt: string;
@@ -1068,6 +1071,7 @@ export type Schemas = {
     points?: number;
     poster: string;
     previewDuration: number;
+    /** Teaser URL; empty while the global preview switch is off. */
     previewSrc: string;
     previewStrategy: "teaser-file";
     publishedAt: string;
@@ -1093,6 +1097,7 @@ export type Schemas = {
     id: string;
     likes: number;
     previewDuration: number;
+    /** Teaser URL; empty while the global preview switch is off. */
     previewSrc: string;
     previewStrategy: "teaser-file";
     /** Publication date in YYYY-MM-DD format. */

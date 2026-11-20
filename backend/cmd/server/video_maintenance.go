@@ -39,6 +39,12 @@ func (a *App) cleanupDuplicateVideoAssets(ctx context.Context) error {
 	if err := a.cleanupPendingDuplicateAssets(ctx, localDir); err != nil {
 		log.Printf("[dedupe-maintenance] retry pending asset cleanup: %v", err)
 	}
+	// Content matching decodes teasers with ffmpeg, so it is preview work and
+	// stops with the global preview switch. Exact and near matching continue.
+	channels := dedupe.AllChannels
+	if !a.previewEnabled() {
+		channels &^= dedupe.ChannelContent
+	}
 	const maxPlanAttempts = 3
 	var (
 		plan  dedupe.Plan
@@ -55,7 +61,7 @@ func (a *App) cleanupDuplicateVideoAssets(ctx context.Context) error {
 			return nil
 		}
 
-		plan, err = a.buildDuplicateMaintenancePlan(ctx, localDir, videos, dedupe.AllChannels)
+		plan, err = a.buildDuplicateMaintenancePlan(ctx, localDir, videos, channels)
 		if err != nil {
 			return err
 		}

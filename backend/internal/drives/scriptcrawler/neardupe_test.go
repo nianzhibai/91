@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/mediaasset"
 	"github.com/nianzhibai/91/backend/internal/mediasim"
 )
@@ -34,5 +36,49 @@ func TestLoadCandidateTeaserSignatureUsesDiskCache(t *testing.T) {
 	}
 	if got == nil || len(got.Frames) != 1 || !bytes.Equal(got.Frames[0], frame) {
 		t.Fatalf("loaded signature = %#v, want cached frame", got)
+	}
+}
+
+func TestNearDuplicateSkipsTeaserComparisonWhilePreviewsDisabled(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cat, err := catalog.Open(filepath.Join(dir, "catalog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+	teaserPath := filepath.Join(dir, "candidate.mp4")
+	sourcePath := filepath.Join(dir, "source.mp4")
+	for _, path := range []string{teaserPath, sourcePath} {
+		if err := os.WriteFile(path, []byte("video"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The fake ffmpeg records that content comparison started, then fails it.
+	marker := filepath.Join(dir, "ffmpeg-ran")
+	ffmpegPath := filepath.Join(dir, "ffmpeg")
+	if err := os.WriteFile(ffmpegPath, []byte("#!/bin/sh\ntouch '"+marker+"'\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := cat.UpsertVideo(ctx, &catalog.Video{
+		ID: "candidate", DriveID: "storage", FileID: "candidate-file", Title: "Unrelated title",
+		DurationSeconds: 600, ThumbnailURL: "/p/thumb/candidate", PreviewStatus: "ready", PreviewLocal: teaserPath,
+		PublishedAt: now, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	source := &catalog.Video{ID: "source", Title: "New title", DurationSeconds: 600}
+	for _, enabled := range []bool{false, true} {
+		_ = os.Remove(marker)
+		importer := &Importer{cfg: ImporterConfig{
+			Driver: New(Config{ID: "crawler", RootDir: dir}), Catalog: cat, FFmpegPath: ffmpegPath,
+			LocalPreviewDir: dir, PreviewEnabled: func() bool { return enabled },
+		}}
+		match, err := importer.findNearDuplicateVideo(ctx, source, "", sourcePath)
+		_, statErr := os.Stat(marker)
+		if err != nil || match != nil || (statErr == nil) != enabled {
+			t.Fatalf("previews=%v: match=%v err=%v ffmpeg ran=%v", enabled, match, err, statErr == nil)
+		}
 	}
 }

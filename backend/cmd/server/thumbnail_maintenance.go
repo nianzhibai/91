@@ -36,10 +36,15 @@ func (a *App) runStartupThumbnailNormalization(ctx context.Context) {
 // references, then waits for every currently registered drive to finish
 // admitting the resulting pending work. Generation itself remains asynchronous;
 // the nightly runner establishes the queue-idle boundary after this method
-// returns.
+// returns. Previews are skipped while the switch is off; enabling it runs
+// their reconciliation instead.
 func (a *App) reconcileLocalGeneratedAssets(ctx context.Context) (int, error) {
 	thumbnailStats, thumbnailErr := a.reconcileMissingLocalThumbnailFiles(ctx)
-	previewStats, previewErr := a.reconcileMissingLocalPreviewFiles(ctx)
+	var previewStats localAssetReconciliationStats
+	var previewErr error
+	if a.previewEnabled() {
+		previewStats, previewErr = a.reconcileMissingLocalPreviewFiles(ctx)
+	}
 	resets := thumbnailStats.Reset + previewStats.Reset
 	reconcileErr := errors.Join(thumbnailErr, previewErr)
 	if resets == 0 {

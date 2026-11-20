@@ -11,12 +11,8 @@ import (
 
 const maxConfigYAMLBytes = 2 << 20
 
-func (a *AdminServer) previewEnabled() bool {
-	return a.ConfigManager.LiveSettings().PreviewEnabled
-}
-
 func (a *AdminServer) requirePreviewEnabled(w http.ResponseWriter) bool {
-	if !a.previewEnabled() {
+	if a.PreviewEnabled != nil && !a.PreviewEnabled() {
 		httpapi.Error(w, "全局预览视频生成已关闭", http.StatusConflict)
 		return false
 	}

@@ -39,11 +39,13 @@ type CrawlerConfig struct {
 	WorkDir            string
 	CommonThumbDir     string
 	LocalPreviewDir    string
-	ProxyURL           string
-	ConfigJSON         string
-	FeedID             string
-	HTTPClient         *http.Client
-	DownloadTimeout    time.Duration
+	// PreviewEnabled reads the global preview switch; nil means enabled.
+	PreviewEnabled  func() bool
+	ProxyURL        string
+	ConfigJSON      string
+	FeedID          string
+	HTTPClient      *http.Client
+	DownloadTimeout time.Duration
 	// RunTimeout bounds discovery and downloads, not processing completed media.
 	RunTimeout       time.Duration
 	OperationTimeout time.Duration
@@ -98,7 +100,7 @@ func NewCrawler(cfg CrawlerConfig) *Crawler {
 		_ = configureExplicitProxy(transport, cfg.ProxyURL)
 		cfg.HTTPClient = &http.Client{Transport: transport}
 	}
-	importer := &Importer{cfg: ImporterConfig{Driver: cfg.Driver, Catalog: cfg.Catalog, FingerprintLimiter: cfg.FingerprintLimiter, CrawlerName: cfg.CrawlerName, FFmpegPath: cfg.FFmpegPath, FFprobePath: cfg.FFprobePath, CommonThumbDir: cfg.CommonThumbDir, LocalPreviewDir: cfg.LocalPreviewDir, HTTPClient: cfg.HTTPClient, DownloadTimeout: cfg.DownloadTimeout}}
+	importer := &Importer{cfg: ImporterConfig{Driver: cfg.Driver, Catalog: cfg.Catalog, FingerprintLimiter: cfg.FingerprintLimiter, CrawlerName: cfg.CrawlerName, FFmpegPath: cfg.FFmpegPath, FFprobePath: cfg.FFprobePath, CommonThumbDir: cfg.CommonThumbDir, LocalPreviewDir: cfg.LocalPreviewDir, PreviewEnabled: cfg.PreviewEnabled, HTTPClient: cfg.HTTPClient, DownloadTimeout: cfg.DownloadTimeout}}
 	return &Crawler{cfg: cfg, Importer: importer}
 }
 

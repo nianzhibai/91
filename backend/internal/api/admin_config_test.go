@@ -176,6 +176,7 @@ func TestConfigYAMLPutReportsRestartForNonLiveFields(t *testing.T) {
 
 func TestGlobalPreviewSwitchControlsRegenerationEndpoints(t *testing.T) {
 	server, _ := newConfigAPIForTest(t, "preview: {enabled: false}\n")
+	server.PreviewEnabled = func() bool { return server.ConfigManager.LiveSettings().PreviewEnabled }
 	calls := 0
 	server.OnRegenPreview = func(string) { calls++ }
 	server.OnRegenAllPreviews = func() { calls++ }

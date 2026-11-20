@@ -392,3 +392,51 @@ func TestCleanupDuplicateVideoAssetsResolvesCanonicalAcrossChannels(t *testing.T
 		t.Fatalf("asset cleanup jobs = %#v, err=%v", jobs, err)
 	}
 }
+
+func TestDuplicateMaintenanceSkipsTeaserDecodingWhilePreviewsDisabled(t *testing.T) {
+	ctx := context.Background()
+	localDir := t.TempDir()
+	cat, err := catalog.Open(filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	for i, id := range []string{"video-a", "video-b"} {
+		teaser := filepath.Join(localDir, id+".mp4")
+		if err := os.WriteFile(teaser, []byte("teaser"), 0o644); err != nil {
+			t.Fatalf("write teaser: %v", err)
+		}
+		v := &catalog.Video{
+			ID: id, DriveID: "115", FileID: "file-" + id, Title: "unrelated " + id,
+			Size: int64(100_000_000 + i), DurationSeconds: 1129, PreviewLocal: teaser, PreviewStatus: "ready",
+			PublishedAt: now, CreatedAt: now.Add(time.Duration(i) * time.Second), UpdatedAt: now,
+		}
+		if err := cat.UpsertVideo(ctx, v); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	calls := 0
+	restore := contentSignatureExtractor
+	contentSignatureExtractor = func(context.Context, string, string) (*mediasim.FrameSignature, error) {
+		calls++
+		return nil, errors.New("teaser decoding is not under test")
+	}
+	t.Cleanup(func() { contentSignatureExtractor = restore })
+
+	app := &App{cfg: &config.Config{Storage: config.Storage{LocalPreviewDir: localDir}}, cat: cat}
+	app.previewGate.Set(false)
+	if err := app.cleanupDuplicateVideoAssets(ctx); err != nil {
+		t.Fatalf("disabled maintenance: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("disabled previews decoded %d teasers", calls)
+	}
+	app.previewGate.Set(true)
+	if err := app.cleanupDuplicateVideoAssets(ctx); err != nil {
+		t.Fatalf("enabled maintenance: %v", err)
+	}
+	if calls == 0 {
+		t.Fatal("enabled maintenance skipped content matching")
+	}
+}

@@ -63,7 +63,10 @@ type AdminServer struct {
 	// ConfigManager owns the real config.yaml management surface. Both visual
 	// and source editors read and write this same document.
 	ConfigManager *config.Manager
-	GPU           *preview.Hardware
+	// PreviewEnabled reads the global preview switch, the same runtime source
+	// used by generation workers. Nil enables preview endpoints.
+	PreviewEnabled func() bool
+	GPU            *preview.Hardware
 	// VersionFilePath points to the installer-written .version file.
 	VersionFilePath string
 	// ImageVersion is the Docker image version injected at build/runtime.

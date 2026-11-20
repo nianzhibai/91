@@ -89,8 +89,9 @@ type Server struct {
 	// GetTheme 返回当前生效的主题（"dark" | "light"）。前台 /api/settings/theme 用，
 	// 不需要登录。无注入时返回 "dark"。
 	GetTheme func() string
-	// GetPreviewEnabled exposes only the live global preview policy to cards.
-	GetPreviewEnabled func() bool
+	// PreviewEnabled reads the global preview switch. While it is off no
+	// response links a preview and preview files are not served. Nil enables.
+	PreviewEnabled func() bool
 
 	subtitleCacheMu  sync.Mutex
 	subtitleCache    map[string]subtitleCacheEntry
@@ -211,15 +212,17 @@ type VideoCollectionDTO struct {
 // can explicitly request PreviewSrc without pulling reactions, tags, badges or
 // the rest of VideoDTO for every item in a large provider directory.
 type VideoCollectionItemDTO struct {
-	ID              string `json:"id"`
-	Href            string `json:"href"`
-	Title           string `json:"title"`
-	Thumbnail       string `json:"thumbnail"`
-	PreviewSrc      string `json:"previewSrc,omitempty"`
-	Duration        string `json:"duration"`
-	DurationSeconds int    `json:"durationSeconds"`
-	Views           int    `json:"views"`
-	PublishedAt     string `json:"publishedAt"`
+	ID        string `json:"id"`
+	Href      string `json:"href"`
+	Title     string `json:"title"`
+	Thumbnail string `json:"thumbnail"`
+	// PreviewSrc is present exactly when the caller asked for previews, and is
+	// empty while the global preview switch is off.
+	PreviewSrc      *string `json:"previewSrc,omitempty"`
+	Duration        string  `json:"duration"`
+	DurationSeconds int     `json:"durationSeconds"`
+	Views           int     `json:"views"`
+	PublishedAt     string  `json:"publishedAt"`
 }
 
 type SubtitleDTO struct {
@@ -329,10 +332,13 @@ func (s *Server) handleGetTheme(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"theme": theme})
 }
 
+func (s *Server) previewsEnabled() bool {
+	return s.PreviewEnabled == nil || s.PreviewEnabled()
+}
+
 func (s *Server) handleGetPreviewSettings(w http.ResponseWriter, r *http.Request) {
-	enabled := s.GetPreviewEnabled == nil || s.GetPreviewEnabled()
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, map[string]bool{"previewEnabled": enabled})
+	writeJSON(w, http.StatusOK, map[string]bool{"previewEnabled": s.previewsEnabled()})
 }
 
 func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
@@ -361,7 +367,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		s.touchHomeRecommendationSession(recommendationSession)
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, mapVideos(items))
+	writeJSON(w, http.StatusOK, mapVideos(items, s.previewsEnabled()))
 }
 
 func (s *Server) handleHomeLatest(w http.ResponseWriter, r *http.Request) {
@@ -390,7 +396,7 @@ func (s *Server) handleHomeLatest(w http.ResponseWriter, r *http.Request) {
 		s.touchHomeRecommendationSession(session)
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, mapVideos(items))
+	writeJSON(w, http.StatusOK, mapVideos(items, s.previewsEnabled()))
 }
 
 func (s *Server) homeSessionFromContext(ctx context.Context) (*homeRecommendationSession, bool) {
@@ -421,7 +427,7 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, VideoListDTO{
-		Items: mapVideos(items),
+		Items: mapVideos(items, s.previewsEnabled()),
 		Total: total,
 		Page:  params.Page,
 		Size:  params.PageSize,
@@ -461,7 +467,7 @@ func (s *Server) handleVideoDetail(w http.ResponseWriter, r *http.Request) {
 		writeCatalogLookupError(w, r, err)
 		return
 	}
-	dto := mapVideo(v)
+	dto := mapVideo(v, s.previewsEnabled())
 	dto.SourceLabel = s.videoSourceLabel(r.Context(), v)
 
 	detail := VideoDetailDTO{
@@ -499,7 +505,7 @@ func (s *Server) handleVideoRecommendations(w http.ResponseWriter, r *http.Reque
 	// Recommendations are randomized per uncached request. Keep their cache
 	// policy independent from the core detail resource.
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, mapVideoSummaries(related))
+	writeJSON(w, http.StatusOK, mapVideoSummaries(related, s.previewsEnabled()))
 }
 
 func (s *Server) handleVideoCollectionSummary(w http.ResponseWriter, r *http.Request) {
@@ -541,6 +547,7 @@ func (s *Server) handleVideoCollection(w http.ResponseWriter, r *http.Request) {
 		Items: mapVideoCollectionItems(
 			items,
 			r.URL.Query().Get("preview") == "1",
+			s.previewsEnabled(),
 		),
 	})
 }
@@ -954,7 +961,7 @@ func (s *Server) handleUpdateVideoTags(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, r, http.StatusNotFound, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, mapVideo(v))
+	writeJSON(w, http.StatusOK, mapVideo(v, s.previewsEnabled()))
 }
 
 func (s *Server) handleLike(w http.ResponseWriter, r *http.Request) {
@@ -1226,7 +1233,7 @@ func (s *Server) handleUploadVideo(w http.ResponseWriter, r *http.Request) {
 	if s.OnVideoUploaded != nil {
 		s.OnVideoUploaded(video)
 	}
-	writeJSON(w, http.StatusCreated, mapVideo(video))
+	writeJSON(w, http.StatusCreated, mapVideo(video, s.previewsEnabled()))
 }
 
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
@@ -1313,7 +1320,9 @@ func (s *Server) handleThumb(w http.ResponseWriter, r *http.Request) {
 
 // ---------- helpers ----------
 
-func mapVideo(v *catalog.Video) VideoDTO {
+// mapVideo links the teaser only when previews is true, which callers derive
+// from the global preview switch.
+func mapVideo(v *catalog.Video, previews bool) VideoDTO {
 	badges := v.Badges
 	if badges == nil {
 		badges = []string{}
@@ -1327,7 +1336,7 @@ func mapVideo(v *catalog.Video) VideoDTO {
 		Href:            "/video/" + pathSegment(v.ID),
 		Title:           v.Title,
 		Thumbnail:       thumbnailURL(v),
-		PreviewSrc:      previewURL(v),
+		PreviewSrc:      previewSrc(v.ID, v.PreviewUpdatedAt, previews),
 		PreviewDuration: 12,
 		PreviewStrategy: "teaser-file",
 		Duration:        formatDuration(v.DurationSeconds),
@@ -1619,8 +1628,11 @@ func normalizeSubtitleExt(ext string) string {
 	return strings.ToLower(strings.TrimPrefix(strings.TrimSpace(ext), "."))
 }
 
-func previewURL(v *catalog.Video) string {
-	return previewURLFor(v.ID, v.PreviewUpdatedAt)
+func previewSrc(videoID string, updatedAt time.Time, previews bool) string {
+	if !previews {
+		return ""
+	}
+	return previewURLFor(videoID, updatedAt)
 }
 
 func previewURLFor(videoID string, updatedAt time.Time) string {
@@ -1914,15 +1926,15 @@ func newUploadID(now time.Time) (string, error) {
 	return fmt.Sprintf("upload-%d-%s", now.UnixNano(), hex.EncodeToString(suffix[:])), nil
 }
 
-func mapVideos(vs []*catalog.Video) []VideoDTO {
+func mapVideos(vs []*catalog.Video, previews bool) []VideoDTO {
 	out := make([]VideoDTO, 0, len(vs))
 	for _, v := range vs {
-		out = append(out, mapVideo(v))
+		out = append(out, mapVideo(v, previews))
 	}
 	return out
 }
 
-func mapVideoSummaries(videos []*catalog.VideoSummary) []VideoCardDTO {
+func mapVideoSummaries(videos []*catalog.VideoSummary, previews bool) []VideoCardDTO {
 	out := make([]VideoCardDTO, 0, len(videos))
 	for _, video := range videos {
 		badges := video.Badges
@@ -1934,7 +1946,7 @@ func mapVideoSummaries(videos []*catalog.VideoSummary) []VideoCardDTO {
 			Href:            "/video/" + pathSegment(video.ID),
 			Title:           video.Title,
 			Thumbnail:       thumbnailURLFor(video.ID, video.ThumbnailURL, video.ThumbnailUpdatedAt),
-			PreviewSrc:      previewURLFor(video.ID, video.PreviewUpdatedAt),
+			PreviewSrc:      previewSrc(video.ID, video.PreviewUpdatedAt, previews),
 			PreviewDuration: 12,
 			PreviewStrategy: "teaser-file",
 			Duration:        formatDuration(video.DurationSeconds),
@@ -1952,7 +1964,7 @@ func mapVideoSummaries(videos []*catalog.VideoSummary) []VideoCardDTO {
 	return out
 }
 
-func mapVideoCollectionItems(videos []*catalog.Video, includePreview bool) []VideoCollectionItemDTO {
+func mapVideoCollectionItems(videos []*catalog.Video, includePreview, previews bool) []VideoCollectionItemDTO {
 	items := make([]VideoCollectionItemDTO, 0, len(videos))
 	for _, video := range videos {
 		if video == nil {
@@ -1969,7 +1981,8 @@ func mapVideoCollectionItems(videos []*catalog.Video, includePreview bool) []Vid
 			PublishedAt:     video.PublishedAt.Format("2006-01-02"),
 		}
 		if includePreview {
-			item.PreviewSrc = previewURL(video)
+			src := previewSrc(video.ID, video.PreviewUpdatedAt, previews)
+			item.PreviewSrc = &src
 		}
 		items = append(items, item)
 	}

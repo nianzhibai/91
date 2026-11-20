@@ -1206,7 +1206,7 @@ func (a *App) newDriveGenerationWorkers(drv drives.Drive) (*preview.Worker, *pre
 	previewCfg.Hardware = a.generationHardware()
 	gen := preview.New(previewCfg)
 	previewWorker := preview.NewWorker(gen, a.cat, drv)
-	previewWorker.Enabled = a.previewEnabled
+	previewWorker.Gate = &a.previewGate
 	thumbWorker := preview.NewThumbWorker(gen, a.cat, drv)
 	thumbnailLimiter, previewLimiter, fingerprintLimiter := a.generationLimits()
 	previewWorker.Limiter = previewLimiter
@@ -1368,6 +1368,7 @@ func (a *App) attachScriptCrawler(d *catalog.Drive, drv *scriptcrawler.Driver) {
 		WorkDir:            workDir,
 		CommonThumbDir:     a.commonThumbsDir(),
 		LocalPreviewDir:    a.cfg.Storage.LocalPreviewDir,
+		PreviewEnabled:     a.previewEnabled,
 		ProxyURL:           proxyURL,
 		ConfigJSON:         configJSON,
 		FeedID:             d.Credentials["feed_id"],

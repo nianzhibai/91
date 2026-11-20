@@ -12,7 +12,7 @@ import (
 
 func TestPublicPreviewSettingsExposeOnlyLiveGlobalSwitch(t *testing.T) {
 	admin, _ := newConfigAPIForTest(t, "preview: {enabled: true}\n")
-	server := &Server{GetPreviewEnabled: func() bool {
+	server := &Server{PreviewEnabled: func() bool {
 		return admin.ConfigManager.LiveSettings().PreviewEnabled
 	}}
 	router := chi.NewRouter()

@@ -178,8 +178,33 @@ func TestVideoDetailDefersCollectionAndSummaryMatchesNaturalDirectoryOrder(t *te
 		t.Fatalf("decode preview collection: %v", err)
 	}
 	for index, id := range want {
-		if got := previewCollection.Items[index].PreviewSrc; got != "/p/preview/"+id {
-			t.Fatalf("preview collection item %d preview = %q, want %q", index, got, "/p/preview/"+id)
+		if got := previewCollection.Items[index].PreviewSrc; got == nil || *got != "/p/preview/"+id {
+			t.Fatalf("preview collection item %d preview = %v, want %q", index, got, "/p/preview/"+id)
+		}
+	}
+
+	// Disabled previews keep the requested field, so clients that validate it
+	// still receive the collection.
+	server.PreviewEnabled = func() bool { return false }
+	disabledRecorder := httptest.NewRecorder()
+	server.handleVideoCollection(disabledRecorder, requestWithVideoID(
+		http.MethodGet,
+		"/api/video/episode-2/collection?preview=1",
+		"episode-2",
+		strings.NewReader(""),
+	))
+	var disabledCollection struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(disabledRecorder.Body).Decode(&disabledCollection); err != nil || disabledRecorder.Code != http.StatusOK {
+		t.Fatalf("disabled preview collection status = %d, err = %v", disabledRecorder.Code, err)
+	}
+	if len(disabledCollection.Items) != len(want) {
+		t.Fatalf("disabled preview collection items = %d, want %d", len(disabledCollection.Items), len(want))
+	}
+	for index, item := range disabledCollection.Items {
+		if src, ok := item["previewSrc"].(string); !ok || src != "" {
+			t.Fatalf("disabled preview collection item %d previewSrc = %#v, want empty string", index, item["previewSrc"])
 		}
 	}
 }

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/nianzhibai/91/backend/internal/api"
@@ -35,9 +34,10 @@ type App struct {
 	hardware               *preview.Hardware
 	thumbnailLimiter       *tasklimit.Limiter
 	previewLimiter         *tasklimit.Limiter
-	previewDisabled        atomic.Bool
 	fingerprintLimiter     *tasklimit.Limiter
-	cancels                map[string]context.CancelFunc
+	// previewGate is the only runtime source of the global preview switch.
+	previewGate preview.Gate
+	cancels     map[string]context.CancelFunc
 	// scriptCrawlers 按 driveID 索引，每个脚本爬虫 drive 独立一个 Crawler。
 	scriptCrawlers map[string]*scriptcrawler.Crawler
 
