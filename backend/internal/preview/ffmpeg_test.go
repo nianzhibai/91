@@ -202,6 +202,30 @@ func TestTeaserCandidateStartsKeepPrimaryAndAddFallbacks(t *testing.T) {
 	}
 }
 
+func TestTeaserCandidateStartsReadEveryPlannedStart(t *testing.T) {
+	// Short videos plan starts less than 4.5 seconds apart; a planned start
+	// that is skipped leaves its signature window missing on every read.
+	for duration := 3.0; duration <= 40; duration += 0.5 {
+		plan := buildTeaserPlan(Config{}, duration)
+		got := teaserCandidateStarts(duration, plan.starts, plan.eachSec)
+		if len(got) < len(plan.starts) {
+			t.Fatalf("%.1fs: candidates = %v, want planned %v first", duration, got, plan.starts)
+		}
+		for i, want := range plan.starts {
+			if got[i] != want {
+				t.Fatalf("%.1fs: candidates = %v, want planned %v first", duration, got, plan.starts)
+			}
+		}
+		for i, fallback := range got[len(plan.starts):] {
+			for _, earlier := range got[:len(plan.starts)+i] {
+				if math.Abs(fallback-earlier) < 4.5 {
+					t.Fatalf("%.1fs: fallback %.2f is %.2fs from %.2f", duration, fallback, math.Abs(fallback-earlier), earlier)
+				}
+			}
+		}
+	}
+}
+
 func TestTeaserSegmentFallbackAllowedForBadSegmentOutput(t *testing.T) {
 	for _, err := range []error{
 		errors.New("generated teaser has no video stream"),

@@ -2,6 +2,7 @@ package preview
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -168,5 +169,37 @@ func TestPlannedSignatureLeavesOutFallbackSegments(t *testing.T) {
 	}
 	if signature, _ := plannedSignature(5, planned, nil, 3); signature != nil {
 		t.Fatal("short video got a signature")
+	}
+}
+
+func TestGenerateSamplesEveryPlannedWindowOfShortVideos(t *testing.T) {
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg unavailable")
+	}
+	ffprobe, err := exec.LookPath("ffprobe")
+	if err != nil {
+		t.Skip("ffprobe unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	for _, duration := range []int{8, 12} {
+		dir := t.TempDir()
+		source := filepath.Join(dir, "source.mp4")
+		if out, err := exec.CommandContext(ctx, ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+			"-f", "lavfi", "-i", "mandelbrot=size=240x180:rate=10:maxiter=150:end_pts=60", "-t", fmt.Sprint(duration),
+			"-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", source).CombinedOutput(); err != nil {
+			t.Fatalf("make source: %v: %s", err, out)
+		}
+		gen := New(Config{FFmpegPath: ffmpeg, FFprobePath: ffprobe, Width: 160, LocalDir: filepath.Join(dir, "output")})
+		media, err := gen.Generate(ctx, &drives.StreamLink{URL: source}, float64(duration), MediaRequest{Teaser: true})
+		if err != nil {
+			t.Fatalf("%ds: Generate: %v", duration, err)
+		}
+		planned := len(TeaserSourceWindows(float64(duration)))
+		if media.Signature == nil || !media.SignatureComplete || media.Signature.SampledWindows() != planned {
+			t.Fatalf("%ds: signature windows = %d complete = %v, want all %d planned windows",
+				duration, media.Signature.SampledWindows(), media.SignatureComplete, planned)
+		}
 	}
 }

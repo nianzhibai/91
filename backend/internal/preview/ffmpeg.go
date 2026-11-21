@@ -216,11 +216,14 @@ func pickSegmentStarts(duration float64, n int, eachSec float64) []float64 {
 	return starts
 }
 
+// teaserCandidateStarts lists the starts a media job reads, in order: every
+// planned start as planned, then fallback starts for segments that cannot be
+// read. The planned starts are where signatures are sampled, so they are
+// never dropped; only fallbacks keep their distance from the starts before
+// them, which short videos plan closer together.
 func teaserCandidateStarts(duration float64, primary []float64, eachSec float64) []float64 {
 	out := make([]float64, 0, len(primary)+8)
-	for _, s := range primary {
-		out = appendUniqueStart(out, s, eachSec)
-	}
+	out = append(out, primary...)
 
 	if duration <= 0 {
 		for _, s := range []float64{0, 3, 30, 60} {
