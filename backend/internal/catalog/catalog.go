@@ -3376,9 +3376,9 @@ func crawlerAssetEquivalentSQL(candidateAlias, sourceAlias string) string {
 		OR (COALESCE(%[2]s.content_hash, '') != ''
 		    AND %[1]s.content_hash = %[2]s.content_hash)
 		OR (%[2]s.size_bytes > 0
-		    AND COALESCE(%[2]s.sampled_sha256, '') != ''
+		    AND %[3]s
 		    AND %[1]s.size_bytes = %[2]s.size_bytes
-		    AND %[1]s.sampled_sha256 = %[2]s.sampled_sha256))`, candidateAlias, sourceAlias)
+		    AND %[1]s.sampled_sha256 = %[2]s.sampled_sha256))`, candidateAlias, sourceAlias, currentFingerprintSQL(sourceAlias+".sampled_sha256"))
 }
 
 func cleanCrawlerIDPrefixes(prefixes []string) []string {
@@ -3484,13 +3484,12 @@ WITH canonical AS (
 	SELECT v.id, v.size_bytes, v.sampled_sha256
 	  FROM videos v
 	 WHERE v.size_bytes > 0
-	   AND COALESCE(v.sampled_sha256, '') != ''
+	   AND `+currentFingerprintSQL("v.sampled_sha256")+`
 	   AND NOT EXISTS (
 		 SELECT 1
 		   FROM videos earlier
 		  WHERE earlier.size_bytes = v.size_bytes
 		    AND earlier.sampled_sha256 = v.sampled_sha256
-		    AND COALESCE(earlier.sampled_sha256, '') != ''
 		    AND earlier.size_bytes > 0
 		    AND (
 			  earlier.created_at < v.created_at
@@ -4226,14 +4225,13 @@ var dynamicUniqueVideoWhereSQL = duplicateLookupScope + ` AND ((COALESCE(videos.
 				OR (dup.created_at = videos.created_at AND dup.id < videos.id)
 			  )
 		))
-	AND (COALESCE(videos.sampled_sha256, '') = ''
+	AND (NOT ` + currentFingerprintSQL("videos.sampled_sha256") + `
 		OR videos.size_bytes <= 0
 		OR NOT EXISTS (
 			SELECT 1
 			FROM videos AS dup
 			WHERE ` + duplicateLookupScope + ` AND dup.sampled_sha256 = videos.sampled_sha256
 			  AND dup.size_bytes = videos.size_bytes
-			  AND COALESCE(dup.sampled_sha256, '') != ''
 			  AND dup.size_bytes > 0
 			  AND (
 				dup.created_at < videos.created_at

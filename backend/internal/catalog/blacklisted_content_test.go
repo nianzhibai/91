@@ -78,10 +78,10 @@ func TestBlacklistedContentStaysOutFromEveryIngress(t *testing.T) {
 func TestFingerprintKeepsContentRepresentedByVisibleVideo(t *testing.T) {
 	ctx := context.Background()
 	cat := openCanonicalTestCatalog(t)
-	seedVideos(t, cat, &Video{ID: "gone", DriveID: "one", FileID: "g", SampledSHA256: "s", FileName: "g.mp4", Size: 10})
+	seedVideos(t, cat, &Video{ID: "gone", DriveID: "one", FileID: "g", SampledSHA256: "s2:s", FileName: "g.mp4", Size: 10})
 	blacklist(t, cat, "gone")
 	// A visible copy that predates content blocking represents the content.
-	seedVideos(t, cat, &Video{ID: "kept", DriveID: "two", FileID: "k", SampledSHA256: "s", FileName: "k.mp4", Size: 10})
+	seedVideos(t, cat, &Video{ID: "kept", DriveID: "two", FileID: "k", SampledSHA256: "s2:s", FileName: "k.mp4", Size: 10})
 	late := &Video{ID: "late", DriveID: "three", FileID: "l", FileName: "l.mp4", Size: 10}
 	seedVideos(t, cat, late)
 	if _, err := cat.UpdateVideoFingerprintForSource(ctx, late, "s", "ready", ""); err != nil {
@@ -128,9 +128,9 @@ func TestFileNameMatchRequiresAgreeingSignals(t *testing.T) {
 	cat := openCanonicalTestCatalog(t)
 	base := time.UnixMilli(1_800_000_000_000)
 	seedVideos(t, cat,
-		&Video{ID: "A", DriveID: "one", FileID: "a", ContentHash: "x", SampledSHA256: "s1", FileName: "1.mp4", Size: 10, CreatedAt: base},
-		&Video{ID: "X", DriveID: "two", FileID: "x", SampledSHA256: "s2", FileName: "1.mp4", Size: 10, CreatedAt: base.Add(time.Millisecond)},
-		&Video{ID: "Y", DriveID: "one", FileID: "y", ContentHash: "y", SampledSHA256: "s3", FileName: "1.mp4", Size: 10, CreatedAt: base.Add(2 * time.Millisecond)},
+		&Video{ID: "A", DriveID: "one", FileID: "a", ContentHash: "x", SampledSHA256: "s2:s1", FileName: "1.mp4", Size: 10, CreatedAt: base},
+		&Video{ID: "X", DriveID: "two", FileID: "x", SampledSHA256: "s2:s2", FileName: "1.mp4", Size: 10, CreatedAt: base.Add(time.Millisecond)},
+		&Video{ID: "Y", DriveID: "one", FileID: "y", ContentHash: "y", SampledSHA256: "s2:s3", FileName: "1.mp4", Size: 10, CreatedAt: base.Add(2 * time.Millisecond)},
 		&Video{ID: "D", DriveID: "two", FileID: "d", FileName: "1.mp4", Size: 10, CreatedAt: base.Add(3 * time.Millisecond)},
 	)
 	assertCanonicalMatchesDynamic(t, cat)

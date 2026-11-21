@@ -10,9 +10,9 @@ func TestBuildCompressesIntermediateCanonicalToFinalSurvivor(t *testing.T) {
 	now := time.Date(2026, 8, 23, 0, 0, 0, 0, time.UTC)
 	shared := windowSignature(1, 2, 3, 4)
 	candidates := []Candidate{
-		{ID: "exact-loser", Size: 100, SampledSHA256: "same", AssetScore: 0, CreatedAt: now, DurationSeconds: 300, Signature: shared, Revision: "1"},
-		{ID: "exact-winner", Size: 100, SampledSHA256: "same", AssetScore: 1, CreatedAt: now.Add(time.Second), DurationSeconds: 300, Signature: shared, Revision: "2"},
-		{ID: "content-winner", Size: 200, SampledSHA256: "different", AssetScore: 0, CreatedAt: now.Add(2 * time.Second), DurationSeconds: 300, Signature: shared, Revision: "3"},
+		{ID: "exact-loser", Size: 100, SampledSHA256: "s2:same", AssetScore: 0, CreatedAt: now, DurationSeconds: 300, Signature: shared, Revision: "1"},
+		{ID: "exact-winner", Size: 100, SampledSHA256: "s2:same", AssetScore: 1, CreatedAt: now.Add(time.Second), DurationSeconds: 300, Signature: shared, Revision: "2"},
+		{ID: "content-winner", Size: 200, SampledSHA256: "s2:different", AssetScore: 0, CreatedAt: now.Add(2 * time.Second), DurationSeconds: 300, Signature: shared, Revision: "3"},
 	}
 
 	plan, err := Build(context.Background(), candidates, Options{Channels: AllChannels})
@@ -45,9 +45,9 @@ func TestBuildCompressesIntermediateCanonicalToFinalSurvivor(t *testing.T) {
 func TestBuildExactCanonicalPrefersAssetsThenAge(t *testing.T) {
 	now := time.Date(2026, 8, 23, 0, 0, 0, 0, time.UTC)
 	plan, err := Build(context.Background(), []Candidate{
-		{ID: "old", Size: 100, SampledSHA256: "same", AssetScore: 1, CreatedAt: now},
-		{ID: "new-complete", Size: 100, SampledSHA256: "same", AssetScore: 2, CreatedAt: now.Add(time.Hour)},
-		{ID: "newer-complete", Size: 100, SampledSHA256: "same", AssetScore: 2, CreatedAt: now.Add(2 * time.Hour)},
+		{ID: "old", Size: 100, SampledSHA256: "s2:same", AssetScore: 1, CreatedAt: now},
+		{ID: "new-complete", Size: 100, SampledSHA256: "s2:same", AssetScore: 2, CreatedAt: now.Add(time.Hour)},
+		{ID: "newer-complete", Size: 100, SampledSHA256: "s2:same", AssetScore: 2, CreatedAt: now.Add(2 * time.Hour)},
 	}, Options{Channels: ChannelExact})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -66,9 +66,9 @@ func TestBuildExactJoinsProviderHashAndSampledFingerprint(t *testing.T) {
 	now := time.Date(2026, 8, 23, 0, 0, 0, 0, time.UTC)
 	plan, err := Build(context.Background(), []Candidate{
 		{ID: "a", ContentHash: "ABC", Size: 100, CreatedAt: now},
-		{ID: "b", ContentHash: "abc", Size: 100, SampledSHA256: "s", CreatedAt: now.Add(time.Second)},
-		{ID: "c", Size: 100, SampledSHA256: "S", CreatedAt: now.Add(2 * time.Second)},
-		{ID: "other-size", Size: 101, SampledSHA256: "s", CreatedAt: now.Add(3 * time.Second)},
+		{ID: "b", ContentHash: "abc", Size: 100, SampledSHA256: "s2:s", CreatedAt: now.Add(time.Second)},
+		{ID: "c", Size: 100, SampledSHA256: "s2:S", CreatedAt: now.Add(2 * time.Second)},
+		{ID: "other-size", Size: 101, SampledSHA256: "s2:s", CreatedAt: now.Add(3 * time.Second)},
 	}, Options{Channels: ChannelExact})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -87,5 +87,23 @@ func TestBuildExactJoinsProviderHashAndSampledFingerprint(t *testing.T) {
 	// claim the provider hash that links b to a.
 	if reasons["b"] != ReasonContentHash+":a" || reasons["c"] != ReasonSampledSHA256+":b" {
 		t.Fatalf("evidence = %#v", reasons)
+	}
+}
+
+func TestExactKeysIgnoreFingerprintsOfEarlierSchemes(t *testing.T) {
+	legacy := Candidate{ID: "legacy", Size: 100, ContentHash: "hash", SampledSHA256: "abc"}
+	keys := ExactKeys(legacy)
+	if len(keys) != 1 || keys[0].Reason != ReasonContentHash {
+		t.Fatalf("keys = %+v, want only the provider hash", keys)
+	}
+	plan, err := Build(context.Background(), []Candidate{
+		{ID: "complete", Size: 100, SampledSHA256: "abc"},
+		{ID: "truncated", Size: 100, SampledSHA256: "abc"},
+	}, Options{Channels: ChannelExact})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Actions) != 0 {
+		t.Fatalf("actions = %+v, want equal old fingerprints left unmerged", plan.Actions)
 	}
 }

@@ -4390,7 +4390,7 @@ func TestCleanupDuplicateVideoAssetsDeletesExactDuplicateRows(t *testing.T) {
 		if err := cat.UpsertVideo(ctx, v); err != nil {
 			t.Fatalf("seed %s: %v", v.ID, err)
 		}
-		if _, err := cat.UpdateVideoFingerprintForSource(ctx, v, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "ready", ""); err != nil {
+		if _, err := cat.UpdateVideoFingerprintForSource(ctx, v, "s2:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "ready", ""); err != nil {
 			t.Fatalf("fingerprint %s: %v", v.ID, err)
 		}
 	}

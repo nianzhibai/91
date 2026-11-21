@@ -1768,11 +1768,11 @@ func TestTagFilterMatchesCanonicalDuplicateVideo(t *testing.T) {
 		}
 	}
 	for _, id := range []string{"pikpak-canonical", "scriptcrawler-crawler-a-dup-1", "scriptcrawler-crawler-a-dup-2"} {
-		if _, err := cat.UpdateVideoFingerprintForSource(ctx, storedVideo(t, cat, id), "same-sampled-sha256", "ready", ""); err != nil {
+		if _, err := cat.UpdateVideoFingerprintForSource(ctx, storedVideo(t, cat, id), "s2:same-sampled-sha256", "ready", ""); err != nil {
 			t.Fatalf("fingerprint %s: %v", id, err)
 		}
 	}
-	if _, err := cat.UpdateVideoFingerprintForSource(ctx, storedVideo(t, cat, "scriptcrawler-crawler-a-visible"), "unique-sampled-sha256", "ready", ""); err != nil {
+	if _, err := cat.UpdateVideoFingerprintForSource(ctx, storedVideo(t, cat, "scriptcrawler-crawler-a-visible"), "s2:unique-sampled-sha256", "ready", ""); err != nil {
 		t.Fatalf("fingerprint visible: %v", err)
 	}
 

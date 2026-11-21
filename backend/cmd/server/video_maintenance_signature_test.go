@@ -206,3 +206,43 @@ func TestCleanupPublishesProbablePairsAndHonoursDismissals(t *testing.T) {
 		}
 	}
 }
+
+func TestCleanupWaitsForCurrentFingerprintsBeforeMerging(t *testing.T) {
+	ctx := context.Background()
+	app, cat, _ := openMaintenanceTestApp(t)
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	// The old scheme gave a complete file and a truncated download of the
+	// same size the same fingerprint; both await a new one.
+	for i, id := range []string{"complete", "truncated"} {
+		at := now.Add(time.Duration(i) * time.Second)
+		if err := cat.UpsertVideo(ctx, &catalog.Video{ID: id, DriveID: "drive", FileID: id, FileName: id + ".mp4", Title: id,
+			Size: 1000, SampledSHA256: "legacy", FingerprintStatus: "pending", PublishedAt: at, CreatedAt: at, UpdatedAt: at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := app.cleanupDuplicateVideoAssets(ctx); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	for _, id := range []string{"complete", "truncated"} {
+		if _, err := cat.GetVideo(ctx, id); err != nil {
+			t.Fatalf("%s merged on an old fingerprint: %v", id, err)
+		}
+	}
+
+	// Current fingerprints decide: equal values merge.
+	for _, id := range []string{"complete", "truncated"} {
+		stored, err := cat.GetVideo(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := cat.UpdateVideoFingerprintForSource(ctx, stored, "s2:same", "ready", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := app.cleanupDuplicateVideoAssets(ctx); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	if merged, err := cat.GetMergedVideo(ctx, "truncated"); err != nil || merged.CanonicalVideoID != "complete" {
+		t.Fatalf("merge = %+v err = %v, want the copy merged once current fingerprints agree", merged, err)
+	}
+}

@@ -52,11 +52,11 @@ func TestCanonicalMaterializationPreservesIndependentDedupRepresentatives(t *tes
 	base := time.UnixMilli(1_800_000_000_000)
 
 	seedCanonicalVideo(t, cat, Video{
-		ID: "hash-representative", ContentHash: "shared-hash", SampledSHA256: "sample-a",
+		ID: "hash-representative", ContentHash: "shared-hash", SampledSHA256: "s2:sample-a",
 		FileName: "a.mp4", Size: 100, CreatedAt: base,
 	})
 	seedCanonicalVideo(t, cat, Video{
-		ID: "sample-representative", ContentHash: "hash-b", SampledSHA256: "shared-sample",
+		ID: "sample-representative", ContentHash: "hash-b", SampledSHA256: "s2:shared-sample",
 		FileName: "b.mp4", Size: 100, CreatedAt: base.Add(time.Millisecond),
 	})
 	seedCanonicalVideo(t, cat, Video{
@@ -64,7 +64,7 @@ func TestCanonicalMaterializationPreservesIndependentDedupRepresentatives(t *tes
 		FileName: "shared-name.mp4", Size: 100, CreatedAt: base.Add(2 * time.Millisecond),
 	})
 	seedCanonicalVideo(t, cat, Video{
-		ID: "bridge", ContentHash: "shared-hash", SampledSHA256: "shared-sample",
+		ID: "bridge", ContentHash: "shared-hash", SampledSHA256: "s2:shared-sample",
 		FileName: "shared-name.mp4", Size: 100, CreatedAt: base.Add(3 * time.Millisecond),
 	})
 
@@ -313,12 +313,11 @@ WITH eligible AS (
 	          FROM eligible canonical
 	         WHERE canonical.sampled_sha256 = videos.sampled_sha256
 	           AND canonical.size_bytes = videos.size_bytes
-	           AND COALESCE(canonical.sampled_sha256, '') != ''
 	           AND canonical.size_bytes > 0
 	         ORDER BY canonical.created_at ASC, canonical.id ASC
 	         LIMIT 1)
 	  FROM eligible AS videos
-	 WHERE COALESCE(videos.sampled_sha256, '') != ''
+	 WHERE COALESCE(videos.sampled_sha256, '') LIKE 's2:%'
 	   AND videos.size_bytes > 0
 	UNION ALL
 	SELECT videos.id,

@@ -56,7 +56,7 @@ func TestListVideosDeduplicatesBySampledSHA256(t *testing.T) {
 		t.Fatalf("before fingerprint total=%d len=%d, want 2", total, len(items))
 	}
 
-	const sampled = "abc123"
+	const sampled = "s2:abc123"
 	if _, err := cat.UpdateVideoFingerprintForSource(ctx, storedVideo(t, cat, "drive-a-file-a"), sampled, "ready", ""); err != nil {
 		t.Fatalf("update a fingerprint: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestDuplicateAssetCleanupCandidates(t *testing.T) {
 			t.Fatalf("seed %s: %v", v.ID, err)
 		}
 	}
-	const sampled = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const sampled = "s2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	for _, v := range videos {
 		if _, err := cat.UpdateVideoFingerprintForSource(ctx, storedVideo(t, cat, v.ID), sampled, "ready", ""); err != nil {
 			t.Fatalf("fingerprint %s: %v", v.ID, err)

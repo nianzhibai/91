@@ -17,8 +17,8 @@ func seedDeletionGroup(t *testing.T) *Catalog {
 	for _, v := range []*Video{
 		{ID: "A", DriveID: "one", FileID: "shared", ContentHash: "ab", FileName: "a.mp4", Size: 10},
 		{ID: "alias", DriveID: "one", FileID: "shared", FileName: "alias.mp4", Size: 10},
-		{ID: "B", DriveID: "two", FileID: "shared", ContentHash: "ab", SampledSHA256: "bc", FileName: "b.mp4", Size: 10},
-		{ID: "C", DriveID: "two", FileID: "c", SampledSHA256: "bc", FileName: "same.mp4", Size: 10},
+		{ID: "B", DriveID: "two", FileID: "shared", ContentHash: "ab", SampledSHA256: "s2:bc", FileName: "b.mp4", Size: 10},
+		{ID: "C", DriveID: "two", FileID: "c", SampledSHA256: "s2:bc", FileName: "same.mp4", Size: 10},
 		{ID: "D", DriveID: "two", FileID: "d", FileName: "same.mp4", Size: 10},
 		{ID: "E", DriveID: "two", FileID: "e", FileName: "same.mp4", Size: 11},
 	} {
@@ -245,8 +245,8 @@ func TestRemovingGroupSourcesKeepsContentBlocked(t *testing.T) {
 		t.Run(map[bool]string{false: "selected", true: "all"}[all], func(t *testing.T) {
 			cat := openCanonicalTestCatalog(t)
 			seedVideos(t, cat,
-				&Video{ID: "A", DriveID: "one", FileID: "a", ContentHash: "hash", SampledSHA256: "s", FileName: "a.mp4", Size: 10},
-				&Video{ID: "B", DriveID: "two", FileID: "b", SampledSHA256: "s", FileName: "b.mp4", Size: 10},
+				&Video{ID: "A", DriveID: "one", FileID: "a", ContentHash: "hash", SampledSHA256: "s2:s", FileName: "a.mp4", Size: 10},
+				&Video{ID: "B", DriveID: "two", FileID: "b", SampledSHA256: "s2:s", FileName: "b.mp4", Size: 10},
 			)
 			preview, err := cat.PreviewVideoDeletion(ctx, "A")
 			if err != nil {
@@ -265,7 +265,7 @@ func TestRemovingGroupSourcesKeepsContentBlocked(t *testing.T) {
 				if entry := deletedEntry(t, cat, "B"); entry != nil {
 					t.Fatalf("kept video blacklisted: %+v", entry)
 				}
-				if admit(t, cat, &Video{ID: "N", DriveID: "three", FileID: "n", SampledSHA256: "s", FileName: "n.mp4", Size: 10}) {
+				if admit(t, cat, &Video{ID: "N", DriveID: "three", FileID: "n", SampledSHA256: "s2:s", FileName: "n.mp4", Size: 10}) {
 					t.Fatal("copy of a kept video was admitted")
 				}
 				return

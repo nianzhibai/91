@@ -293,13 +293,13 @@ func TestRescanKeepsOnlyCurrentContentEvidence(t *testing.T) {
 			}
 			defer cat.Close()
 			before := &catalog.Video{ID: "existing", DriveID: "drive", FileID: "file", FileName: "file.mp4", Size: 100,
-				ContentHash: "old", SampledSHA256: "sample", DurationSeconds: 180,
+				ContentHash: "old", SampledSHA256: "s2:sample", DurationSeconds: 180,
 				ThumbnailURL: "/p/thumb/existing", PreviewStatus: "ready", PreviewLocal: "existing.mp4"}
 			if err := cat.UpsertVideo(ctx, before); err != nil {
 				t.Fatal(err)
 			}
 			if err := cat.UpsertVideo(ctx, &catalog.Video{ID: "copy", DriveID: "other", FileID: "other-file",
-				FileName: "different.mp4", Size: 100, SampledSHA256: "sample"}); err != nil {
+				FileName: "different.mp4", Size: 100, SampledSHA256: "s2:sample"}); err != nil {
 				t.Fatal(err)
 			}
 
@@ -331,7 +331,7 @@ func TestRescanKeepsOnlyCurrentContentEvidence(t *testing.T) {
 				}
 				return
 			}
-			if got.SampledSHA256 != "sample" || got.PreviewStatus != "ready" || result.Duplicates != 1 {
+			if got.SampledSHA256 != "s2:sample" || got.PreviewStatus != "ready" || result.Duplicates != 1 {
 				t.Fatalf("unchanged file: duplicates=%d row=%+v", result.Duplicates, got)
 			}
 			db, err := sql.Open("sqlite", path)

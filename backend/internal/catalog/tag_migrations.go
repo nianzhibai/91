@@ -582,17 +582,17 @@ func (c *Catalog) ensureBaseVideoIndexes(ctx context.Context) error {
 	return nil
 }
 
-const canonicalMaterializationMarker = "videos.is_canonical.v3"
+const canonicalMaterializationMarker = "videos.is_canonical.v4"
 
-const dedupRepresentativesMarker = "videos.dedup_representatives.v3"
+const dedupRepresentativesMarker = "videos.dedup_representatives.v4"
 
 const contentHashNormalizationMarker = "videos.content_hash.normalized"
 
-const canonicalRowsMatchingNewVideoSQL = `(videos.id = NEW.id
+var canonicalRowsMatchingNewVideoSQL = `(videos.id = NEW.id
 	OR (COALESCE(NEW.content_hash, '') != ''
 		AND videos.content_hash = NEW.content_hash)
 	OR (NEW.size_bytes > 0
-		AND COALESCE(NEW.sampled_sha256, '') != ''
+		AND ` + currentFingerprintSQL("NEW.sampled_sha256") + `
 		AND videos.size_bytes = NEW.size_bytes
 		AND videos.sampled_sha256 = NEW.sampled_sha256)
 	OR (NEW.size_bytes > 0
@@ -600,11 +600,11 @@ const canonicalRowsMatchingNewVideoSQL = `(videos.id = NEW.id
 		AND videos.size_bytes = NEW.size_bytes
 		AND videos.file_name = NEW.file_name))`
 
-const canonicalRowsMatchingOldVideoSQL = `(videos.id = OLD.id
+var canonicalRowsMatchingOldVideoSQL = `(videos.id = OLD.id
 	OR (COALESCE(OLD.content_hash, '') != ''
 		AND videos.content_hash = OLD.content_hash)
 	OR (OLD.size_bytes > 0
-		AND COALESCE(OLD.sampled_sha256, '') != ''
+		AND ` + currentFingerprintSQL("OLD.sampled_sha256") + `
 		AND videos.size_bytes = OLD.size_bytes
 		AND videos.sampled_sha256 = OLD.sampled_sha256)
 	OR (OLD.size_bytes > 0
@@ -793,7 +793,7 @@ func rebuildVideoDedupRepresentativesSQL() string {
 	SELECT id, 'self', id FROM videos;
 ` + writeVideoDedupRepresentativeGroupsSQL(
 		"COALESCE(videos.content_hash, '') != ''",
-		"videos.size_bytes > 0 AND COALESCE(videos.sampled_sha256, '') != ''",
+		"videos.size_bytes > 0 AND "+currentFingerprintSQL("videos.sampled_sha256"),
 		"videos.size_bytes > 0 AND COALESCE(videos.file_name, '') != ''",
 	)
 }
@@ -849,12 +849,12 @@ func writeVideoDedupRepresentativeGroupsSQL(hashScope, sampleScope, fileScope st
 	          FROM videos canonical
 	         WHERE ` + duplicateLookupScope + ` AND canonical.sampled_sha256 = videos.sampled_sha256
 	           AND canonical.size_bytes = videos.size_bytes
-	           AND COALESCE(canonical.sampled_sha256, '') != ''
+	           AND ` + currentFingerprintSQL("canonical.sampled_sha256") + `
 	           AND canonical.size_bytes > 0
 	         ORDER BY canonical.created_at ASC, canonical.id ASC
 	         LIMIT 1)
 	  FROM videos
-	 WHERE ` + duplicateLookupScope + ` AND (` + sampleScope + `);
+	 WHERE ` + duplicateLookupScope + ` AND ` + currentFingerprintSQL("videos.sampled_sha256") + ` AND (` + sampleScope + `);
 
 	INSERT OR REPLACE INTO video_dedup_representatives (video_id, basis, representative_id)
 	SELECT videos.id,
@@ -892,7 +892,7 @@ func dedupRepresentativeSampleScopeSQL(refs ...string) string {
 			continue
 		}
 		conditions = append(conditions, `(`+ref+`.size_bytes > 0
-		AND COALESCE(`+ref+`.sampled_sha256, '') != ''
+		AND `+currentFingerprintSQL(ref+".sampled_sha256")+`
 		AND videos.size_bytes = `+ref+`.size_bytes
 		AND videos.sampled_sha256 = `+ref+`.sampled_sha256)`)
 	}

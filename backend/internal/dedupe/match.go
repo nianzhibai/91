@@ -21,13 +21,16 @@ type ExactKey struct {
 
 // ExactKeys returns the provider content hash and the size-qualified sampled
 // fingerprint of a candidate, when present. Hash strings are compared as
-// opaque values; no algorithm is inferred from their length.
+// opaque values; no algorithm is inferred from their length. Only a
+// fingerprint of the current sampling scheme is a key: an earlier scheme
+// could give different files the same value, so its fingerprints may tell
+// files apart but never prove them equal.
 func ExactKeys(c Candidate) []ExactKey {
 	keys := make([]ExactKey, 0, 2)
 	if hash := NormalizeHash(c.ContentHash); hash != "" {
 		keys = append(keys, ExactKey{Reason: ReasonContentHash, Value: hash})
 	}
-	if sampled := NormalizeHash(c.SampledSHA256); sampled != "" && c.Size > 0 {
+	if sampled := NormalizeHash(c.SampledSHA256); IsCurrentFingerprint(sampled) && c.Size > 0 {
 		keys = append(keys, ExactKey{Reason: ReasonSampledSHA256, Value: sampledKey(c.Size, sampled)})
 	}
 	return keys

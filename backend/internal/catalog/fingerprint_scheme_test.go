@@ -87,8 +87,10 @@ VALUES ('scriptcrawler', 'crawler', 'src', 'abc', 10, 1, 1);`, payload); err != 
 	if err != nil || len(queued) != 1 || queued[0].ID != "legacy-a" {
 		t.Fatalf("queued fingerprints = %v err=%v, want legacy-a", queued, err)
 	}
-	if canonical := canonicalVideoIDs(t, cat); canonical["legacy-b"] {
-		t.Fatalf("canonical rows = %v, want the old fingerprint to keep grouping the copies", canonical)
+	// Equal old fingerprints may stand for different files, so they group
+	// nothing until both videos are fingerprinted again.
+	if canonical := canonicalVideoIDs(t, cat); !canonical["legacy-a"] || !canonical["legacy-b"] {
+		t.Fatalf("canonical rows = %v, want both videos shown despite equal old fingerprints", canonical)
 	}
 
 	var deleted, restorePayload, merged, crawler string

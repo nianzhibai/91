@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/nianzhibai/91/backend/internal/dedupe"
 )
 
 // DeletedVideoReasonBlacklistedContent marks an entry that was created
@@ -59,7 +61,7 @@ func blacklistedContentWhere(v *Video) (string, []any, bool) {
 		parts = append(parts, "content_hash = ?")
 		args = append(args, hash)
 	}
-	if sampled != "" && v.Size > 0 {
+	if dedupe.IsCurrentFingerprint(sampled) && v.Size > 0 {
 		parts = append(parts, "(sampled_sha256 = ? AND size_bytes = ?)")
 		args = append(args, sampled, v.Size)
 	}

@@ -16,6 +16,8 @@ const sampledFingerprintSchemeKey = "videos.sampled_sha256.scheme"
 
 // currentFingerprintSQL matches a column holding a fingerprint of the current
 // sampling scheme. The prefix is a constant without quotes or LIKE wildcards.
+// Only such a fingerprint may join two rows as the same content; see
+// dedupe.ExactKeys.
 func currentFingerprintSQL(column string) string {
 	return "COALESCE(" + column + ", '') LIKE '" + dedupe.SampledFingerprintPrefix + "%'"
 }
