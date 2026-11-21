@@ -52,7 +52,7 @@ func Extract(ctx context.Context, ffmpegPath string, duration time.Duration, cli
 			"-t", seconds(clip.Window.Duration),
 			"-i", clip.Path,
 		)
-		filters = append(filters, fmt.Sprintf("[%d:v:0]%s[s%d]", i, sampleFilter, i))
+		filters = append(filters, fmt.Sprintf("[%d:v:0]%s[s%d]", i, SampleFilter, i))
 		outputs = append(outputs, "-map", fmt.Sprintf("[s%d]", i), "-f", "rawvideo", clipOutputPath(dir, i))
 	}
 	args = append(args, "-filter_complex", strings.Join(filters, ";"))
@@ -67,19 +67,31 @@ func Extract(ctx context.Context, ffmpegPath string, duration time.Duration, cli
 		if err != nil {
 			return nil, err
 		}
-		for j, gray := range splitFrames(raw) {
-			offset := time.Duration(j) * SampleInterval
-			if offset >= clip.Window.Duration {
-				break
-			}
-			signature.Frames = append(signature.Frames, newFrame(clip.Window.Start+offset, i, gray))
-		}
+		signature.Frames = append(signature.Frames, FramesFromGray(raw, clip.Window, i)...)
 	}
 	return finish(signature)
 }
 
-var sampleFilter = fmt.Sprintf("fps=%s,scale=%d:%d:flags=area,format=gray",
+// SampleFilter is the ffmpeg filter chain that samples a window's frames for
+// FramesFromGray, written as rawvideo. Apply it to the decoded source picture,
+// before any scaling, fading or encoding meant for viewing.
+var SampleFilter = fmt.Sprintf("fps=%s,scale=%d:%d:flags=area,format=gray",
 	strconv.FormatFloat(float64(time.Second)/float64(SampleInterval), 'f', -1, 64), GridSize, GridSize)
+
+// FramesFromGray hashes the raw frames SampleFilter produced for one window,
+// numbered index within its signature. Frame j shows the source at
+// window.Start + j*SampleInterval; a trailing partial frame is ignored.
+func FramesFromGray(raw []byte, window Window, index int) []Frame {
+	var frames []Frame
+	for j, gray := range splitFrames(raw) {
+		offset := time.Duration(j) * SampleInterval
+		if offset >= window.Duration {
+			break
+		}
+		frames = append(frames, newFrame(window.Start+offset, index, gray))
+	}
+	return frames
+}
 
 func newFrame(at time.Duration, window int, gray []byte) Frame {
 	hash, informative := HashFrame(gray)

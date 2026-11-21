@@ -494,9 +494,6 @@ func newTeaserStubGenerator(t *testing.T, okSegments int) *Generator {
 out=""
 for arg in "$@"; do out="$arg"; done
 case " $* " in
-  *" -f rawvideo "*)
-    exit 0
-    ;;
   *" -f concat "*)
     printf 'concat-output' > "$out"
     exit 0
@@ -914,7 +911,7 @@ func TestGenerateMediaWithLimitedFFmpegThreads(t *testing.T) {
 		if err := gen.generateThumbnailAtOffset(ctx, link, filepath.Join(dir, "cover.jpg"), 0, &sourceColorRepair{}); err != nil {
 			t.Fatalf("thumbnail threads=%d: %v", threads, err)
 		}
-		if _, _, err := gen.generateSingleSegment(ctx, 0, 0, 1, false, false, link, &sourceColorRepair{}); err != nil {
+		if _, err := gen.generateSingleSegment(ctx, 0, 0, 1, false, segmentOutputs{}, link, &sourceColorRepair{}); err != nil {
 			t.Fatalf("preview threads=%d: %v", threads, err)
 		}
 	}

@@ -26,9 +26,6 @@ func newTimeoutTeaserGenerator(t *testing.T, okSegments int, blockedStage string
 out=""
 for arg in "$@"; do out="$arg"; done
 case " $* " in
-  *" -f rawvideo "*)
-    exit 0
-    ;;
   *" -f concat "*)
     : > %[1]q/concat-started
     if [ %[3]q = concat ]; then exec sleep 30; fi

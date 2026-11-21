@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/mediasig"
 )
 
 // Hardware is shared by every drive. Detection is explicit and cached; asset
@@ -175,7 +176,7 @@ func (h *Hardware) probeCandidates(ctx context.Context, candidates []*hardwareBa
 		link := &drives.StreamLink{URL: source}
 		err := gen.generateThumbnailAtOffset(probeCtx, link, filepath.Join(dir, "cover.jpg"), 0, &sourceColorRepair{})
 		if err == nil {
-			_, _, err = gen.generateSingleSegment(probeCtx, 0, 0, 0.4, true, true, link, &sourceColorRepair{})
+			_, err = gen.generateSingleSegment(probeCtx, 0, 0, 0.4, true, segmentOutputs{thumbnail: true, signature: true}, link, &sourceColorRepair{})
 		}
 		cancel()
 		if err == nil {
@@ -251,16 +252,26 @@ func (g *Generator) segmentFilter(fade bool, duration float64) string {
 	return filter
 }
 
-// segmentThumbnailGraph decodes a segment once into the encoded segment and a
-// thumbnail taken from its middle, before any fade.
-func (g *Generator) segmentThumbnailGraph(fade bool, eachSec float64) string {
+// segmentGraph decodes a segment once and splits the picture before any fade
+// or encoding: into the encoded segment, a thumbnail from the middle of the
+// segment, and the frames sampled for the perceptual signature.
+func (g *Generator) segmentGraph(fade bool, eachSec float64, outputs segmentOutputs) string {
 	decode, encoderInput := "", ""
 	if g.hardware != nil {
 		decode = g.hardware.downloadFilter(g.cfg.Width) + ","
 		encoderInput = "," + g.hardware.encoderInputFilter()
 	}
-	return fmt.Sprintf("[0:v:0]%ssplit=2[s][t];[s]%s%s[segment];[t]trim=start=%.3f,setpts=PTS-STARTPTS,%s[thumb]",
-		decode, teaserSegmentVideoFilter(g.cfg.Width, fade, eachSec), encoderInput, eachSec/2, thumbnailVideoFilter(g.cfg.Width))
+	labels := "[s]"
+	branches := []string{fmt.Sprintf("[s]%s%s[segment]", teaserSegmentVideoFilter(g.cfg.Width, fade, eachSec), encoderInput)}
+	if outputs.thumbnail {
+		labels += "[t]"
+		branches = append(branches, fmt.Sprintf("[t]trim=start=%.3f,setpts=PTS-STARTPTS,%s[thumb]", eachSec/2, thumbnailVideoFilter(g.cfg.Width)))
+	}
+	if outputs.signature {
+		labels += "[g]"
+		branches = append(branches, "[g]"+mediasig.SampleFilter+"[sig]")
+	}
+	return fmt.Sprintf("[0:v:0]%ssplit=%d%s;%s", decode, len(branches), labels, strings.Join(branches, ";"))
 }
 
 func (g *Generator) encoderOptions() []string {

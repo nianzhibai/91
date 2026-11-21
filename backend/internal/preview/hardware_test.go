@@ -133,7 +133,7 @@ func TestGPUMidPreviewFailureRestartsWholeAssetWithCPU(t *testing.T) {
 			calls, _ := os.ReadFile(logPath)
 			var gpuSegments, cpuSegments int
 			for _, line := range strings.Split(string(calls), "\n") {
-				if !strings.Contains(line, "-vf") {
+				if !strings.Contains(line, "teaser-seg-") {
 					continue
 				}
 				if strings.Contains(line, "-hwaccel") {

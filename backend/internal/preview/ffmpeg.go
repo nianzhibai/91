@@ -575,6 +575,7 @@ type teaserSegmentResult struct {
 	teaserSegmentCandidate
 	path      string
 	thumbnail string
+	signature string
 	err       error
 }
 
@@ -623,7 +624,6 @@ func (g *Generator) generateSerialWithRefresh(
 	if request.Thumbnail {
 		thumbnailIndex = middleSegment(duration, starts, eachSec)
 	}
-
 	candidates := teaserCandidateStarts(duration, starts, eachSec)
 	targetSegments := len(starts)
 	fadeSegments := targetSegments > 1
@@ -631,6 +631,15 @@ func (g *Generator) generateSerialWithRefresh(
 	segmentResults := make([]teaserSegmentResult, 0, targetSegments)
 	currentLink := initialLink
 	var colorRepair sourceColorRepair
+	// Only segments read at the planned starts are comparable with other
+	// videos; fallback segments fill the teaser alone.
+	sampleSignature := secondsDuration(duration) >= mediasig.MinDuration
+	segmentRead := func(ctx context.Context, candidate teaserSegmentCandidate, link *drives.StreamLink) (segmentFiles, error) {
+		return g.generateSingleSegment(ctx, candidate.index, candidate.start, eachSec, fadeSegments, segmentOutputs{
+			thumbnail: candidate.index == thumbnailIndex,
+			signature: sampleSignature && slices.Contains(starts, candidate.start),
+		}, link, &colorRepair)
+	}
 	nextCandidate := 0
 	var lastErr error
 segmentLoop:
@@ -648,17 +657,8 @@ segmentLoop:
 		nextCandidate++
 
 		result := teaserSegmentResult{teaserSegmentCandidate: candidate}
-		withThumbnail := candidate.index == thumbnailIndex
-		result.path, result.thumbnail, result.err = g.generateSingleSegment(
-			segmentCtx,
-			candidate.index,
-			candidate.start,
-			eachSec,
-			fadeSegments,
-			withThumbnail,
-			currentLink,
-			&colorRepair,
-		)
+		files, err := segmentRead(segmentCtx, candidate, currentLink)
+		result.path, result.thumbnail, result.signature, result.err = files.segment, files.thumbnail, files.signature, err
 		if err := ctx.Err(); err != nil && result.err != nil {
 			return Media{}, err
 		}
@@ -673,16 +673,8 @@ segmentLoop:
 			switch {
 			case refreshErr == nil:
 				currentLink = refreshed
-				result.path, result.thumbnail, result.err = g.generateSingleSegment(
-					segmentCtx,
-					candidate.index,
-					candidate.start,
-					eachSec,
-					fadeSegments,
-					withThumbnail,
-					currentLink,
-					&colorRepair,
-				)
+				files, err := segmentRead(segmentCtx, candidate, currentLink)
+				result.path, result.thumbnail, result.signature, result.err = files.segment, files.thumbnail, files.signature, err
 			case !errors.Is(refreshErr, drives.ErrGenerationStreamUnavailable):
 				if segmentCtx.Err() != nil && errors.Is(refreshErr, segmentCtx.Err()) {
 					lastErr = refreshErr
@@ -703,8 +695,10 @@ segmentLoop:
 			continue
 		}
 		generatedPaths = append(generatedPaths, result.path)
-		if result.thumbnail != "" {
-			generatedPaths = append(generatedPaths, result.thumbnail)
+		for _, extra := range []string{result.thumbnail, result.signature} {
+			if extra != "" {
+				generatedPaths = append(generatedPaths, extra)
+			}
 		}
 		segmentResults = append(segmentResults, result)
 	}
@@ -743,7 +737,7 @@ segmentLoop:
 		segmentPaths[i] = result.path
 	}
 	media := Media{}
-	media.Signature, media.SignatureComplete = g.sampleSignature(ctx, duration, starts, segmentResults, eachSec)
+	media.Signature, media.SignatureComplete = plannedSignature(duration, starts, segmentResults, eachSec)
 	for _, result := range segmentResults {
 		if result.thumbnail != "" {
 			media.ThumbnailPath = result.thumbnail
@@ -835,34 +829,27 @@ func middleSegment(duration float64, starts []float64, eachSec float64) int {
 	return best
 }
 
-// sampleSignature samples the segments read at the planned starts. A segment
-// that fell back to another start shows moments other videos do not sample,
-// so it fills the teaser but stays out of the signature. complete reports
-// whether every planned window contributed frames. The signature is
-// optional: a failure is logged and the teaser stays usable.
-func (g *Generator) sampleSignature(ctx context.Context, duration float64, planned []float64, segments []teaserSegmentResult, eachSec float64) (signature *mediasig.Signature, complete bool) {
-	source := secondsDuration(duration)
-	if source < mediasig.MinDuration {
+// plannedSignature builds the signature from the frames the segments read at
+// the planned starts sampled from the decoded source picture. complete
+// reports whether every planned window contributed frames.
+func plannedSignature(duration float64, planned []float64, segments []teaserSegmentResult, eachSec float64) (*mediasig.Signature, bool) {
+	if secondsDuration(duration) < mediasig.MinDuration {
 		return nil, false
 	}
-	clips := make([]mediasig.Clip, 0, len(segments))
+	signature := &mediasig.Signature{Duration: secondsDuration(duration)}
 	for _, segment := range segments {
-		if !slices.Contains(planned, segment.start) {
+		index := slices.Index(planned, segment.start)
+		if segment.signature == "" || index < 0 {
 			continue
 		}
-		clips = append(clips, mediasig.Clip{
-			Path:   segment.path,
-			Window: mediasig.Window{Start: secondsDuration(segment.start), Duration: secondsDuration(eachSec)},
-		})
+		raw, err := os.ReadFile(segment.signature)
+		if err != nil {
+			continue
+		}
+		window := mediasig.Window{Start: secondsDuration(segment.start), Duration: secondsDuration(eachSec)}
+		signature.Frames = append(signature.Frames, mediasig.FramesFromGray(raw, window, index)...)
 	}
-	if len(clips) == 0 {
-		return nil, false
-	}
-	ctx, cancel := context.WithTimeout(ctx, g.finishTimeout)
-	defer cancel()
-	signature, err := mediasig.Extract(ctx, g.cfg.FFmpegPath, source, clips)
-	if err != nil {
-		applog.Warn(ctx, "[preview] teaser signature sampling failed", err, applog.Fields{Component: "preview", Stage: "signature"})
+	if len(signature.Frames) == 0 {
 		return nil, false
 	}
 	return signature, signature.SampledWindows() == len(planned)
@@ -888,34 +875,58 @@ func requiredTeaserSegments(duration float64, targetSegments int, degraded bool)
 	return targetSegments
 }
 
-// generateSingleSegment encodes one teaser segment. withThumbnail also writes
-// a thumbnail from the middle of the segment in the same read; a thumbnail
-// that could not be written is returned empty without failing the segment.
-func (g *Generator) generateSingleSegment(ctx context.Context, index int, start, eachSec float64, fade, withThumbnail bool, link *drives.StreamLink, colorRepair *sourceColorRepair) (string, string, error) {
+// segmentOutputs selects what a segment read writes besides the segment.
+type segmentOutputs struct {
+	// thumbnail writes a thumbnail from the middle of the segment.
+	thumbnail bool
+	// signature writes the frames sampled for the perceptual signature.
+	signature bool
+}
+
+// segmentFiles are the temporary files of one segment read; optional files
+// are empty when they were not requested or came out empty.
+type segmentFiles struct {
+	segment   string
+	thumbnail string
+	signature string
+}
+
+// generateSingleSegment encodes one teaser segment and writes the requested
+// extra outputs from the same decoded picture. An extra output that came out
+// empty does not fail the segment.
+func (g *Generator) generateSingleSegment(ctx context.Context, index int, start, eachSec float64, fade bool, outputs segmentOutputs, link *drives.StreamLink, colorRepair *sourceColorRepair) (segmentFiles, error) {
 	ctx, cancel := context.WithTimeout(ctx, teaserSegmentTimeout)
 	defer cancel()
 
 	ffmpegLink, cleanup, err := prepareFFmpegLink(ctx, link)
 	if err != nil {
-		return "", "", err
+		return segmentFiles{}, err
 	}
 	defer cleanup()
 
-	segPath, err := reserveTemp(g.cfg.LocalDir, fmt.Sprintf("teaser-seg-%d-*.mp4", index))
-	if err != nil {
-		return "", "", err
-	}
-	thumbPath := ""
-	if withThumbnail {
-		if thumbPath, err = reserveTemp(g.cfg.LocalDir, fmt.Sprintf("thumb-seg-%d-*.jpg", index)); err != nil {
-			_ = os.Remove(segPath)
-			return "", "", err
+	var files segmentFiles
+	removeFiles := func() {
+		for _, path := range []string{files.segment, files.thumbnail, files.signature} {
+			if path != "" {
+				_ = os.Remove(path)
+			}
 		}
 	}
-	removeOutputs := func() {
-		_ = os.Remove(segPath)
-		if thumbPath != "" {
-			_ = os.Remove(thumbPath)
+	for _, reserve := range []struct {
+		wanted  bool
+		pattern string
+		path    *string
+	}{
+		{true, "teaser-seg-%d-*.mp4", &files.segment},
+		{outputs.thumbnail, "thumb-seg-%d-*.jpg", &files.thumbnail},
+		{outputs.signature, "sig-seg-%d-*.gray", &files.signature},
+	} {
+		if !reserve.wanted {
+			continue
+		}
+		if *reserve.path, err = reserveTemp(g.cfg.LocalDir, fmt.Sprintf(reserve.pattern, index)); err != nil {
+			removeFiles()
+			return segmentFiles{}, err
 		}
 	}
 
@@ -932,13 +943,16 @@ func (g *Generator) generateSingleSegment(ctx context.Context, index int, start,
 	)
 	args = append(args, g.hardware.inputOptions()...)
 	outputArgs := []string{"-threads", strconv.Itoa(g.cfg.FFmpegThreads)}
-	if thumbPath != "" {
-		// The segment stays the last output, after the thumbnail.
-		outputArgs = append(outputArgs,
-			"-filter_complex", g.segmentThumbnailGraph(fade, eachSec),
-			"-map", "[thumb]", "-frames:v", "1", "-q:v", "3", "-y", thumbPath,
-			"-map", "[segment]",
-		)
+	if outputs.thumbnail || outputs.signature {
+		// The segment stays the last output, after the extra outputs.
+		outputArgs = append(outputArgs, "-filter_complex", g.segmentGraph(fade, eachSec, outputs))
+		if outputs.thumbnail {
+			outputArgs = append(outputArgs, "-map", "[thumb]", "-frames:v", "1", "-q:v", "3", "-y", files.thumbnail)
+		}
+		if outputs.signature {
+			outputArgs = append(outputArgs, "-map", "[sig]", "-f", "rawvideo", "-y", files.signature)
+		}
+		outputArgs = append(outputArgs, "-map", "[segment]")
 	} else {
 		outputArgs = append(outputArgs, "-vf", g.segmentFilter(fade, eachSec))
 	}
@@ -946,28 +960,31 @@ func (g *Generator) generateSingleSegment(ctx context.Context, index int, start,
 	outputArgs = append(outputArgs, g.encoderOptions()...)
 	outputArgs = append(outputArgs,
 		"-movflags", "+faststart",
-		"-y", segPath,
+		"-y", files.segment,
 	)
 	out, err := g.runMediaCommand(ctx, link, ffmpegLink, args, outputArgs, colorRepair)
 	if err != nil {
-		removeOutputs()
-		return "", "", g.processingError(ffmpegCommandError("ffmpeg segment", err, out))
+		removeFiles()
+		return segmentFiles{}, g.processingError(ffmpegCommandError("ffmpeg segment", err, out))
 	}
-	if info, statErr := os.Stat(segPath); statErr != nil || info.Size() == 0 {
-		removeOutputs()
-		return "", "", g.processingError(fmt.Errorf("ffmpeg segment produced empty file, stderr: %s", string(out)))
+	if info, statErr := os.Stat(files.segment); statErr != nil || info.Size() == 0 {
+		removeFiles()
+		return segmentFiles{}, g.processingError(fmt.Errorf("ffmpeg segment produced empty file, stderr: %s", string(out)))
 	}
-	if err := g.validateGeneratedTeaser(ctx, segPath); err != nil {
-		removeOutputs()
-		return "", "", g.processingError(err)
+	if err := g.validateGeneratedTeaser(ctx, files.segment); err != nil {
+		removeFiles()
+		return segmentFiles{}, g.processingError(err)
 	}
-	if thumbPath != "" {
-		if info, statErr := os.Stat(thumbPath); statErr != nil || info.Size() == 0 {
-			_ = os.Remove(thumbPath)
-			thumbPath = ""
+	for _, path := range []*string{&files.thumbnail, &files.signature} {
+		if *path == "" {
+			continue
+		}
+		if info, statErr := os.Stat(*path); statErr != nil || info.Size() == 0 {
+			_ = os.Remove(*path)
+			*path = ""
 		}
 	}
-	return segPath, thumbPath, nil
+	return files, nil
 }
 
 // reserveTemp returns the name of a new empty file in dir.
