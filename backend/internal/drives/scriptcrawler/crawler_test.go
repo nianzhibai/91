@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/dedupe"
 	"github.com/nianzhibai/91/backend/internal/fingerprint"
 	"github.com/nianzhibai/91/backend/internal/mediaasset"
 )
@@ -823,7 +824,29 @@ func TestCrawlerRunOnceSkipsBlacklistedContent(t *testing.T) {
 	}
 }
 
-func TestCrawlerProcessItemSkipsNearDuplicateByTitleDurationAndThumbnail(t *testing.T) {
+const (
+	nearDuplicateTestDuration = 12
+	nearDuplicateTestContent  = -0.743643887037151
+)
+
+// seedNearDuplicateSignature stores the signature of the near-duplicate test
+// clip on an existing library video, as its media job would have.
+func seedNearDuplicateSignature(t *testing.T, cat *catalog.Catalog, ffmpeg, videoID string) {
+	t.Helper()
+	ctx := context.Background()
+	library := filepath.Join(t.TempDir(), "library.mp4")
+	renderClip(t, ffmpeg, library, nearDuplicateTestDuration, nearDuplicateTestContent, "")
+	video, err := cat.GetVideo(ctx, videoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.CompleteMediaForSource(ctx, video, sampleClip(t, ffmpeg, library, nearDuplicateTestDuration)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCrawlerProcessItemSkipsNearDuplicateBySignature(t *testing.T) {
+	ffmpeg := requireFFmpeg(t)
 	ctx := context.Background()
 	tmp := t.TempDir()
 	cat, err := catalog.Open(filepath.Join(tmp, "catalog.db"))
@@ -851,8 +874,8 @@ func TestCrawlerProcessItemSkipsNearDuplicateByTitleDurationAndThumbnail(t *test
 		DriveID:         "other-drive",
 		FileID:          "existing.mp4",
 		FileName:        "existing.mp4",
-		Title:           "91 Test Similar Title 1215516",
-		DurationSeconds: 257,
+		Title:           "Library title",
+		DurationSeconds: nearDuplicateTestDuration,
 		Size:            12345,
 		Ext:             "mp4",
 		ThumbnailURL:    "/p/thumb/" + canonicalID,
@@ -862,13 +885,10 @@ func TestCrawlerProcessItemSkipsNearDuplicateByTitleDurationAndThumbnail(t *test
 	}); err != nil {
 		t.Fatalf("seed canonical video: %v", err)
 	}
-	writeScriptCrawlerJPEG(t, mediaasset.ThumbnailPathInDir(commonThumbDir, canonicalID), color.RGBA{R: 210, G: 40, B: 40, A: 255})
+	seedNearDuplicateSignature(t, cat, ffmpeg, canonicalID)
 
 	outputDir := drv.OutputDir()
-	mediaPath := filepath.Join(outputDir, "near-video.mp4")
-	if err := os.WriteFile(mediaPath, []byte("near-duplicate-but-different-bytes"), 0o644); err != nil {
-		t.Fatalf("write media: %v", err)
-	}
+	renderClip(t, ffmpeg, filepath.Join(outputDir, "near-video.mp4"), nearDuplicateTestDuration, nearDuplicateTestContent, letterbox)
 	thumbPath := filepath.Join(outputDir, "near-thumb.jpg")
 	writeScriptCrawlerJPEG(t, thumbPath, color.RGBA{R: 211, G: 41, B: 41, A: 255})
 	mediaURL := serveScriptCrawlerFiles(t, outputDir)
@@ -876,15 +896,16 @@ func TestCrawlerProcessItemSkipsNearDuplicateByTitleDurationAndThumbnail(t *test
 	c := NewCrawler(CrawlerConfig{
 		Driver:         drv,
 		Catalog:        cat,
+		FFmpegPath:     ffmpeg,
 		FFprobePath:    writeScriptCrawlerFFprobeStub(t, tmp, true),
 		CommonThumbDir: commonThumbDir,
 	})
 	imported, err := c.Import(ctx, ctx, Item{
 		DiscoveryKey:    "detail:test",
 		SourceID:        "near-source",
-		Title:           "91 Test Similar Title 1215516 - source suffix",
+		Title:           "A different title",
 		Author:          "helper",
-		DurationSeconds: 257,
+		DurationSeconds: nearDuplicateTestDuration,
 		Media:           MediaRef{Type: "url", URL: mediaURL + "/near-video.mp4"},
 		Thumbnail:       &MediaRef{Type: "url", URL: mediaURL + "/near-thumb.jpg"},
 	})
@@ -915,10 +936,11 @@ func TestCrawlerProcessItemSkipsNearDuplicateByTitleDurationAndThumbnail(t *test
 	if !hasString(seen, "near-source") {
 		t.Fatalf("seen ids = %#v, want near-source", seen)
 	}
-	assertCrawlerDuplicateRecord(t, filepath.Join(tmp, "catalog.db"), importVideoID("demo", "near-source"), canonicalID, "title_duration_thumbnail", "skipped_import")
+	assertCrawlerDuplicateRecord(t, filepath.Join(tmp, "catalog.db"), importVideoID("demo", "near-source"), canonicalID, dedupe.ReasonSignature, "skipped_import")
 }
 
 func TestCrawlerProcessItemKeepsExistingNearDuplicateEvenWhenCandidateLarger(t *testing.T) {
+	ffmpeg := requireFFmpeg(t)
 	for _, location := range []string{"local", "uploaded"} {
 		t.Run(location, func(t *testing.T) {
 			ctx := context.Background()
@@ -963,8 +985,8 @@ func TestCrawlerProcessItemKeepsExistingNearDuplicateEvenWhenCandidateLarger(t *
 				DriveID:         existingDrive,
 				FileID:          "smaller.mp4",
 				FileName:        "smaller.mp4",
-				Title:           "91 Test Larger Candidate 1215516",
-				DurationSeconds: 257,
+				Title:           "Library title",
+				DurationSeconds: nearDuplicateTestDuration,
 				Size:            5,
 				Ext:             "mp4",
 				ThumbnailURL:    "/p/thumb/" + smallerID,
@@ -976,6 +998,7 @@ func TestCrawlerProcessItemKeepsExistingNearDuplicateEvenWhenCandidateLarger(t *
 				t.Fatalf("seed smaller video: %v", err)
 			}
 			writeScriptCrawlerWebP(t, mediaasset.ThumbnailPathInDir(commonThumbDir, smallerID))
+			seedNearDuplicateSignature(t, cat, ffmpeg, smallerID)
 			if _, err := cat.SetVisitReaction(ctx, smallerID, "visit-1234567890123456", catalog.VideoReactionLike); err != nil {
 				t.Fatal(err)
 			}
@@ -988,10 +1011,7 @@ func TestCrawlerProcessItemKeepsExistingNearDuplicateEvenWhenCandidateLarger(t *
 			}
 
 			outputDir := drv.OutputDir()
-			mediaPath := filepath.Join(outputDir, "larger-video.mp4")
-			if err := os.WriteFile(mediaPath, []byte("near-duplicate-larger-candidate-bytes"), 0o644); err != nil {
-				t.Fatalf("write media: %v", err)
-			}
+			renderClip(t, ffmpeg, filepath.Join(outputDir, "larger-video.mp4"), nearDuplicateTestDuration, nearDuplicateTestContent, letterbox)
 			thumbPath := filepath.Join(outputDir, "larger-thumb.jpg")
 			writeScriptCrawlerWebP(t, thumbPath)
 			mediaURL := serveScriptCrawlerFiles(t, outputDir)
@@ -999,14 +1019,15 @@ func TestCrawlerProcessItemKeepsExistingNearDuplicateEvenWhenCandidateLarger(t *
 			c := NewCrawler(CrawlerConfig{
 				Driver:         drv,
 				Catalog:        cat,
+				FFmpegPath:     ffmpeg,
 				FFprobePath:    writeScriptCrawlerFFprobeStub(t, tmp, true),
 				CommonThumbDir: commonThumbDir,
 			})
 			imported, err := c.Import(ctx, ctx, Item{
 				DiscoveryKey:    "detail:test",
 				SourceID:        "larger-source",
-				Title:           "91 Test Larger Candidate 1215516 - source suffix",
-				DurationSeconds: 257,
+				Title:           "A different title",
+				DurationSeconds: nearDuplicateTestDuration,
 				Media:           MediaRef{Type: "url", URL: mediaURL + "/larger-video.mp4"},
 				Thumbnail:       &MediaRef{Type: "url", URL: mediaURL + "/larger-thumb.jpg"},
 			})
@@ -1059,7 +1080,7 @@ func TestCrawlerProcessItemKeepsExistingNearDuplicateEvenWhenCandidateLarger(t *
 			if err := db.QueryRow(`SELECT canonical_video_id FROM crawler_seen_sources WHERE drive_id='demo' AND source_id='larger-source' AND status='duplicate'`).Scan(&canonical); err != nil || canonical != smallerID {
 				t.Fatalf("history: %s %v", canonical, err)
 			}
-			assertCrawlerDuplicateRecord(t, filepath.Join(tmp, "catalog.db"), importVideoID("demo", "larger-source"), smallerID, "title_duration_thumbnail", "skipped_import")
+			assertCrawlerDuplicateRecord(t, filepath.Join(tmp, "catalog.db"), importVideoID("demo", "larger-source"), smallerID, dedupe.ReasonSignature, "skipped_import")
 		})
 	}
 }

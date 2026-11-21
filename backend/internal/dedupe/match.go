@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/nianzhibai/91/backend/internal/mediasig"
-	"github.com/nianzhibai/91/backend/internal/mediasim"
 )
 
 // The rules in this file are the single definition of a duplicate pair. The
@@ -50,29 +49,10 @@ func NormalizeHash(hash string) string {
 	return strings.ToLower(strings.TrimSpace(hash))
 }
 
-// MatchNear applies the title, duration and thumbnail rule. compare is only
-// called after the cheaper title and duration checks pass.
-func MatchNear(left, right Candidate, compare ImageComparator) (Match, bool, error) {
-	if !durationsWithinTolerance(left, right) ||
-		strings.TrimSpace(left.ThumbnailPath) == "" || strings.TrimSpace(right.ThumbnailPath) == "" {
-		return Match{}, false, nil
-	}
-	titleScore := mediasim.TitleSimilarity(left.Title, right.Title)
-	if titleScore < mediasim.NearDuplicateTitleThreshold {
-		return Match{}, false, nil
-	}
-	ssim, err := compare(left.ThumbnailPath, right.ThumbnailPath)
-	if err != nil {
-		return Match{}, false, err
-	}
-	if ssim < mediasim.NearDuplicateThumbSSIMThreshold {
-		return Match{}, false, nil
-	}
-	return Match{
-		Stage: StageNear, Reason: ReasonTitleThumb, LeftID: left.ID, RightID: right.ID,
-		Score: ssim, TitleScore: titleScore,
-	}, true, nil
-}
+// DurationToleranceSeconds is the largest duration difference of two videos
+// compared by signature. Copies differ by rounding and container overhead;
+// edited versions differ by more.
+const DurationToleranceSeconds = 2
 
 // SignatureEligible reports whether a candidate is long enough for its
 // signature verdict to be trusted.
@@ -107,5 +87,5 @@ func durationsWithinTolerance(left, right Candidate) bool {
 	if delta < 0 {
 		delta = -delta
 	}
-	return delta <= mediasim.NearDuplicateDurationToleranceSeconds
+	return delta <= DurationToleranceSeconds
 }

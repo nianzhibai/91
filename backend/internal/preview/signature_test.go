@@ -166,7 +166,7 @@ func TestPlannedSignatureLeavesOutFallbackSegments(t *testing.T) {
 	if signature == nil || !complete || signature.SampledWindows() != 2 {
 		t.Fatalf("signature = %+v complete = %v, want both planned windows", signature, complete)
 	}
-	if signature, _ := plannedSignature(20, planned, nil, 3); signature != nil {
+	if signature, _ := plannedSignature(5, planned, nil, 3); signature != nil {
 		t.Fatal("short video got a signature")
 	}
 }

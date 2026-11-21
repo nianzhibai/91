@@ -7,14 +7,10 @@ import (
 	"strings"
 
 	"github.com/nianzhibai/91/backend/internal/mediasig"
-	"github.com/nianzhibai/91/backend/internal/mediasim"
 )
 
-type ImageComparator func(leftPath, rightPath string) (float64, error)
-
 type Options struct {
-	Channels      Channels
-	CompareImages ImageComparator
+	Channels Channels
 	// Distinct reports pairs a person judged not to be duplicates. The
 	// signature channel neither merges nor reviews them.
 	Distinct func(leftID, rightID string) bool
@@ -35,9 +31,6 @@ type plannerState struct {
 func Build(ctx context.Context, candidates []Candidate, options Options) (Plan, error) {
 	if options.Channels == 0 {
 		options.Channels = AllChannels
-	}
-	if options.CompareImages == nil {
-		options.CompareImages = mediasim.ImageSSIM
 	}
 	if options.Distinct == nil {
 		options.Distinct = func(string, string) bool { return false }
@@ -69,11 +62,6 @@ func Build(ctx context.Context, candidates []Candidate, options Options) (Plan, 
 
 	if options.Channels.includes(ChannelExact) {
 		if err := state.planExact(ctx, ordered); err != nil {
-			return Plan{}, err
-		}
-	}
-	if options.Channels.includes(ChannelNear) {
-		if err := state.planNear(ctx, ordered, options.CompareImages); err != nil {
 			return Plan{}, err
 		}
 	}
@@ -157,110 +145,6 @@ func (s *plannerState) planExact(ctx context.Context, candidates []Candidate) er
 	return nil
 }
 
-type nearCandidate struct {
-	Candidate
-	titleKeys    []string
-	titleQGrams  map[string]struct{}
-	titleBuckets []string
-}
-
-func (s *plannerState) planNear(ctx context.Context, candidates []Candidate, compare ImageComparator) error {
-	near := make([]nearCandidate, 0, len(candidates))
-	for _, candidate := range candidates {
-		if !s.alive[candidate.ID] || strings.TrimSpace(candidate.Title) == "" || candidate.DurationSeconds <= 0 || strings.TrimSpace(candidate.ThumbnailPath) == "" {
-			continue
-		}
-		keys := mediasim.TitleKeys(candidate.Title)
-		if len(keys) == 0 {
-			continue
-		}
-		buckets := mediasim.TitlePrefixBuckets(keys, 12)
-		if len(buckets) == 0 {
-			continue
-		}
-		near = append(near, nearCandidate{
-			Candidate:    candidate,
-			titleKeys:    keys,
-			titleQGrams:  mediasim.TitleQGrams(keys, 4),
-			titleBuckets: buckets,
-		})
-	}
-	sort.Slice(near, func(i, j int) bool {
-		if near[i].DurationSeconds != near[j].DurationSeconds {
-			return near[i].DurationSeconds < near[j].DurationSeconds
-		}
-		return earlier(near[i].Candidate, near[j].Candidate)
-	})
-	s.plan.Stats.Near.Candidates = len(near)
-	if len(near) < 2 {
-		return nil
-	}
-
-	countedCompare := func(leftPath, rightPath string) (float64, error) {
-		s.plan.Stats.Near.Comparisons++
-		return compare(leftPath, rightPath)
-	}
-	sets := newDisjointSet(len(near))
-	bucketIndex := make(map[int]map[string][]int)
-	seenPairs := make(map[uint64]struct{})
-	for i, right := range near {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		for duration := right.DurationSeconds - mediasim.NearDuplicateDurationToleranceSeconds; duration <= right.DurationSeconds+mediasim.NearDuplicateDurationToleranceSeconds; duration++ {
-			byBucket := bucketIndex[duration]
-			if len(byBucket) == 0 {
-				continue
-			}
-			for _, bucket := range right.titleBuckets {
-				for _, j := range byBucket[bucket] {
-					key := pairKey(i, j)
-					if _, seen := seenPairs[key]; seen {
-						continue
-					}
-					seenPairs[key] = struct{}{}
-					left := near[j]
-					if !nearTitlePrefilter(left, right) {
-						continue
-					}
-					match, matched, err := MatchNear(left.Candidate, right.Candidate, countedCompare)
-					if err != nil {
-						s.plan.Issues = append(s.plan.Issues, Issue{Stage: StageNear, LeftID: left.ID, RightID: right.ID, Err: err})
-						continue
-					}
-					if matched {
-						sets.union(i, j)
-						s.plan.Matches = append(s.plan.Matches, match)
-					}
-				}
-			}
-		}
-		byBucket := bucketIndex[right.DurationSeconds]
-		if byBucket == nil {
-			byBucket = make(map[string][]int)
-			bucketIndex[right.DurationSeconds] = byBucket
-		}
-		for _, bucket := range right.titleBuckets {
-			byBucket[bucket] = append(byBucket[bucket], i)
-		}
-	}
-
-	groups := groupedNearCandidates(near, sets)
-	for _, group := range groups {
-		plain := make([]Candidate, len(group))
-		for i := range group {
-			plain[i] = group[i].Candidate
-		}
-		canonical := selectCanonical(plain, betterPerceptualCanonical)
-		if canonical.ID == "" {
-			continue
-		}
-		s.plan.Stats.Near.Groups++
-		s.plan.Stats.Near.Deleted += s.markGroup(StageNear, plain, canonical)
-	}
-	return nil
-}
-
 // planSignature merges strong pairs only, and only into a canonical the member
 // matched directly. Transitive closure would let a chain of similar videos
 // merge two that never matched each other; such pairs and probable pairs are
@@ -290,7 +174,7 @@ func (s *plannerState) planSignature(ctx context.Context, candidates []Candidate
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		for windowStart < i && signed[i].DurationSeconds-signed[windowStart].DurationSeconds > mediasim.NearDuplicateDurationToleranceSeconds {
+		for windowStart < i && signed[i].DurationSeconds-signed[windowStart].DurationSeconds > DurationToleranceSeconds {
 			windowStart++
 		}
 		for j := windowStart; j < i; j++ {
@@ -471,10 +355,6 @@ func reviewVerdict(match Match) mediasig.Verdict {
 	return match.Signature.Verdict
 }
 
-func groupedNearCandidates(candidates []nearCandidate, sets *disjointSet) [][]nearCandidate {
-	return groupedBy(candidates, sets)
-}
-
 func groupedCandidates(candidates []Candidate, sets *disjointSet) [][]Candidate {
 	return groupedBy(candidates, sets)
 }
@@ -549,13 +429,6 @@ func earlier(left, right Candidate) bool {
 		return left.CreatedAt.Before(right.CreatedAt)
 	}
 	return left.ID < right.ID
-}
-
-func nearTitlePrefilter(left, right nearCandidate) bool {
-	if !mediasim.TitleLengthCouldReachThreshold(left.titleKeys, right.titleKeys, mediasim.NearDuplicateTitleThreshold) {
-		return false
-	}
-	return mediasim.QGramContainment(left.titleQGrams, right.titleQGrams) >= 0.45
 }
 
 func pairKey(left, right int) uint64 {

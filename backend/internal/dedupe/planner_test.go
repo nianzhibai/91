@@ -42,50 +42,6 @@ func TestBuildCompressesIntermediateCanonicalToFinalSurvivor(t *testing.T) {
 	}
 }
 
-func TestBuildNearGroupsUseTransitiveClosure(t *testing.T) {
-	now := time.Date(2026, 8, 23, 0, 0, 0, 0, time.UTC)
-	candidates := []Candidate{
-		{ID: "a", Title: "同一个视频标题", Size: 100, CreatedAt: now, DurationSeconds: 300, ThumbnailPath: "a"},
-		{ID: "b", Title: "同一个视频标题", Size: 200, CreatedAt: now.Add(time.Second), DurationSeconds: 300, ThumbnailPath: "b"},
-		{ID: "c", Title: "同一个视频标题", Size: 300, CreatedAt: now.Add(2 * time.Second), DurationSeconds: 300, ThumbnailPath: "c"},
-	}
-	scores := map[string]float64{
-		"a:b": 0.96,
-		"a:c": 0.10,
-		"b:c": 0.96,
-	}
-	plan, err := Build(context.Background(), candidates, Options{
-		Channels: ChannelNear,
-		CompareImages: func(left, right string) (float64, error) {
-			if left > right {
-				left, right = right, left
-			}
-			return scores[left+":"+right], nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	if plan.Stats.Near.Groups != 1 || plan.Stats.Near.Deleted != 2 {
-		t.Fatalf("stats = %#v, want one transitive group and two deletions", plan.Stats.Near)
-	}
-	for _, action := range plan.Actions {
-		if action.CanonicalVideoID != "c" {
-			t.Fatalf("action = %#v, want largest member c", action)
-		}
-		if action.Evidence.Match == nil || action.Evidence.Match.Score != 0.96 || action.Evidence.Match.TitleScore != 1 {
-			t.Fatalf("evidence must use an observed successful comparison: %+v", action.Evidence)
-		}
-		wantMatch := "c"
-		if action.VideoID == "a" {
-			wantMatch = "b"
-		}
-		if action.Evidence.MatchedVideoID != wantMatch {
-			t.Fatalf("%s matched %s, want %s; cannot attribute A-B score to A-C", action.VideoID, action.Evidence.MatchedVideoID, wantMatch)
-		}
-	}
-}
-
 func TestBuildExactCanonicalPrefersAssetsThenAge(t *testing.T) {
 	now := time.Date(2026, 8, 23, 0, 0, 0, 0, time.UTC)
 	plan, err := Build(context.Background(), []Candidate{
@@ -131,18 +87,5 @@ func TestBuildExactJoinsProviderHashAndSampledFingerprint(t *testing.T) {
 	// claim the provider hash that links b to a.
 	if reasons["b"] != ReasonContentHash+":a" || reasons["c"] != ReasonSampledSHA256+":b" {
 		t.Fatalf("evidence = %#v", reasons)
-	}
-}
-
-func TestMatchNearRequiresDurationWithinTolerance(t *testing.T) {
-	compare := func(string, string) (float64, error) { return 1, nil }
-	left := Candidate{ID: "a", Title: "same title", DurationSeconds: 300, ThumbnailPath: "a"}
-	right := Candidate{ID: "b", Title: "same title", DurationSeconds: 302, ThumbnailPath: "b"}
-	if match, ok, err := MatchNear(left, right, compare); err != nil || !ok || match.Reason != ReasonTitleThumb {
-		t.Fatalf("within tolerance: match=%#v ok=%v err=%v", match, ok, err)
-	}
-	right.DurationSeconds = 303
-	if _, ok, _ := MatchNear(left, right, compare); ok {
-		t.Fatal("durations 3 seconds apart must not match")
 	}
 }

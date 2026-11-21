@@ -195,7 +195,7 @@ GPU 主机可运行 `cd backend && VIDEO_TEST_GPU=1 go test ./internal/preview -
 | `internal/preview/`、`internal/fingerprint/` | 封面、预览和采样指纹 |
 | `internal/proxy/`、`internal/streamhttp/` | 媒体代理、直链缓存和重定向策略 |
 | `internal/mediaimport/`、`internal/telegram/`、`internal/crawlerupload/` | 导入、Telegram 接收和爬虫产物转存 |
-| `internal/nightly/`、`internal/dedupe/`、`internal/mediasim/` | 定时编排、去重计划和相似度算法 |
+| `internal/nightly/`、`internal/dedupe/`、`internal/mediasig/` | 定时编排、去重计划和感知签名 |
 
 官方前端源码和 UI 测试位于独立的 `nianzhibai/91-web-nostalgic`（默认）和 `nianzhibai/91-web` 仓库。本仓库的 `sdk/` 提供客户端库，`tests/` 验证 SDK、接口约定和部署脚本；`scripts/` 与 `.github/` 负责产品构建发布。前端安装、切换及版本锁定见 [前端版本与发布](../docs/FRONTEND_RELEASES.md)。
 
@@ -261,7 +261,7 @@ flowchart TD
 
 ### 去重
 
-扫描入库只按原生哈希跳过重复文件；前台软过滤还使用采样指纹和文件名加大小的弱兜底。全库硬去重依次执行采样指纹、标题/封面、感知签名三个通道。
+扫描入库只按原生哈希跳过重复文件；前台软过滤还使用采样指纹和文件名加大小的弱兜底。全库硬去重依次执行采样指纹、感知签名两个通道。
 
 硬去重先合并标签、反应、计数、分享和历史引用，再将重复行的原 ID 和来源记录到 `merged_videos` 并指向最终保留项，提交后清理本地资产。**不删除网盘源文件；重复项不能从后台恢复**，旧公开 ID 会解析到保留项。阈值、选择规则和预演工具见 [去重体系](../docs/DEDUP.md)，内部 SQL 审计见 [重复决策记录](internal/dedupe/RECORDS.md)。
 

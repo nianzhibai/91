@@ -91,8 +91,8 @@ func TestCleanupMergesSignatureDuplicatesWhilePreviewsDisabled(t *testing.T) {
 		{video("video-compressed", 129_000_000, 1130, 1), contentSignature(1130, 1, 4)},
 		{video("video-other", 500_000_000, 1129, 2), contentSignature(1129, 2, 0)},
 		// Same pictures, but too short for a signature verdict.
-		{video("video-short", 400_000_000, 20, 3), contentSignature(20, 1, 0)},
-		{video("video-short-copy", 300_000_000, 20, 4), contentSignature(20, 1, 0)},
+		{video("video-short", 400_000_000, 5, 3), contentSignature(5, 1, 0)},
+		{video("video-short-copy", 300_000_000, 5, 4), contentSignature(5, 1, 0)},
 	})
 	app.previewGate.Set(false)
 

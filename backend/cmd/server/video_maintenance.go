@@ -18,10 +18,6 @@ type duplicateVideoMaintenanceStats struct {
 	VideosScanned        int
 	ExactGroups          int
 	ExactDeleted         int
-	NearCandidates       int
-	NearSSIMComparisons  int
-	NearGroups           int
-	NearDeleted          int
 	SignatureCandidates  int
 	SignatureComparisons int
 	SignatureGroups      int
@@ -76,18 +72,14 @@ func (a *App) cleanupDuplicateVideoAssets(ctx context.Context) error {
 	}
 	stats.ExactGroups = plan.Stats.Exact.Groups
 	stats.ExactDeleted = plan.Stats.Exact.Deleted
-	stats.NearCandidates = plan.Stats.Near.Candidates
-	stats.NearSSIMComparisons = plan.Stats.Near.Comparisons
-	stats.NearGroups = plan.Stats.Near.Groups
-	stats.NearDeleted = plan.Stats.Near.Deleted
 	stats.SignatureCandidates = plan.Stats.Signature.Candidates
 	stats.SignatureComparisons = plan.Stats.Signature.Comparisons
 	stats.SignatureGroups = plan.Stats.Signature.Groups
 	stats.SignatureDeleted = plan.Stats.Signature.Deleted
 	stats.SignatureReviews = len(plan.Reviews)
 
-	log.Printf("[dedupe-maintenance] videos=%d exact_groups=%d exact_deleted=%d near_candidates=%d near_ssim_comparisons=%d near_groups=%d near_deleted=%d signature_candidates=%d signature_comparisons=%d signature_groups=%d signature_deleted=%d signature_reviews=%d",
-		stats.VideosScanned, stats.ExactGroups, stats.ExactDeleted, stats.NearCandidates, stats.NearSSIMComparisons, stats.NearGroups, stats.NearDeleted,
+	log.Printf("[dedupe-maintenance] videos=%d exact_groups=%d exact_deleted=%d signature_candidates=%d signature_comparisons=%d signature_groups=%d signature_deleted=%d signature_reviews=%d",
+		stats.VideosScanned, stats.ExactGroups, stats.ExactDeleted,
 		stats.SignatureCandidates, stats.SignatureComparisons, stats.SignatureGroups, stats.SignatureDeleted, stats.SignatureReviews)
 	if err := a.renewStaleMedia(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("[dedupe-maintenance] renew stale media: %v", err)

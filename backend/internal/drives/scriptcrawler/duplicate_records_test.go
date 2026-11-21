@@ -35,7 +35,7 @@ func assertCrawlerDuplicateRecord(t *testing.T, path, sourceID, canonicalID, rea
 	if evidence.MatchedVideoID != canonicalID {
 		t.Fatalf("matched video=%s, want %s", evidence.MatchedVideoID, canonicalID)
 	}
-	if reason == dedupe.ReasonTitleThumb && (evidence.Match == nil || evidence.Match.TitleScore < 0.9 || evidence.Match.Score < 0.95) {
-		t.Fatalf("crawler dropped thumbnail/title evidence: %+v", evidence)
+	if reason == dedupe.ReasonSignature && (evidence.Match == nil || evidence.Match.Signature == nil) {
+		t.Fatalf("crawler dropped signature evidence: %+v", evidence)
 	}
 }

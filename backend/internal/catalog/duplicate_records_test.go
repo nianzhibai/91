@@ -139,17 +139,18 @@ func TestDuplicateRecordsCommitWithTransitiveMerges(t *testing.T) {
 				if err := cat.UpsertVideo(ctx, video); err != nil {
 					t.Fatal(err)
 				}
-				candidates = append(candidates, dedupe.Candidate{ID: id, Title: video.Title, Size: video.Size, DurationSeconds: 300, ThumbnailPath: id})
+				// a and b share a provider hash, b and c a sampled fingerprint:
+				// a reaches the survivor c only through b.
+				candidate := dedupe.Candidate{ID: id, Size: 200, DurationSeconds: 300, AssetScore: i}
+				if id != "c" {
+					candidate.ContentHash = "hash-ab"
+				}
+				if id != "a" {
+					candidate.SampledSHA256 = "s2:sampled-bc"
+				}
+				candidates = append(candidates, candidate)
 			}
-			plan, err := dedupe.Build(ctx, candidates, dedupe.Options{
-				Channels: dedupe.ChannelNear,
-				CompareImages: func(a, b string) (float64, error) {
-					if a == "a" && b == "c" {
-						return 0.10, nil
-					}
-					return 0.96, nil
-				},
-			})
+			plan, err := dedupe.Build(ctx, candidates, dedupe.Options{Channels: dedupe.ChannelExact})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -194,7 +195,8 @@ func TestDuplicateRecordsCommitWithTransitiveMerges(t *testing.T) {
 			if err := json.Unmarshal([]byte(evidenceJSON), &evidence); err != nil {
 				t.Fatal(err)
 			}
-			if matched != "b" || canonical != "c" || snapshot.FileName != "b.mp4" || evidence.Match == nil || evidence.Match.LeftID != "a" || evidence.Match.RightID != "b" || evidence.Match.Score != 0.96 {
+			if matched != "b" || canonical != "c" || snapshot.FileName != "b.mp4" || evidence.Reason != dedupe.ReasonContentHash || evidence.Match == nil ||
+				!slices.Contains([]string{evidence.Match.LeftID + evidence.Match.RightID, evidence.Match.RightID + evidence.Match.LeftID}, "ab") {
 				t.Fatalf("transitive evidence attributed to wrong video: matched=%s canonical=%s snapshot=%+v evidence=%+v", matched, canonical, snapshot, evidence)
 			}
 			if _, err := cat.GetVideo(ctx, "b"); !errors.Is(err, sql.ErrNoRows) {

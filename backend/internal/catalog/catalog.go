@@ -2398,31 +2398,25 @@ func (c *Catalog) FindEquivalentVideo(ctx context.Context, source *Video) (*Vide
 	return scanVideo(row)
 }
 
-// ListNearDuplicateVideoCandidates returns visible videos that are cheap
-// candidates for perceptual duplicate checking: same-ish duration and either a
-// thumbnail URL or a perceptual signature. Callers apply the title/thumbnail
-// and signature rules to whichever input a candidate has.
-func (c *Catalog) ListNearDuplicateVideoCandidates(ctx context.Context, source *Video, durationToleranceSeconds, limit int) ([]*Video, error) {
-	if source == nil || strings.TrimSpace(source.Title) == "" || source.DurationSeconds <= 0 {
+// ListSignedVideosNearDuration returns visible, content-verified videos with a
+// current perceptual signature whose duration is within tolerance of source,
+// closest durations first.
+func (c *Catalog) ListSignedVideosNearDuration(ctx context.Context, source *Video, durationToleranceSeconds, limit int) ([]*Video, error) {
+	if source == nil || source.DurationSeconds <= 0 {
 		return nil, nil
 	}
-	if durationToleranceSeconds < 0 {
-		durationToleranceSeconds = 0
-	}
+	durationToleranceSeconds = max(durationToleranceSeconds, 0)
 	if limit <= 0 {
 		limit = 200
 	}
-	minDuration := source.DurationSeconds - durationToleranceSeconds
-	if minDuration < 1 {
-		minDuration = 1
-	}
+	minDuration := max(source.DurationSeconds-durationToleranceSeconds, 1)
 	maxDuration := source.DurationSeconds + durationToleranceSeconds
 	rows, err := c.db.QueryContext(ctx,
 		`SELECT `+allVideoCols+` FROM videos
 		 WHERE id != ?
 		   AND `+duplicateLookupScope+`
 		   AND `+contentVerifiedWhere+`
-		   AND (COALESCE(thumbnail_url, '') != '' OR content_signature IS NOT NULL)
+		   AND `+currentSignatureWhere+`
 		   AND COALESCE(duration_seconds, 0) BETWEEN ? AND ?
 		 ORDER BY ABS(duration_seconds - ?) ASC, created_at ASC, id ASC
 		 LIMIT ?`,

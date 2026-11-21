@@ -31,8 +31,11 @@ const (
 	// recording match at about 8 bits; reposts of one video stay within 4.
 	StaticMaxMedianDistance = 4
 
-	// MinDuration is the shortest source a signature verdict is trusted for.
-	MinDuration = 30 * time.Second
+	// MinDuration is the shortest source that is sampled and compared. Below
+	// it the teaser plan reads fewer than two windows, too little to tell
+	// copies from clips of one recording. Sources shorter than nine seconds
+	// get two windows and so reach a probable verdict at most.
+	MinDuration = 6 * time.Second
 )
 
 // Verdict grades the evidence that two signatures show the same video.

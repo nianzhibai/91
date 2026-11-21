@@ -45,8 +45,8 @@ func TestMediaWants(t *testing.T) {
 	}{
 		{"new video", Video{PreviewStatus: "pending", MediaStatus: "pending"}, true, MediaWants{Teaser: true, Signature: true}},
 		{"new video without previews", Video{PreviewStatus: "pending", MediaStatus: "pending"}, false, MediaWants{Signature: true}},
-		{"short video", Video{DurationSeconds: 20, PreviewStatus: "pending", MediaStatus: "pending"}, true, MediaWants{Teaser: true}},
-		{"short video without previews", Video{DurationSeconds: 20, PreviewStatus: "pending", MediaStatus: "pending"}, false, MediaWants{}},
+		{"short video", Video{DurationSeconds: 5, PreviewStatus: "pending", MediaStatus: "pending"}, true, MediaWants{Teaser: true}},
+		{"short video without previews", Video{DurationSeconds: 5, PreviewStatus: "pending", MediaStatus: "pending"}, false, MediaWants{}},
 		{"renewal keeps the teaser fresh", Video{DurationSeconds: 90, PreviewStatus: "ready", PreviewLocal: "a.mp4", MediaStatus: "pending"}, true, MediaWants{Teaser: true, Signature: true}},
 		{"done", Video{DurationSeconds: 90, PreviewStatus: "ready", PreviewLocal: "a.mp4", MediaStatus: "ready"}, true, MediaWants{}},
 		{"teaser enabled after the job", Video{DurationSeconds: 90, PreviewStatus: "pending", MediaStatus: "ready"}, true, MediaWants{Teaser: true}},
@@ -61,7 +61,7 @@ func TestMediaWants(t *testing.T) {
 
 func TestMediaJobLifecycle(t *testing.T) {
 	ctx := context.Background()
-	cat := openMediaTestCatalog(t, mediaTestVideo("signed", 90), mediaTestVideo("failing", 90), mediaTestVideo("short", 10))
+	cat := openMediaTestCatalog(t, mediaTestVideo("signed", 90), mediaTestVideo("failing", 90), mediaTestVideo("short", 5))
 	listIDs := func(previews bool) map[string]bool {
 		t.Helper()
 		videos, err := cat.ListVideosNeedingMedia(ctx, "drive", previews)
@@ -165,10 +165,13 @@ func TestOutdatedSignaturesBecomeStaleOnOpen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := cat.UpsertVideo(ctx, mediaTestVideo("old", 90)); err != nil {
-		t.Fatal(err)
+	for _, video := range []*Video{mediaTestVideo("old", 90), mediaTestVideo("unsigned", 12), mediaTestVideo("tiny", 5)} {
+		if err := cat.UpsertVideo(ctx, video); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err := cat.db.ExecContext(ctx, `UPDATE videos SET content_signature = x'01ff', media_status = 'ready'`); err != nil {
+	if _, err := cat.db.ExecContext(ctx, `UPDATE videos SET media_status = 'ready',
+		content_signature = CASE id WHEN 'old' THEN x'01ff' END`); err != nil {
 		t.Fatal(err)
 	}
 	if err := cat.Close(); err != nil {
@@ -179,8 +182,10 @@ func TestOutdatedSignaturesBecomeStaleOnOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
-	if got, _ := reopened.GetVideo(ctx, "old"); got.MediaStatus != "stale" {
-		t.Fatalf("media status = %q, want an outdated signature renewed", got.MediaStatus)
+	for id, want := range map[string]string{"old": "stale", "unsigned": "stale", "tiny": "ready"} {
+		if got, _ := reopened.GetVideo(ctx, id); got.MediaStatus != want {
+			t.Errorf("%s: media status = %q, want %q", id, got.MediaStatus, want)
+		}
 	}
 }
 

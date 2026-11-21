@@ -11,7 +11,6 @@ const (
 	ReasonContentHash   = "content_hash"
 	ReasonFileNameSize  = "file_name_size"
 	ReasonSampledSHA256 = "sampled_sha256"
-	ReasonTitleThumb    = "title_duration_thumbnail"
 	ReasonSignature     = "content_signature"
 )
 

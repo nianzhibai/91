@@ -30,10 +30,8 @@ func (a *App) buildDuplicateMaintenancePlan(ctx context.Context, localDir string
 		if video == nil || strings.TrimSpace(video.ID) == "" {
 			continue
 		}
-		thumbnailPath, _ := localGeneratedThumbnailPath(localDir, video)
 		candidates = append(candidates, dedupe.Candidate{
 			ID:              video.ID,
-			Title:           video.Title,
 			DurationSeconds: video.DurationSeconds,
 			Size:            video.Size,
 			ContentHash:     video.ContentHash,
@@ -41,7 +39,6 @@ func (a *App) buildDuplicateMaintenancePlan(ctx context.Context, localDir string
 			AssetScore:      videoAssetCompletenessScore(localDir, video),
 			CreatedAt:       video.CreatedAt,
 			Revision:        catalog.DuplicateRevision(video),
-			ThumbnailPath:   thumbnailPath,
 			Signature:       signatures[video.ID],
 		})
 	}
@@ -53,9 +50,6 @@ func (a *App) buildDuplicateMaintenancePlan(ctx context.Context, localDir string
 	plan, err := dedupe.Build(ctx, candidates, dedupe.Options{Channels: channels, Distinct: distinct})
 	if err != nil {
 		return dedupe.Plan{}, err
-	}
-	for _, issue := range plan.Issues {
-		log.Printf("[dedupe-maintenance] thumbnail ssim failed left=%s right=%s: %v", issue.LeftID, issue.RightID, issue.Err)
 	}
 	for _, match := range plan.Matches {
 		if c := match.Signature; c != nil {

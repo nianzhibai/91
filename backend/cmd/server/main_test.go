@@ -4432,7 +4432,7 @@ func TestCleanupDuplicateVideoAssetsDeletesExactDuplicateRows(t *testing.T) {
 	}
 }
 
-func TestCleanupDuplicateVideoAssetsDeletesNearDuplicateRowsKeepingLargest(t *testing.T) {
+func TestCleanupDuplicateVideoAssetsDeletesSignatureDuplicateRowsKeepingLargest(t *testing.T) {
 	ctx := context.Background()
 	localDir := t.TempDir()
 	cat, err := catalog.Open(filepath.Join(t.TempDir(), "catalog.db"))
@@ -4467,7 +4467,7 @@ func TestCleanupDuplicateVideoAssetsDeletesNearDuplicateRowsKeepingLargest(t *te
 			DriveID:         "scriptcrawler-a",
 			FileID:          "file-small",
 			FileName:        "small.mp4",
-			Title:           "反差极品大二女友，叫声可射～，“射进小骚逼里面～” - 91porn",
+			Title:           "small copy",
 			DurationSeconds: 313,
 			Size:            1024,
 			ThumbnailURL:    "/p/thumb/small-video",
@@ -4482,7 +4482,7 @@ func TestCleanupDuplicateVideoAssetsDeletesNearDuplicateRowsKeepingLargest(t *te
 			DriveID:         "scriptcrawler-b",
 			FileID:          "file-large",
 			FileName:        "large.mp4",
-			Title:           "反差极品大二女友，叫声可射～，“射进小骚逼里面～”_91pinse",
+			Title:           "large original",
 			DurationSeconds: 313,
 			Size:            4096,
 			ThumbnailURL:    "/p/thumb/large-video",
@@ -4492,9 +4492,23 @@ func TestCleanupDuplicateVideoAssetsDeletesNearDuplicateRowsKeepingLargest(t *te
 			CreatedAt:       now.Add(time.Second),
 			UpdatedAt:       now.Add(time.Second),
 		},
+		// Equal titles and covers alone do not make a duplicate.
+		{ID: "same-cover-a", DriveID: "drive", FileID: "file-a", Title: "同一个标题", DurationSeconds: 313, Size: 100,
+			ThumbnailURL: "/p/thumb/small-video", PublishedAt: now, CreatedAt: now, UpdatedAt: now},
+		{ID: "same-cover-b", DriveID: "drive", FileID: "file-b", Title: "同一个标题", DurationSeconds: 313, Size: 200,
+			ThumbnailURL: "/p/thumb/small-video", PublishedAt: now, CreatedAt: now, UpdatedAt: now},
 	} {
 		if err := cat.UpsertVideo(ctx, v); err != nil {
 			t.Fatalf("seed %s: %v", v.ID, err)
+		}
+	}
+	for id, noise := range map[string]int{"small-video": 4, "large-video": 0} {
+		stored, err := cat.GetVideo(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cat.CompleteMediaForSource(ctx, stored, contentSignature(313, 7, noise)); err != nil {
+			t.Fatal(err)
 		}
 	}
 
@@ -4506,6 +4520,11 @@ func TestCleanupDuplicateVideoAssetsDeletesNearDuplicateRowsKeepingLargest(t *te
 		t.Fatalf("cleanup duplicate video assets: %v", err)
 	}
 
+	for _, id := range []string{"same-cover-a", "same-cover-b"} {
+		if _, err := cat.GetVideo(ctx, id); err != nil {
+			t.Fatalf("%s merged by title and cover: %v", id, err)
+		}
+	}
 	if _, err := cat.GetVideo(ctx, "small-video"); err != sql.ErrNoRows {
 		t.Fatalf("small duplicate lookup error = %v, want sql.ErrNoRows", err)
 	}

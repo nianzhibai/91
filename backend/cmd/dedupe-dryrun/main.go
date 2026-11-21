@@ -81,7 +81,6 @@ func signatureCandidates(localDir string, videos []*catalog.Video) ([]dedupe.Can
 		}
 		candidate := dedupe.Candidate{
 			ID:              video.ID,
-			Title:           video.Title,
 			DurationSeconds: video.DurationSeconds,
 			Size:            video.Size,
 			ContentHash:     video.ContentHash,

@@ -14,7 +14,6 @@ type Stage string
 
 const (
 	StageExact Stage = "exact"
-	StageNear  Stage = "near"
 	// StageSignature compares perceptual signatures of the video content.
 	StageSignature Stage = "signature"
 )
@@ -24,24 +23,22 @@ type Channels uint8
 
 const (
 	ChannelExact Channels = 1 << iota
-	ChannelNear
 	ChannelSignature
 
-	AllChannels = ChannelExact | ChannelNear | ChannelSignature
+	AllChannels = ChannelExact | ChannelSignature
 )
 
 func (c Channels) includes(channel Channels) bool {
 	return c&channel != 0
 }
 
-// Candidate is the dedupe-owned projection of a catalog video. Paths and
-// AssetScore are prepared by the caller because only the application knows
-// which configured local directory owns generated assets. Revision is an
+// Candidate is the dedupe-owned projection of a catalog video. AssetScore is
+// prepared by the caller because only the application knows which configured
+// local directory owns generated assets. Revision is an
 // opaque token of the catalog state the decision depends on; the catalog
 // rejects a plan when it no longer matches.
 type Candidate struct {
 	ID              string
-	Title           string
 	DurationSeconds int
 	Size            int64
 	ContentHash     string
@@ -49,7 +46,6 @@ type Candidate struct {
 	AssetScore      int
 	CreatedAt       time.Time
 	Revision        string
-	ThumbnailPath   string
 	Signature       *mediasig.Signature
 }
 
@@ -84,19 +80,8 @@ type Match struct {
 	RightID     string  `json:"rightId"`
 	Score       float64 `json:"score,omitempty"`
 	Comparisons int     `json:"comparisons,omitempty"`
-	TitleScore  float64 `json:"titleScore,omitempty"`
 	// Signature is the evidence of a signature-channel pair.
 	Signature *mediasig.Comparison `json:"signature,omitempty"`
-}
-
-// Issue is a non-fatal media comparison problem. The affected candidate or
-// pair is skipped while the rest of the plan continues.
-type Issue struct {
-	Stage   Stage
-	VideoID string
-	LeftID  string
-	RightID string
-	Err     error
 }
 
 type ChannelStats struct {
@@ -109,7 +94,6 @@ type ChannelStats struct {
 type Stats struct {
 	Videos    int
 	Exact     ChannelStats
-	Near      ChannelStats
 	Signature ChannelStats
 }
 
@@ -130,7 +114,6 @@ type Plan struct {
 	Groups    []Group
 	Matches   []Match
 	Reviews   []Review
-	Issues    []Issue
 	Stats     Stats
 }
 

@@ -107,11 +107,16 @@ func (c *Catalog) RequestMediaRenewal(ctx context.Context, ids []string) (result
 	return nil
 }
 
-// markOutdatedSignaturesStale queues finished jobs whose signature uses an
-// older format, after a sampling change, for renewal in maintenance batches.
+// markOutdatedSignaturesStale queues finished jobs for renewal in maintenance
+// batches when their signature no longer fits the current scheme: it uses an
+// older format, or the video was too short to sign when the job ran and is
+// long enough now.
 func (c *Catalog) markOutdatedSignaturesStale(ctx context.Context) error {
 	_, err := c.db.ExecContext(ctx, `UPDATE videos SET media_status = 'stale'
-		 WHERE media_status = 'ready' AND content_signature IS NOT NULL AND NOT `+currentSignatureWhere)
+		 WHERE media_status = 'ready'
+		   AND (content_signature IS NOT NULL AND NOT `+currentSignatureWhere+`
+		        OR content_signature IS NULL AND COALESCE(duration_seconds, 0) >= ?)`,
+		int(mediasig.MinDuration/time.Second))
 	return err
 }
 

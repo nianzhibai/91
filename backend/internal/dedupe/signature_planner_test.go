@@ -95,6 +95,19 @@ func TestSignatureEligibleStartsAtMinDuration(t *testing.T) {
 	}
 }
 
+func TestMatchSignatureRequiresDurationWithinTolerance(t *testing.T) {
+	left := signedCandidate("a", 100, windowSignature(1, 2, 3, 4))
+	right := signedCandidate("b", 100, windowSignature(1, 2, 3, 4))
+	right.DurationSeconds = left.DurationSeconds + DurationToleranceSeconds
+	if _, verdict := MatchSignature(left, right); verdict != mediasig.VerdictStrong {
+		t.Fatalf("within tolerance: verdict = %v, want strong", verdict)
+	}
+	right.DurationSeconds++
+	if _, verdict := MatchSignature(left, right); verdict != mediasig.VerdictNone {
+		t.Fatalf("beyond tolerance: verdict = %v, want none", verdict)
+	}
+}
+
 func TestSignatureChannelSkipsDistinctPairs(t *testing.T) {
 	candidates := []Candidate{
 		signedCandidate("a", 100, windowSignature(1, 2, 3, 4)),

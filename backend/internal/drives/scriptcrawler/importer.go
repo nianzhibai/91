@@ -193,7 +193,7 @@ func (c *Importer) Import(downloadCtx, ctx context.Context, item Item) (ImportOu
 	if thumbReady {
 		v.ThumbnailURL = "/p/thumb/" + v.ID
 	}
-	duplicate, err := c.findNearDuplicateVideo(ctx, v, commonThumbPath, videoPath)
+	duplicate, err := c.findNearDuplicateVideo(ctx, v, videoPath)
 	if err != nil {
 		_ = os.Remove(videoPath)
 		if thumbPath != "" {

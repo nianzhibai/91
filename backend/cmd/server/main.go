@@ -41,9 +41,6 @@ import (
 const (
 	fingerprintReconcileInterval = time.Minute
 
-	// 近重复阈值统一定义在 mediasim（NearDuplicate* / ContentDuplicate*），
-	// 爬虫导入与夜间维护共用同一组常量。
-
 	blacklistSourceDeletePace            = 250 * time.Millisecond
 	blacklistSourceDeleteDefaultCooldown = 30 * time.Second
 	blacklistSourceDeleteMaxAttempts     = 4

@@ -33,9 +33,10 @@ duplicate decisions. For this reason, a scan's total `duplicateCount` is not
 necessarily the number of newly created records.
 
 `reason` is one of `content_hash`, `file_name_size`, `sampled_sha256`,
-`title_duration_thumbnail`, `content_signature`, or `unknown`. Older records
-may also carry `content_frames`, the retired rule that compared teaser frames
-with SSIM. `content_hash`
+`content_signature`, or `unknown`. Older records may also carry two retired
+rules: `content_frames`, which compared teaser frames with SSIM, and
+`title_duration_thumbnail`, which matched similar titles with similar
+covers. `content_hash`
 means the provider hash strings matched; no algorithm is inferred from hash
 length. `size_bytes` and snapshot `sizeBytes` retain the reported value,
 without claiming independent size verification. `unknown` is used when an
@@ -43,7 +44,7 @@ internal caller supplies no matching evidence.
 
 All entry points share one policy. Exact identity is a matching provider hash
 or a matching size plus sampled fingerprint (`dedupe.ExactKeys`); perceptual
-pairs use `dedupe.MatchNear` and `dedupe.MatchContent`. Hidden rows and rows
+pairs use `dedupe.MatchSignature`. Hidden rows and rows
 without a file never act as duplicate partners. Scan skips only exact
 duplicates; a file name and size match is admitted and left to its
 fingerprint. Older scan records with reason `file_name_size` remain as
@@ -85,12 +86,12 @@ though C survives. B's record supplies the next edge. Scores keep their original
 winner explained by `selection_reason`; a later channel may replace it.
 Historical records are not rewritten when canonical references later change.
 
-Evidence version 1 uses the current rules: title similarity >= 0.90, thumbnail
-SSIM >= 0.95 and duration tolerance 2 seconds. A `content_signature` match is a
+Evidence version 1 uses the current rules. A `content_signature` match needs
+durations within 2 seconds and is a
 strong `mediasig` comparison: at least 3 matching windows and 60% of at least
 6 comparable frames within hash distance 10, plus a median distance of at most
 4 when either signature is static. `evidence.match.signature` keeps the counts.
-Signature candidates must be at least 30 seconds long. Increment
+Signature candidates must be at least 6 seconds long. Increment
 `EvidenceVersion` when changing the meaning of an existing reason or score; a
 new rule gets a new reason instead.
 
