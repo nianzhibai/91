@@ -2661,9 +2661,14 @@ func buildVideoListQuery(p ListParams) videoListQuery {
 	var where []string
 	var args []any
 	if p.Keyword != "" {
-		where = append(where, "(title LIKE ? OR author LIKE ? OR file_name LIKE ?)")
+		where = append(where, `(title LIKE ? OR author LIKE ? OR file_name LIKE ? OR
+			COALESCE((
+				SELECT group_concat(value, '/' ORDER BY key)
+				FROM json_each(CASE WHEN json_valid(videos.ancestor_dir_names) THEN videos.ancestor_dir_names ELSE '[]' END)
+				WHERE type = 'text' AND value <> ''
+			), NULLIF(videos.dir_name, '')) || '/' || COALESCE(videos.file_name, '') LIKE ?)`)
 		like := "%" + p.Keyword + "%"
-		args = append(args, like, like, like)
+		args = append(args, like, like, like, like)
 	}
 	if p.DriveID != "" {
 		where = append(where, "drive_id = ?")
