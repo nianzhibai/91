@@ -58,6 +58,18 @@ func (s *Signature) InformativeFrames() int {
 	return n
 }
 
+// SampledWindows returns the number of windows that contributed frames.
+func (s *Signature) SampledWindows() int {
+	if s == nil {
+		return 0
+	}
+	windows := make(map[int]struct{})
+	for _, frame := range s.Frames {
+		windows[frame.Window] = struct{}{}
+	}
+	return len(windows)
+}
+
 // SignatureFormat is the first byte of every encoded signature. It versions
 // the encoding and the sampling positions: format 2 samples the fixed
 // fractions of preview.longVideoSegmentFractions. Bump it when the sampling or

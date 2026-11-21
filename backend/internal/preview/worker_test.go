@@ -1419,6 +1419,7 @@ type fakeTeaserGenerator struct {
 	generatedURLs     []string
 	generatedDuration float64
 	signature         *mediasig.Signature
+	partialSignature  bool
 	thumbnailPath     string
 	requests          []MediaRequest
 }
@@ -1491,7 +1492,7 @@ func (g *fakeTeaserGenerator) Generate(_ context.Context, link *drives.StreamLin
 	if g.generateErr != nil {
 		return Media{}, g.generateErr
 	}
-	media := Media{Signature: g.signature}
+	media := Media{Signature: g.signature, SignatureComplete: g.signature != nil && !g.partialSignature}
 	if request.Teaser {
 		media.TeaserPath = "/tmp/source-teaser.mp4"
 	}

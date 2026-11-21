@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -86,6 +87,10 @@ type Media struct {
 	// Signature is nil when the windows could not be sampled or the source is
 	// too short to compare.
 	Signature *mediasig.Signature
+	// SignatureComplete reports whether every planned window contributed to
+	// the signature. A planned segment that fell back to another start
+	// leaves its window out.
+	SignatureComplete bool
 }
 
 // MediaGenerator produces a video's teaser, thumbnail and signature from one
@@ -737,7 +742,8 @@ segmentLoop:
 	for i, result := range segmentResults {
 		segmentPaths[i] = result.path
 	}
-	media := Media{Signature: g.sampleSignature(ctx, duration, segmentResults, eachSec)}
+	media := Media{}
+	media.Signature, media.SignatureComplete = g.sampleSignature(ctx, duration, starts, segmentResults, eachSec)
 	for _, result := range segmentResults {
 		if result.thumbnail != "" {
 			media.ThumbnailPath = result.thumbnail
@@ -829,29 +835,37 @@ func middleSegment(duration float64, starts []float64, eachSec float64) int {
 	return best
 }
 
-// sampleSignature samples the generated segments at the source windows they
-// actually show, including segments that fell back to another start. The
-// signature is optional: a failure is logged and the teaser stays usable.
-func (g *Generator) sampleSignature(ctx context.Context, duration float64, segments []teaserSegmentResult, eachSec float64) *mediasig.Signature {
+// sampleSignature samples the segments read at the planned starts. A segment
+// that fell back to another start shows moments other videos do not sample,
+// so it fills the teaser but stays out of the signature. complete reports
+// whether every planned window contributed frames. The signature is
+// optional: a failure is logged and the teaser stays usable.
+func (g *Generator) sampleSignature(ctx context.Context, duration float64, planned []float64, segments []teaserSegmentResult, eachSec float64) (signature *mediasig.Signature, complete bool) {
 	source := secondsDuration(duration)
 	if source < mediasig.MinDuration {
-		return nil
+		return nil, false
 	}
 	clips := make([]mediasig.Clip, 0, len(segments))
 	for _, segment := range segments {
+		if !slices.Contains(planned, segment.start) {
+			continue
+		}
 		clips = append(clips, mediasig.Clip{
 			Path:   segment.path,
 			Window: mediasig.Window{Start: secondsDuration(segment.start), Duration: secondsDuration(eachSec)},
 		})
+	}
+	if len(clips) == 0 {
+		return nil, false
 	}
 	ctx, cancel := context.WithTimeout(ctx, g.finishTimeout)
 	defer cancel()
 	signature, err := mediasig.Extract(ctx, g.cfg.FFmpegPath, source, clips)
 	if err != nil {
 		applog.Warn(ctx, "[preview] teaser signature sampling failed", err, applog.Fields{Component: "preview", Stage: "signature"})
-		return nil
+		return nil, false
 	}
-	return signature
+	return signature, signature.SampledWindows() == len(planned)
 }
 
 func secondsDuration(seconds float64) time.Duration {
@@ -2221,7 +2235,7 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
 	if media.TeaserPath != "" {
 		w.saveTeaser(ctx, v, media.TeaserPath)
 	}
-	w.completeMedia(ctx, v, wants, duration, media.Signature)
+	w.completeMedia(ctx, v, wants, duration, media)
 	if media.ThumbnailPath != "" {
 		w.saveThumbnail(ctx, v, media.ThumbnailPath)
 	}
@@ -2236,12 +2250,20 @@ func (w *Worker) logFields(v *catalog.Video, stage string) applog.Fields {
 	return applog.Fields{Component: "preview", DriveID: generationDriveID(w.Drive), VideoID: v.ID, FileID: v.FileID, Stage: stage}
 }
 
-// completeMedia records the job's signature. A long video whose segments
-// could not be sampled fails the job so a retry admits it again; a job that
-// only renewed the teaser keeps an existing signature when sampling failed.
-func (w *Worker) completeMedia(ctx context.Context, v *catalog.Video, wants catalog.MediaWants, duration float64, signature *mediasig.Signature) {
+// incompleteSignatureRereads bounds how often maintenance reads a video's
+// segments again for planned windows that fell back to other starts.
+const incompleteSignatureRereads = 3
+
+// completeMedia records the job's signature. A signature missing planned
+// windows is kept and read again later, since a fallback window cannot be
+// compared with other videos. A long video whose segments could not be
+// sampled fails the job so a retry admits it again; a job that only renewed
+// the teaser keeps an existing signature when sampling failed.
+func (w *Worker) completeMedia(ctx context.Context, v *catalog.Video, wants catalog.MediaWants, duration float64, media Media) {
 	var err error
-	switch {
+	switch signature := media.Signature; {
+	case signature != nil && !media.SignatureComplete:
+		err = w.Catalog.CompletePartialMediaForSource(ctx, v, signature, incompleteSignatureRereads)
 	case signature != nil || (wants.Signature && secondsDuration(duration) < mediasig.MinDuration):
 		err = w.Catalog.CompleteMediaForSource(ctx, v, signature)
 	case wants.Signature:

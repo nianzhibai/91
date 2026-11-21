@@ -726,7 +726,7 @@ var contentDerivedResets = []string{
 	"duration_seconds = 0",
 	"thumbnail_url = ''", "thumbnail_updated_at = 0", "thumbnail_status = 'pending'", "thumbnail_failures = 0",
 	"preview_file_id = ''", "preview_local = ''", "preview_updated_at = 0", "preview_status = 'pending'",
-	"content_signature = NULL", "media_status = 'pending'",
+	"content_signature = NULL", "media_status = 'pending'", "media_retries = 0",
 }
 
 // Workers can commit results only while the row still refers to the bytes
@@ -2178,6 +2178,7 @@ UPDATE videos
 	       preview_status = 'pending',
 	       content_signature = NULL,
 	       media_status = 'pending',
+	       media_retries = 0,
 	       updated_at = ?
  WHERE id = ?`, source.Size, FormatSourceModTime(source.ModTime), time.Now().UnixMilli(), id)
 	return err

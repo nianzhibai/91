@@ -52,6 +52,9 @@ func (c *Catalog) migrate(ctx context.Context) error {
 			return err
 		}
 	}
+	if err := c.addColumnIfMissing(ctx, "videos", "media_retries", "INTEGER DEFAULT 0"); err != nil {
+		return err
+	}
 	if err := c.markOutdatedSignaturesStale(ctx); err != nil {
 		return err
 	}
@@ -934,6 +937,7 @@ var currentVideoColumnNames = []string{
 	"preview_status",
 	"content_signature",
 	"media_status",
+	"media_retries",
 	"views",
 	"last_viewed_at",
 	"favorites",
@@ -982,6 +986,7 @@ CREATE TABLE videos_schema_rebuild_new (
     preview_status     TEXT DEFAULT 'pending',
     content_signature  BLOB,
     media_status       TEXT DEFAULT 'pending',
+    media_retries      INTEGER DEFAULT 0,
     views              INTEGER DEFAULT 0,
     last_viewed_at     INTEGER DEFAULT 0,
     favorites          INTEGER DEFAULT 0,

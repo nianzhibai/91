@@ -59,7 +59,25 @@ func (c *Catalog) CompleteMediaForSource(ctx context.Context, source *Video, sig
 			return err
 		}
 	}
-	return c.updateVideoRow(ctx, source.ID, source, "content_signature = ?, media_status = 'ready'", data)
+	return c.updateVideoRow(ctx, source.ID, source, "content_signature = ?, media_status = 'ready', media_retries = 0", data)
+}
+
+// CompletePartialMediaForSource stores a signature that misses planned
+// windows, usually because a segment could not be read and fell back to
+// another start. The signature is usable at once; the job is left stale so a
+// maintenance batch reads the segments again, until maxRetries rereads have
+// not completed it and the partial signature is kept for good.
+func (c *Catalog) CompletePartialMediaForSource(ctx context.Context, source *Video, signature *mediasig.Signature, maxRetries int) error {
+	if source == nil || signature == nil {
+		return fmt.Errorf("catalog: complete partial media: missing source or signature")
+	}
+	data, err := signature.MarshalBinary()
+	if err != nil {
+		return err
+	}
+	return c.updateVideoRow(ctx, source.ID, source, `content_signature = ?,
+		media_status = CASE WHEN COALESCE(media_retries, 0) + 1 > ? THEN 'ready' ELSE 'stale' END,
+		media_retries = COALESCE(media_retries, 0) + 1`, data, maxRetries)
 }
 
 // MarkMediaFailedForSource records a failed media job, so the video is not
@@ -82,7 +100,7 @@ func (c *Catalog) RequestMediaRenewal(ctx context.Context, ids []string) (result
 		for _, id := range chunk {
 			args = append(args, id)
 		}
-		if _, err := c.db.ExecContext(ctx, `UPDATE videos SET media_status = 'pending', updated_at = ?
+		if _, err := c.db.ExecContext(ctx, `UPDATE videos SET media_status = 'pending', media_retries = 0, updated_at = ?
 			 WHERE id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")+`)`, args...); err != nil {
 			return err
 		}
@@ -98,9 +116,10 @@ func (c *Catalog) markOutdatedSignaturesStale(ctx context.Context) error {
 	return err
 }
 
-// PromoteStaleMedia turns up to limit of the oldest stale media jobs into
-// pending ones and returns those videos, so renewals proceed in batches that
-// do not hold up maintenance.
+// PromoteStaleMedia turns up to limit stale media jobs into pending ones and
+// returns those videos, so renewals proceed in batches that do not hold up
+// maintenance. Rereads of partial signatures go first, then the oldest
+// videos.
 func (c *Catalog) PromoteStaleMedia(ctx context.Context, limit int) (resultValue []*Video, resultErr error) {
 	defer c.notifyDriveWrite(&resultErr, "", driveevents.GenerationChanged)
 	if limit <= 0 {
@@ -113,7 +132,7 @@ func (c *Catalog) PromoteStaleMedia(ctx context.Context, limit int) (resultValue
 	defer tx.Rollback()
 	rows, err := tx.QueryContext(ctx, `SELECT `+allVideoCols+` FROM videos
 		 WHERE media_status = 'stale' AND COALESCE(hidden, 0) = 0 AND `+uniqueVideoWhereSQL+`
-		 ORDER BY created_at ASC, id ASC
+		 ORDER BY COALESCE(media_retries, 0) > 0 DESC, created_at ASC, id ASC
 		 LIMIT ?`, limit)
 	if err != nil {
 		return nil, err

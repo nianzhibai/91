@@ -111,3 +111,48 @@ func TestFailedRenewalKeepsTheExistingTeaser(t *testing.T) {
 		t.Fatalf("preview = %q/%q media = %q, want the teaser kept and the job failed", got.PreviewStatus, got.PreviewLocal, got.MediaStatus)
 	}
 }
+
+func TestPartialSignatureIsReadAgainUntilTheRetryLimit(t *testing.T) {
+	ctx := context.Background()
+	cat, video := seedPreviewTestVideo(t, "partial-signature")
+	gen := &fakeTeaserGenerator{signature: testMediaSignature(), partialSignature: true}
+	worker := NewWorker(gen, cat, &previewFakeDrive{})
+
+	current := video
+	for attempt := 1; attempt <= incompleteSignatureRereads+1; attempt++ {
+		worker.process(ctx, current)
+		got, err := cat.GetVideo(ctx, video.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if signatures, _ := cat.LoadVideoSignatures(ctx, []string{video.ID}); signatures[video.ID] == nil {
+			t.Fatalf("attempt %d: partial signature not stored", attempt)
+		}
+		want := "stale"
+		if attempt > incompleteSignatureRereads {
+			want = "ready"
+		}
+		if got.MediaStatus != want {
+			t.Fatalf("attempt %d: media status = %q, want %q", attempt, got.MediaStatus, want)
+		}
+		// Maintenance promotes the stale job for the next read.
+		if want == "stale" {
+			promoted, err := cat.PromoteStaleMedia(ctx, 1)
+			if err != nil || len(promoted) != 1 {
+				t.Fatalf("promote = %v err = %v", promoted, err)
+			}
+			current = promoted[0]
+		}
+	}
+
+	// A complete read resets the count.
+	gen.partialSignature = false
+	if err := cat.RequestMediaRenewal(ctx, []string{video.ID}); err != nil {
+		t.Fatal(err)
+	}
+	renewed, _ := cat.GetVideo(ctx, video.ID)
+	worker.process(ctx, renewed)
+	if got, _ := cat.GetVideo(ctx, video.ID); got.MediaStatus != "ready" {
+		t.Fatalf("media status = %q, want ready after a complete read", got.MediaStatus)
+	}
+}

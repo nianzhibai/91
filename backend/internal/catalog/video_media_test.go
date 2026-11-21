@@ -183,3 +183,19 @@ func TestOutdatedSignaturesBecomeStaleOnOpen(t *testing.T) {
 		t.Fatalf("media status = %q, want an outdated signature renewed", got.MediaStatus)
 	}
 }
+
+func TestPartialSignatureRereadsArePromotedFirst(t *testing.T) {
+	ctx := context.Background()
+	cat := openMediaTestCatalog(t, mediaTestVideo("old", 90), mediaTestVideo("partial", 90))
+	if _, err := cat.db.ExecContext(ctx, `UPDATE videos SET media_status = 'stale', created_at = CASE id WHEN 'old' THEN 1 ELSE 2 END`); err != nil {
+		t.Fatal(err)
+	}
+	partial, _ := cat.GetVideo(ctx, "partial")
+	if err := cat.CompletePartialMediaForSource(ctx, partial, testSignature(), 3); err != nil {
+		t.Fatal(err)
+	}
+	promoted, err := cat.PromoteStaleMedia(ctx, 1)
+	if err != nil || len(promoted) != 1 || promoted[0].ID != "partial" {
+		t.Fatalf("promoted = %+v err = %v, want the partial signature reread first", promoted, err)
+	}
+}
