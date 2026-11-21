@@ -543,6 +543,37 @@ export type Schemas = {
     status?: number;
     updatedAt: string;
   };
+  DuplicateReview: {
+    left: Schemas["adminVideoDTO"];
+    right: Schemas["adminVideoDTO"];
+    evidence: Schemas["DuplicateReviewEvidence"];
+    firstSeenAt: string;
+  };
+  DuplicateReviewDismissRequest: {
+    leftVideoId: string;
+    rightVideoId: string;
+  };
+  DuplicateReviewEvidence: {
+    leftId: string;
+    rightId: string;
+    verdict: "none" | "probable" | "strong";
+    windows: number;
+    matchedWindows: number;
+    frames: number;
+    matchedFrames: number;
+    medianDistance: number;
+    static: boolean;
+  };
+  DuplicateReviewList: {
+    items: Schemas["DuplicateReview"][];
+    total: number;
+    page: number;
+    size: number;
+  };
+  DuplicateReviewMergeRequest: {
+    keepVideoId: string;
+    mergeVideoId: string;
+  };
   /** Common error fields. Some task and snapshot failures include their operation-specific state instead. Inspect HTTP status before interpreting the payload. */
   Error: {
     code?: string;
