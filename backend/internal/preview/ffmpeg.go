@@ -2214,7 +2214,7 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
 	if !wants.Any() {
 		// A pending job for a video too short to sample has nothing to do
 		// until previews are enabled.
-		if v.MediaStatus == "pending" {
+		if v.MediaPending() {
 			_ = w.Catalog.CompleteMediaForSource(ctx, v, nil)
 		}
 		w.handOffThumbnail(v)
@@ -2259,20 +2259,24 @@ func (w *Worker) logFields(v *catalog.Video, stage string) applog.Fields {
 	return applog.Fields{Component: "preview", DriveID: generationDriveID(w.Drive), VideoID: v.ID, FileID: v.FileID, Stage: stage}
 }
 
-// completeMedia records the job's signature. A signature missing planned
-// windows is kept and read again by maintenance until it is complete, since
-// a fallback window cannot be compared with other videos. A long video whose segments could not be
-// sampled fails the job so a retry admits it again; a job that only renewed
-// the teaser keeps an existing signature when sampling failed.
+// completeMedia settles the job once its segments were read. A signature
+// missing planned windows is kept and read again by maintenance until it is
+// complete, since a fallback window cannot be compared with other videos. A
+// video long enough to sign whose segments could not be sampled fails the job
+// so a retry admits it again. Any other due job is done, including one for a
+// video too short to sign. A teaser generated for a job that was not due
+// leaves the job and its signature as they are.
 func (w *Worker) completeMedia(ctx context.Context, v *catalog.Video, wants catalog.MediaWants, duration float64, media Media) {
 	var err error
 	switch signature := media.Signature; {
 	case signature != nil && !media.SignatureComplete:
 		err = w.Catalog.CompletePartialMediaForSource(ctx, v, signature)
-	case signature != nil || (wants.Signature && secondsDuration(duration) < mediasig.MinDuration):
+	case signature != nil:
 		err = w.Catalog.CompleteMediaForSource(ctx, v, signature)
-	case wants.Signature:
+	case wants.Signature && secondsDuration(duration) >= mediasig.MinDuration:
 		err = w.Catalog.MarkMediaFailedForSource(ctx, v)
+	case v.MediaPending():
+		err = w.Catalog.CompleteMediaForSource(ctx, v, nil)
 	}
 	if err != nil {
 		applog.Warn(ctx, "Save media signature failed: "+v.Title, err, w.logFields(v, "signature"))
@@ -2285,7 +2289,7 @@ func (w *Worker) failMedia(ctx context.Context, v *catalog.Video, wants catalog.
 	if wants.Teaser && v.PreviewStatus != "ready" {
 		_ = w.Catalog.UpdatePreviewForSource(ctx, v, "", "failed")
 	}
-	if v.MediaStatus == "pending" {
+	if v.MediaPending() {
 		_ = w.Catalog.MarkMediaFailedForSource(ctx, v)
 	}
 }

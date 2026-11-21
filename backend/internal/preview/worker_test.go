@@ -299,6 +299,40 @@ func TestMediaJobSavesThumbnailFromItsSegments(t *testing.T) {
 	}
 }
 
+func TestMediaJobSettlesForVideosTooShortToSign(t *testing.T) {
+	ctx := context.Background()
+	cat, video := seedPreviewTestVideo(t, "short-clip")
+	video.DurationSeconds = int(mediasig.MinDuration/time.Second) - 1
+	if err := cat.UpsertVideo(ctx, video); err != nil {
+		t.Fatal(err)
+	}
+	gen := &fakeTeaserGenerator{}
+	worker := NewWorker(gen, cat, &previewFakeDrive{})
+	stored, err := cat.GetVideo(ctx, video.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wants := stored.MediaWants(true); !wants.Teaser || wants.Signature {
+		t.Fatalf("wants = %+v, want only the teaser", wants)
+	}
+
+	worker.process(ctx, stored)
+
+	got, err := cat.GetVideo(ctx, video.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PreviewStatus != "ready" || got.MediaStatus != "ready" {
+		t.Fatalf("preview = %q media = %q, want both settled", got.PreviewStatus, got.MediaStatus)
+	}
+	if due, err := cat.ListVideosNeedingMedia(ctx, video.DriveID, true); err != nil || len(due) != 0 {
+		t.Fatalf("due = %d err = %v, want the finished job not queued again", len(due), err)
+	}
+	if gen.generateCalls != 1 {
+		t.Fatalf("generate calls = %d, want one", gen.generateCalls)
+	}
+}
+
 func TestMediaRenewalReplacesOnlyGeneratedThumbnails(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {

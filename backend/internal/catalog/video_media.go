@@ -35,13 +35,18 @@ func (v *Video) MediaWants(previewsEnabled bool) MediaWants {
 	if v == nil || v.Hidden {
 		return MediaWants{}
 	}
-	// Rows default to pending; an unsaved video has not run its job either.
-	pending := v.MediaStatus == "pending" || v.MediaStatus == ""
+	pending := v.MediaPending()
 	minimum := int(mediasig.MinDuration / time.Second)
 	return MediaWants{
 		Teaser:    previewsEnabled && (pending || v.PreviewStatus == "pending"),
 		Signature: pending && (v.DurationSeconds == 0 || v.DurationSeconds >= minimum),
 	}
+}
+
+// MediaPending reports whether v's media job is due. Rows default to pending;
+// an unsaved video has not run its job either.
+func (v *Video) MediaPending() bool {
+	return v.MediaStatus == "pending" || v.MediaStatus == ""
 }
 
 // CompleteMediaForSource records a finished media job for source with the
