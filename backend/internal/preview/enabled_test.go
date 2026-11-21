@@ -112,14 +112,14 @@ func TestFailedRenewalKeepsTheExistingTeaser(t *testing.T) {
 	}
 }
 
-func TestPartialSignatureIsReadAgainUntilTheRetryLimit(t *testing.T) {
+func TestPartialSignatureIsReadAgainUntilComplete(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "partial-signature")
 	gen := &fakeTeaserGenerator{signature: testMediaSignature(), partialSignature: true}
 	worker := NewWorker(gen, cat, &previewFakeDrive{})
 
 	current := video
-	for attempt := 1; attempt <= incompleteSignatureRereads+1; attempt++ {
+	for attempt := 1; attempt <= 5; attempt++ {
 		worker.process(ctx, current)
 		got, err := cat.GetVideo(ctx, video.ID)
 		if err != nil {
@@ -128,30 +128,19 @@ func TestPartialSignatureIsReadAgainUntilTheRetryLimit(t *testing.T) {
 		if signatures, _ := cat.LoadVideoSignatures(ctx, []string{video.ID}); signatures[video.ID] == nil {
 			t.Fatalf("attempt %d: partial signature not stored", attempt)
 		}
-		want := "stale"
-		if attempt > incompleteSignatureRereads {
-			want = "ready"
-		}
-		if got.MediaStatus != want {
-			t.Fatalf("attempt %d: media status = %q, want %q", attempt, got.MediaStatus, want)
+		if got.MediaStatus != "stale" {
+			t.Fatalf("attempt %d: media status = %q, want stale for another read", attempt, got.MediaStatus)
 		}
 		// Maintenance promotes the stale job for the next read.
-		if want == "stale" {
-			promoted, err := cat.PromoteStaleMedia(ctx, 1)
-			if err != nil || len(promoted) != 1 {
-				t.Fatalf("promote = %v err = %v", promoted, err)
-			}
-			current = promoted[0]
+		promoted, err := cat.PromoteStaleMedia(ctx, 1)
+		if err != nil || len(promoted) != 1 {
+			t.Fatalf("promote = %v err = %v", promoted, err)
 		}
+		current = promoted[0]
 	}
 
-	// A complete read resets the count.
 	gen.partialSignature = false
-	if err := cat.RequestMediaRenewal(ctx, []string{video.ID}); err != nil {
-		t.Fatal(err)
-	}
-	renewed, _ := cat.GetVideo(ctx, video.ID)
-	worker.process(ctx, renewed)
+	worker.process(ctx, current)
 	if got, _ := cat.GetVideo(ctx, video.ID); got.MediaStatus != "ready" {
 		t.Fatalf("media status = %q, want ready after a complete read", got.MediaStatus)
 	}

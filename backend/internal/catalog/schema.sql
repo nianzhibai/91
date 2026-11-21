@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS videos (
     preview_status   TEXT DEFAULT 'pending',    -- pending / ready / failed / disabled
     content_signature BLOB,                     -- mediasig 感知签名；源文件内容变化时清空
     media_status     TEXT DEFAULT 'pending',    -- 媒体任务（签名与预览）：pending / ready / failed / stale（待分批续期）
-    media_retries    INTEGER DEFAULT 0,         -- 签名缺少计划窗口时已重读的次数
+    media_retries    INTEGER DEFAULT 0,         -- 签名缺少计划窗口时的重读次数；未补齐前持续重读
     views            INTEGER DEFAULT 0,
     last_viewed_at   INTEGER DEFAULT 0,
     favorites        INTEGER DEFAULT 0,

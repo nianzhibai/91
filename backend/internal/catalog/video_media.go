@@ -64,10 +64,10 @@ func (c *Catalog) CompleteMediaForSource(ctx context.Context, source *Video, sig
 
 // CompletePartialMediaForSource stores a signature that misses planned
 // windows, usually because a segment could not be read and fell back to
-// another start. The signature is usable at once; the job is left stale so a
-// maintenance batch reads the segments again, until maxRetries rereads have
-// not completed it and the partial signature is kept for good.
-func (c *Catalog) CompletePartialMediaForSource(ctx context.Context, source *Video, signature *mediasig.Signature, maxRetries int) error {
+// another start. The signature is usable at once; the job is left stale so
+// maintenance batches read the segments again until a read completes it.
+// media_retries counts the rereads.
+func (c *Catalog) CompletePartialMediaForSource(ctx context.Context, source *Video, signature *mediasig.Signature) error {
 	if source == nil || signature == nil {
 		return fmt.Errorf("catalog: complete partial media: missing source or signature")
 	}
@@ -75,9 +75,8 @@ func (c *Catalog) CompletePartialMediaForSource(ctx context.Context, source *Vid
 	if err != nil {
 		return err
 	}
-	return c.updateVideoRow(ctx, source.ID, source, `content_signature = ?,
-		media_status = CASE WHEN COALESCE(media_retries, 0) + 1 > ? THEN 'ready' ELSE 'stale' END,
-		media_retries = COALESCE(media_retries, 0) + 1`, data, maxRetries)
+	return c.updateVideoRow(ctx, source.ID, source, `content_signature = ?, media_status = 'stale',
+		media_retries = COALESCE(media_retries, 0) + 1`, data)
 }
 
 // MarkMediaFailedForSource records a failed media job, so the video is not

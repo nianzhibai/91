@@ -191,7 +191,7 @@ func TestPartialSignatureRereadsArePromotedFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	partial, _ := cat.GetVideo(ctx, "partial")
-	if err := cat.CompletePartialMediaForSource(ctx, partial, testSignature(), 3); err != nil {
+	if err := cat.CompletePartialMediaForSource(ctx, partial, testSignature()); err != nil {
 		t.Fatal(err)
 	}
 	promoted, err := cat.PromoteStaleMedia(ctx, 1)

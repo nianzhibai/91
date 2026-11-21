@@ -2250,20 +2250,16 @@ func (w *Worker) logFields(v *catalog.Video, stage string) applog.Fields {
 	return applog.Fields{Component: "preview", DriveID: generationDriveID(w.Drive), VideoID: v.ID, FileID: v.FileID, Stage: stage}
 }
 
-// incompleteSignatureRereads bounds how often maintenance reads a video's
-// segments again for planned windows that fell back to other starts.
-const incompleteSignatureRereads = 3
-
 // completeMedia records the job's signature. A signature missing planned
-// windows is kept and read again later, since a fallback window cannot be
-// compared with other videos. A long video whose segments could not be
+// windows is kept and read again by maintenance until it is complete, since
+// a fallback window cannot be compared with other videos. A long video whose segments could not be
 // sampled fails the job so a retry admits it again; a job that only renewed
 // the teaser keeps an existing signature when sampling failed.
 func (w *Worker) completeMedia(ctx context.Context, v *catalog.Video, wants catalog.MediaWants, duration float64, media Media) {
 	var err error
 	switch signature := media.Signature; {
 	case signature != nil && !media.SignatureComplete:
-		err = w.Catalog.CompletePartialMediaForSource(ctx, v, signature, incompleteSignatureRereads)
+		err = w.Catalog.CompletePartialMediaForSource(ctx, v, signature)
 	case signature != nil || (wants.Signature && secondsDuration(duration) < mediasig.MinDuration):
 		err = w.Catalog.CompleteMediaForSource(ctx, v, signature)
 	case wants.Signature:
