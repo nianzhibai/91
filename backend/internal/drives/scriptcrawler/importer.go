@@ -191,7 +191,7 @@ func (c *Importer) Import(downloadCtx, ctx context.Context, item Item) (ImportOu
 		}
 	}
 	if thumbReady {
-		v.ThumbnailURL = "/p/thumb/" + v.ID
+		v.ThumbnailURL, v.ThumbnailSource = catalog.GeneratedThumbnailURL(v.ID), catalog.ThumbnailProvided
 	}
 	duplicate, err := c.findNearDuplicateVideo(ctx, v, videoPath)
 	if err != nil {
@@ -351,7 +351,7 @@ func (c *Importer) RestoreRequestedVideos(ctx context.Context) (int, error) {
 		// tombstone must not reintroduce a source-supplied publication date.
 		video.PublishedAt = video.CreatedAt
 		if c.restoreCrawlerThumbnail(video, fileID) {
-			video.ThumbnailURL = "/p/thumb/" + video.ID
+			video.ThumbnailURL, video.ThumbnailSource = catalog.GeneratedThumbnailURL(video.ID), catalog.ThumbnailProvided
 		}
 
 		sourceID, sourceErr := c.cfg.Catalog.CrawlerSourceForVideo(ctx, c.cfg.Driver.ID(), request.ID)

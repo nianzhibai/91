@@ -73,6 +73,13 @@ func (c *Catalog) migrate(ctx context.Context) error {
 	if err := c.addColumnIfMissing(ctx, "videos", "thumbnail_failures", "INTEGER DEFAULT 0"); err != nil {
 		return err
 	}
+	if added, err := c.addColumnIfMissingReportNew(ctx, "videos", "thumbnail_source", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	} else if added {
+		if err := c.backfillThumbnailSources(ctx); err != nil {
+			return err
+		}
+	}
 	if err := c.migrateLegacyDurationBackfill(ctx); err != nil {
 		return err
 	}
@@ -931,6 +938,7 @@ var currentVideoColumnNames = []string{
 	"thumbnail_updated_at",
 	"thumbnail_status",
 	"thumbnail_failures",
+	"thumbnail_source",
 	"preview_file_id",
 	"preview_local",
 	"preview_updated_at",
@@ -980,6 +988,7 @@ CREATE TABLE videos_schema_rebuild_new (
 	thumbnail_updated_at INTEGER DEFAULT 0,
     thumbnail_status   TEXT DEFAULT 'pending',
     thumbnail_failures INTEGER DEFAULT 0,
+    thumbnail_source   TEXT NOT NULL DEFAULT '',
     preview_file_id    TEXT,
     preview_local      TEXT,
     preview_updated_at INTEGER DEFAULT 0,

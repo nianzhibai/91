@@ -197,12 +197,14 @@ SELECT id, COALESCE(preview_local, ''), COALESCE(preview_status, ''),
 		if _, err := tx.ExecContext(ctx, `
 UPDATE videos
    SET preview_local = ?, preview_status = ?,
-       thumbnail_url = ?, thumbnail_status = ?
+       thumbnail_url = ?, thumbnail_status = ?,
+       thumbnail_source = CASE WHEN ? = '' THEN '' ELSE thumbnail_source END
  WHERE id = ?`,
 			rewrittenPreview,
 			video.previewStatus,
 			video.thumbnailURL,
 			video.thumbnailStatus,
+			video.thumbnailURL,
 			video.id,
 		); err != nil {
 			return err

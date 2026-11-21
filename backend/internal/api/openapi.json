@@ -9118,6 +9118,16 @@
           "thumbnailUrl": {
             "type": "string"
           },
+          "thumbnailSource": {
+            "type": "string",
+            "enum": [
+              "",
+              "generated",
+              "provided",
+              "custom"
+            ],
+            "description": "Who owns the cover. Only generated covers are replaced when the media job reads the video again."
+          },
           "title": {
             "type": "string"
           },
@@ -9146,6 +9156,7 @@
           "size",
           "ext",
           "thumbnailUrl",
+          "thumbnailSource",
           "previewFileId",
           "previewLocal",
           "previewStatus",

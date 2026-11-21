@@ -37,6 +37,8 @@ export type Schemas = {
     } | null;
     tags: string[] | null;
     thumbnailUrl: string;
+    /** Who owns the cover. Only generated covers are replaced when the media job reads the video again. */
+    thumbnailSource: "" | "generated" | "provided" | "custom";
     title: string;
     updatedAt: string;
     views: number;

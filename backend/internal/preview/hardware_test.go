@@ -48,8 +48,12 @@ case " $* " in
         fi ;;
     esac ;;
 esac
+case "$out" in *.jpg) cp "$GPU_TEST_COVER" "$out"; exit 0 ;; esac
 printf 'media-output' > "$out"
 `)
+	cover := filepath.Join(dir, "cover.jpg")
+	writeCoverJPEG(t, cover, 40, 160)
+	t.Setenv("GPU_TEST_COVER", cover)
 	ffprobe := filepath.Join(dir, "ffprobe")
 	writeExecutable(t, ffprobe, "#!/bin/sh\nprintf '%s' '{\"streams\":[{\"codec_type\":\"video\",\"duration\":\"3.0\"}],\"format\":{\"duration\":\"3.0\"}}'\n")
 	cfg := Config{FFmpegPath: ffmpeg, FFprobePath: ffprobe, Width: 128, LocalDir: filepath.Join(dir, "previews")}
@@ -104,8 +108,8 @@ func TestGPUThumbnailFailureRetriesCPUOnce(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if data, _ := os.ReadFile(path); string(data) != "media-output" {
-				t.Fatal("CPU cover was not published")
+			if _, err := measureCover(path); err != nil {
+				t.Fatalf("CPU cover was not published: %v", err)
 			}
 			calls, _ := os.ReadFile(logPath)
 			lines := strings.Split(strings.TrimSpace(string(calls)), "\n")

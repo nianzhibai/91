@@ -294,8 +294,56 @@ func TestMediaJobSavesThumbnailFromItsSegments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.ThumbnailURL != "/p/thumb/"+video.ID || got.PreviewStatus != "ready" {
-		t.Fatalf("thumbnail = %q preview = %q, want both from one job", got.ThumbnailURL, got.PreviewStatus)
+	if got.ThumbnailURL != "/p/thumb/"+video.ID || got.ThumbnailSource != catalog.ThumbnailGenerated || got.PreviewStatus != "ready" {
+		t.Fatalf("thumbnail = %q (%q) preview = %q, want both from one job", got.ThumbnailURL, got.ThumbnailSource, got.PreviewStatus)
+	}
+}
+
+func TestMediaRenewalReplacesOnlyGeneratedThumbnails(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		source  string
+		url     string
+		renewed bool
+	}{
+		{catalog.ThumbnailGenerated, "/p/thumb/", true},
+		{catalog.ThumbnailProvided, "/p/thumb/", false},
+		{catalog.ThumbnailCustom, "https://covers.example/a.jpg", false},
+	} {
+		cat, video := seedPreviewTestVideo(t, "renewal-"+tc.source)
+		url := tc.url
+		if url == "/p/thumb/" {
+			url += video.ID
+		}
+		video.ThumbnailURL, video.ThumbnailSource = url, tc.source
+		if err := cat.UpsertVideo(ctx, video); err != nil {
+			t.Fatal(err)
+		}
+		if err := cat.RequestMediaRenewal(ctx, []string{video.ID}); err != nil {
+			t.Fatal(err)
+		}
+		before, err := cat.GetVideo(ctx, video.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		thumbnail := filepath.Join(t.TempDir(), "thumb.jpg")
+		if err := os.WriteFile(thumbnail, []byte("jpeg"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gen := &fakeTeaserGenerator{thumbnailPath: thumbnail}
+		NewWorker(gen, cat, &previewFakeDrive{}).process(ctx, before)
+
+		if len(gen.requests) != 1 || gen.requests[0].Thumbnail != tc.renewed {
+			t.Fatalf("%s: requests = %+v, want thumbnail requested = %v", tc.source, gen.requests, tc.renewed)
+		}
+		after, err := cat.GetVideo(ctx, video.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		renewed := after.ThumbnailUpdatedAt.After(before.ThumbnailUpdatedAt)
+		if after.ThumbnailURL != url || after.ThumbnailSource != tc.source || renewed != tc.renewed {
+			t.Fatalf("%s: cover = %q/%q renewed=%v, want %q kept, renewed=%v", tc.source, after.ThumbnailURL, after.ThumbnailSource, renewed, url, tc.renewed)
+		}
 	}
 }
 

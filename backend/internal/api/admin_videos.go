@@ -42,6 +42,7 @@ type adminVideoDTO struct {
 	Size              int64             `json:"size"`
 	Ext               string            `json:"ext"`
 	ThumbnailURL      string            `json:"thumbnailUrl"`
+	ThumbnailSource   string            `json:"thumbnailSource"`
 	PreviewFileID     string            `json:"previewFileId"`
 	PreviewLocal      string            `json:"previewLocal"`
 	PreviewStatus     string            `json:"previewStatus"`
@@ -79,6 +80,7 @@ func mapAdminVideo(v *catalog.Video) adminVideoDTO {
 		Size:              v.Size,
 		Ext:               v.Ext,
 		ThumbnailURL:      v.ThumbnailURL,
+		ThumbnailSource:   v.ThumbnailSource,
 		PreviewFileID:     v.PreviewFileID,
 		PreviewLocal:      v.PreviewLocal,
 		PreviewStatus:     v.PreviewStatus,
@@ -124,7 +126,7 @@ func (a *AdminServer) handleUpdateVideo(w http.ResponseWriter, r *http.Request) 
 		v.Badges = body.Badges
 	}
 	if body.Thumbnail != "" {
-		v.ThumbnailURL = body.Thumbnail
+		v.ThumbnailURL, v.ThumbnailSource = body.Thumbnail, catalog.ThumbnailCustom
 	}
 	if body.DurationSec > 0 {
 		v.DurationSeconds = body.DurationSec

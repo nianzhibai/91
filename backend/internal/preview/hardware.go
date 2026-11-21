@@ -236,8 +236,9 @@ func (b *hardwareBackend) encoderInputFilter() string {
 	return "format=nv12,hwupload"
 }
 
-func (g *Generator) thumbnailFilter() string {
-	filter := thumbnailVideoFilter(g.cfg.Width)
+// thumbnailFilter selects the cover frame of a span lasting span seconds.
+func (g *Generator) thumbnailFilter(span float64) string {
+	filter := coverFilter(g.cfg.Width, span)
 	if g.hardware != nil {
 		filter = g.hardware.downloadFilter(g.cfg.Width) + "," + filter
 	}
@@ -253,8 +254,8 @@ func (g *Generator) segmentFilter(fade bool, duration float64) string {
 }
 
 // segmentGraph decodes a segment once and splits the picture before any fade
-// or encoding: into the encoded segment, a thumbnail from the middle of the
-// segment, and the frames sampled for the perceptual signature.
+// or encoding: into the encoded segment, the segment's cover candidate, and
+// the frames sampled for the perceptual signature.
 func (g *Generator) segmentGraph(fade bool, eachSec float64, outputs segmentOutputs) string {
 	decode, encoderInput := "", ""
 	if g.hardware != nil {
@@ -265,7 +266,7 @@ func (g *Generator) segmentGraph(fade bool, eachSec float64, outputs segmentOutp
 	branches := []string{fmt.Sprintf("[s]%s%s[segment]", teaserSegmentVideoFilter(g.cfg.Width, fade, eachSec), encoderInput)}
 	if outputs.thumbnail {
 		labels += "[t]"
-		branches = append(branches, fmt.Sprintf("[t]trim=start=%.3f,setpts=PTS-STARTPTS,%s[thumb]", eachSec/2, thumbnailVideoFilter(g.cfg.Width)))
+		branches = append(branches, "[t]"+coverFilter(g.cfg.Width, eachSec)+"[thumb]")
 	}
 	if outputs.signature {
 		labels += "[g]"

@@ -172,10 +172,13 @@ type Video struct {
 	Ext                string    `json:"ext"`
 	ThumbnailURL       string    `json:"thumbnailUrl"`
 	ThumbnailUpdatedAt time.Time `json:"thumbnailUpdatedAt"`
-	PreviewFileID      string    `json:"previewFileId"`
-	PreviewLocal       string    `json:"previewLocal"` // relative to <storage.data_dir>/previews
-	PreviewUpdatedAt   time.Time `json:"previewUpdatedAt"`
-	PreviewStatus      string    `json:"previewStatus"`
+	// ThumbnailSource records who owns the cover: ThumbnailGenerated,
+	// ThumbnailProvided or ThumbnailCustom. Empty for a video without one.
+	ThumbnailSource  string    `json:"thumbnailSource"`
+	PreviewFileID    string    `json:"previewFileId"`
+	PreviewLocal     string    `json:"previewLocal"` // relative to <storage.data_dir>/previews
+	PreviewUpdatedAt time.Time `json:"previewUpdatedAt"`
+	PreviewStatus    string    `json:"previewStatus"`
 	// MediaStatus is the state of the media job that samples the perceptual
 	// signature and renews the teaser: pending, ready, failed, or stale when
 	// a renewal is due but left to maintenance batches.
@@ -316,13 +319,13 @@ func upsertVideoRow(ctx context.Context, exec videoRowExecer, v *Video) ([]strin
 	_, err := exec.ExecContext(ctx, `
 INSERT INTO videos (
   id, drive_id, file_id, file_name, content_hash, source_mod_time, sampled_sha256, fingerprint_status, fingerprint_error, parent_id, ancestor_dir_ids, ancestor_dir_names, dir_name, title, author, tags,
-	  duration_seconds, size_bytes, ext, thumbnail_url, thumbnail_updated_at, thumbnail_status,
+	  duration_seconds, size_bytes, ext, thumbnail_url, thumbnail_updated_at, thumbnail_status, thumbnail_source,
 	  preview_file_id, preview_local, preview_updated_at, preview_status,
 	  views, last_viewed_at, favorites, comments, likes, last_liked_at, dislikes,
 	  hidden, badges, published_at, created_at, updated_at
 	) VALUES (
 	  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-	  ?, ?, ?, ?, ?, CASE WHEN COALESCE(?, '') != '' THEN 'ready' ELSE 'pending' END,
+	  ?, ?, ?, ?, ?, CASE WHEN COALESCE(?, '') != '' THEN 'ready' ELSE 'pending' END, ?,
 	  ?, ?, ?, ?,
 	  ?, ?, ?, ?, ?, ?, ?,
 	  ?, ?, ?, ?, ?
@@ -377,6 +380,7 @@ ON CONFLICT(id) DO UPDATE SET
   size_bytes      = excluded.size_bytes,
   ext             = excluded.ext,
   thumbnail_url   = excluded.thumbnail_url,
+  thumbnail_source = excluded.thumbnail_source,
 	thumbnail_updated_at = CASE
 	                    WHEN COALESCE(excluded.thumbnail_url, '') = '' THEN 0
 	                    WHEN COALESCE(excluded.thumbnail_url, '') != COALESCE(videos.thumbnail_url, '')
@@ -396,7 +400,7 @@ ON CONFLICT(id) DO UPDATE SET
   updated_at      = excluded.updated_at
 `,
 		v.ID, v.DriveID, v.FileID, v.FileName, v.ContentHash, v.SourceModTime, v.SampledSHA256, fingerprintStatus, v.FingerprintError, v.ParentID, ancestorDirIDsJSON, ancestorDirNamesJSON, v.DirName, v.Title, v.Author, string(tagsJSON),
-		v.DurationSeconds, v.Size, v.Ext, v.ThumbnailURL, thumbnailUpdatedAt, v.ThumbnailURL,
+		v.DurationSeconds, v.Size, v.Ext, v.ThumbnailURL, thumbnailUpdatedAt, v.ThumbnailURL, v.thumbnailSourceState(),
 		v.PreviewFileID, v.PreviewLocal, previewUpdatedAt, nullableStatus(v.PreviewStatus),
 		v.Views, unixMilliOrZero(v.LastViewedAt), v.Favorites, v.Comments, v.Likes, unixMilliOrZero(v.LastLikedAt), v.Dislikes,
 		v.hiddenState(), string(badgesJSON),
@@ -694,9 +698,11 @@ type VideoMetaPatch struct {
 	// VerifyContent records a suspected replacement that size and hash cannot
 	// confirm. The sampled fingerprint is set aside for the fingerprint worker
 	// to compare; generated assets stay until that comparison finds new bytes.
-	VerifyContent          bool
-	Size                   int64
+	VerifyContent bool
+	Size          int64
+	// ThumbnailURL replaces the cover; ThumbnailSource names its owner.
 	ThumbnailURL           string
+	ThumbnailSource        string
 	ThumbnailStatus        string
 	ResetThumbnailFailures bool
 	DurationSeconds        int
@@ -724,7 +730,7 @@ type VideoMetaPatch struct {
 // workers regenerate them.
 var contentDerivedResets = []string{
 	"duration_seconds = 0",
-	"thumbnail_url = ''", "thumbnail_updated_at = 0", "thumbnail_status = 'pending'", "thumbnail_failures = 0",
+	"thumbnail_url = ''", "thumbnail_updated_at = 0", "thumbnail_status = 'pending'", "thumbnail_failures = 0", "thumbnail_source = ''",
 	"preview_file_id = ''", "preview_local = ''", "preview_updated_at = 0", "preview_status = 'pending'",
 	"content_signature = NULL", "media_status = 'pending'", "media_retries = 0",
 }
@@ -758,9 +764,10 @@ func (c *Catalog) UpdateVideoMeta(ctx context.Context, id string, p VideoMetaPat
 	if p.ThumbnailURL != "" {
 		parts = append(parts,
 			"thumbnail_url = ?",
+			"thumbnail_source = ?",
 			"thumbnail_updated_at = MAX(COALESCE(thumbnail_updated_at, 0) + 1, ?)",
 		)
-		args = append(args, p.ThumbnailURL, now)
+		args = append(args, p.ThumbnailURL, p.ThumbnailSource, now)
 	}
 	switch {
 	case p.ThumbnailStatus != "":
@@ -997,7 +1004,8 @@ func (c *Catalog) ResetMissingLocalThumbnails(ctx context.Context, references []
 		   SET thumbnail_url = '',
 		       thumbnail_updated_at = 0,
 		       thumbnail_status = 'pending',
-		       thumbnail_failures = 0
+		       thumbnail_failures = 0,
+		       thumbnail_source = ''
 		 WHERE id = ?
 		   AND thumbnail_url = '/p/thumb/' || id
 		   AND COALESCE(thumbnail_updated_at, 0) = ?`)
@@ -2172,6 +2180,7 @@ UPDATE videos
        thumbnail_updated_at = 0,
        thumbnail_status = 'pending',
        thumbnail_failures = 0,
+       thumbnail_source = '',
        preview_file_id = '',
 	       preview_local = '',
 	       preview_updated_at = 0,
@@ -3549,7 +3558,7 @@ func (c *Catalog) ClearGeneratedAssets(ctx context.Context, videoID string, clea
 		parts = append(parts, "preview_file_id = ''", "preview_local = ''", "preview_updated_at = 0", "preview_status = 'pending'")
 	}
 	if clearThumbnail {
-		parts = append(parts, "thumbnail_url = ''", "thumbnail_updated_at = 0", "thumbnail_status = 'pending'")
+		parts = append(parts, "thumbnail_url = ''", "thumbnail_updated_at = 0", "thumbnail_status = 'pending'", "thumbnail_source = ''")
 	}
 	if len(parts) == 0 {
 		return nil
@@ -4178,7 +4187,7 @@ const allVideoCols = `
 id, drive_id, file_id, COALESCE(file_name, ''), COALESCE(content_hash, ''), source_mod_time,
 COALESCE(sampled_sha256, ''), COALESCE(fingerprint_status, 'pending'), COALESCE(fingerprint_error, ''),
 COALESCE(parent_id, ''), COALESCE(ancestor_dir_ids, ''), COALESCE(ancestor_dir_names, ''), COALESCE(dir_name, ''), title, COALESCE(author, ''), COALESCE(tags, '[]'),
-duration_seconds, COALESCE(size_bytes, 0), COALESCE(ext, ''), COALESCE(thumbnail_url, ''), COALESCE(thumbnail_updated_at, 0),
+duration_seconds, COALESCE(size_bytes, 0), COALESCE(ext, ''), COALESCE(thumbnail_url, ''), COALESCE(thumbnail_updated_at, 0), COALESCE(thumbnail_source, ''),
 COALESCE(preview_file_id, ''), COALESCE(preview_local, ''), COALESCE(preview_updated_at, 0), COALESCE(preview_status, 'pending'),
 COALESCE(media_status, 'pending'),
 	views, COALESCE(last_viewed_at, 0), favorites, comments, likes, COALESCE(last_liked_at, 0), dislikes,
@@ -4293,7 +4302,7 @@ func scanVideo(row rowScanner) (*Video, error) {
 		&v.ID, &v.DriveID, &v.FileID, &v.FileName, &v.ContentHash, &v.SourceModTime,
 		&v.SampledSHA256, &v.FingerprintStatus, &v.FingerprintError,
 		&v.ParentID, &ancestorDirIDsJSON, &ancestorDirNamesJSON, &v.DirName, &v.Title, &v.Author, &tagsJSON,
-		&v.DurationSeconds, &v.Size, &v.Ext, &v.ThumbnailURL, &thumbnailUpdatedAt,
+		&v.DurationSeconds, &v.Size, &v.Ext, &v.ThumbnailURL, &thumbnailUpdatedAt, &v.ThumbnailSource,
 		&v.PreviewFileID, &v.PreviewLocal, &previewUpdatedAt, &v.PreviewStatus,
 		&v.MediaStatus,
 		&v.Views, &lastViewedAt, &v.Favorites, &v.Comments, &v.Likes, &lastLikedAt, &v.Dislikes,

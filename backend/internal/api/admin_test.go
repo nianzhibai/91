@@ -89,6 +89,39 @@ func TestHandleUpdateVideoRejectsReadOnlyTitleAndAuthor(t *testing.T) {
 	}
 }
 
+func TestHandleUpdateVideoMarksAdministratorCoverCustom(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	defer cat.Close()
+	now := time.Now()
+	if err := cat.UpsertVideo(ctx, &catalog.Video{
+		ID: "video-cover", DriveID: "drive", FileID: "file", FileName: "file.mp4", Title: "file",
+		ThumbnailURL: "/p/thumb/video-cover", ThumbnailSource: catalog.ThumbnailGenerated,
+		PublishedAt: now, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed video: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/admin/api/videos/video-cover", strings.NewReader(`{"thumbnail":"https://covers.example/a.jpg"}`))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "video-cover")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rr := httptest.NewRecorder()
+	(&AdminServer{Catalog: cat}).handleUpdateVideo(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	got, err := cat.GetVideo(ctx, "video-cover")
+	if err != nil {
+		t.Fatalf("get video: %v", err)
+	}
+	if got.ThumbnailURL != "https://covers.example/a.jpg" || got.ThumbnailSource != catalog.ThumbnailCustom || got.GeneratesThumbnail() {
+		t.Fatalf("cover = %q/%q, want the administrator's cover kept from the workers", got.ThumbnailURL, got.ThumbnailSource)
+	}
+}
+
 func TestHandleLoginReturnsForbiddenForBannedIP(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")

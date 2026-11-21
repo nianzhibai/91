@@ -134,7 +134,7 @@ time.sleep(30)
 			videoPath := filepath.Join(c.cfg.Driver.VideosDir(), mediaFileStem("one")+".mp4")
 			if wantNew == 1 {
 				v, err := c.cfg.Catalog.GetVideo(context.Background(), videoID)
-				if err != nil || v.FingerprintStatus != "ready" || v.SampledSHA256 == "" || v.ThumbnailURL == "" || !strings.Contains(strings.Join(v.Tags, ","), result.DriveID) {
+				if err != nil || v.FingerprintStatus != "ready" || v.SampledSHA256 == "" || v.ThumbnailURL == "" || v.ThumbnailSource != catalog.ThumbnailProvided || !strings.Contains(strings.Join(v.Tags, ","), result.DriveID) {
 					t.Fatalf("incomplete video publication: %+v %v", v, err)
 				}
 				data, err := os.ReadFile(videoPath)

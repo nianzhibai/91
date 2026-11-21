@@ -939,12 +939,12 @@ func (m *Migrator) preserveCrawledThumbnail(ctx context.Context, src LocalSource
 		}
 	}
 	if err := m.cfg.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{
-		ThumbnailURL: "/p/thumb/" + v.ID,
+		ThumbnailURL: catalog.GeneratedThumbnailURL(v.ID), ThumbnailSource: catalog.ThumbnailProvided,
 	}); err != nil {
 		log.Printf("[crawlerupload] %s update crawled thumbnail url: %v", v.ID, err)
 		return
 	}
-	v.ThumbnailURL = "/p/thumb/" + v.ID
+	v.ThumbnailURL, v.ThumbnailSource = catalog.GeneratedThumbnailURL(v.ID), catalog.ThumbnailProvided
 }
 
 func findCrawlerThumbPath(src LocalSource, fileID string) (string, bool) {

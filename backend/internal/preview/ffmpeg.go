@@ -74,7 +74,8 @@ type ThumbnailGenerator interface {
 // MediaRequest selects what a media job produces besides the perceptual
 // signature, which is always sampled from the segments.
 type MediaRequest struct {
-	Teaser    bool
+	Teaser bool
+	// Thumbnail selects a cover from the segments read.
 	Thumbnail bool
 }
 
@@ -255,17 +256,18 @@ func appendUniqueStart(starts []float64, start, eachSec float64) []float64 {
 	return append(starts, start)
 }
 
-// thumbnailOffsets 选封面抽帧的时间点（秒）。独立于预览视频。
-// 默认取视频中间帧；时长未知时退回早期帧。
+// thumbnailOffsets returns where the thumbnail worker samples cover spans, in
+// order: the middle of the video, then 30% and 70% for a middle without a
+// usable frame, then early offsets that partially readable files still serve.
 func thumbnailOffsets(duration float64) []float64 {
 	if duration <= 0 {
 		return []float64{5, 1, 0}
 	}
-	mid := duration / 2
-	out := []float64{mid}
-	for _, fallback := range []float64{5, 1, 0} {
-		if !containsOffset(out, fallback) {
-			out = append(out, fallback)
+	latest := math.Max(0, duration-coverSpan)
+	var out []float64
+	for _, offset := range []float64{duration * 0.5, duration * 0.3, duration * 0.7, 5, 1, 0} {
+		if offset = math.Min(offset, latest); !containsOffset(out, offset) {
+			out = append(out, offset)
 		}
 	}
 	return out
@@ -282,7 +284,9 @@ func containsOffset(offsets []float64, target float64) bool {
 
 // --- 封面 ---
 
-// GenerateThumbnail 抽一张 jpg 封面。默认从视频中间抽帧，失败时回退到更早时间点。
+// GenerateThumbnail selects a cover from spans around thumbnailOffsets: the
+// first usable frame, or the frame with the most contrast when none is. An
+// unreadable span falls back to the next offset.
 func (g *Generator) GenerateThumbnail(ctx context.Context, link *drives.StreamLink, videoID string, duration float64) (string, error) {
 	task := g.forTask()
 	path, err := task.generateThumbnail(ctx, link, videoID, duration)
@@ -297,27 +301,22 @@ func (g *Generator) generateThumbnail(ctx context.Context, link *drives.StreamLi
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	dst := mediaasset.ThumbnailPath(g.cfg.LocalDir, videoID)
-	temp, err := os.CreateTemp(dir, ".thumbnail-*.part.jpg")
-	if err != nil {
-		return "", err
-	}
-	tempPath := temp.Name()
-	if err := temp.Close(); err != nil {
-		_ = os.Remove(tempPath)
-		return "", err
-	}
-	_ = os.Remove(tempPath)
-	defer os.Remove(tempPath)
+	var candidates []coverCandidate
+	defer func() {
+		for _, candidate := range candidates {
+			_ = os.Remove(candidate.path)
+		}
+	}()
 
 	var lastErr error
 	var colorRepair sourceColorRepair
-	offsets := thumbnailOffsets(duration)
-	for i, offset := range offsets {
-		if i > 0 {
-			_ = os.Remove(tempPath)
+	for _, offset := range thumbnailOffsets(duration) {
+		path, err := reserveTemp(dir, ".thumbnail-*.part.jpg")
+		if err != nil {
+			return "", err
 		}
-		if err := g.generateThumbnailAtOffset(ctx, link, tempPath, offset, &colorRepair); err != nil {
+		if err := g.generateThumbnailAtOffset(ctx, link, path, offset, &colorRepair); err != nil {
+			_ = os.Remove(path)
 			lastErr = err
 			if g.hardware != nil && hardwareFailure(err) {
 				return "", err
@@ -327,15 +326,23 @@ func (g *Generator) generateThumbnail(ctx context.Context, link *drives.StreamLi
 			}
 			continue
 		}
-		if err := replaceFile(tempPath, dst); err != nil {
-			return "", err
+		candidates = append(candidates, coverCandidate{path: path, at: offset})
+		if quality, err := measureCover(path); err == nil && quality.usable() {
+			break
 		}
-		return dst, nil
 	}
-	if lastErr != nil {
-		return "", lastErr
+	chosen := pickCover(candidates, duration/2)
+	if chosen == "" {
+		if lastErr != nil {
+			return "", lastErr
+		}
+		return "", errors.New("thumbnail generation produced no readable cover")
 	}
-	return "", errors.New("thumbnail generation did not run")
+	dst := mediaasset.ThumbnailPath(g.cfg.LocalDir, videoID)
+	if err := replaceFile(chosen, dst); err != nil {
+		return "", err
+	}
+	return dst, nil
 }
 
 func (g *Generator) generateThumbnailAtOffset(ctx context.Context, link *drives.StreamLink, dst string, offset float64, colorRepair *sourceColorRepair) error {
@@ -354,12 +361,13 @@ func (g *Generator) generateThumbnailAtOffset(ctx context.Context, link *drives.
 		"-filter_complex_threads", strconv.Itoa(g.cfg.FFmpegThreads),
 		"-threads", strconv.Itoa(g.cfg.FFmpegThreads),
 		"-ss", fmt.Sprintf("%.2f", offset),
+		"-t", fmt.Sprintf("%.2f", coverSpan),
 	}
 	args = append(args, g.hardware.inputOptions()...)
 	outputArgs := []string{
 		"-threads", strconv.Itoa(g.cfg.FFmpegThreads),
 		"-frames:v", "1",
-		"-vf", g.thumbnailFilter(),
+		"-vf", g.thumbnailFilter(coverSpan),
 		"-q:v", "3",
 		"-y", dst,
 	}
@@ -620,10 +628,6 @@ func (g *Generator) generateSerialWithRefresh(
 			}
 		}
 	}
-	thumbnailIndex := -1
-	if request.Thumbnail {
-		thumbnailIndex = middleSegment(duration, starts, eachSec)
-	}
 	candidates := teaserCandidateStarts(duration, starts, eachSec)
 	targetSegments := len(starts)
 	fadeSegments := targetSegments > 1
@@ -636,7 +640,7 @@ func (g *Generator) generateSerialWithRefresh(
 	sampleSignature := secondsDuration(duration) >= mediasig.MinDuration
 	segmentRead := func(ctx context.Context, candidate teaserSegmentCandidate, link *drives.StreamLink) (segmentFiles, error) {
 		return g.generateSingleSegment(ctx, candidate.index, candidate.start, eachSec, fadeSegments, segmentOutputs{
-			thumbnail: candidate.index == thumbnailIndex,
+			thumbnail: request.Thumbnail,
 			signature: sampleSignature && slices.Contains(starts, candidate.start),
 		}, link, &colorRepair)
 	}
@@ -738,11 +742,14 @@ segmentLoop:
 	}
 	media := Media{}
 	media.Signature, media.SignatureComplete = plannedSignature(duration, starts, segmentResults, eachSec)
+	covers := make([]coverCandidate, 0, len(segmentResults))
 	for _, result := range segmentResults {
 		if result.thumbnail != "" {
-			media.ThumbnailPath = result.thumbnail
-			keep(result.thumbnail)
+			covers = append(covers, coverCandidate{path: result.thumbnail, at: result.start + eachSec/2})
 		}
+	}
+	if media.ThumbnailPath = pickCover(covers, duration/2); media.ThumbnailPath != "" {
+		keep(media.ThumbnailPath)
 	}
 	if !request.Teaser {
 		return media, nil
@@ -817,18 +824,6 @@ segmentLoop:
 	return media, nil
 }
 
-// middleSegment returns the index of the planned segment closest to the
-// middle of the video, which supplies the thumbnail.
-func middleSegment(duration float64, starts []float64, eachSec float64) int {
-	best := -1
-	for i, start := range starts {
-		if best < 0 || math.Abs(start+eachSec/2-duration/2) < math.Abs(starts[best]+eachSec/2-duration/2) {
-			best = i
-		}
-	}
-	return best
-}
-
 // plannedSignature builds the signature from the frames the segments read at
 // the planned starts sampled from the decoded source picture. complete
 // reports whether every planned window contributed frames.
@@ -877,7 +872,7 @@ func requiredTeaserSegments(duration float64, targetSegments int, degraded bool)
 
 // segmentOutputs selects what a segment read writes besides the segment.
 type segmentOutputs struct {
-	// thumbnail writes a thumbnail from the middle of the segment.
+	// thumbnail writes the segment's cover candidate.
 	thumbnail bool
 	// signature writes the frames sampled for the perceptual signature.
 	signature bool
@@ -2140,11 +2135,7 @@ func (w *ThumbWorker) generateThumbnailFromLink(ctx context.Context, v *catalog.
 	if err != nil {
 		return err
 	}
-	if err := w.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{
-		ExpectedSource:  v,
-		ThumbnailURL:    "/p/thumb/" + v.ID,
-		ThumbnailStatus: "ready",
-	}); err != nil {
+	if err := w.Catalog.SaveGeneratedThumbnailForSource(ctx, v); err != nil {
 		_ = os.Remove(local)
 		applog.Error(ctx, "Save thumbnail metadata failed: "+v.Title, err, applog.Fields{Component: "thumb", DriveID: generationDriveID(w.Drive), VideoID: v.ID, Stage: "save"})
 		return nil
@@ -2230,7 +2221,8 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
 		return false
 	}
 
-	request := MediaRequest{Teaser: wants.Teaser, Thumbnail: v.ThumbnailURL == ""}
+	// The job owns covers it generated and renews them with every read.
+	request := MediaRequest{Teaser: wants.Teaser, Thumbnail: v.GeneratesThumbnail()}
 	media, err := w.generateMedia(ctx, v, input, duration, request)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -2327,15 +2319,10 @@ func (w *Worker) saveThumbnail(ctx context.Context, v *catalog.Video, path strin
 		applog.Error(ctx, "Thumbnail file move failed: "+v.Title, err, w.logFields(v, "thumbnail"))
 		return
 	}
-	url := "/p/thumb/" + v.ID
-	if err := w.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{
-		ExpectedSource: v, ThumbnailURL: url, ThumbnailStatus: "ready",
-	}); err != nil {
+	if err := w.Catalog.SaveGeneratedThumbnailForSource(ctx, v); err != nil {
 		_ = os.Remove(local)
 		applog.Error(ctx, "Save thumbnail metadata failed: "+v.Title, err, w.logFields(v, "thumbnail"))
-		return
 	}
-	v.ThumbnailURL = url
 }
 
 // handOffThumbnail passes a video the media job left without a thumbnail to

@@ -412,6 +412,8 @@ export type AdminVideo = {
   size: number;
   ext: string;
   thumbnailUrl: string;
+  /** Who owns the cover. Only generated covers are replaced when the media job reads the video again. */
+  thumbnailSource: "" | "generated" | "provided" | "custom";
   previewStatus: string;
   views: number;
   favorites: number;

@@ -248,32 +248,6 @@ func TestMediumAndLongVideosRequireFullPlanBeforeExplicitDegradation(t *testing.
 	}
 }
 
-func TestThumbnailOffsetsPreferMiddleFrame(t *testing.T) {
-	tests := []struct {
-		name     string
-		duration float64
-		want     []float64
-	}{
-		{name: "unknown duration", duration: 0, want: []float64{5, 1, 0}},
-		{name: "long video", duration: 2804.9, want: []float64{1402.45, 5, 1, 0}},
-		{name: "short video", duration: 8.9, want: []float64{4.45, 5, 1, 0}},
-		{name: "middle equals fallback", duration: 10, want: []float64{5, 1, 0}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := thumbnailOffsets(tt.duration)
-			if len(got) != len(tt.want) {
-				t.Fatalf("offsets = %#v, want %#v", got, tt.want)
-			}
-			for i := range tt.want {
-				if math.Abs(got[i]-tt.want[i]) > 0.001 {
-					t.Fatalf("offset[%d] = %.2f, want %.2f", i, got[i], tt.want[i])
-				}
-			}
-		})
-	}
-}
-
 func TestThumbnailVideoFilterUsesFullRangeJPEGPixelFormat(t *testing.T) {
 	got := thumbnailVideoFilter(480)
 	if !strings.Contains(got, "scale=480:-2:out_range=pc") {
