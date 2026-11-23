@@ -1681,7 +1681,7 @@ func playbackMediaType(v *catalog.Video) string {
 	case "ts", "mts", "m2ts":
 		return "video/mp2t"
 	case "mov":
-		return "video/quicktime"
+		return "video/mp4" // MOV/H.264 is mp4-compatible; report mp4 so browsers (e.g. Chrome canPlayType("video/quicktime")=="") do not reject it; aligned with .m4v
 	default:
 		return ""
 	}
