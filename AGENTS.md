@@ -73,6 +73,7 @@ When creating Git commits in this repository:
   - `## Testing` to list actual tests and validation performed.
 - Omit `## Why` when the motivation is obvious.
 - If tests were not run, state that explicitly and explain why.
+- When a commit adopts a contributor's issue, diagnosis, or PR, credit them at the end of the message with `Refs #<number>` and a `Co-authored-by: <name> <email>` trailer, taking the email from their PR commits.
 - Only create a Git commit when the user explicitly asks for one.
 
 Example subject:
