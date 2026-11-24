@@ -346,6 +346,9 @@ CREATE TABLE IF NOT EXISTS deleted_videos (
 	if _, err := c.clearSyntheticCrawlerAuthorsOnce(ctx); err != nil {
 		return err
 	}
+	if _, err := c.clearScannerParsedAuthorsOnce(ctx); err != nil {
+		return err
+	}
 	if _, err := c.alignCrawlerPublishedAtWithCreatedAtOnce(ctx); err != nil {
 		return err
 	}

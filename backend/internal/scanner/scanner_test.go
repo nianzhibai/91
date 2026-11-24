@@ -383,12 +383,12 @@ func TestRunSyncsRenamedExistingVideoMetadata(t *testing.T) {
 	if got.Title != "[4K] renamed clip" {
 		t.Fatalf("title = %q, want full remote filename without extension", got.Title)
 	}
-	if got.Author != "" {
-		t.Fatalf("author = %q, want cleared author from remote name without author suffix", got.Author)
+	if got.Author != "Old Author" {
+		t.Fatalf("author = %q, want existing author preserved on rename", got.Author)
 	}
 }
 
-func TestRunUsesFullFilenameForTitleButKeepsAuthorParser(t *testing.T) {
+func TestRunLeavesScannedVideoAuthorEmpty(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
 	if err != nil {
@@ -399,24 +399,27 @@ func TestRunUsesFullFilenameForTitleButKeepsAuthorParser(t *testing.T) {
 	drv := &scannerFakeDrive{entries: []drives.Entry{
 		{ID: "hnd", Name: "HND-970.mp4", Size: 123},
 		{ID: "weather", Name: "天气晴朗-小白.mp4", Size: 124},
+		{ID: "bracketed", Name: "[4K] 标题 - 某作者.mp4", Size: 125},
 	}}
 	if _, err := New(cat, drv, []string{".mp4"}, nil, nil).Run(ctx, ""); err != nil {
 		t.Fatalf("scan: %v", err)
 	}
 
-	hnd, err := cat.GetVideo(ctx, "fake-drive-hnd")
-	if err != nil {
-		t.Fatalf("get HND video: %v", err)
-	}
-	if hnd.Title != "HND-970" || hnd.Author != "970" {
-		t.Fatalf("HND metadata = title %q author %q", hnd.Title, hnd.Author)
-	}
-	weather, err := cat.GetVideo(ctx, "fake-drive-weather")
-	if err != nil {
-		t.Fatalf("get weather video: %v", err)
-	}
-	if weather.Title != "天气晴朗-小白" || weather.Author != "小白" {
-		t.Fatalf("weather metadata = title %q author %q", weather.Title, weather.Author)
+	for _, tc := range []struct {
+		id    string
+		title string
+	}{
+		{id: "fake-drive-hnd", title: "HND-970"},
+		{id: "fake-drive-weather", title: "天气晴朗-小白"},
+		{id: "fake-drive-bracketed", title: "[4K] 标题 - 某作者"},
+	} {
+		got, err := cat.GetVideo(ctx, tc.id)
+		if err != nil {
+			t.Fatalf("get %s: %v", tc.id, err)
+		}
+		if got.Title != tc.title || got.Author != "" {
+			t.Fatalf("%s metadata = title %q author %q, want title %q and empty author", tc.id, got.Title, got.Author, tc.title)
+		}
 	}
 }
 
@@ -435,7 +438,7 @@ func TestRunUpdatesMigratedCrawlerByDriveFileID(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed crawler video: %v", err)
 	}
-	drv := &scannerFakeDrive{entries: []drives.Entry{{ID: "remote-file", Name: "Long title-DASS-984.mp4", Size: 123}}}
+	drv := &scannerFakeDrive{entries: []drives.Entry{{ID: "remote-file", Name: "Renamed title-DASS-984.mp4", Size: 123}}}
 	if _, err := New(cat, drv, []string{".mp4"}, nil, nil).Run(ctx, ""); err != nil {
 		t.Fatalf("scan: %v", err)
 	}
@@ -443,11 +446,11 @@ func TestRunUpdatesMigratedCrawlerByDriveFileID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get crawler video: %v", err)
 	}
-	if got.Title != "Long title-DASS-984" {
+	if got.Title != "Renamed title-DASS-984" {
 		t.Fatalf("title = %q", got.Title)
 	}
 	if got.Author != "Haduki Honami" {
-		t.Fatalf("author = %q, want preserved crawler author", got.Author)
+		t.Fatalf("author = %q, want preserved crawler author even after rename", got.Author)
 	}
 	if _, err := cat.GetVideo(ctx, "fake-drive-remote-file"); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("generated duplicate exists: %v", err)
@@ -1530,4 +1533,16 @@ func TestScannerProgressHeartbeatDisabled(t *testing.T) {
 	if strings.Contains(buf.String(), "progress:") {
 		t.Fatalf("progress heartbeat should be silenced when interval < 0, got:\n%s", buf.String())
 	}
+}
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

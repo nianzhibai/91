@@ -74,38 +74,47 @@ func (s *Scanner) reconcileFile(ctx context.Context, file File, result *Result) 
 		}
 	}
 
-	parsed := Parse(entry.Name)
 	displayTitle := videoname.TitleFromFileName(entry.Name)
 	if displayTitle == "" {
 		displayTitle = strings.TrimSpace(entry.Name)
 	}
-	assignments, tagErr := s.Catalog.MatchTagAssignments(ctx, parsed.Title, entry.Name, parsed.Author, file.DirName, file.AncestorDirNames...)
-	if tagErr != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
-		}
-		result.addIssue(ctx, file, IssueTags, tagErr)
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
 	if len(existing) == 0 {
-		return s.insertNew(ctx, file, id, displayTitle, parsed.Author, assignments, result)
+		assignments, _, err := s.matchTags(ctx, file, displayTitle, "", result)
+		if err != nil {
+			return err
+		}
+		return s.insertNew(ctx, file, id, displayTitle, assignments, result)
 	}
 	for _, row := range existing {
-		if err := s.reconcileExisting(ctx, file, displayTitle, parsed.Author, row, assignments, tagErr == nil, result); err != nil {
+		assignments, tagLookupOK, err := s.matchTags(ctx, file, displayTitle, row.Author, result)
+		if err != nil {
+			return err
+		}
+		if err := s.reconcileExisting(ctx, file, displayTitle, row, assignments, tagLookupOK, result); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+// matchTags runs the catalog tag matcher for one video. A lookup failure is
+// recorded as an issue and reported through ok=false so callers keep existing
+// tags; only context cancellation is returned as an error.
+func (s *Scanner) matchTags(ctx context.Context, file File, title, author string, result *Result) (assignments []catalog.TagAssignment, ok bool, err error) {
+	assignments, matchErr := s.Catalog.MatchTagAssignments(ctx, title, file.Entry.Name, author, file.DirName, file.AncestorDirNames...)
+	if matchErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, false, ctxErr
+		}
+		result.addIssue(ctx, file, IssueTags, matchErr)
+	}
+	return assignments, matchErr == nil, ctx.Err()
+}
+
 func (s *Scanner) reconcileExisting(
 	ctx context.Context,
 	file File,
 	displayTitle string,
-	parsedAuthor string,
 	existing *catalog.Video,
 	assignments []catalog.TagAssignment,
 	tagLookupOK bool,
@@ -166,8 +175,6 @@ func (s *Scanner) reconcileExisting(
 	}
 	if entry.Name != "" && existing.FileName != entry.Name {
 		patch.FileName = entry.Name
-		patch.Author = parsedAuthor
-		patch.AuthorSet = true
 	}
 	if existing.Title != displayTitle {
 		patch.Title = displayTitle
@@ -226,7 +233,6 @@ func (s *Scanner) insertNew(
 	file File,
 	id string,
 	displayTitle string,
-	parsedAuthor string,
 	assignments []catalog.TagAssignment,
 	result *Result,
 ) error {
@@ -248,7 +254,6 @@ func (s *Scanner) insertNew(
 		AncestorDirIDs:   append([]string(nil), file.AncestorDirIDs...),
 		AncestorDirNames: append([]string(nil), file.AncestorDirNames...),
 		Title:            displayTitle,
-		Author:           parsedAuthor,
 		Ext:              strings.TrimPrefix(strings.ToLower(path.Ext(entry.Name)), "."),
 		Size:             entry.Size,
 		PreviewStatus:    "pending",
@@ -301,7 +306,7 @@ func (r *Result) addIssue(ctx context.Context, file File, stage IssueStage, err 
 
 func metadataPatchSet(patch catalog.VideoMetaPatch) bool {
 	return patch.ResumeAfterInvalidSize || patch.ResetContent || patch.VerifyContent || patch.SourceModTime != "" || patch.ContentHash != "" || patch.FileName != "" || patch.ParentIDSet ||
-		patch.DirNameSet || patch.AncestorDirIDsSet || patch.AncestorDirNamesSet || patch.TitleSet || patch.AuthorSet
+		patch.DirNameSet || patch.AncestorDirIDsSet || patch.AncestorDirNamesSet || patch.TitleSet
 }
 
 func assignmentLabels(assignments []catalog.TagAssignment) []string {
