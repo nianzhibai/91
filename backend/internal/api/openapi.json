@@ -3415,6 +3415,69 @@
         }
       }
     },
+    "/admin/api/drives/{id}/generation-parallelism": {
+      "post": {
+        "operationId": "post_admin_api_drives_id_generation_parallelism",
+        "summary": "Set Drive Generation Parallelism",
+        "tags": [
+          "Management"
+        ],
+        "x-role": "admin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/generationParallelismReq"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "generationParallelism": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "generationParallelism"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
     "/admin/api/drives/{id}/dirtree": {
       "get": {
         "operationId": "get_admin_api_drives_id_dirtree",
@@ -10142,7 +10205,7 @@
       },
       "configLiveSettings": {
         "properties": {
-          "fingerprintConcurrency": {
+          "generationConcurrency": {
             "type": "integer"
           },
           "nightlyDisabled": {
@@ -10154,17 +10217,11 @@
           "nightlyTimezone": {
             "type": "string"
           },
-          "previewConcurrency": {
-            "type": "integer"
-          },
           "previewEnabled": {
             "type": "boolean"
           },
           "telegramEnabled": {
             "type": "boolean"
-          },
-          "thumbnailConcurrency": {
-            "type": "integer"
           },
           "useGPU": {
             "type": "boolean"
@@ -10174,12 +10231,10 @@
           "useGPU",
           "telegramEnabled",
           "previewEnabled",
-          "thumbnailConcurrency",
-          "fingerprintConcurrency",
+          "generationConcurrency",
           "nightlyDisabled",
           "nightlyStartTime",
-          "nightlyTimezone",
-          "previewConcurrency"
+          "nightlyTimezone"
         ],
         "type": "object"
       },
@@ -10654,6 +10709,9 @@
           "fingerprintReadyCount": {
             "type": "integer"
           },
+          "generationParallelism": {
+            "type": "integer"
+          },
           "hasCredential": {
             "type": "boolean"
           },
@@ -10735,6 +10793,7 @@
           "canUpload",
           "skipDirIds",
           "directoryRevision",
+          "generationParallelism",
           "scanGenerationStatus",
           "thumbnailGenerationStatus",
           "previewGenerationStatus",
@@ -11156,6 +11215,18 @@
             ]
           }
         },
+        "type": "object"
+      },
+      "generationParallelismReq": {
+        "properties": {
+          "parallelism": {
+            "type": "integer",
+            "description": "0 keeps the drive kind's default; at most 5"
+          }
+        },
+        "required": [
+          "parallelism"
+        ],
         "type": "object"
       },
       "storageusageDriveUsage": {

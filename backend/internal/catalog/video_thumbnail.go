@@ -13,7 +13,7 @@ import (
 // viewers; the media job replaces the covers it generated with the frame it
 // selects on every read, and never touches covers it does not own.
 const (
-	// ThumbnailGenerated covers are selected from the video by the workers.
+	// ThumbnailGenerated covers are selected from the video by its generation.
 	ThumbnailGenerated = "generated"
 	// ThumbnailProvided covers came with the source, such as a crawled item.
 	ThumbnailProvided = "provided"
@@ -21,7 +21,7 @@ const (
 	ThumbnailCustom = "custom"
 )
 
-// GeneratesThumbnail reports whether the workers produce v's cover: it has
+// GeneratesThumbnail reports whether generation produces v's cover: it has
 // none, or the one it has was generated.
 func (v *Video) GeneratesThumbnail() bool {
 	return v.ThumbnailURL == "" || v.ThumbnailSource == ThumbnailGenerated

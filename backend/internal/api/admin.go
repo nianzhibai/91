@@ -64,7 +64,7 @@ type AdminServer struct {
 	// and source editors read and write this same document.
 	ConfigManager *config.Manager
 	// PreviewEnabled reads the global preview switch, the same runtime source
-	// used by generation workers. Nil enables preview endpoints.
+	// used by resource generation. Nil enables preview endpoints.
 	PreviewEnabled func() bool
 	GPU            *preview.Hardware
 	// VersionFilePath points to the installer-written .version file.
@@ -88,6 +88,9 @@ type AdminServer struct {
 	// OnDriveRuntimeConfigChanged 只在新建网盘，或 kind/root/credentials 等
 	// Driver 构造参数发生变化时调用。名称、跳过目录等纯元数据保存不得触发重挂载。
 	OnDriveRuntimeConfigChanged func(driveID string) error
+	// OnDriveGenerationParallelismChanged applies a saved generation
+	// parallelism to the drive's running generation.
+	OnDriveGenerationParallelismChanged func(driveID string) error
 	// OnPrepareDriveDelete cancels all work for the drive and returns only after
 	// every tracked task has exited. The destructive lease is already blocking
 	// new admissions when this hook runs.
@@ -269,6 +272,7 @@ func (a *AdminServer) Register(r chi.Router, adminRoutes ...func(chi.Router)) {
 			r.Post("/drives/{id}/rescan", a.handleRescan)
 			r.Post("/drives/{id}/tasks/stop", a.handleStopDriveTasks)
 			r.Post("/drives/{id}/skip-dirs", a.handleSetDriveSkipDirs)
+			r.Post("/drives/{id}/generation-parallelism", a.handleSetDriveGenerationParallelism)
 			r.Get("/drives/{id}/dirtree", a.handleListDriveDirTree)
 			r.Post("/drives/{id}/previews/generate", a.handleGenerateDrivePreviews)
 			r.Post("/drives/{id}/thumbnails/generate", a.handleGenerateDriveThumbnails)

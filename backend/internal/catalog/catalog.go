@@ -696,7 +696,7 @@ type VideoMetaPatch struct {
 	ResetContent           bool
 	ResumeAfterInvalidSize bool
 	// VerifyContent records a suspected replacement that size and hash cannot
-	// confirm. The sampled fingerprint is set aside for the fingerprint worker
+	// confirm. The sampled fingerprint is set aside for the fingerprint step
 	// to compare; generated assets stay until that comparison finds new bytes.
 	VerifyContent bool
 	Size          int64
@@ -733,6 +733,7 @@ var contentDerivedResets = []string{
 	"thumbnail_url = ''", "thumbnail_updated_at = 0", "thumbnail_status = 'pending'", "thumbnail_failures = 0", "thumbnail_source = ''",
 	"preview_file_id = ''", "preview_local = ''", "preview_updated_at = 0", "preview_status = 'pending'",
 	"content_signature = NULL", "media_status = 'pending'", "media_retries = 0",
+	"generation_after = 0",
 }
 
 // Workers can commit results only while the row still refers to the bytes
@@ -812,7 +813,8 @@ func (c *Catalog) UpdateVideoMeta(ctx context.Context, id string, p VideoMetaPat
 	} else if p.VerifyContent {
 		parts = append(parts,
 			"previous_sampled_sha256 = CASE WHEN COALESCE(sampled_sha256, '') != '' THEN sampled_sha256 ELSE previous_sampled_sha256 END",
-			"sampled_sha256 = ''", "fingerprint_status = 'pending'", "fingerprint_error = ''")
+			"sampled_sha256 = ''", "fingerprint_status = 'pending'", "fingerprint_error = ''",
+			"generation_after = 0")
 	}
 	if p.ResetContent || p.SourceModTime != "" {
 		parts = append(parts, "source_mod_time = ?")
@@ -1005,7 +1007,8 @@ func (c *Catalog) ResetMissingLocalThumbnails(ctx context.Context, references []
 		       thumbnail_updated_at = 0,
 		       thumbnail_status = 'pending',
 		       thumbnail_failures = 0,
-		       thumbnail_source = ''
+		       thumbnail_source = '',
+		       generation_after = 0
 		 WHERE id = ?
 		   AND thumbnail_url = '/p/thumb/' || id
 		   AND COALESCE(thumbnail_updated_at, 0) = ?`)
@@ -1094,6 +1097,7 @@ func (c *Catalog) ResetMissingLocalPreviews(ctx context.Context, references []Lo
 		       preview_local = '',
 		       preview_updated_at = 0,
 		       preview_status = 'pending',
+		       generation_after = 0,
 		       updated_at = ?
 		 WHERE id = ?
 		   AND COALESCE(preview_status, 'pending') = 'ready'
@@ -1125,54 +1129,6 @@ func (c *Catalog) ResetMissingLocalPreviews(ctx context.Context, references []Lo
 		return 0, err
 	}
 	return reset, nil
-}
-
-// ListVideosNeedingThumbnail only admits missing covers. Remaining missing
-// durations are processed after this drive finishes its resource generation.
-// Failed thumbnails are reported separately and should not block preview-video generation.
-// Videos whose local assets were cleared because they are fingerprint duplicates
-// stay pending in the DB, but uniqueVideoWhereSQL keeps them out of this queue
-// while their canonical sibling still exists.
-func (c *Catalog) ListVideosNeedingThumbnail(ctx context.Context, driveID string, limit int) ([]*Video, error) {
-	if limit <= 0 {
-		limit = 10000
-	}
-	rows, err := c.db.QueryContext(ctx,
-		`SELECT `+allVideoCols+` FROM videos
-		 WHERE drive_id = ?
-		   AND COALESCE(thumbnail_url, '') = ''
-		   AND COALESCE(thumbnail_status, 'pending') NOT IN ('failed', 'skipped')
-		   AND COALESCE(hidden, 0) = 0
-		   AND `+uniqueVideoWhereSQL+`
-		 ORDER BY created_at ASC
-		 LIMIT ?`,
-		driveID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []*Video
-	for rows.Next() {
-		v, err := scanVideo(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, v)
-	}
-	return out, nil
-}
-
-func (c *Catalog) CountVideosNeedingThumbnail(ctx context.Context, driveID string) (int, error) {
-	var count int
-	err := c.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM videos
-		 WHERE drive_id = ?
-		   AND COALESCE(thumbnail_url, '') = ''
-		   AND COALESCE(thumbnail_status, 'pending') NOT IN ('failed', 'skipped')
-		   AND COALESCE(hidden, 0) = 0
-		   AND `+uniqueVideoWhereSQL,
-		driveID).Scan(&count)
-	return count, err
 }
 
 func (c *Catalog) GetVideo(ctx context.Context, id string) (*Video, error) {
@@ -2188,6 +2144,7 @@ UPDATE videos
 	       content_signature = NULL,
 	       media_status = 'pending',
 	       media_retries = 0,
+	       generation_after = 0,
 	       updated_at = ?
  WHERE id = ?`, source.Size, FormatSourceModTime(source.ModTime), time.Now().UnixMilli(), id)
 	return err
@@ -2494,35 +2451,6 @@ func (c *Catalog) HasReadyEquivalentPreview(ctx context.Context, source *Video) 
 		return false, err
 	}
 	return true, nil
-}
-
-func (c *Catalog) ListVideosNeedingFingerprint(ctx context.Context, driveID string, limit int) ([]*Video, error) {
-	if limit <= 0 {
-		limit = 10000
-	}
-	rows, err := c.db.QueryContext(ctx,
-		`SELECT `+allVideoCols+` FROM videos
-		 WHERE drive_id = ?
-		   AND size_bytes > 0
-		   AND NOT `+currentFingerprintSQL("sampled_sha256")+`
-		   AND COALESCE(fingerprint_status, 'pending') = 'pending'
-		   AND COALESCE(hidden, 0) = 0
-		 ORDER BY created_at ASC, id ASC
-		 LIMIT ?`,
-		driveID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []*Video
-	for rows.Next() {
-		v, err := scanVideo(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, v)
-	}
-	return out, rows.Err()
 }
 
 // ListVideosByFingerprintStatus lists visible videos on a drive by fingerprint status.
@@ -3554,10 +3482,10 @@ func (c *Catalog) ClearGeneratedAssets(ctx context.Context, videoID string, clea
 	parts := []string{}
 	args := []any{}
 	if clearPreview {
-		parts = append(parts, "preview_file_id = ''", "preview_local = ''", "preview_updated_at = 0", "preview_status = 'pending'")
+		parts = append(parts, "preview_file_id = ''", "preview_local = ''", "preview_updated_at = 0", "preview_status = 'pending'", "generation_after = 0")
 	}
 	if clearThumbnail {
-		parts = append(parts, "thumbnail_url = ''", "thumbnail_updated_at = 0", "thumbnail_status = 'pending'", "thumbnail_source = ''")
+		parts = append(parts, "thumbnail_url = ''", "thumbnail_updated_at = 0", "thumbnail_status = 'pending'", "thumbnail_source = ''", "generation_after = 0")
 	}
 	if len(parts) == 0 {
 		return nil
@@ -3590,9 +3518,12 @@ type Drive struct {
 	// scanner 发现阶段命中后不递归、不收集文件，也不参与缺失确认。名单变化后，
 	// 下一次扫盘会先执行策略清理，让这些目录的历史记录直接退出媒体库管理范围。
 	// 含义按"目录 ID 自身"匹配，所以同名目录在不同父级下需要分别选定。
-	SkipDirIDs []string  `json:"skipDirIds,omitempty"`
-	CreatedAt  time.Time `json:"createdAt"`
-	UpdatedAt  time.Time `json:"updatedAt"`
+	SkipDirIDs []string `json:"skipDirIds,omitempty"`
+	// GenerationParallelism is how many videos the drive generates at once,
+	// set by an administrator; zero leaves it to the drive's kind.
+	GenerationParallelism int       `json:"generationParallelism,omitempty"`
+	CreatedAt             time.Time `json:"createdAt"`
+	UpdatedAt             time.Time `json:"updatedAt"`
 }
 
 type DriveUpsertOptions struct {
@@ -3744,7 +3675,7 @@ UPDATE drives
 }
 
 func (c *Catalog) ListDrives(ctx context.Context) ([]*Drive, error) {
-	rows, err := c.db.QueryContext(ctx, `SELECT id, kind, name, root_id, COALESCE(scan_root_id, ''), COALESCE(credentials, '{}'), status, COALESCE(last_error, ''), COALESCE(skip_dir_ids, '[]'), created_at, updated_at FROM drives ORDER BY created_at ASC`)
+	rows, err := c.db.QueryContext(ctx, `SELECT id, kind, name, root_id, COALESCE(scan_root_id, ''), COALESCE(credentials, '{}'), status, COALESCE(last_error, ''), COALESCE(skip_dir_ids, '[]'), generation_parallelism, created_at, updated_at FROM drives ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -3754,7 +3685,7 @@ func (c *Catalog) ListDrives(ctx context.Context) ([]*Drive, error) {
 		d := &Drive{}
 		var credsStr, skipDirsStr string
 		var createdAt, updatedAt int64
-		if err := rows.Scan(&d.ID, &d.Kind, &d.Name, &d.RootID, &d.ScanRootID, &credsStr, &d.Status, &d.LastError, &skipDirsStr, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.Kind, &d.Name, &d.RootID, &d.ScanRootID, &credsStr, &d.Status, &d.LastError, &skipDirsStr, &d.GenerationParallelism, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(credsStr), &d.Credentials)
@@ -3768,11 +3699,11 @@ func (c *Catalog) ListDrives(ctx context.Context) ([]*Drive, error) {
 }
 
 func (c *Catalog) GetDrive(ctx context.Context, id string) (*Drive, error) {
-	row := c.db.QueryRowContext(ctx, `SELECT id, kind, name, root_id, COALESCE(scan_root_id, ''), COALESCE(credentials, '{}'), status, COALESCE(last_error, ''), COALESCE(skip_dir_ids, '[]'), created_at, updated_at FROM drives WHERE id = ?`, id)
+	row := c.db.QueryRowContext(ctx, `SELECT id, kind, name, root_id, COALESCE(scan_root_id, ''), COALESCE(credentials, '{}'), status, COALESCE(last_error, ''), COALESCE(skip_dir_ids, '[]'), generation_parallelism, created_at, updated_at FROM drives WHERE id = ?`, id)
 	d := &Drive{}
 	var credsStr, skipDirsStr string
 	var createdAt, updatedAt int64
-	if err := row.Scan(&d.ID, &d.Kind, &d.Name, &d.RootID, &d.ScanRootID, &credsStr, &d.Status, &d.LastError, &skipDirsStr, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&d.ID, &d.Kind, &d.Name, &d.RootID, &d.ScanRootID, &credsStr, &d.Status, &d.LastError, &skipDirsStr, &d.GenerationParallelism, &createdAt, &updatedAt); err != nil {
 		return nil, err
 	}
 	_ = json.Unmarshal([]byte(credsStr), &d.Credentials)
@@ -4022,6 +3953,22 @@ func (c *Catalog) SetDriveSkipDirIDs(ctx context.Context, id string, ids []strin
 	res, err := c.db.ExecContext(ctx,
 		`UPDATE drives SET skip_dir_ids = ?, updated_at = ? WHERE id = ?`,
 		string(payload), time.Now().UnixMilli(), id)
+	if err != nil {
+		return err
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// SetDriveGenerationParallelism stores how many videos the drive generates
+// at once; zero leaves it to the drive's kind.
+func (c *Catalog) SetDriveGenerationParallelism(ctx context.Context, id string, parallelism int) (resultErr error) {
+	defer c.notifyDriveWrite(&resultErr, id, driveevents.DriveMetadataChanged)
+	res, err := c.db.ExecContext(ctx,
+		`UPDATE drives SET generation_parallelism = ?, updated_at = ? WHERE id = ?`,
+		parallelism, time.Now().UnixMilli(), id)
 	if err != nil {
 		return err
 	}

@@ -233,7 +233,7 @@ func TestGenerateCancellationStopsEveryStageWithoutDegradation(t *testing.T) {
 				}
 			})
 			marker := filepath.Join(filepath.Dir(gen.cfg.FFmpegPath), tc.marker)
-			waitForDispatch(t, func() bool {
+			waitUntil(t, func() bool {
 				_, err := os.Stat(marker)
 				return err == nil
 			})
@@ -254,4 +254,16 @@ func TestGenerateCancellationStopsEveryStageWithoutDegradation(t *testing.T) {
 			assertTeaserTemporaryFiles(t, gen, path)
 		})
 	}
+}
+
+func waitUntil(t *testing.T, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("condition was not reached")
 }

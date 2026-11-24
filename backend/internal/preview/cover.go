@@ -17,7 +17,7 @@ import (
 const (
 	// coverSampleRate is the frames per second the thumbnail filter compares.
 	coverSampleRate = 4
-	// coverSpan is the length of the span the thumbnail worker samples at
+	// coverSpan is the length of the span the thumbnail job samples at
 	// each offset.
 	coverSpan = 2.0
 

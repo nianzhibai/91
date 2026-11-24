@@ -6,15 +6,14 @@
 // cloud-scan and duplicate-maintenance stages.
 //
 //	Phase 1: concurrently for each non-crawler cloud drive
-//	           scan + delete-detection + enqueue thumb + enqueue preview video
-//	         wait for all scans, then all thumb / preview-video queues to be idle
-//	         each drive backfills missing durations after its resource queues drain
+//	           scan + delete-detection, then wake the drive's generation
+//	         wait for all scans, then for every drive to generate its due resources
 //	Phase 1b: reconcile generated thumbnails/previews against local storage
-//	          enqueue repaired pending rows and wait for their queues to drain
+//	          wake the drives and wait for the repaired resources
 //	Phase 1c: upload Telegram local videos to their configured cloud drive
 //	Phase 2: if any script crawler configured
-//	           crawl + enqueue preview video for new videos
-//	         wait until preview-video queues are idle
+//	           crawl and generate resources for new videos
+//	         wait until every drive's generation is idle
 //	Phase 3: crawler local video → cloud upload (single sweep, captcha cooldown still
 //	         honored within this call)
 //	Phase 4: scan crawler local directories and restore user-requested videos
@@ -87,7 +86,7 @@ type Config struct {
 	// Should exclude crawler and localupload drives.
 	ListScanTargets func(ctx context.Context) ([]string, error)
 
-	// RunScan synchronously runs scan + cleanup + enqueueDriveGeneration for
+	// RunScan synchronously runs scan + cleanup and wakes generation for
 	// one drive, returning its final outcome even when it failed or was skipped.
 	// It must support concurrent calls for different drives and honor cancellation.
 	RunScan func(ctx context.Context, driveID string) scanjob.Result
@@ -100,15 +99,14 @@ type Config struct {
 	// as manual execution and returns its final error.
 	RunCrawlerCrawl func(ctx context.Context, driveID string) error
 
-	// WaitPreviewQueuesIdle blocks until both the thumbnail and preview-video queues
-	// across all drives are drained (queue empty + no in-flight task). It must
-	// honor ctx cancellation.
-	WaitPreviewQueuesIdle func(ctx context.Context) error
+	// WaitGenerationIdle blocks until every drive has generated the resources
+	// due in the catalog. It must honor ctx cancellation.
+	WaitGenerationIdle func(ctx context.Context) error
 
 	// RunLocalAssetReconciliation repairs catalog rows whose generated local
-	// thumbnail or preview file is missing. It must finish admitting repaired
-	// pending rows to registered worker queues before returning. The result is
-	// the number of generated asset references reset across both asset types.
+	// thumbnail or preview file is missing and wakes the drives to regenerate
+	// them. The result is the number of generated asset references reset
+	// across both asset types.
 	RunLocalAssetReconciliation func(ctx context.Context) (int, error)
 
 	// RunTelegramUpload is independent of crawler configuration and runs only
@@ -690,7 +688,7 @@ func (r *Runner) runScanPhase(ctx context.Context, component, phase string) bool
 	if r.shouldStop(ctx, component, phase) {
 		return false
 	}
-	log.Printf("[%s] %s: waiting for preview queues to drain", component, phase)
+	log.Printf("[%s] %s: waiting for drive generation to finish", component, phase)
 	if err := r.waitIdle(ctx, component, phase); err != nil {
 		return false
 	}
@@ -728,13 +726,13 @@ func (r *Runner) shouldStop(ctx context.Context, component, phase string) bool {
 	return false
 }
 
-// waitIdle calls the configured WaitPreviewQueuesIdle, logging the outcome.
+// waitIdle calls the configured WaitGenerationIdle, logging the outcome.
 func (r *Runner) waitIdle(ctx context.Context, component, phase string) error {
-	if r.cfg.WaitPreviewQueuesIdle == nil {
+	if r.cfg.WaitGenerationIdle == nil {
 		return nil
 	}
-	if err := r.cfg.WaitPreviewQueuesIdle(ctx); err != nil {
-		log.Printf("[%s] %s: wait preview queues: %v", component, phase, err)
+	if err := r.cfg.WaitGenerationIdle(ctx); err != nil {
+		log.Printf("[%s] %s: wait drive generation: %v", component, phase, err)
 		r.recordIssue(phase, err)
 		return err
 	}

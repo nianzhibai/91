@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/nianzhibai/91/backend/internal/catalog"
+	"github.com/nianzhibai/91/backend/internal/config"
 	"github.com/nianzhibai/91/backend/internal/driveevents"
 	"github.com/nianzhibai/91/backend/internal/drives/googledrive"
 	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
@@ -476,6 +477,44 @@ func (a *AdminServer) handleSetDriveSkipDirs(w http.ResponseWriter, r *http.Requ
 		resp["deferred"] = true
 		resp["message"] = driveConfigDeferredMessage
 	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// generationParallelismReq 是 POST /admin/api/drives/{id}/generation-parallelism
+// 的入参。0 表示按网盘类型：本地来源只受全局名额限制，云盘一次一个视频。
+type generationParallelismReq struct {
+	Parallelism int `json:"parallelism"`
+}
+
+// handleSetDriveGenerationParallelism 设置某盘同时生成资源的视频数。保存后立即
+// 生效：正在处理的视频照常完成，之后按新数量取视频；全局名额仍是上限。
+func (a *AdminServer) handleSetDriveGenerationParallelism(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var body generationParallelismReq
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, r, http.StatusBadRequest, err)
+		return
+	}
+	if body.Parallelism < 0 || body.Parallelism > config.MaxGenerationConcurrency {
+		httpapi.Error(w, fmt.Sprintf("parallelism must be between 0 and %d", config.MaxGenerationConcurrency), http.StatusBadRequest)
+		return
+	}
+	if err := a.Catalog.SetDriveGenerationParallelism(r.Context(), id, body.Parallelism); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httpapi.Error(w, "drive not found", http.StatusNotFound)
+			return
+		}
+		writeErr(w, r, http.StatusInternalServerError, err)
+		return
+	}
+	if a.OnDriveGenerationParallelismChanged != nil {
+		if err := a.OnDriveGenerationParallelismChanged(id); err != nil {
+			writeErr(w, r, http.StatusInternalServerError, err)
+			return
+		}
+	}
+	resp := map[string]any{"ok": true, "generationParallelism": body.Parallelism}
+	a.addDriveSnapshot(r.Context(), resp, id, driveview.Config)
 	writeJSON(w, http.StatusOK, resp)
 }
 

@@ -192,6 +192,8 @@ export type AdminDrive = {
   skipDirIds: string[];
   /** Changes after the mounted runtime configuration has been applied. */
   directoryRevision: number;
+  /** 同时生成资源的视频数；0 表示按网盘类型（云盘一次一个，本地来源只受全局名额限制）。 */
+  generationParallelism: number;
   scanGenerationStatus?: DriveGenerationStatus;
   thumbnailGenerationStatus?: DriveGenerationStatus;
   previewGenerationStatus?: DriveGenerationStatus;
@@ -981,6 +983,20 @@ export function createAdminClient(http: Transport) {
     );
   }
 
+  /**
+   * 设置某盘同时生成资源的视频数（0-5）。0 表示按网盘类型：本地来源只受全局
+   * 名额限制，云盘一次一个视频。立即生效，全局名额仍是上限。
+   */
+  function setDriveGenerationParallelism(id: string, parallelism: number) {
+    return request<DriveConfigSaveResult & { generationParallelism: number }>(
+      `/drives/${encodeURIComponent(id)}/generation-parallelism`,
+      {
+        method: "POST",
+        body: JSON.stringify({ parallelism }),
+      }
+    );
+  }
+
   function generateDrivePreviews(id: string) {
     return request<DriveGenerationResult>(
       `/drives/${encodeURIComponent(id)}/previews/generate`,
@@ -1367,6 +1383,7 @@ export function createAdminClient(http: Transport) {
     cancelDriveLogin,
     listDriveDirChildren,
     setDriveSkipDirIds,
+    setDriveGenerationParallelism,
     generateDrivePreviews,
     generateDriveThumbnails,
     generateDriveFingerprints,

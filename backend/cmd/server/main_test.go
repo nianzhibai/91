@@ -25,7 +25,7 @@ import (
 	"github.com/nianzhibai/91/backend/internal/config"
 	"github.com/nianzhibai/91/backend/internal/drives"
 	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
-	"github.com/nianzhibai/91/backend/internal/fingerprint"
+	"github.com/nianzhibai/91/backend/internal/generation"
 	"github.com/nianzhibai/91/backend/internal/mediaasset"
 	"github.com/nianzhibai/91/backend/internal/preview"
 	"github.com/nianzhibai/91/backend/internal/proxy"
@@ -343,7 +343,7 @@ func TestListDriveDirChildrenRecordsMissingAttachWithoutOriginalFailure(t *testi
 	}
 }
 
-func TestRegisterPreviewWorkerBackfillsPendingWhenGlobalPreviewEnabled(t *testing.T) {
+func TestDriveGenerationTakesPendingMediaWhenItStarts(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -372,15 +372,8 @@ func TestRegisterPreviewWorkerBackfillsPendingWhenGlobalPreviewEnabled(t *testin
 		t.Fatalf("seed video: %v", err)
 	}
 
-	app := &App{
-		cat:          cat,
-		workers:      make(map[string]*preview.Worker),
-		thumbWorkers: make(map[string]*preview.ThumbWorker),
-	}
-	worker := preview.NewWorker(&serverFakeTeaserGenerator{}, cat, &serverFakeDrive{})
-	go worker.Run(ctx)
-
-	app.registerPreviewWorkers(ctx, "drive-id", worker, nil, nil, func() {})
+	app := &App{cat: cat}
+	startTestGeneration(t, ctx, app, &serverFakeDrive{}, &serverFakeTeaserGenerator{}, nil)
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -404,86 +397,7 @@ func TestRegisterPreviewWorkerBackfillsPendingWhenGlobalPreviewEnabled(t *testin
 	t.Fatalf("preview status = %q, want ready", got.PreviewStatus)
 }
 
-func TestRegisterPreviewWorkersRunThumbnailsAndPreviewsIndependently(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
-	if err != nil {
-		t.Fatalf("open catalog: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := cat.Close(); err != nil {
-			t.Fatalf("close catalog: %v", err)
-		}
-	})
-
-	seedGenerationDrive(t, cat, "drive-id")
-	now := time.Now()
-	video := &catalog.Video{
-		ID:            "video-1",
-		DriveID:       "drive-id",
-		FileID:        "file-1",
-		Title:         "Clip 1",
-		PreviewStatus: "pending",
-		PublishedAt:   now,
-		CreatedAt:     now,
-		UpdatedAt:     now,
-	}
-	if err := cat.UpsertVideo(ctx, video); err != nil {
-		t.Fatalf("seed video: %v", err)
-	}
-
-	app := &App{
-		cat:          cat,
-		workers:      make(map[string]*preview.Worker),
-		thumbWorkers: make(map[string]*preview.ThumbWorker),
-	}
-	gen := &serverBlockingThumbGenerator{
-		started: make(chan string, 1),
-		release: make(chan struct{}),
-	}
-	drv := &serverFakeDrive{}
-	worker := preview.NewWorker(gen, cat, drv)
-	thumbWorker := preview.NewThumbWorker(gen, cat, drv)
-	go worker.Run(ctx)
-	go thumbWorker.Run(ctx)
-
-	app.registerPreviewWorkers(ctx, "drive-id", worker, thumbWorker, nil, func() {})
-
-	select {
-	case got := <-gen.started:
-		if got != video.ID {
-			t.Fatalf("thumbnail started for %q, want %q", got, video.ID)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("thumbnail generation did not start")
-	}
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		got, err := cat.GetVideo(ctx, video.ID)
-		if err != nil {
-			t.Fatalf("get video: %v", err)
-		}
-		if got.PreviewStatus == "ready" {
-			if got.ThumbnailURL != "" {
-				t.Fatalf("thumbnail url = %q, want preview ready while thumbnail is still blocked", got.ThumbnailURL)
-			}
-			close(gen.release)
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	got, err := cat.GetVideo(ctx, video.ID)
-	if err != nil {
-		t.Fatalf("get video after timeout: %v", err)
-	}
-	t.Fatalf("preview status=%q thumbnail=%q, want preview ready before thumbnail finishes", got.PreviewStatus, got.ThumbnailURL)
-}
-
-func TestRegisterPreviewWorkersBackfillsHistoricalFingerprints(t *testing.T) {
+func TestDriveGenerationBackfillsHistoricalFingerprints(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -519,17 +433,8 @@ func TestRegisterPreviewWorkersBackfillsHistoricalFingerprints(t *testing.T) {
 		t.Fatalf("seed video: %v", err)
 	}
 
-	app := &App{
-		cat:                cat,
-		workers:            make(map[string]*preview.Worker),
-		thumbWorkers:       make(map[string]*preview.ThumbWorker),
-		fingerprintWorkers: make(map[string]*fingerprint.Worker),
-	}
-	drv := &serverFingerprintFakeDrive{path: dataPath}
-	fingerprintWorker := fingerprint.NewWorker(cat, drv, fingerprint.Config{})
-	go fingerprintWorker.Run(ctx)
-
-	app.registerPreviewWorkers(ctx, "drive-id", nil, nil, fingerprintWorker, func() {})
+	app := &App{cat: cat}
+	startTestGeneration(t, ctx, app, &serverFingerprintFakeDrive{path: dataPath}, nil, nil)
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -819,7 +724,7 @@ func TestDriveConfigUpdateDefersEveryTaskSensitiveScope(t *testing.T) {
 	}
 }
 
-func TestDeferredScanConfigRestoresWorkersStoppedDuringDrain(t *testing.T) {
+func TestStopDuringDeferredConfigPausesGenerationUntilWake(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
@@ -827,28 +732,12 @@ func TestDeferredScanConfigRestoresWorkersStoppedDuringDrain(t *testing.T) {
 		t.Fatalf("open catalog: %v", err)
 	}
 	t.Cleanup(func() { _ = cat.Close() })
-	if err := cat.UpsertDrive(ctx, &catalog.Drive{
-		ID: "drive-id", Kind: "fake", Name: "Drive", RootID: "root",
-	}); err != nil {
-		t.Fatalf("seed drive: %v", err)
-	}
-
+	seedGenerationDrive(t, cat, "drive-id")
 	drv := &serverFakeDrive{}
 	registry := proxy.NewRegistry()
 	registry.Set("drive-id", drv)
-	gen := &serverFakeTeaserGenerator{}
-	oldWorker := preview.NewWorker(gen, cat, drv)
-	oldThumbWorker := preview.NewThumbWorker(gen, cat, drv)
-	oldFingerprintWorker := fingerprint.NewWorker(cat, drv, fingerprint.Config{})
-	app := &App{
-		cfg:                &config.Config{},
-		cat:                cat,
-		registry:           registry,
-		workers:            map[string]*preview.Worker{"drive-id": oldWorker},
-		thumbWorkers:       map[string]*preview.ThumbWorker{"drive-id": oldThumbWorker},
-		fingerprintWorkers: map[string]*fingerprint.Worker{"drive-id": oldFingerprintWorker},
-		cancels:            map[string]context.CancelFunc{"drive-id": func() {}},
-	}
+	app := &App{cfg: &config.Config{}, cat: cat, registry: registry}
+	runner := startTestGeneration(t, ctx, app, drv, &serverFakeTeaserGenerator{}, &serverFakeTeaserGenerator{})
 	taskCtx, taskDone, admitted := app.registerDriveTaskContext(ctx, "drive-id", 0)
 	if !admitted {
 		t.Fatal("task admission rejected")
@@ -857,14 +746,9 @@ func TestDeferredScanConfigRestoresWorkersStoppedDuringDrain(t *testing.T) {
 	if reason := lease.Authorize(api.DriveConfigUpdateScan); reason != "" {
 		t.Fatalf("authorize scan update: %s", reason)
 	}
-	callbackSawWorkers := make(chan bool, 1)
+	applied := make(chan struct{}, 1)
 	deferred, err := lease.Commit(api.DriveConfigUpdateScan, func() error {
-		app.mu.Lock()
-		ready := app.workers["drive-id"] != nil &&
-			app.thumbWorkers["drive-id"] != nil &&
-			app.fingerprintWorkers["drive-id"] != nil
-		app.mu.Unlock()
-		callbackSawWorkers <- ready
+		applied <- struct{}{}
 		return nil
 	})
 	if err != nil || !deferred {
@@ -872,46 +756,31 @@ func TestDeferredScanConfigRestoresWorkersStoppedDuringDrain(t *testing.T) {
 	}
 	lease.Release()
 
-	if !app.stopDriveTasks(ctx, "drive-id") {
-		t.Fatal("stopDriveTasks returned false")
-	}
+	app.stopDriveTasks(ctx, "drive-id")
 	if taskCtx.Err() == nil {
 		t.Fatal("active task was not canceled")
 	}
-	app.mu.Lock()
-	workersPresentWhilePending := app.workers["drive-id"] != nil ||
-		app.thumbWorkers["drive-id"] != nil || app.fingerprintWorkers["drive-id"] != nil
-	app.mu.Unlock()
-	if workersPresentWhilePending {
-		t.Fatal("generation workers were restarted before the old task drained")
-	}
-
 	taskDone()
 	select {
-	case ready := <-callbackSawWorkers:
-		if !ready {
-			t.Fatal("preview callback ran before stopped workers were restored")
-		}
+	case <-applied:
 	case <-time.After(2 * time.Second):
-		t.Fatal("deferred preview update did not apply")
+		t.Fatal("deferred scan update did not apply")
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for app.driveConfigPending("drive-id") && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
+	if app.generationRunner("drive-id") != runner || !runner.Status().Paused {
+		t.Fatal("a scan-only update replaced or resumed the stopped generation")
 	}
-	app.mu.Lock()
-	newWorker := app.workers["drive-id"]
-	newThumbWorker := app.thumbWorkers["drive-id"]
-	newFingerprintWorker := app.fingerprintWorkers["drive-id"]
-	app.mu.Unlock()
-	if newWorker == nil || newWorker == oldWorker ||
-		newThumbWorker == nil || newThumbWorker == oldThumbWorker ||
-		newFingerprintWorker == nil || newFingerprintWorker == oldFingerprintWorker {
-		t.Fatal("stopped generation workers were not replaced after deferred apply")
+	video := &catalog.Video{ID: "after-stop", DriveID: "drive-id", FileID: "file", Title: "Clip", PublishedAt: time.Now(), CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	if err := cat.UpsertVideo(ctx, video); err != nil {
+		t.Fatal(err)
+	}
+	app.wakeDriveGeneration("drive-id")
+	waitGenerationIdle(t, app, "drive-id")
+	if got, err := cat.GetVideo(ctx, video.ID); err != nil || got.PreviewStatus != "ready" {
+		t.Fatalf("video after wake = %+v, %v; want its preview generated", got, err)
 	}
 }
 
-func TestAbortedDeferredConfigRestoresWorkersBeforeUnblocking(t *testing.T) {
+func TestAbortedDeferredConfigUnblocksAdmissions(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
@@ -944,26 +813,38 @@ func TestAbortedDeferredConfigRestoresWorkersBeforeUnblocking(t *testing.T) {
 	if app.driveConfigPending("drive-id") {
 		t.Fatal("aborted configuration left the gate pending")
 	}
-	app.mu.Lock()
-	workersReady := app.workers["drive-id"] != nil &&
-		app.thumbWorkers["drive-id"] != nil &&
-		app.fingerprintWorkers["drive-id"] != nil
-	app.mu.Unlock()
-	if !workersReady {
-		t.Fatal("aborted configuration unblocked admissions without restoring workers")
-	}
 	taskDone()
+	if _, done, admitted := app.registerDriveTaskContext(ctx, "drive-id", 0); !admitted {
+		t.Fatal("aborted configuration kept admissions blocked")
+	} else {
+		done()
+	}
 }
 
-func TestGenerationWorkerGuardKeepsOldRuntimeAliveUntilProviderCallReturns(t *testing.T) {
-	app := &App{}
-	worker, _, _ := app.newDriveGenerationWorkers(&serverFakeDrive{})
-	if worker.TaskGuard == nil {
-		t.Fatal("preview worker task guard is not configured")
+func TestGenerationRunnerKeepsOldRuntimeAliveUntilProviderCallReturns(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatal(err)
 	}
-	providerCallDone := worker.TaskGuard()
-	if providerCallDone == nil {
-		t.Fatal("current worker generation was not admitted")
+	t.Cleanup(func() { _ = cat.Close() })
+	seedGenerationDrive(t, cat, "drive-id")
+	now := time.Now()
+	for _, id := range []string{"first", "second"} {
+		if err := cat.UpsertVideo(ctx, &catalog.Video{ID: id, DriveID: "drive-id", FileID: id, Title: id, ThumbnailURL: "/p/thumb/" + id,
+			PublishedAt: now, CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		markMediaDone(t, cat, id)
+	}
+	app := &App{cat: cat}
+	gen := &serverBlockingProbeGenerator{started: make(chan string, 8), release: make(chan struct{})}
+	runner := startTestGeneration(t, ctx, app, &serverFakeDrive{}, nil, gen)
+	select {
+	case <-gen.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("provider call did not start")
 	}
 
 	lease, _ := app.beginDriveConfigUpdate("drive-id")
@@ -979,15 +860,28 @@ func TestGenerationWorkerGuardKeepsOldRuntimeAliveUntilProviderCallReturns(t *te
 		t.Fatalf("commit deferred/error = %v/%v", deferred, err)
 	}
 	lease.Release()
-	providerCallDone()
+	// The provider call returns without settling the duration; the remaining
+	// due video keeps the old runtime busy until it runs as well.
+	close(gen.release)
 	select {
 	case <-applied:
-	case <-time.After(2 * time.Second):
-		t.Fatal("runtime did not switch after provider call returned")
+	case <-time.After(3 * time.Second):
+		t.Fatalf("runtime did not switch after the old runner drained (status %+v)", runner.Status())
 	}
-	if release := worker.TaskGuard(); release != nil {
-		release()
-		t.Fatal("retired worker generation was admitted after runtime switch")
+	if err := cat.DeferGeneration(ctx, "first", time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	calls := len(gen.started)
+	runner.Wake()
+	time.Sleep(50 * time.Millisecond)
+	if len(gen.started) != calls {
+		t.Fatal("retired runner generation started work after the runtime switch")
+	}
+	// A runner whose runtime was not replaced, as after a failed remount,
+	// must not hold up later configuration changes.
+	waitGenerationIdle(t, app, "drive-id")
+	if app.driveHasActiveWork("drive-id") {
+		t.Fatal("retired runner still reports active work")
 	}
 }
 
@@ -1173,7 +1067,7 @@ func TestFailedDriveDeleteResumesPendingConfig(t *testing.T) {
 	}
 }
 
-func TestStopDriveTasksCancelsQueuedTasksAndReplacesWorkers(t *testing.T) {
+func TestStopDriveTasksCancelsQueuedTasksAndPausesGeneration(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -1186,30 +1080,30 @@ func TestStopDriveTasksCancelsQueuedTasksAndReplacesWorkers(t *testing.T) {
 			t.Fatalf("close catalog: %v", err)
 		}
 	})
+	seedGenerationDrive(t, cat, "drive-id")
+	now := time.Now()
+	if err := cat.UpsertVideo(ctx, &catalog.Video{ID: "busy", DriveID: "drive-id", FileID: "busy", Title: "Busy", ThumbnailURL: "/p/thumb/busy",
+		PublishedAt: now, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	markMediaDone(t, cat, "busy")
 
 	drv := &serverFakeDrive{}
 	registry := proxy.NewRegistry()
 	registry.Set("drive-id", drv)
-
-	gen := &serverFakeTeaserGenerator{}
-	oldWorker := preview.NewWorker(gen, cat, drv)
-	oldThumbWorker := preview.NewThumbWorker(gen, cat, drv)
-	oldFingerprintWorker := fingerprint.NewWorker(cat, drv, fingerprint.Config{})
-	oldCanceled := make(chan struct{})
-
 	app := &App{
-		cfg:                &config.Config{},
-		cat:                cat,
-		registry:           registry,
-		workers:            map[string]*preview.Worker{"drive-id": oldWorker},
-		thumbWorkers:       map[string]*preview.ThumbWorker{"drive-id": oldThumbWorker},
-		fingerprintWorkers: map[string]*fingerprint.Worker{"drive-id": oldFingerprintWorker},
-		cancels: map[string]context.CancelFunc{
-			"drive-id": func() { close(oldCanceled) },
-		},
-		scanQueued:          map[string]bool{"drive-id": true},
-		scanProgress:        map[string]driveScanProgress{"drive-id": {Scanned: 8, Added: 2}},
-		fingerprintQueueing: map[string]bool{"drive-id": true},
+		cfg:          &config.Config{},
+		cat:          cat,
+		registry:     registry,
+		scanQueued:   map[string]bool{"drive-id": true},
+		scanProgress: map[string]driveScanProgress{"drive-id": {Scanned: 8, Added: 2}},
+	}
+	gen := &serverBlockingProbeGenerator{started: make(chan string, 8), release: make(chan struct{})}
+	runner := startTestGeneration(t, ctx, app, drv, nil, gen)
+	select {
+	case <-gen.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("generation did not start")
 	}
 	taskCtx, done, admitted := app.registerDriveTaskContext(ctx, "drive-id", 0)
 	if !admitted {
@@ -1220,11 +1114,6 @@ func TestStopDriveTasksCancelsQueuedTasksAndReplacesWorkers(t *testing.T) {
 	if !app.stopDriveTasks(ctx, "drive-id") {
 		t.Fatal("stopDriveTasks returned false, want true")
 	}
-	select {
-	case <-oldCanceled:
-	case <-time.After(time.Second):
-		t.Fatal("old worker cancel was not called")
-	}
 	if err := taskCtx.Err(); err == nil {
 		t.Fatal("registered drive task context was not canceled")
 	}
@@ -1234,39 +1123,39 @@ func TestStopDriveTasksCancelsQueuedTasksAndReplacesWorkers(t *testing.T) {
 	if _, ok := app.scanProgress["drive-id"]; ok {
 		t.Fatal("scan progress marker was not cleared")
 	}
-	if app.fingerprintQueueing["drive-id"] {
-		t.Fatal("fingerprint queue marker was not cleared")
+	waitGenerationIdle(t, app, "drive-id")
+	status := runner.Status()
+	if !status.Paused || status.Counts.Durations != 1 {
+		t.Fatalf("stopped generation status = %+v, want paused with the work still due", status)
 	}
-
-	app.mu.Lock()
-	newWorker := app.workers["drive-id"]
-	newThumbWorker := app.thumbWorkers["drive-id"]
-	newFingerprintWorker := app.fingerprintWorkers["drive-id"]
-	newCancel := app.cancels["drive-id"]
-	app.mu.Unlock()
-	if newWorker == nil || newWorker == oldWorker {
-		t.Fatalf("preview worker was not replaced")
+	if app.driveHasActiveWork("drive-id") {
+		t.Fatal("stopped generation still reports active work")
 	}
-	if newThumbWorker == nil || newThumbWorker == oldThumbWorker {
-		t.Fatalf("thumb worker was not replaced")
-	}
-	if newFingerprintWorker == nil || newFingerprintWorker == oldFingerprintWorker {
-		t.Fatalf("fingerprint worker was not replaced")
-	}
-	if newCancel == nil {
-		t.Fatalf("replacement worker cancel was not registered")
-	}
-	newCancel()
 }
 
 func TestScheduleScanRejectsDriveWithActiveGenerationWork(t *testing.T) {
-	ctx := context.Background()
-	thumbWorker := preview.NewThumbWorker(&serverFakeTeaserGenerator{}, nil, &serverFakeDrive{})
-	if !thumbWorker.Enqueue(&catalog.Video{ID: "busy-video", DriveID: "drive-id", Title: "Busy Video"}) {
-		t.Fatal("failed to enqueue busy thumbnail task")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatal(err)
 	}
-	app := &App{
-		thumbWorkers: map[string]*preview.ThumbWorker{"drive-id": thumbWorker},
+	t.Cleanup(func() { _ = cat.Close() })
+	seedGenerationDrive(t, cat, "drive-id")
+	now := time.Now()
+	if err := cat.UpsertVideo(ctx, &catalog.Video{ID: "busy", DriveID: "drive-id", FileID: "busy", Title: "Busy", ThumbnailURL: "/p/thumb/busy",
+		PublishedAt: now, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	markMediaDone(t, cat, "busy")
+	app := &App{cat: cat}
+	gen := &serverBlockingProbeGenerator{started: make(chan string, 8), release: make(chan struct{})}
+	startTestGeneration(t, ctx, app, &serverFakeDrive{}, nil, gen)
+	defer close(gen.release)
+	select {
+	case <-gen.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("generation did not start")
 	}
 
 	if app.scheduleScan(ctx, "drive-id") {
@@ -1395,12 +1284,9 @@ func TestRunCrawlerMigrationAfterManualCrawlRequiresCrawlerUploadTarget(t *testi
 	registry := proxy.NewRegistry()
 	migrator := &serverFakeCrawlerUploadRunner{}
 	app := &App{
-		cat:                cat,
-		registry:           registry,
-		crawlerUploader:    migrator,
-		workers:            map[string]*preview.Worker{},
-		thumbWorkers:       map[string]*preview.ThumbWorker{},
-		fingerprintWorkers: map[string]*fingerprint.Worker{},
+		cat:             cat,
+		registry:        registry,
+		crawlerUploader: migrator,
 	}
 
 	app.finishCrawlerProcessing(ctx, "crawler-main")
@@ -1522,12 +1408,9 @@ func TestScheduleManualCrawlerUploadMigrationRunsWhenAssetsReady(t *testing.T) {
 	registry.Set("pikpak-target", &serverFakeKindDrive{id: "pikpak-target", kind: "pikpak"})
 	migrator := &serverFakeCrawlerUploadRunner{}
 	app := &App{
-		cat:                cat,
-		registry:           registry,
-		crawlerUploader:    migrator,
-		workers:            map[string]*preview.Worker{},
-		thumbWorkers:       map[string]*preview.ThumbWorker{},
-		fingerprintWorkers: map[string]*fingerprint.Worker{},
+		cat:             cat,
+		registry:        registry,
+		crawlerUploader: migrator,
 	}
 
 	accepted, message := app.scheduleManualCrawlerUploadMigration(ctx, "crawler-ready")
@@ -1621,92 +1504,93 @@ func TestScheduleManualCrawlerUploadMigrationAdmitsPendingFingerprintForPerVideo
 	}
 }
 
-func TestDriveGenerationStatusUsesWorkerQueueNotPendingCatalogRows(t *testing.T) {
-	ctx := context.Background()
+func TestRunnerStatusProjectsOntoEachStep(t *testing.T) {
+	counts := catalog.GenerationCounts{Fingerprints: 2, Media: 3, Thumbnails: 1, Durations: 1, Covers: 2}
+	for _, tc := range []struct {
+		name                        string
+		status                      generation.Status
+		thumbnail, preview, scanned api.GenerationStatus
+	}{
+		{
+			name:      "generating media",
+			status:    generation.Status{State: "generating", Active: []generation.Activity{{Kind: generation.KindMedia, ID: "clip", Title: "Clip"}}, Counts: counts},
+			thumbnail: api.GenerationStatus{State: "queued", QueueLength: 2},
+			preview:   api.GenerationStatus{State: "generating", CurrentTitle: "Clip", QueueLength: 2},
+			scanned:   api.GenerationStatus{State: "queued", QueueLength: 2},
+		},
+		{
+			name: "fingerprinting beside a media job",
+			status: generation.Status{State: "generating", Counts: counts, Active: []generation.Activity{
+				{Kind: generation.KindMedia, ID: "clip", Title: "Clip"},
+				{Kind: generation.KindFingerprint, ID: "new", Title: "New"},
+			}},
+			thumbnail: api.GenerationStatus{State: "queued", QueueLength: 2},
+			preview:   api.GenerationStatus{State: "generating", CurrentTitle: "Clip", QueueLength: 2},
+			scanned:   api.GenerationStatus{State: "generating", CurrentTitle: "New", QueueLength: 1},
+		},
+		{
+			name: "covering a video that also lacks its duration",
+			status: generation.Status{State: "generating", Active: []generation.Activity{{Kind: generation.KindThumbnail, ID: "both", Title: "Both"}},
+				Counts: catalog.GenerationCounts{Thumbnails: 1, Durations: 1, Covers: 1}},
+			thumbnail: api.GenerationStatus{State: "generating", CurrentTitle: "Both"},
+			preview:   api.GenerationStatus{State: "idle"},
+			scanned:   api.GenerationStatus{State: "idle"},
+		},
+		{
+			name:      "stopped",
+			status:    generation.Status{State: "idle", Paused: true, Counts: counts},
+			thumbnail: api.GenerationStatus{State: "idle"},
+			preview:   api.GenerationStatus{State: "idle"},
+			scanned:   api.GenerationStatus{State: "idle"},
+		},
+		{
+			name:      "cooling",
+			status:    generation.Status{State: "cooling", Counts: catalog.GenerationCounts{Media: 1}, CooldownUntil: time.Unix(1000, 0)},
+			thumbnail: api.GenerationStatus{State: "cooling", CooldownUntil: time.Unix(1000, 0).Format(time.RFC3339)},
+			preview:   api.GenerationStatus{State: "cooling", QueueLength: 1, CooldownUntil: time.Unix(1000, 0).Format(time.RFC3339)},
+			scanned:   api.GenerationStatus{State: "cooling", CooldownUntil: time.Unix(1000, 0).Format(time.RFC3339)},
+		},
+	} {
+		thumbnail, preview, fingerprint := runnerGenerationStatuses(tc.status)
+		if thumbnail != tc.thumbnail || preview != tc.preview || fingerprint != tc.scanned {
+			t.Fatalf("%s: statuses = %+v / %+v / %+v", tc.name, thumbnail, preview, fingerprint)
+		}
+	}
+}
+
+func TestDriveGenerationRequestResumesStoppedDrive(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
 	if err != nil {
 		t.Fatalf("open catalog: %v", err)
 	}
-	t.Cleanup(func() {
-		if err := cat.Close(); err != nil {
-			t.Fatalf("close catalog: %v", err)
-		}
-	})
+	t.Cleanup(func() { _ = cat.Close() })
+	seedGenerationDrive(t, cat, "drive-id")
+	app := &App{cat: cat}
+	runner := startTestGeneration(t, ctx, app, &serverFakeDrive{}, nil, &serverFakeTeaserGenerator{})
+	waitGenerationIdle(t, app, "drive-id")
+	runner.Stop()
 
 	now := time.Now()
 	if err := cat.UpsertVideo(ctx, &catalog.Video{
-		ID:            "pending-thumb",
-		DriveID:       "drive-id",
-		FileID:        "file-id",
-		Title:         "Pending Thumb",
-		PreviewStatus: "ready",
-		PublishedAt:   now,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		ID: "pending-thumb", DriveID: "drive-id", FileID: "file-id", Title: "Pending Thumb", DurationSeconds: 30,
+		PublishedAt: now, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("seed video: %v", err)
 	}
-	if err := cat.UpdateVideoMeta(ctx, "pending-thumb", catalog.VideoMetaPatch{ThumbnailStatus: "pending"}); err != nil {
-		t.Fatalf("mark thumbnail pending: %v", err)
+	markMediaDone(t, cat, "pending-thumb")
+	result, err := app.requestDriveGeneration(ctx, "drive-id", api.DriveGenerationThumbnails)
+	if err != nil || result.State != "started" {
+		t.Fatalf("request = %+v, %v; want started", result, err)
 	}
-
-	thumbWorker := preview.NewThumbWorker(&serverFakeTeaserGenerator{}, cat, &serverFakeDrive{})
-	app := &App{
-		cat:                cat,
-		workers:            map[string]*preview.Worker{},
-		thumbWorkers:       map[string]*preview.ThumbWorker{"drive-id": thumbWorker},
-		fingerprintWorkers: map[string]*fingerprint.Worker{},
-	}
-
-	status := app.driveGenerationStatuses()["drive-id"].Thumbnail
-	if status.State != "idle" || status.QueueLength != 0 {
-		t.Fatalf("thumbnail status = %#v, want idle with empty worker queue", status)
+	waitGenerationIdle(t, app, "drive-id")
+	if got, err := cat.GetVideo(ctx, "pending-thumb"); err != nil || got.ThumbnailURL == "" {
+		t.Fatalf("video = %+v, %v; want the pending cover generated after the request", got, err)
 	}
 }
 
-func TestRegenFailedThumbnailsQueuesPendingRowsAfterStop(t *testing.T) {
-	ctx := context.Background()
-	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
-	if err != nil {
-		t.Fatalf("open catalog: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := cat.Close(); err != nil {
-			t.Fatalf("close catalog: %v", err)
-		}
-	})
-
-	now := time.Now()
-	if err := cat.UpsertVideo(ctx, &catalog.Video{
-		ID:            "pending-thumb",
-		DriveID:       "drive-id",
-		FileID:        "file-id",
-		Title:         "Pending Thumb",
-		PreviewStatus: "ready",
-		PublishedAt:   now,
-		CreatedAt:     now,
-		UpdatedAt:     now,
-	}); err != nil {
-		t.Fatalf("seed video: %v", err)
-	}
-	if err := cat.UpdateVideoMeta(ctx, "pending-thumb", catalog.VideoMetaPatch{ThumbnailStatus: "pending"}); err != nil {
-		t.Fatalf("mark thumbnail pending: %v", err)
-	}
-
-	thumbWorker := preview.NewThumbWorker(&serverFakeTeaserGenerator{}, cat, &serverFakeDrive{})
-	app := &App{
-		cat:          cat,
-		thumbWorkers: map[string]*preview.ThumbWorker{"drive-id": thumbWorker},
-	}
-
-	app.regenFailedThumbnails(ctx, "drive-id")
-
-	if got := thumbWorker.Status().QueueLength; got != 1 {
-		t.Fatalf("thumb queue length = %d, want pending row re-enqueued", got)
-	}
-}
-
-func TestRunScanStartsFingerprintBeforeThumbnailAndPreviewDrain(t *testing.T) {
+func TestRunScanWakesGenerationThatFingerprintsBeforeMedia(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -1738,63 +1622,38 @@ func TestRunScanStartsFingerprintBeforeThumbnailAndPreviewDrain(t *testing.T) {
 	}
 	registry := proxy.NewRegistry()
 	registry.Set("drive-id", drv)
-
-	gen := &serverFakeTeaserGenerator{}
-	worker := preview.NewWorker(gen, cat, drv)
-	thumbWorker := preview.NewThumbWorker(gen, cat, drv)
-	fingerprintWorker := fingerprint.NewWorker(cat, drv, fingerprint.Config{})
-	go fingerprintWorker.Run(ctx)
-
 	app := &App{
 		cfg: &config.Config{
 			Scanner: config.Scanner{VideoExtensions: []string{".mp4"}},
 		},
-		cat:                cat,
-		registry:           registry,
-		workers:            map[string]*preview.Worker{"drive-id": worker},
-		thumbWorkers:       map[string]*preview.ThumbWorker{"drive-id": thumbWorker},
-		fingerprintWorkers: map[string]*fingerprint.Worker{"drive-id": fingerprintWorker},
+		cat:      cat,
+		registry: registry,
 	}
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		app.runScan(ctx, "drive-id")
-	}()
-
 	videoID := "fake-drive-id-file-id"
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		got, err := cat.GetVideo(ctx, videoID)
-		if err == nil && got.SampledSHA256 != "" && got.FingerprintStatus == "ready" {
-			cancel()
-			select {
-			case <-done:
-			case <-time.After(2 * time.Second):
-				t.Fatal("scan did not stop after context cancel")
-			}
-			if got.ThumbnailURL != "" {
-				t.Fatalf("thumbnail url = %q, want fingerprint before thumbnail generation", got.ThumbnailURL)
-			}
-			return
+	var fingerprintAtMedia string
+	gen := &serverObservingMediaGenerator{onGenerate: func() {
+		if got, err := cat.GetVideo(ctx, videoID); err == nil {
+			fingerprintAtMedia = got.FingerprintStatus
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("scan did not stop after context cancel")
-	}
-	got, err := cat.GetVideo(context.Background(), videoID)
+	}}
+	startTestGeneration(t, ctx, app, drv, gen, gen)
+
+	app.runScan(ctx, "drive-id")
+	waitGenerationIdle(t, app, "drive-id")
+
+	got, err := cat.GetVideo(ctx, videoID)
 	if err != nil {
-		t.Fatalf("get video after timeout: %v", err)
+		t.Fatal(err)
 	}
-	t.Fatalf("fingerprint status=%q sampled=%q, want ready before thumbnail/preview drain", got.FingerprintStatus, got.SampledSHA256)
+	if got.FingerprintStatus != "ready" || got.PreviewStatus != "ready" || fingerprintAtMedia != "ready" {
+		t.Fatalf("fingerprint=%q preview=%q fingerprint at media=%q, want the fingerprint before the media job",
+			got.FingerprintStatus, got.PreviewStatus, fingerprintAtMedia)
+	}
 }
 
-func TestRunScanBackfillsExistingFingerprintBeforeTaskReturns(t *testing.T) {
-	ctx := context.Background()
+func TestRunScanWakesGenerationForExistingPendingFingerprint(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
 	if err != nil {
 		t.Fatalf("open catalog: %v", err)
@@ -1805,6 +1664,10 @@ func TestRunScanBackfillsExistingFingerprintBeforeTaskReturns(t *testing.T) {
 		}
 	})
 	seedGenerationDrive(t, cat, "drive-id")
+	dataPath := filepath.Join(t.TempDir(), "existing.mp4")
+	if err := os.WriteFile(dataPath, make([]byte, 123), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	now := time.Now()
 	if err := cat.UpsertVideo(ctx, &catalog.Video{
@@ -1825,6 +1688,7 @@ func TestRunScanBackfillsExistingFingerprintBeforeTaskReturns(t *testing.T) {
 	}
 
 	drv := &serverScanFingerprintFakeDrive{
+		serverFingerprintFakeDrive: serverFingerprintFakeDrive{path: dataPath},
 		entries: []drives.Entry{{
 			ID:   "file-id",
 			Name: "existing.mp4",
@@ -1833,23 +1697,21 @@ func TestRunScanBackfillsExistingFingerprintBeforeTaskReturns(t *testing.T) {
 	}
 	registry := proxy.NewRegistry()
 	registry.Set("drive-id", drv)
-	fingerprintWorker := fingerprint.NewWorker(cat, drv, fingerprint.Config{})
 	app := &App{
 		cfg: &config.Config{
 			Scanner: config.Scanner{VideoExtensions: []string{".mp4"}},
 		},
-		cat:                cat,
-		registry:           registry,
-		fingerprintWorkers: map[string]*fingerprint.Worker{"drive-id": fingerprintWorker},
+		cat:      cat,
+		registry: registry,
 	}
+	// A stopped drive takes its work again when a scan wakes it.
+	startPausedTestGeneration(t, ctx, app, drv, nil, nil)
 
 	app.runScan(ctx, "drive-id")
+	waitGenerationIdle(t, app, "drive-id")
 
-	if got := fingerprintWorker.Status().QueueLength; got != 1 {
-		t.Fatalf("fingerprint queue length after scan = %d, want 1", got)
-	}
-	if app.fingerprintQueueingBusy("drive-id") {
-		t.Fatal("fingerprint backfill still marked active after scan returned")
+	if got, err := cat.GetVideo(ctx, "existing-video"); err != nil || got.FingerprintStatus != "ready" {
+		t.Fatalf("video = %+v, %v; want the pending fingerprint taken after the scan", got, err)
 	}
 }
 
@@ -1993,27 +1855,17 @@ func TestFailedThumbnailsDoNotBlockPreviewGeneration(t *testing.T) {
 	if err := cat.UpdateVideoMeta(ctx, video.ID, catalog.VideoMetaPatch{ThumbnailStatus: "failed"}); err != nil {
 		t.Fatalf("mark thumbnail failed: %v", err)
 	}
-	missing, err := cat.CountVideosNeedingThumbnail(ctx, "drive-id")
+	counts, err := cat.CountDueGeneration(ctx, "drive-id", true, time.Now())
 	if err != nil {
-		t.Fatalf("count missing thumbnails: %v", err)
+		t.Fatalf("count due generation: %v", err)
 	}
-	if missing != 0 {
-		t.Fatalf("missing thumbnails = %d, want failed thumbnails excluded", missing)
+	if counts.Thumbnails != 0 {
+		t.Fatalf("missing thumbnails = %d, want failed thumbnails excluded", counts.Thumbnails)
 	}
 
-	app := &App{
-		cat:          cat,
-		workers:      make(map[string]*preview.Worker),
-		thumbWorkers: make(map[string]*preview.ThumbWorker),
-	}
+	app := &App{cat: cat}
 	gen := &serverFakeTeaserGenerator{}
-	drv := &serverFakeDrive{}
-	worker := preview.NewWorker(gen, cat, drv)
-	thumbWorker := preview.NewThumbWorker(gen, cat, drv)
-	go worker.Run(ctx)
-	go thumbWorker.Run(ctx)
-
-	app.registerPreviewWorkers(ctx, "drive-id", worker, thumbWorker, nil, func() {})
+	startTestGeneration(t, ctx, app, &serverFakeDrive{}, gen, gen)
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -2040,7 +1892,7 @@ func TestFailedThumbnailsDoNotBlockPreviewGeneration(t *testing.T) {
 	t.Fatalf("preview status = %q, want ready; events=%#v", got.PreviewStatus, gen.Events())
 }
 
-func TestRegenFailedPreviewsQueuesOnlyFailedVideosForDrive(t *testing.T) {
+func TestPreviewRequestRetriesOnlyFailedVideosOfItsDrive(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -2070,18 +1922,14 @@ func TestRegenFailedPreviewsQueuesOnlyFailedVideosForDrive(t *testing.T) {
 		}
 	}
 
-	app := &App{
-		cat:          cat,
-		workers:      make(map[string]*preview.Worker),
-		thumbWorkers: make(map[string]*preview.ThumbWorker),
-	}
-	worker := preview.NewWorker(&serverFakeTeaserGenerator{}, cat, &serverFakeDrive{})
-	go worker.Run(ctx)
-	app.mu.Lock()
-	app.workers["drive-id"] = worker
-	app.mu.Unlock()
+	markMediaDone(t, cat, "target-ready")
+	app := &App{cat: cat}
+	startTestGeneration(t, ctx, app, &serverFakeDrive{}, &serverFakeTeaserGenerator{}, nil)
+	waitGenerationIdle(t, app, "drive-id")
 
-	app.regenFailedPreviews(ctx, "drive-id")
+	if result, err := app.requestDriveGeneration(ctx, "drive-id", api.DriveGenerationPreviews); err != nil || result.State != "started" {
+		t.Fatalf("request = %+v, %v; want started", result, err)
+	}
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -2121,7 +1969,7 @@ func TestRegenFailedPreviewsQueuesOnlyFailedVideosForDrive(t *testing.T) {
 	}
 }
 
-func TestEnqueueUploadedVideoQueuesLocalGenerationByDefault(t *testing.T) {
+func TestUploadedVideoGeneratesLocalAssets(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -2149,24 +1997,11 @@ func TestEnqueueUploadedVideoQueuesLocalGenerationByDefault(t *testing.T) {
 		t.Fatalf("seed video: %v", err)
 	}
 
-	app := &App{
-		cat:          cat,
-		workers:      make(map[string]*preview.Worker),
-		thumbWorkers: make(map[string]*preview.ThumbWorker),
-	}
+	app := &App{cat: cat}
 	gen := &serverFakeTeaserGenerator{}
-	drv := &serverLocalUploadFakeDrive{}
-	worker := preview.NewWorker(gen, cat, drv)
-	thumbWorker := preview.NewThumbWorker(gen, cat, drv)
-	linkThumbnailHandOff(worker, thumbWorker)
-	go worker.Run(ctx)
-	go thumbWorker.Run(ctx)
-	app.mu.Lock()
-	app.workers["local-upload"] = worker
-	app.thumbWorkers["local-upload"] = thumbWorker
-	app.mu.Unlock()
+	startTestGeneration(t, ctx, app, &serverLocalUploadFakeDrive{}, gen, gen)
 
-	app.enqueueUploadedVideo(ctx, video)
+	app.wakeDriveGeneration(video.DriveID)
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -2220,39 +2055,35 @@ func TestRestoreDeletedVideoQueuesDerivedAssetsAndInvalidatesTags(t *testing.T) 
 	}}
 	registry := proxy.NewRegistry()
 	registry.Set(drv.ID(), drv)
-	gen := &serverFakeTeaserGenerator{}
-	worker := preview.NewWorker(gen, cat, drv)
-	thumbWorker := preview.NewThumbWorker(gen, cat, drv)
 	tagInvalidations := 0
 	app := &App{
-		cat:          cat,
-		registry:     registry,
-		workers:      map[string]*preview.Worker{"local-upload": worker},
-		thumbWorkers: map[string]*preview.ThumbWorker{"local-upload": thumbWorker},
+		cat:      cat,
+		registry: registry,
 		onTagsChanged: func() {
 			tagInvalidations++
 		},
 	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	gen := &serverFakeTeaserGenerator{}
+	runner := startPausedTestGeneration(t, runCtx, app, drv, gen, gen)
 
 	if err := app.restoreDeletedVideo(ctx, video.ID); err != nil {
 		t.Fatalf("restore deleted video: %v", err)
 	}
-	if got := worker.Status().QueueLength; got != 1 {
-		t.Fatalf("preview queue length = %d, want 1", got)
-	}
-	// The media job makes the missing thumbnail.
-	if got := thumbWorker.Status().QueueLength; got != 0 {
-		t.Fatalf("thumbnail queue length = %d, want 0", got)
+	if runner.Status().Paused {
+		t.Fatal("restore did not wake the drive's generation")
 	}
 	if tagInvalidations != 1 {
 		t.Fatalf("tag cache invalidations = %d, want 1", tagInvalidations)
 	}
+	waitGenerationIdle(t, app, drv.ID())
 	restored, err := cat.GetVideo(ctx, video.ID)
 	if err != nil {
 		t.Fatalf("get restored video: %v", err)
 	}
-	if restored.PreviewStatus != "pending" || restored.ThumbnailURL != "" {
-		t.Fatalf("restored derived state = preview:%q thumbnail:%q", restored.PreviewStatus, restored.ThumbnailURL)
+	if restored.PreviewStatus != "ready" || restored.PreviewLocal != video.ID+".mp4" {
+		t.Fatalf("restored derived state = preview:%q local:%q, want regenerated", restored.PreviewStatus, restored.PreviewLocal)
 	}
 }
 
@@ -3615,12 +3446,9 @@ func TestCleanupDriveVideosForDeleteRemovesRowsAndGeneratedAssetsOnly(t *testing
 	}
 
 	app := &App{
-		cfg:                &config.Config{Storage: config.Storage{LocalPreviewDir: localDir}},
-		cat:                cat,
-		registry:           proxy.NewRegistry(),
-		workers:            make(map[string]*preview.Worker),
-		thumbWorkers:       make(map[string]*preview.ThumbWorker),
-		fingerprintWorkers: make(map[string]*fingerprint.Worker),
+		cfg:      &config.Config{Storage: config.Storage{LocalPreviewDir: localDir}},
+		cat:      cat,
+		registry: proxy.NewRegistry(),
 	}
 	removed, err := app.cleanupDriveVideosForDelete(ctx, "local-main")
 	if err != nil {
@@ -4130,12 +3958,9 @@ func TestCleanupDriveVideosForDeleteScriptCrawlerRemovesOnlyLocalRows(t *testing
 	}
 
 	app := &App{
-		cfg:                &config.Config{Storage: config.Storage{LocalPreviewDir: localDir}},
-		cat:                cat,
-		registry:           proxy.NewRegistry(),
-		workers:            make(map[string]*preview.Worker),
-		thumbWorkers:       make(map[string]*preview.ThumbWorker),
-		fingerprintWorkers: make(map[string]*fingerprint.Worker),
+		cfg:      &config.Config{Storage: config.Storage{LocalPreviewDir: localDir}},
+		cat:      cat,
+		registry: proxy.NewRegistry(),
 	}
 	crawlerStorage := app.scriptCrawlerDriveDir(driveID)
 	localSource := filepath.Join(crawlerStorage, "videos", "source.mp4")

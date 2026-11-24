@@ -64,13 +64,9 @@ func TestMediaJobLifecycle(t *testing.T) {
 	cat := openMediaTestCatalog(t, mediaTestVideo("signed", 90), mediaTestVideo("failing", 90), mediaTestVideo("short", 5))
 	listIDs := func(previews bool) map[string]bool {
 		t.Helper()
-		videos, err := cat.ListVideosNeedingMedia(ctx, "drive", previews)
-		if err != nil {
-			t.Fatal(err)
-		}
 		ids := map[string]bool{}
-		for _, video := range videos {
-			ids[video.ID] = true
+		for _, id := range dueForStep(t, cat, "drive", previews, needsMedia) {
+			ids[id] = true
 		}
 		return ids
 	}
@@ -146,14 +142,14 @@ func TestStaleMediaRenewsInBatches(t *testing.T) {
 	if _, err := cat.db.ExecContext(ctx, `UPDATE videos SET media_status = 'stale'`); err != nil {
 		t.Fatal(err)
 	}
-	if videos, _ := cat.ListVideosNeedingMedia(ctx, "drive", false); len(videos) != 0 {
+	if videos := dueForStep(t, cat, "drive", false, needsMedia); len(videos) != 0 {
 		t.Fatalf("stale videos listed as due: %d", len(videos))
 	}
 	promoted, err := cat.PromoteStaleMedia(ctx, 2)
 	if err != nil || len(promoted) != 2 || promoted[0].ID != "first" || promoted[1].ID != "second" || promoted[0].MediaStatus != "pending" {
 		t.Fatalf("promoted = %+v err = %v, want the two oldest", promoted, err)
 	}
-	if videos, _ := cat.ListVideosNeedingMedia(ctx, "drive", false); len(videos) != 2 {
+	if videos := dueForStep(t, cat, "drive", false, needsMedia); len(videos) != 2 {
 		t.Fatalf("due videos = %d, want the promoted batch", len(videos))
 	}
 }

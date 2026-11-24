@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -21,7 +20,6 @@ import (
 	"github.com/nianzhibai/91/backend/internal/crawljob"
 	"github.com/nianzhibai/91/backend/internal/drives"
 	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
-	"github.com/nianzhibai/91/backend/internal/fingerprint"
 	"github.com/nianzhibai/91/backend/internal/preview"
 	"github.com/nianzhibai/91/backend/internal/proxy"
 )
@@ -144,25 +142,17 @@ send(c,"stopped")
 			registry.Set(target.ID(), target)
 			app := &App{cat: cat, registry: registry, cfg: &config.Config{Storage: config.Storage{LocalPreviewDir: root}}}
 			app.previewGate.Set(mode != "preview_disabled")
-			workerCtx, workerCancel := context.WithCancel(ctx)
+			runCtx, runCancel := context.WithCancel(ctx)
+			t.Cleanup(runCancel)
 			gen := &finishingGenerator{dir: root}
-			worker := preview.NewWorker(gen, cat, source)
-			thumb := preview.NewThumbWorker(gen, cat, source)
-			linkThumbnailHandOff(worker, thumb)
-			app.workers = map[string]*preview.Worker{source.ID(): worker}
-			app.thumbWorkers = map[string]*preview.ThumbWorker{source.ID(): thumb}
-			app.cancels = map[string]context.CancelFunc{source.ID(): workerCancel}
-			var workers sync.WaitGroup
-			workers.Add(2)
-			go func() { defer workers.Done(); worker.Run(workerCtx) }()
-			go func() { defer workers.Done(); thumb.Run(workerCtx) }()
-			t.Cleanup(func() { workerCancel(); workers.Wait() })
+			runner := startPausedTestGeneration(t, runCtx, app, source, gen, gen)
 			pause := func() error {
+				generating := !runner.Status().Paused
 				if !app.stopDriveTasks(ctx, source.ID()) || !app.stopDriveTasks(ctx, source.ID()) {
 					return errors.New("pause lost the active crawler task")
 				}
-				if !app.driveHasActiveWork(source.ID()) || workerCtx.Err() != nil {
-					return errors.New("pause released task ownership or canceled workers")
+				if !app.driveHasActiveWork(source.ID()) || (generating && runner.Status().Paused) {
+					return errors.New("pause released task ownership or stopped generation")
 				}
 				return nil
 			}
@@ -350,20 +340,9 @@ print(json.dumps(dict(type="error", request_id=c["request_id"], scope="source", 
 			registry.Set(target.ID(), target)
 			app := &App{cat: cat, registry: registry, cfg: &config.Config{Storage: config.Storage{LocalPreviewDir: root}}}
 			gen := &finishingGenerator{dir: root, beforePreview: func(ctx context.Context) error { return ctx.Err() }}
-			worker := preview.NewWorker(gen, cat, source)
-			thumb := preview.NewThumbWorker(gen, cat, source)
-			linkThumbnailHandOff(worker, thumb)
-			fp := fingerprint.NewWorker(cat, source, fingerprint.Config{})
-			app.workers = map[string]*preview.Worker{source.ID(): worker}
-			app.thumbWorkers = map[string]*preview.ThumbWorker{source.ID(): thumb}
-			app.fingerprintWorkers = map[string]*fingerprint.Worker{source.ID(): fp}
-			workerCtx, workerCancel := context.WithCancel(ctx)
-			var workers sync.WaitGroup
-			for _, run := range []func(context.Context){worker.Run, thumb.Run, fp.Run} {
-				workers.Add(1)
-				go func(run func(context.Context)) { defer workers.Done(); run(workerCtx) }(run)
-			}
-			t.Cleanup(func() { workerCancel(); workers.Wait() })
+			runCtx, runCancel := context.WithCancel(ctx)
+			t.Cleanup(runCancel)
+			startPausedTestGeneration(t, runCtx, app, source, gen, gen)
 			var taskID string
 			backlogID := scriptcrawler.BuildVideoID(source.ID(), "backlog")
 			target.beforeUpload = func(ctx context.Context) error {
@@ -415,9 +394,7 @@ print(json.dumps(dict(type="error", request_id=c["request_id"], scope="source", 
 			if err != nil || len(requests) != 0 {
 				t.Fatalf("restoration was not completed: %+v %v", requests, err)
 			}
-			if err := app.waitDriveGenerationQueuesIdle(ctx, source.ID()); err != nil {
-				t.Fatal(err)
-			}
+			waitGenerationIdle(t, app, source.ID())
 		})
 	}
 }

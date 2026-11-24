@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -93,6 +94,14 @@ func ensureMappingValue(parent *yaml.Node, key string) *yaml.Node {
 }
 
 func setScalarValue(parent *yaml.Node, key, value string) {
+	setScalarNode(parent, key, "!!str", value)
+}
+
+func setIntValue(parent *yaml.Node, key string, value int) {
+	setScalarNode(parent, key, "!!int", strconv.Itoa(value))
+}
+
+func setScalarNode(parent *yaml.Node, key, tag, value string) {
 	if parent.Kind != yaml.MappingNode {
 		parent.Kind = yaml.MappingNode
 		parent.Content = nil
@@ -100,7 +109,7 @@ func setScalarValue(parent *yaml.Node, key, value string) {
 	for i := 0; i+1 < len(parent.Content); i += 2 {
 		if parent.Content[i].Value == key {
 			parent.Content[i+1].Kind = yaml.ScalarNode
-			parent.Content[i+1].Tag = "!!str"
+			parent.Content[i+1].Tag = tag
 			parent.Content[i+1].Value = value
 			parent.Content[i+1].Content = nil
 			return
@@ -108,7 +117,7 @@ func setScalarValue(parent *yaml.Node, key, value string) {
 	}
 	parent.Content = append(parent.Content,
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
-		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: tag, Value: value},
 	)
 }
 
@@ -176,10 +185,10 @@ type Scanner struct {
 
 // Generation bounds work across every drive, independently of scan concurrency.
 type Generation struct {
-	UseGPU                 bool `yaml:"use_gpu"`
-	ThumbnailConcurrency   int  `yaml:"thumbnail_concurrency"`
-	PreviewConcurrency     int  `yaml:"preview_concurrency"`
-	FingerprintConcurrency int  `yaml:"fingerprint_concurrency"`
+	UseGPU bool `yaml:"use_gpu"`
+	// Concurrency is how many videos run asset steps (media jobs, covers and
+	// durations) at once across every source. Fingerprints take no slot.
+	Concurrency int `yaml:"concurrency"`
 }
 
 type Preview struct {
@@ -328,20 +337,11 @@ func (c *Config) applyDefaults() error {
 	if len(c.Scanner.VideoExtensions) == 0 {
 		c.Scanner.VideoExtensions = append([]string{}, defaultVideoExtensions...)
 	}
-	for _, field := range []struct {
-		name  string
-		value *int
-	}{
-		{"thumbnail_concurrency", &c.Generation.ThumbnailConcurrency},
-		{"preview_concurrency", &c.Generation.PreviewConcurrency},
-		{"fingerprint_concurrency", &c.Generation.FingerprintConcurrency},
-	} {
-		if *field.value == 0 {
-			*field.value = DefaultGenerationConcurrency
-		}
-		if *field.value < 1 || *field.value > MaxGenerationConcurrency {
-			return fmt.Errorf("generation.%s must be between 1 and %d", field.name, MaxGenerationConcurrency)
-		}
+	if c.Generation.Concurrency == 0 {
+		c.Generation.Concurrency = DefaultGenerationConcurrency
+	}
+	if c.Generation.Concurrency < 1 || c.Generation.Concurrency > MaxGenerationConcurrency {
+		return fmt.Errorf("generation.concurrency must be between 1 and %d", MaxGenerationConcurrency)
 	}
 	if c.Preview.FFmpegThreads == 0 {
 		c.Preview.FFmpegThreads = 1

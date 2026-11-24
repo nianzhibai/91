@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS videos (
     content_signature BLOB,                     -- mediasig 感知签名；源文件内容变化时清空
     media_status     TEXT DEFAULT 'pending',    -- 媒体任务（签名与预览）：pending / ready / failed / stale（待分批续期）
     media_retries    INTEGER DEFAULT 0,         -- 签名缺少计划窗口时的重读次数；未补齐前持续重读
+    generation_after INTEGER NOT NULL DEFAULT 0, -- unix ms；生成步骤未能结清时推迟到此时刻再取
     views            INTEGER DEFAULT 0,
     last_viewed_at   INTEGER DEFAULT 0,
     favorites        INTEGER DEFAULT 0,
@@ -279,6 +280,8 @@ CREATE TABLE IF NOT EXISTS drives (
     skip_dir_ids  TEXT NOT NULL DEFAULT '[]',
     -- 上一次完成精确策略清理时使用的跳过目录集合；NULL 表示从未执行。
     skip_cleanup_dir_ids TEXT,
+    -- 同时生成资源的视频数；0 表示按网盘类型（本地来源只受全局名额限制，云盘一次一个）
+    generation_parallelism INTEGER NOT NULL DEFAULT 0,
     created_at    INTEGER NOT NULL,
     updated_at    INTEGER NOT NULL
 );

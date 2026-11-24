@@ -16,7 +16,7 @@ var currentSignatureWhere = fmt.Sprintf(`hex(substr(content_signature, 1, 1)) = 
 
 // MediaWants is the work a media job does for a video. Both parts come from
 // one read of the teaser segments; the job also produces a missing
-// thumbnail, but a missing thumbnail alone is left to the thumbnail worker.
+// thumbnail, but a missing thumbnail alone is left to the thumbnail step.
 type MediaWants struct {
 	// Teaser renews the preview video.
 	Teaser bool
@@ -38,7 +38,7 @@ func (v *Video) MediaWants(previewsEnabled bool) MediaWants {
 	pending := v.MediaPending()
 	minimum := int(mediasig.MinDuration / time.Second)
 	return MediaWants{
-		Teaser:    previewsEnabled && (pending || v.PreviewStatus == "pending"),
+		Teaser:    previewsEnabled && (pending || v.PreviewStatus == "pending" || v.PreviewStatus == ""),
 		Signature: pending && (v.DurationSeconds == 0 || v.DurationSeconds >= minimum),
 	}
 }
@@ -104,7 +104,7 @@ func (c *Catalog) RequestMediaRenewal(ctx context.Context, ids []string) (result
 		for _, id := range chunk {
 			args = append(args, id)
 		}
-		if _, err := c.db.ExecContext(ctx, `UPDATE videos SET media_status = 'pending', media_retries = 0, updated_at = ?
+		if _, err := c.db.ExecContext(ctx, `UPDATE videos SET media_status = 'pending', media_retries = 0, generation_after = 0, updated_at = ?
 			 WHERE id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")+`)`, args...); err != nil {
 			return err
 		}
@@ -160,39 +160,12 @@ func (c *Catalog) PromoteStaleMedia(ctx context.Context, limit int) (resultValue
 	}
 	now := time.Now().UnixMilli()
 	for _, v := range promoted {
-		if _, err := tx.ExecContext(ctx, `UPDATE videos SET media_status = 'pending', updated_at = ? WHERE id = ? AND media_status = 'stale'`, now, v.ID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE videos SET media_status = 'pending', generation_after = 0, updated_at = ? WHERE id = ? AND media_status = 'stale'`, now, v.ID); err != nil {
 			return nil, err
 		}
 		v.MediaStatus = "pending"
 	}
 	return promoted, tx.Commit()
-}
-
-// ListVideosNeedingMedia returns the drive's visible, unique videos for which
-// MediaWants reports work.
-func (c *Catalog) ListVideosNeedingMedia(ctx context.Context, driveID string, previewsEnabled bool) ([]*Video, error) {
-	rows, err := c.db.QueryContext(ctx,
-		`SELECT `+allVideoCols+` FROM videos
-		 WHERE drive_id = ?
-		   AND (preview_status = 'pending' OR COALESCE(media_status, 'pending') = 'pending')
-		   AND COALESCE(hidden, 0) = 0
-		   AND `+uniqueVideoWhereSQL+`
-		 ORDER BY created_at ASC`, driveID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []*Video
-	for rows.Next() {
-		v, err := scanVideo(rows)
-		if err != nil {
-			return nil, err
-		}
-		if v.MediaWants(previewsEnabled).Any() {
-			out = append(out, v)
-		}
-	}
-	return out, rows.Err()
 }
 
 // LoadVideoSignatures returns the current signatures of the given videos.

@@ -29,6 +29,9 @@ type driveConfigDTO struct {
 	SkipDirIDs        []string `json:"skipDirIds"`
 	DirectoryRevision uint64   `json:"directoryRevision"`
 	LastCrawlAt       int64    `json:"lastCrawlAt,omitempty"`
+	// GenerationParallelism is the administrator's number of videos the drive
+	// generates at once; zero leaves it to the drive's kind.
+	GenerationParallelism int `json:"generationParallelism"`
 }
 
 type driveRuntimeDTO struct {
@@ -72,7 +75,8 @@ func (a *AdminServer) driveConfig(d *catalog.Drive) driveConfigDTO {
 		Status: d.Status, LastError: d.LastError, HasCredential: hasCredential,
 		CanUpload:  drivepkg.CapabilitiesForKind(d.Kind).Upload,
 		SkipDirIDs: append([]string{}, d.SkipDirIDs...), LastCrawlAt: lastCrawlAt,
-		DirectoryRevision: a.Catalog.DriveEvents().Version(d.ID, driveevents.DriveRuntimeChanged),
+		GenerationParallelism: d.GenerationParallelism,
+		DirectoryRevision:     a.Catalog.DriveEvents().Version(d.ID, driveevents.DriveRuntimeChanged),
 	}
 }
 

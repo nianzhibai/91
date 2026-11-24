@@ -51,12 +51,22 @@ func TestResetMissingLocalThumbnailsGuardsVersionAndDeduplicates(t *testing.T) {
 	}
 	references = append(references, references[0])
 
+	if err := cat.DeferGeneration(ctx, "local", now.Add(time.Hour)); err != nil {
+		t.Fatalf("defer local: %v", err)
+	}
 	reset, err := cat.ResetMissingLocalThumbnails(ctx, references)
 	if err != nil {
 		t.Fatalf("reset missing local thumbnails: %v", err)
 	}
 	if reset != 1 {
 		t.Fatalf("reset = %d, want 1", reset)
+	}
+	due, err := cat.ListDueAssets(ctx, "drive", true, now, 10)
+	if err != nil {
+		t.Fatalf("list due assets: %v", err)
+	}
+	if len(due) == 0 || due[0] != "local" {
+		t.Fatalf("due assets after thumbnail reset = %v, want local deferral lifted", due)
 	}
 	local, err := cat.GetVideo(ctx, "local")
 	if err != nil {
@@ -132,12 +142,22 @@ func TestResetMissingLocalPreviewsGuardsExactReadyReference(t *testing.T) {
 	}
 	references = append(references, references[0])
 
+	if err := cat.DeferGeneration(ctx, "missing", now.Add(time.Hour)); err != nil {
+		t.Fatalf("defer missing: %v", err)
+	}
 	reset, err := cat.ResetMissingLocalPreviews(ctx, references)
 	if err != nil {
 		t.Fatalf("reset missing local previews: %v", err)
 	}
 	if reset != 1 {
 		t.Fatalf("reset = %d, want 1", reset)
+	}
+	due, err := cat.ListDueAssets(ctx, "drive", true, now, 10)
+	if err != nil {
+		t.Fatalf("list due assets: %v", err)
+	}
+	if len(due) == 0 || due[0] != "missing" {
+		t.Fatalf("due assets after preview reset = %v, want missing deferral lifted", due)
 	}
 	missing, err := cat.GetVideo(ctx, "missing")
 	if err != nil {

@@ -43,7 +43,7 @@ const SampledFingerprintPrefix = "s2:"
 
 // IsCurrentFingerprint reports whether sampled was made by the current
 // sampling scheme. A video keeps an earlier scheme's fingerprint only until
-// the fingerprint worker replaces it.
+// the fingerprint step replaces it.
 func IsCurrentFingerprint(sampled string) bool {
 	return strings.HasPrefix(NormalizeHash(sampled), SampledFingerprintPrefix)
 }

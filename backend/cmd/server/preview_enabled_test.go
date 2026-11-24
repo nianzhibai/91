@@ -4,14 +4,25 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/nianzhibai/91/backend/internal/api"
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/config"
 	"github.com/nianzhibai/91/backend/internal/drives/localupload"
-	"github.com/nianzhibai/91/backend/internal/preview"
 )
+
+func teaserCount(gen *serverFakeTeaserGenerator) int {
+	count := 0
+	for _, event := range gen.Events() {
+		if strings.HasPrefix(event, "preview") {
+			count++
+		}
+	}
+	return count
+}
 
 func TestGlobalPreviewHotReloadBackfillsEverySource(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -29,21 +40,22 @@ func TestGlobalPreviewHotReloadBackfillsEverySource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	app := &App{cat: cat, configManager: manager, workers: make(map[string]*preview.Worker)}
+	app := &App{cat: cat, configManager: manager}
 	if err := manager.SetApply(func(s config.LiveSettings) error { return app.applyLiveConfig(ctx, s) }); err != nil {
 		t.Fatal(err)
 	}
 	if app.previewEnabled() {
 		t.Fatal("startup ignored disabled global switch")
 	}
+	generators := map[string]*serverFakeTeaserGenerator{}
 	for _, driveID := range []string{"storage", "crawler", localupload.DriveID} {
 		if driveID != localupload.DriveID {
 			seedGenerationDrive(t, cat, driveID)
 		}
 		now := time.Now()
 		video := &catalog.Video{
-			ID: driveID + "-video", DriveID: driveID, FileID: "source", Title: "Pending",
-			PreviewStatus: "pending", CreatedAt: now, UpdatedAt: now, PublishedAt: now,
+			ID: driveID + "-video", DriveID: driveID, FileID: "source", Title: "Pending", DurationSeconds: 30,
+			ThumbnailURL: "/p/thumb/" + driveID, PreviewStatus: "pending", CreatedAt: now, UpdatedAt: now, PublishedAt: now,
 		}
 		if err := cat.UpsertVideo(ctx, video); err != nil {
 			t.Fatal(err)
@@ -51,38 +63,31 @@ func TestGlobalPreviewHotReloadBackfillsEverySource(t *testing.T) {
 		// Only the teaser is outstanding; signature jobs run regardless of
 		// the switch.
 		markMediaDone(t, cat, video.ID)
-		if video, err = cat.GetVideo(ctx, video.ID); err != nil {
-			t.Fatal(err)
-		}
-		worker := preview.NewWorker(&serverFakeTeaserGenerator{}, cat, &serverFakeDrive{})
-		worker.Gate = &app.previewGate
-		app.workers[driveID] = worker
-		app.enqueueDriveGeneration(ctx, driveID, worker, nil)
-		app.enqueueUploadedVideo(ctx, video)
+		gen := &serverFakeTeaserGenerator{}
+		generators[driveID] = gen
+		startTestGeneration(t, ctx, app, &serverFakeKindDrive{id: driveID, kind: "fake"}, gen, gen)
+		app.wakeDriveGeneration(driveID)
 		app.regenPreview(ctx, video.ID)
-		app.regenFailedPreviews(ctx, driveID)
-		if worker.Status().QueueLength != 0 {
-			t.Fatalf("disabled source %s admitted preview work", driveID)
+		if _, err := app.requestDriveGeneration(ctx, driveID, api.DriveGenerationPreviews); err == nil && driveID != localupload.DriveID {
+			t.Fatalf("disabled source %s accepted a preview request", driveID)
+		}
+		waitGenerationIdle(t, app, driveID)
+		if teaserCount(gen) != 0 {
+			t.Fatalf("disabled source %s generated a teaser", driveID)
 		}
 	}
 	result, err := manager.ReplaceYAML([]byte("preview: {enabled: true}\n"), "")
 	if err != nil || result.RestartRequired || !app.previewEnabled() {
 		t.Fatalf("hot enable: %+v, %v", result, err)
 	}
-	for driveID, worker := range app.workers {
-		for worker.Status().QueueLength != 1 && ctx.Err() == nil {
+	for driveID, gen := range generators {
+		for teaserCount(gen) == 0 && ctx.Err() == nil {
 			time.Sleep(time.Millisecond)
 		}
-		if worker.Status().QueueLength != 1 {
-			t.Fatalf("source %s was not backfilled", driveID)
+		waitGenerationIdle(t, app, driveID)
+		if got, err := cat.GetVideo(ctx, driveID+"-video"); err != nil || got.PreviewStatus != "ready" {
+			t.Fatalf("source %s was not backfilled: %+v, %v", driveID, got, err)
 		}
-	}
-	if _, err := manager.ReplaceYAML([]byte("preview: {enabled: false}\n"), ""); err != nil {
-		t.Fatal(err)
-	}
-	late, _, _ := app.newDriveGenerationWorkers(&serverFakeDrive{})
-	if late.Gate != &app.previewGate || late.Gate.Enabled() {
-		t.Fatal("late attached worker ignored global switch")
 	}
 }
 
@@ -98,31 +103,33 @@ func TestPreviewSwitchDefersLocalPreviewReconciliationUntilEnabled(t *testing.T)
 	seedGenerationDrive(t, cat, "storage")
 	now := time.Now()
 	if err := cat.UpsertVideo(ctx, &catalog.Video{
-		ID: "missing", DriveID: "storage", FileID: "source", Title: "Missing",
-		PreviewLocal: filepath.Join(root, "missing.mp4"), PreviewStatus: "ready",
+		ID: "missing", DriveID: "storage", FileID: "source", Title: "Missing", DurationSeconds: 30,
+		ThumbnailURL: "/p/thumb/missing", PreviewLocal: filepath.Join(root, "missing.mp4"), PreviewStatus: "ready",
 		PublishedAt: now, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	app := &App{cat: cat, cfg: &config.Config{Storage: config.Storage{LocalPreviewDir: root}}, workers: make(map[string]*preview.Worker)}
-	worker := preview.NewWorker(&serverFakeTeaserGenerator{}, cat, &serverFakeDrive{})
-	worker.Gate = &app.previewGate
-	app.workers["storage"] = worker
+	markMediaDone(t, cat, "missing")
+	app := &App{cat: cat, cfg: &config.Config{Storage: config.Storage{LocalPreviewDir: root}}}
 	app.applyPreviewEnabled(ctx, false)
+	gen := &serverFakeTeaserGenerator{}
+	startTestGeneration(t, ctx, app, &serverFakeKindDrive{id: "storage", kind: "fake"}, gen, gen)
 
 	if _, err := app.reconcileLocalGeneratedAssets(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := cat.GetVideo(ctx, "missing"); err != nil || got.PreviewStatus != "ready" {
+	waitGenerationIdle(t, app, "storage")
+	if got, err := cat.GetVideo(ctx, "missing"); err != nil || got.PreviewStatus != "ready" || teaserCount(gen) != 0 {
 		t.Fatalf("disabled maintenance touched previews: %+v, %v", got, err)
 	}
 
 	app.applyPreviewEnabled(ctx, true)
-	for worker.Status().QueueLength != 1 && ctx.Err() == nil {
+	for teaserCount(gen) == 0 && ctx.Err() == nil {
 		time.Sleep(time.Millisecond)
 	}
+	waitGenerationIdle(t, app, "storage")
 	got, err := cat.GetVideo(ctx, "missing")
-	if err != nil || got.PreviewStatus != "pending" || got.PreviewLocal != "" || worker.Status().QueueLength != 1 {
-		t.Fatalf("enabling did not repair and requeue the preview: %+v, %v, queue=%d", got, err, worker.Status().QueueLength)
+	if err != nil || got.PreviewStatus != "ready" || got.PreviewLocal != "missing.mp4" {
+		t.Fatalf("enabling did not repair and regenerate the preview: %+v, %v", got, err)
 	}
 }

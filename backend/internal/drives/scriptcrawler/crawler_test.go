@@ -242,12 +242,12 @@ func TestCrawlerRunOnceKeepsPreviewPendingForGlobalScheduling(t *testing.T) {
 	if v.FingerprintStatus != "ready" || v.SampledSHA256 == "" {
 		t.Fatalf("fingerprint status=%q sampled=%q, want ready and sampled hash", v.FingerprintStatus, v.SampledSHA256)
 	}
-	pending, err := cat.ListVideosNeedingMedia(ctx, "demo", true)
+	counts, err := cat.CountDueGeneration(ctx, "demo", true, time.Now())
 	if err != nil {
-		t.Fatalf("list pending media: %v", err)
+		t.Fatalf("count due generation: %v", err)
 	}
-	if len(pending) != 1 {
-		t.Fatalf("pending previews = %d, want 1", len(pending))
+	if counts.Media != 1 {
+		t.Fatalf("due media jobs = %d, want 1", counts.Media)
 	}
 }
 

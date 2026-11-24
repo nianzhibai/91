@@ -11,13 +11,14 @@ import (
 
 	"github.com/nianzhibai/91/backend/internal/api"
 	"github.com/nianzhibai/91/backend/internal/catalog"
-	"github.com/nianzhibai/91/backend/internal/fingerprint"
-	"github.com/nianzhibai/91/backend/internal/preview"
 )
 
 var generationTestKinds = []api.DriveGenerationKind{api.DriveGenerationThumbnails, api.DriveGenerationPreviews, api.DriveGenerationFingerprints}
 
-func newGenerationRequestApp(t *testing.T) *App {
+// newGenerationRequestApp runs the drive's generation with fake generators
+// while the test holds the only slot and the source reads, so requests leave
+// their work due. The returned release lets the runner take it.
+func newGenerationRequestApp(t *testing.T) (*App, func()) {
 	t.Helper()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
 	if err != nil {
@@ -25,13 +26,20 @@ func newGenerationRequestApp(t *testing.T) *App {
 	}
 	t.Cleanup(func() { cat.Close() })
 	seedGenerationDrive(t, cat, "drive-id")
-	gen, drv := &serverFakeTeaserGenerator{}, &serverFakeDrive{}
-	return &App{
-		cat:                cat,
-		workers:            map[string]*preview.Worker{"drive-id": preview.NewWorker(gen, cat, drv)},
-		thumbWorkers:       map[string]*preview.ThumbWorker{"drive-id": preview.NewThumbWorker(gen, cat, drv)},
-		fingerprintWorkers: map[string]*fingerprint.Worker{"drive-id": fingerprint.NewWorker(cat, drv, fingerprint.Config{})},
+	app := &App{cat: cat}
+	releaseSlot, err := app.generationLimiter().Acquire(context.Background(), "test")
+	if err != nil {
+		t.Fatal(err)
 	}
+	open := make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(open); releaseSlot() }) }
+	t.Cleanup(release)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	gen := &serverFakeTeaserGenerator{}
+	startTestGeneration(t, ctx, app, gatedStreamDrive{Drive: &serverFakeDrive{}, open: open}, gen, gen)
+	return app, release
 }
 
 func seedGenerationRequestVideo(t *testing.T, app *App, id, state string) *catalog.Video {
@@ -42,7 +50,7 @@ func seedGenerationRequestVideo(t *testing.T, app *App, id, state string) *catal
 	if state == "ready" {
 		v.PreviewLocal = id + ".mp4"
 		v.ThumbnailURL = "/p/thumb/" + id
-		v.SampledSHA256 = strings.Repeat("a", 64)
+		v.SampledSHA256 = "s2:" + strings.Repeat("a", 64)
 	}
 	if err := app.cat.UpsertVideo(context.Background(), v); err != nil {
 		t.Fatal(err)
@@ -60,33 +68,26 @@ func seedGenerationRequestVideo(t *testing.T, app *App, id, state string) *catal
 	return stored
 }
 
-func waitGenerationRequestProducer(t *testing.T, app *App) {
+func dueCounts(t *testing.T, app *App) catalog.GenerationCounts {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		app.taskCancelMu.Lock()
-		active := len(app.driveTaskCancels["drive-id"])
-		app.taskCancelMu.Unlock()
-		if active == 0 {
-			return
-		}
-		time.Sleep(time.Millisecond)
+	counts, err := app.cat.CountDueGeneration(context.Background(), "drive-id", app.previewEnabled(), time.Now())
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Fatal("generation producer did not finish")
+	return counts
 }
 
-func TestDriveGenerationRequestReportsReadyWithoutRequeueingCompletedResources(t *testing.T) {
+func TestDriveGenerationRequestReportsReadyWithoutReopeningCompletedResources(t *testing.T) {
 	for _, kind := range generationTestKinds {
 		t.Run(string(kind), func(t *testing.T) {
-			app := newGenerationRequestApp(t)
+			app, _ := newGenerationRequestApp(t)
 			seedGenerationRequestVideo(t, app, "ready", "ready")
-			result, err := app.requestDriveGeneration(context.Background(), context.Background(), "drive-id", kind)
+			result, err := app.requestDriveGeneration(context.Background(), "drive-id", kind)
 			if err != nil || result.State != "ready" || result.Message != generationLabel(kind)+"已全部就绪" {
 				t.Fatalf("result = %+v, err=%v", result, err)
 			}
-			work, _ := app.driveGenerationWork("drive-id", kind)
-			if work.busy {
-				t.Fatal("completed resources were requeued")
+			if counts := dueCounts(t, app); counts.Any() {
+				t.Fatalf("completed resources became due: %+v", counts)
 			}
 		})
 	}
@@ -94,48 +95,34 @@ func TestDriveGenerationRequestReportsReadyWithoutRequeueingCompletedResources(t
 
 func TestDriveGenerationRequestKeepsExistingThumbnailReadyWithMissingDuration(t *testing.T) {
 	ctx := context.Background()
-	app := newGenerationRequestApp(t)
+	app, _ := newGenerationRequestApp(t)
 	video := seedGenerationRequestVideo(t, app, "duration-only", "ready")
 	if err := app.cat.UpdateVideoMeta(ctx, video.ID, catalog.VideoMetaPatch{DurationSecondsSet: true}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := app.requestDriveGeneration(ctx, ctx, video.DriveID, api.DriveGenerationThumbnails)
+	result, err := app.requestDriveGeneration(ctx, video.DriveID, api.DriveGenerationThumbnails)
 	if err != nil || result.State != "ready" {
 		t.Fatalf("missing duration made ready covers fail: %+v, %v", result, err)
 	}
-	if app.thumbWorkers[video.DriveID].Status().QueueLength != 0 {
-		t.Fatal("cover generation admitted duration-only work")
+	if counts := dueCounts(t, app); counts.Thumbnails != 0 || counts.Durations != 1 {
+		t.Fatalf("counts = %+v, want only the duration due", counts)
 	}
 }
 
-func TestDriveGenerationRequestResumesPendingAndFailedResourcesOfOnlyItsKind(t *testing.T) {
+func TestDriveGenerationRequestRetriesFailedResourcesOfOnlyItsKind(t *testing.T) {
 	for _, kind := range generationTestKinds {
 		t.Run(string(kind), func(t *testing.T) {
-			app := newGenerationRequestApp(t)
+			app, _ := newGenerationRequestApp(t)
 			seedGenerationRequestVideo(t, app, "pending", "pending")
 			seedGenerationRequestVideo(t, app, "failed", "failed")
 			seedGenerationRequestVideo(t, app, "ready", "ready")
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			result, err := app.requestDriveGeneration(ctx, ctx, "drive-id", kind)
+			ctx := context.Background()
+			result, err := app.requestDriveGeneration(ctx, "drive-id", kind)
 			if err != nil || result.State != "started" {
 				t.Fatalf("result = %+v, err=%v", result, err)
 			}
-			waitGenerationRequestProducer(t, app)
-			queues := map[api.DriveGenerationKind]int{
-				api.DriveGenerationThumbnails:   app.thumbWorkers["drive-id"].Status().QueueLength,
-				api.DriveGenerationPreviews:     app.workers["drive-id"].Status().QueueLength,
-				api.DriveGenerationFingerprints: app.fingerprintWorkers["drive-id"].Status().QueueLength,
-			}
-			want := map[api.DriveGenerationKind]int{kind: 2}
-			if kind == api.DriveGenerationThumbnails {
-				// The pending teaser's media job makes its thumbnail.
-				want = map[api.DriveGenerationKind]int{api.DriveGenerationThumbnails: 1, api.DriveGenerationPreviews: 1}
-			}
-			for queuedKind, length := range queues {
-				if length != want[queuedKind] {
-					t.Fatalf("%s queue=%d, want %d", queuedKind, length, want[queuedKind])
-				}
+			if due := dueOfKind(dueCounts(t, app), kind); due != 2 {
+				t.Fatalf("%s due = %d, want the pending and the retried video", kind, due)
 			}
 			failed, err := app.cat.GetVideo(ctx, "failed")
 			if err != nil {
@@ -166,106 +153,63 @@ func TestDriveGenerationRequestResumesPendingAndFailedResourcesOfOnlyItsKind(t *
 	}
 }
 
-func TestDriveGenerationRequestReportsBusyWithoutResettingFailures(t *testing.T) {
-	for _, kind := range generationTestKinds {
-		t.Run(string(kind), func(t *testing.T) {
-			app := newGenerationRequestApp(t)
-			video := seedGenerationRequestVideo(t, app, "failed", "failed")
-			work, _ := app.driveGenerationWork("drive-id", kind)
-			work.enqueue(context.Background(), video)
-			result, err := app.requestDriveGeneration(context.Background(), context.Background(), "drive-id", kind)
-			if err != nil || result.State != "busy" || result.Message != generationLabel(kind)+"生成任务正在进行" {
-				t.Fatalf("result = %+v, err=%v", result, err)
-			}
-			failed, err := app.cat.GetVideo(context.Background(), "failed")
-			if err != nil || failed.PreviewStatus != "failed" || failed.FingerprintStatus != "failed" {
-				t.Fatalf("busy request changed failures: %+v, %v", failed, err)
-			}
-			stats, err := app.cat.CountDriveAssetStatsForDrive(context.Background(), "drive-id")
-			if err != nil || stats.Thumbnails["drive-id"].Failed != 1 {
-				t.Fatalf("busy request changed thumbnail failures: %+v, %v", stats, err)
-			}
-		})
-	}
-}
-
-func TestDriveGenerationRequestsAllowIndependentKindsWhileScanning(t *testing.T) {
-	app := newGenerationRequestApp(t)
-	// Failed work keeps each kind in its own queue.
+func TestDriveGenerationRequestsAllowEveryKindWhileScanning(t *testing.T) {
+	app, _ := newGenerationRequestApp(t)
 	seedGenerationRequestVideo(t, app, "failed", "failed")
 	app.scanQueued = map[string]bool{"drive-id": true}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	for _, kind := range generationTestKinds {
-		result, err := app.requestDriveGeneration(ctx, ctx, "drive-id", kind)
+		result, err := app.requestDriveGeneration(context.Background(), "drive-id", kind)
 		if err != nil || result.State != "started" {
 			t.Fatalf("%s result=%+v, err=%v", kind, result, err)
 		}
 	}
-	waitGenerationRequestProducer(t, app)
 }
 
-func TestConcurrentDriveGenerationClicksStartOnlyOneBatch(t *testing.T) {
-	for _, kind := range generationTestKinds {
-		t.Run(string(kind), func(t *testing.T) {
-			app := newGenerationRequestApp(t)
-			seedGenerationRequestVideo(t, app, "pending", "pending")
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			var requests sync.WaitGroup
-			results := make(chan api.DriveGenerationResult, 20)
-			errors := make(chan error, 20)
-			for range 20 {
-				requests.Add(1)
-				go func() {
-					defer requests.Done()
-					result, err := app.requestDriveGeneration(ctx, ctx, "drive-id", kind)
-					results <- result
-					errors <- err
-				}()
+func TestRepeatedDriveGenerationRequestsShareTheDueWork(t *testing.T) {
+	app, _ := newGenerationRequestApp(t)
+	seedGenerationRequestVideo(t, app, "pending", "pending")
+	var requests sync.WaitGroup
+	failures := make(chan error, 20)
+	for range 20 {
+		requests.Add(1)
+		go func() {
+			defer requests.Done()
+			result, err := app.requestDriveGeneration(context.Background(), "drive-id", api.DriveGenerationPreviews)
+			if err == nil && result.State != "started" {
+				err = errors.New("request was not started: " + result.State)
 			}
-			requests.Wait()
-			close(results)
-			close(errors)
-			for err := range errors {
-				if err != nil {
-					t.Fatal(err)
-				}
-			}
-			started, busy := 0, 0
-			for result := range results {
-				if result.State == "started" {
-					started++
-				}
-				if result.State == "busy" {
-					busy++
-				}
-			}
-			if started != 1 || busy != 19 {
-				t.Fatalf("started=%d, busy=%d", started, busy)
-			}
-			waitGenerationRequestProducer(t, app)
-		})
+			failures <- err
+		}()
+	}
+	requests.Wait()
+	close(failures)
+	for err := range failures {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if counts := dueCounts(t, app); counts.Media != 1 {
+		t.Fatalf("media due = %d, want the one pending video", counts.Media)
 	}
 }
 
 func TestDriveGenerationRequestRejectsMissingUnavailableAndBlockedDrives(t *testing.T) {
-	app := newGenerationRequestApp(t)
+	app, _ := newGenerationRequestApp(t)
 	seedGenerationRequestVideo(t, app, "failed", "failed")
 	ctx := context.Background()
-	if _, err := app.requestDriveGeneration(ctx, ctx, "missing", api.DriveGenerationThumbnails); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := app.requestDriveGeneration(ctx, "missing", api.DriveGenerationThumbnails); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("missing drive error = %v", err)
 	}
-	delete(app.thumbWorkers, "drive-id")
-	if _, err := app.requestDriveGeneration(ctx, ctx, "drive-id", api.DriveGenerationThumbnails); err == nil {
-		t.Fatal("missing worker was acknowledged")
+	seedGenerationDrive(t, app.cat, "detached")
+	if _, err := app.requestDriveGeneration(ctx, "detached", api.DriveGenerationThumbnails); err == nil {
+		t.Fatal("a drive without generation was acknowledged")
 	}
 	gate := app.driveOperationGate("drive-id")
 	gate.mu.Lock()
 	gate.beginBlockedLocked()
 	gate.pending = true
 	gate.mu.Unlock()
-	result, err := app.requestDriveGeneration(ctx, ctx, "drive-id", api.DriveGenerationFingerprints)
+	result, err := app.requestDriveGeneration(ctx, "drive-id", api.DriveGenerationFingerprints)
 	if err != nil || result.State != "busy" {
 		t.Fatalf("blocked result=%+v, err=%v", result, err)
 	}
@@ -276,112 +220,30 @@ func TestDriveGenerationRequestRejectsMissingUnavailableAndBlockedDrives(t *test
 }
 
 func TestDriveGenerationRequestDoesNotCallIneligibleFailuresReady(t *testing.T) {
-	app := newGenerationRequestApp(t)
+	app, _ := newGenerationRequestApp(t)
 	video := seedGenerationRequestVideo(t, app, "invalid-size", "failed")
 	video.Size = 0
 	if err := app.cat.UpsertVideo(context.Background(), video); err != nil {
 		t.Fatal(err)
 	}
-	result, err := app.requestDriveGeneration(context.Background(), context.Background(), "drive-id", api.DriveGenerationFingerprints)
+	result, err := app.requestDriveGeneration(context.Background(), "drive-id", api.DriveGenerationFingerprints)
 	if err == nil || result.State == "ready" {
 		t.Fatalf("ineligible failure was acknowledged as ready: %+v, %v", result, err)
 	}
 }
 
 func TestAcceptedDriveGenerationSurvivesHTTPContextCancellation(t *testing.T) {
-	app := newGenerationRequestApp(t)
-	seedGenerationRequestVideo(t, app, "pending", "pending")
+	app, release := newGenerationRequestApp(t)
+	seedGenerationRequestVideo(t, app, "failed", "failed")
 	reqCtx, cancelRequest := context.WithCancel(context.Background())
-	runCtx, cancelRun := context.WithCancel(context.Background())
-	defer cancelRun()
-	result, err := app.requestDriveGeneration(reqCtx, runCtx, "drive-id", api.DriveGenerationThumbnails)
+	result, err := app.requestDriveGeneration(reqCtx, "drive-id", api.DriveGenerationThumbnails)
 	cancelRequest()
 	if err != nil || result.State != "started" {
 		t.Fatalf("result=%+v, err=%v", result, err)
 	}
-	waitGenerationRequestProducer(t, app)
-	// The pending teaser's media job makes the thumbnail.
-	if app.thumbWorkers["drive-id"].Status().QueueLength+app.workers["drive-id"].Status().QueueLength != 1 {
-		t.Fatal("HTTP context cancellation discarded accepted work")
-	}
-}
-
-func TestDriveGenerationRequestReportsBusyWhileAWorkerIsProcessing(t *testing.T) {
-	app := newGenerationRequestApp(t)
-	video := seedGenerationRequestVideo(t, app, "active", "pending")
-	drv := &budgetTestDrive{id: "drive-id", started: make(chan string, 1)}
-	worker := preview.NewThumbWorker(&serverFakeTeaserGenerator{}, app.cat, drv)
-	app.thumbWorkers["drive-id"] = worker
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { defer close(done); worker.Run(ctx) }()
-	t.Cleanup(func() { cancel(); <-done })
-	worker.Enqueue(video)
-	select {
-	case <-drv.started:
-	case <-time.After(time.Second):
-		t.Fatal("worker did not start")
-	}
-	result, err := app.requestDriveGeneration(ctx, ctx, "drive-id", api.DriveGenerationThumbnails)
-	if err != nil || result.State != "busy" {
-		t.Fatalf("active worker result=%+v, err=%v", result, err)
-	}
-}
-
-func TestStopCancelsPreparingGenerationAndAllowsAnotherRequest(t *testing.T) {
-	app := newGenerationRequestApp(t)
-	seedGenerationRequestVideo(t, app, "pending", "pending")
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	barrier, err := app.cat.BeginWriteBarrier(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer barrier.Close()
-	type response struct {
-		result api.DriveGenerationResult
-		err    error
-	}
-	out := make(chan response, 1)
-	go func() {
-		result, err := app.requestDriveGeneration(ctx, ctx, "drive-id", api.DriveGenerationThumbnails)
-		out <- response{result, err}
-	}()
-	gate := app.driveOperationGate("drive-id")
-	deadline := time.Now().Add(time.Second)
-	for {
-		gate.mu.Lock()
-		preparing := gate.generationRequests[api.DriveGenerationThumbnails]
-		gate.mu.Unlock()
-		if preparing {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("request did not enter preparation")
-		}
-		time.Sleep(time.Millisecond)
-	}
-	if !app.stopDriveTasks(ctx, "drive-id") {
-		t.Fatal("preparing generation was not stopped")
-	}
-	if err := barrier.Close(); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case stopped := <-out:
-		if stopped.err == nil || stopped.result.State == "started" {
-			t.Fatalf("canceled preparation was acknowledged: %+v", stopped)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("stopped preparation did not release its task")
-	}
-	app.thumbWorkers["drive-id"] = preview.NewThumbWorker(&serverFakeTeaserGenerator{}, app.cat, &serverFakeDrive{})
-	result, err := app.requestDriveGeneration(ctx, ctx, "drive-id", api.DriveGenerationThumbnails)
-	if err != nil || result.State != "started" {
-		t.Fatalf("request after stop=%+v, err=%v", result, err)
-	}
-	waitGenerationRequestProducer(t, app)
-	if app.thumbWorkers["drive-id"].Status().QueueLength != 1 {
-		t.Fatal("request after stop did not enqueue pending work")
+	release()
+	waitGenerationIdle(t, app, "drive-id")
+	if got, err := app.cat.GetVideo(context.Background(), "failed"); err != nil || got.ThumbnailURL == "" {
+		t.Fatalf("video = %+v, %v; want the retried cover generated", got, err)
 	}
 }

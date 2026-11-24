@@ -1369,6 +1369,60 @@ func TestDriveTaskSensitiveSettingHandlersSaveAndDeferApply(t *testing.T) {
 	})
 }
 
+func TestDriveGenerationParallelismSavesAndAppliesLive(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+	if err := cat.UpsertDrive(ctx, &catalog.Drive{ID: "drive-main", Kind: "webdav", Name: "NAS", RootID: "/"}); err != nil {
+		t.Fatalf("seed drive: %v", err)
+	}
+	var applied []string
+	server := &AdminServer{Catalog: cat, OnDriveGenerationParallelismChanged: func(id string) error {
+		applied = append(applied, id)
+		return nil
+	}}
+	post := func(id, body string) *httptest.ResponseRecorder {
+		routeCtx := chi.NewRouteContext()
+		routeCtx.URLParams.Add("id", id)
+		req := httptest.NewRequest(http.MethodPost, "/admin/api/drives/"+id+"/generation-parallelism", strings.NewReader(body))
+		rr := httptest.NewRecorder()
+		server.handleSetDriveGenerationParallelism(rr, req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeCtx)))
+		return rr
+	}
+
+	if rr := post("drive-main", `{"parallelism":3}`); rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	got, err := cat.GetDrive(ctx, "drive-main")
+	if err != nil || got.GenerationParallelism != 3 {
+		t.Fatalf("drive = %+v, err=%v; want three saved", got, err)
+	}
+	if len(applied) != 1 || applied[0] != "drive-main" {
+		t.Fatalf("applied = %v, want the drive once", applied)
+	}
+	// An upsert of the drive's other settings keeps the number.
+	if err := cat.UpsertDrive(ctx, &catalog.Drive{ID: "drive-main", Kind: "webdav", Name: "Renamed", RootID: "/"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := cat.GetDrive(ctx, "drive-main"); err != nil || got.GenerationParallelism != 3 {
+		t.Fatalf("after upsert drive = %+v, err=%v", got, err)
+	}
+	for _, body := range []string{`{"parallelism":-1}`, `{"parallelism":6}`} {
+		if rr := post("drive-main", body); rr.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400", body, rr.Code)
+		}
+	}
+	if rr := post("missing", `{"parallelism":1}`); rr.Code != http.StatusNotFound {
+		t.Fatalf("missing drive: status = %d, want 404", rr.Code)
+	}
+	if len(applied) != 1 {
+		t.Fatalf("applied = %v, want no apply for rejected requests", applied)
+	}
+}
+
 func TestHandleUpsertDriveDefaultsEmptyRootID(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")

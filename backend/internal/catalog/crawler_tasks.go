@@ -122,7 +122,7 @@ func (c *Catalog) InterruptCrawlerTasks(ctx context.Context) error {
 }
 
 // CrawlerGenerationFailures reports outcomes for this task's committed videos,
-// without counting older failures in the crawler's global worker queues.
+// without counting older failures of the crawler's other videos.
 func (c *Catalog) CrawlerGenerationFailures(ctx context.Context, videoIDs []string) ([]crawljob.Issue, error) {
 	if len(videoIDs) == 0 {
 		return nil, nil

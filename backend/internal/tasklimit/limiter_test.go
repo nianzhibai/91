@@ -39,12 +39,12 @@ func TestLimitResizePreservesRunningTasksAndFIFO(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	l := New(1)
-	first, _ := l.Acquire(ctx)
+	first, _ := l.Acquire(ctx, "")
 	defer first()
 	waiting := []chan func(){make(chan func(), 1), make(chan func(), 1), make(chan func(), 1)}
 	for i, ch := range waiting {
 		go func() {
-			if release, err := l.Acquire(ctx); err == nil {
+			if release, err := l.Acquire(ctx, ""); err == nil {
 				ch <- release
 			}
 		}()
@@ -71,11 +71,11 @@ func TestLimitResizePreservesRunningTasksAndFIFO(t *testing.T) {
 func TestCancellationRemovesWaiterAndDoesNotLeakRacingGrant(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		l := New(1)
-		first, _ := l.Acquire(context.Background())
+		first, _ := l.Acquire(context.Background(), "")
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
 		go func() {
-			release, err := l.Acquire(ctx)
+			release, err := l.Acquire(ctx, "")
 			if release != nil {
 				release()
 			}
@@ -109,7 +109,7 @@ func TestAggregateConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			release, err := l.Acquire(context.Background())
+			release, err := l.Acquire(context.Background(), "")
 			if err != nil {
 				t.Error(err)
 				return
@@ -129,4 +129,44 @@ func TestAggregateConcurrency(t *testing.T) {
 	if peak.Load() != 3 {
 		t.Fatalf("peak=%d, want 3", peak.Load())
 	}
+}
+
+func TestFreeSlotGoesToTheOwnerHoldingFewest(t *testing.T) {
+	ctx := context.Background()
+	l := New(3)
+	var local []func()
+	for range 3 {
+		release, err := l.Acquire(ctx, "local")
+		if err != nil {
+			t.Fatal(err)
+		}
+		local = append(local, release)
+	}
+	// The local source queues more work before the cloud drive arrives.
+	localNext, cloud := make(chan func(), 1), make(chan func(), 1)
+	go func() {
+		if release, err := l.Acquire(ctx, "local"); err == nil {
+			localNext <- release
+		}
+	}()
+	waitPending(t, l, 1)
+	go func() {
+		if release, err := l.Acquire(ctx, "cloud"); err == nil {
+			cloud <- release
+		}
+	}()
+	waitPending(t, l, 2)
+
+	local[0]()
+	releaseCloud := take(t, cloud)
+	l.mu.Lock()
+	pending := len(l.waiters)
+	l.mu.Unlock()
+	if pending != 1 {
+		t.Fatalf("pending = %d, want the local task still waiting", pending)
+	}
+	local[1]()
+	take(t, localNext)()
+	releaseCloud()
+	local[2]()
 }

@@ -60,18 +60,10 @@ func sampleRanges(size int64) []byteRange {
 	}
 }
 
-// Compute fingerprints v's source within the shared fingerprint budget.
+// Compute fingerprints v's source. It takes no generation slot: a sample is a
+// few MiB of Range reads, whether the fingerprint step, an import or a
+// blacklist check asks for it.
 func Compute(ctx context.Context, drv drives.Drive, v *catalog.Video, cfg Config, hc *http.Client) (string, error) {
-	release, err := cfg.Limiter.Acquire(ctx)
-	if err != nil {
-		return "", err
-	}
-	defer release()
-	return compute(ctx, drv, v, cfg, hc)
-}
-
-// compute runs after the caller has acquired the shared fingerprint budget.
-func compute(ctx context.Context, drv drives.Drive, v *catalog.Video, cfg Config, hc *http.Client) (string, error) {
 	if drv == nil {
 		return "", errors.New("fingerprint: nil drive")
 	}

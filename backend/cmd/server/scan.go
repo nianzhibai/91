@@ -14,9 +14,7 @@ import (
 	"github.com/nianzhibai/91/backend/internal/drives"
 	"github.com/nianzhibai/91/backend/internal/drives/localupload"
 	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
-	"github.com/nianzhibai/91/backend/internal/fingerprint"
 	"github.com/nianzhibai/91/backend/internal/persistence"
-	"github.com/nianzhibai/91/backend/internal/preview"
 	"github.com/nianzhibai/91/backend/internal/scanjob"
 	"github.com/nianzhibai/91/backend/internal/scanner"
 )
@@ -217,19 +215,14 @@ func (a *App) runScanWithTaskContext(ctx context.Context, driveID string) (repor
 		return report
 	}
 
-	a.mu.Lock()
-	previewWorker := a.workers[driveID]
-	thumbnailWorker := a.thumbWorkers[driveID]
-	fingerprintWorker := a.fingerprintWorkers[driveID]
-	a.mu.Unlock()
-	// Reset failures once, after stale-source cleanup and before admitting new
-	// generation. Recurring queue admission only picks up pending work, so a
-	// retry that fails again remains failed until the next scan or manual retry.
+	// Reset failures once, after stale-source cleanup and before the drive
+	// takes its work. A retry that fails again remains failed until the next
+	// scan or manual retry.
 	if _, err := a.resetFailedGeneration(ctx, driveID, catalog.GenerationKinds{
-		Thumbnails: thumbnailWorker != nil,
+		Thumbnails: true,
 		// Media jobs also sample signatures while previews are disabled.
-		Previews:     previewWorker != nil,
-		Fingerprints: fingerprintWorker != nil,
+		Previews:     true,
+		Fingerprints: true,
 	}); err != nil {
 		report.AddIssue("generation_retry", err)
 		log.Printf("[scan] reset failed generation drive=%s: %v", driveID, err)
@@ -237,11 +230,7 @@ func (a *App) runScanWithTaskContext(ctx context.Context, driveID string) (repor
 			return report
 		}
 	}
-	finishEnqueue := a.beginDriveResourceEnqueue(driveID)
-	defer finishEnqueue()
-	enqueueNewScanVideos(result.NewVideos, previewWorker, thumbnailWorker, fingerprintWorker, a.previewEnabled())
-	a.enqueueFingerprintBackfill(ctx, driveID, fingerprintWorker)
-	a.enqueueDriveGeneration(ctx, driveID, previewWorker, thumbnailWorker)
+	a.wakeDriveGeneration(driveID)
 	return report
 }
 
@@ -333,24 +322,6 @@ func missingFileCleanupMode(snapshot scanner.Snapshot) catalog.MissingFileCleanu
 		return catalog.MissingFileCleanupImmediate
 	}
 	return catalog.MissingFileCleanupConfirmTwice
-}
-
-func enqueueNewScanVideos(
-	videos []*catalog.Video,
-	mediaWorker *preview.Worker,
-	thumbnailWorker *preview.ThumbWorker,
-	fingerprintWorker *fingerprint.Worker,
-	previewsEnabled bool,
-) {
-	for _, video := range videos {
-		if video == nil {
-			continue
-		}
-		if fingerprintWorker != nil {
-			fingerprintWorker.Enqueue(video)
-		}
-		enqueueVideoGeneration(mediaWorker, thumbnailWorker, video, previewsEnabled)
-	}
 }
 
 func (a *App) cleanupMissingDriveVideos(

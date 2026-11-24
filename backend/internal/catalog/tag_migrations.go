@@ -55,6 +55,9 @@ func (c *Catalog) migrate(ctx context.Context) error {
 	if err := c.addColumnIfMissing(ctx, "videos", "media_retries", "INTEGER DEFAULT 0"); err != nil {
 		return err
 	}
+	if err := c.addColumnIfMissing(ctx, "videos", "generation_after", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	if err := c.markOutdatedSignaturesStale(ctx); err != nil {
 		return err
 	}
@@ -194,6 +197,9 @@ UPDATE videos
 	if err := c.addColumnIfMissing(ctx, "drives", "skip_cleanup_dir_ids", "TEXT"); err != nil {
 		return err
 	}
+	if err := c.addColumnIfMissing(ctx, "drives", "generation_parallelism", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	if _, err := c.db.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS deleted_videos (
 	id                 TEXT PRIMARY KEY,
@@ -296,6 +302,9 @@ CREATE TABLE IF NOT EXISTS deleted_videos (
 		return err
 	}
 	if err := c.ensureCanonicalVideoMaterialization(ctx); err != nil {
+		return err
+	}
+	if err := c.ensureGenerationWorkIndexes(ctx); err != nil {
 		return err
 	}
 	if _, err := c.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_deleted_videos_drive_file ON deleted_videos(drive_id, file_id)`); err != nil {
@@ -946,6 +955,7 @@ var currentVideoColumnNames = []string{
 	"content_signature",
 	"media_status",
 	"media_retries",
+	"generation_after",
 	"views",
 	"last_viewed_at",
 	"favorites",
@@ -996,6 +1006,7 @@ CREATE TABLE videos_schema_rebuild_new (
     content_signature  BLOB,
     media_status       TEXT DEFAULT 'pending',
     media_retries      INTEGER DEFAULT 0,
+    generation_after   INTEGER NOT NULL DEFAULT 0,
     views              INTEGER DEFAULT 0,
     last_viewed_at     INTEGER DEFAULT 0,
     favorites          INTEGER DEFAULT 0,

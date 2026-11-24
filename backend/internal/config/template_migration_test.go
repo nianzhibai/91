@@ -82,8 +82,7 @@ future_section:
 		section, key string
 		want         any
 	}{
-		{"generation", "thumbnail_concurrency", 1},
-		{"generation", "fingerprint_concurrency", 1},
+		{"generation", "concurrency", 1},
 		{"preview", "ffmpeg_threads", 1},
 		{"telegram", "upload_proxy", ""},
 		{"telegram", "max_pending_jobs", 0},
@@ -186,7 +185,7 @@ func TestTemplateMigrationUsesBundledDefaultsWithoutExternalExample(t *testing.T
 func TestTemplateMigrationResolvesAliasesBeforeRemovingOldFields(t *testing.T) {
 	manager, _ := newManagerForTest(t, `defaults: &defaults
   generation:
-    preview_concurrency: 3
+    concurrency: 3
     unused: remove
   server:
     listen: ":9876"
@@ -205,7 +204,7 @@ telegram:
 	data, _, _ := manager.ReadYAML()
 	assertTemplateStructure(t, data)
 	cfg, err := Parse(data)
-	if err != nil || cfg.Preview.Enabled || cfg.Generation.PreviewConcurrency != 3 || cfg.Server.Listen != ":9876" ||
+	if err != nil || cfg.Preview.Enabled || cfg.Generation.Concurrency != 3 || cfg.Server.Listen != ":9876" ||
 		cfg.Telegram.UploadProxy != "socks5h://proxy.example:1080" || len(cfg.Telegram.AllowedUserIDs) != 1 || cfg.Telegram.AllowedUserIDs[0] != 42 {
 		t.Fatalf("migration lost inherited settings: %v", err)
 	}
@@ -213,7 +212,7 @@ telegram:
 
 func TestTemplateMigrationRejectsInvalidConfigWithoutChangingFileOrSnapshot(t *testing.T) {
 	for _, source := range []string{
-		"generation: {preview_concurrency: 99}\n",
+		"generation: {concurrency: 99}\n",
 		"telegram: {enabled: true}\n",
 		"server: {admin: {username: owner, password: secret}}\n",
 		"preview: [\n",

@@ -1,7 +1,7 @@
 // Package scriptcrawler provides a generic local drive for script-based
 // crawlers. A crawler script discovers videos; the Go runner downloads them
-// into this drive and the existing preview/fingerprint workers consume them
-// through the normal drives.Drive interface.
+// into this drive and the drive's generation runner consumes them through the
+// normal drives.Drive interface.
 package scriptcrawler
 
 import (

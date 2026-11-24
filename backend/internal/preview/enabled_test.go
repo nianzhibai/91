@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nianzhibai/91/backend/internal/generation"
 	"github.com/nianzhibai/91/backend/internal/mediasig"
 )
 
@@ -31,12 +32,12 @@ func TestDisabledPreviewsStillSampleSignatureWithoutTeaser(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "previews-off")
 	gen := &fakeTeaserGenerator{signature: testMediaSignature()}
-	worker := NewWorker(gen, cat, &previewFakeDrive{})
+	worker := NewMediaJob(gen, cat, &previewFakeDrive{})
 	worker.Gate = &Gate{}
 	worker.Gate.Set(false)
 
-	if retry := worker.process(ctx, video); retry {
-		t.Fatal("job asked for a retry")
+	if outcome := worker.Run(ctx, video); outcome != generation.StepSettled {
+		t.Fatalf("outcome = %v, want settled", outcome)
 	}
 	if len(gen.requests) != 1 || gen.requests[0].Teaser {
 		t.Fatalf("requests = %+v, want one job without a teaser", gen.requests)
@@ -54,8 +55,8 @@ func TestDisabledPreviewsStillSampleSignatureWithoutTeaser(t *testing.T) {
 
 	// Enabling previews later generates the teaser that is still pending.
 	worker.Gate.Set(true)
-	if retry := worker.process(ctx, got); retry {
-		t.Fatal("job asked for a retry")
+	if outcome := worker.Run(ctx, got); outcome != generation.StepSettled {
+		t.Fatalf("outcome = %v, want settled", outcome)
 	}
 	if len(gen.requests) != 2 || !gen.requests[1].Teaser {
 		t.Fatalf("requests = %+v, want a teaser job after enabling", gen.requests)
@@ -69,13 +70,13 @@ func TestSettledVideoIsNotProcessedAgain(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "settled")
 	gen := &fakeTeaserGenerator{signature: testMediaSignature()}
-	worker := NewWorker(gen, cat, &previewFakeDrive{})
-	worker.process(ctx, video)
+	worker := NewMediaJob(gen, cat, &previewFakeDrive{})
+	worker.Run(ctx, video)
 	settled, err := cat.GetVideo(ctx, video.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	worker.process(ctx, settled)
+	worker.Run(ctx, settled)
 	if gen.generateCalls != 1 {
 		t.Fatalf("generate calls = %d, want one job for a settled video", gen.generateCalls)
 	}
@@ -83,7 +84,7 @@ func TestSettledVideoIsNotProcessedAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	renewed, _ := cat.GetVideo(ctx, video.ID)
-	worker.process(ctx, renewed)
+	worker.Run(ctx, renewed)
 	if gen.generateCalls != 2 || !gen.requests[1].Teaser {
 		t.Fatalf("requests = %+v, want a renewal to regenerate the teaser", gen.requests)
 	}
@@ -99,9 +100,9 @@ func TestFailedRenewalKeepsTheExistingTeaser(t *testing.T) {
 	if err != nil || renewing.MediaStatus != "pending" {
 		t.Fatalf("video = %+v err = %v, want a pending renewal", renewing, err)
 	}
-	worker := NewWorker(&fakeTeaserGenerator{generateErr: errors.New("ffmpeg segment: invalid data")}, cat, &previewFakeDrive{})
+	worker := NewMediaJob(&fakeTeaserGenerator{generateErr: errors.New("ffmpeg segment: invalid data")}, cat, &previewFakeDrive{})
 
-	worker.process(ctx, renewing)
+	worker.Run(ctx, renewing)
 
 	got, err := cat.GetVideo(ctx, video.ID)
 	if err != nil {
@@ -116,11 +117,11 @@ func TestPartialSignatureIsReadAgainUntilComplete(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "partial-signature")
 	gen := &fakeTeaserGenerator{signature: testMediaSignature(), partialSignature: true}
-	worker := NewWorker(gen, cat, &previewFakeDrive{})
+	worker := NewMediaJob(gen, cat, &previewFakeDrive{})
 
 	current := video
 	for attempt := 1; attempt <= 5; attempt++ {
-		worker.process(ctx, current)
+		worker.Run(ctx, current)
 		got, err := cat.GetVideo(ctx, video.ID)
 		if err != nil {
 			t.Fatal(err)
@@ -140,7 +141,7 @@ func TestPartialSignatureIsReadAgainUntilComplete(t *testing.T) {
 	}
 
 	gen.partialSignature = false
-	worker.process(ctx, current)
+	worker.Run(ctx, current)
 	if got, _ := cat.GetVideo(ctx, video.ID); got.MediaStatus != "ready" {
 		t.Fatalf("media status = %q, want ready after a complete read", got.MediaStatus)
 	}

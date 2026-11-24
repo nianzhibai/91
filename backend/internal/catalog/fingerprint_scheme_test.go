@@ -83,9 +83,8 @@ VALUES ('scriptcrawler', 'crawler', 'src', 'abc', 10, 1, 1);`, payload); err != 
 			t.Fatalf("%s fingerprint = %q/%q, want %q", id, got.SampledSHA256, got.FingerprintStatus, want)
 		}
 	}
-	queued, err := cat.ListVideosNeedingFingerprint(ctx, "one", 0)
-	if err != nil || len(queued) != 1 || queued[0].ID != "legacy-a" {
-		t.Fatalf("queued fingerprints = %v err=%v, want legacy-a", queued, err)
+	if queued := dueForStep(t, cat, "one", true, needsFingerprint); len(queued) != 1 || queued[0] != "legacy-a" {
+		t.Fatalf("due fingerprints = %v, want legacy-a", queued)
 	}
 	// Equal old fingerprints may stand for different files, so they group
 	// nothing until both videos are fingerprinted again.

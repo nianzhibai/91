@@ -9,7 +9,6 @@ import (
 
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/drives"
-	"github.com/nianzhibai/91/backend/internal/fingerprint"
 	"github.com/nianzhibai/91/backend/internal/nightly"
 	"github.com/nianzhibai/91/backend/internal/preview"
 	"github.com/nianzhibai/91/backend/internal/scanjob"
@@ -40,33 +39,33 @@ func failedGenerationScanApp(t *testing.T, enabled bool) (*App, *serverTreeScanD
 
 func TestScanRetriesFailedGenerationAfterCleanup(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		enabled    bool
-		workers    bool
-		scanFails  bool
-		canceled   bool
-		wantState  scanjob.State
-		wantQueues [3]int
+		name      string
+		enabled   bool
+		scanFails bool
+		canceled  bool
+		wantState scanjob.State
+		wantRetry bool
 	}{
-		// The retried media job also makes the missing thumbnail, and it
-		// samples the signature while previews are disabled.
-		{"enabled", true, true, false, false, scanjob.Succeeded, [3]int{0, 1, 1}},
-		{"preview disabled", false, true, false, false, scanjob.Succeeded, [3]int{0, 1, 1}},
-		{"workers unavailable", true, false, false, false, scanjob.Succeeded, [3]int{}},
-		{"discovery failed", true, true, true, false, scanjob.Failed, [3]int{}},
-		{"canceled", true, true, false, true, scanjob.Canceled, [3]int{}},
+		// The retried media job also samples the signature while previews
+		// are disabled.
+		{"enabled", true, false, false, scanjob.Succeeded, true},
+		{"preview disabled", false, false, false, scanjob.Succeeded, true},
+		{"discovery failed", true, true, false, scanjob.Failed, false},
+		{"canceled", true, false, true, scanjob.Canceled, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			app, drv := failedGenerationScanApp(t, tc.enabled)
-			gen := &serverFakeTeaserGenerator{}
-			thumb := preview.NewThumbWorker(gen, app.cat, drv)
-			teaser := preview.NewWorker(gen, app.cat, drv)
-			fp := fingerprint.NewWorker(app.cat, drv, fingerprint.Config{})
-			if tc.workers {
-				app.thumbWorkers = map[string]*preview.ThumbWorker{drv.ID(): thumb}
-				app.workers = map[string]*preview.Worker{drv.ID(): teaser}
-				app.fingerprintWorkers = map[string]*fingerprint.Worker{drv.ID(): fp}
+			// Hold the only slot and every source read, so the woken drive
+			// leaves the retried work due: fingerprints take no slot.
+			release, err := app.generationLimiter().Acquire(context.Background(), "test")
+			if err != nil {
+				t.Fatal(err)
 			}
+			defer release()
+			runCtx, stop := context.WithCancel(context.Background())
+			defer stop()
+			gen := &serverFakeTeaserGenerator{}
+			runner := startPausedTestGeneration(t, runCtx, app, gatedStreamDrive{Drive: drv}, gen, gen)
 			if tc.scanFails {
 				drv.listErrors = map[string]error{"root": errors.New("discovery unavailable")}
 			}
@@ -79,20 +78,19 @@ func TestScanRetriesFailedGenerationAfterCleanup(t *testing.T) {
 			if result.State != tc.wantState {
 				t.Fatalf("scan = %+v", result)
 			}
-			queues := [3]int{thumb.Status().QueueLength, teaser.Status().QueueLength, fp.Status().QueueLength}
-			if queues != tc.wantQueues {
-				t.Fatalf("queue lengths = %v, want %v", queues, tc.wantQueues)
+			if woken := !runner.Status().Paused; woken != tc.wantRetry {
+				t.Fatalf("drive woken = %v, want %v", woken, tc.wantRetry)
 			}
 			video, err := app.cat.GetVideo(context.Background(), "failed")
 			if err != nil {
 				t.Fatal(err)
 			}
-			wantPreview := "failed"
-			if tc.wantQueues[1] > 0 {
-				wantPreview = "pending"
+			want := "failed"
+			if tc.wantRetry {
+				want = "pending"
 			}
-			if video.PreviewStatus != wantPreview {
-				t.Fatalf("preview state = %s, want %s", video.PreviewStatus, wantPreview)
+			if video.PreviewStatus != want || video.FingerprintStatus != want {
+				t.Fatalf("preview/fingerprint state = %s/%s, want %s", video.PreviewStatus, video.FingerprintStatus, want)
 			}
 			if !tc.scanFails && !tc.canceled {
 				if _, err := app.cat.GetVideo(context.Background(), "removed"); !errors.Is(err, sql.ErrNoRows) {
@@ -112,34 +110,37 @@ func (g *failingRetryTeaserGenerator) Generate(context.Context, *drives.StreamLi
 	return preview.Media{}, errors.New("invalid media")
 }
 
+func (g *failingRetryTeaserGenerator) attempts() int {
+	attempts := 0
+	for _, event := range g.Events() {
+		if event == "attempt" {
+			attempts++
+		}
+	}
+	return attempts
+}
+
 func TestFailedGenerationWaitsForNextScanBeforeRetryingAgain(t *testing.T) {
 	app, drv := failedGenerationScanApp(t, true)
 	gen := &failingRetryTeaserGenerator{}
-	worker := preview.NewWorker(gen, app.cat, drv)
-	app.workers = map[string]*preview.Worker{drv.ID(): worker}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	done := make(chan struct{})
-	go func() { defer close(done); worker.Run(ctx) }()
-	t.Cleanup(func() { cancel(); <-done })
+	defer cancel()
+	startPausedTestGeneration(t, ctx, app, drv, gen, gen)
 
 	for round := 1; round <= 2; round++ {
 		if result := app.runScan(ctx, drv.ID()); result.State != scanjob.Succeeded {
 			t.Fatalf("scan = %+v", result)
 		}
-		if err := worker.WaitIdle(ctx); err != nil {
-			t.Fatal(err)
-		}
+		waitGenerationIdle(t, app, drv.ID())
 		video, err := app.cat.GetVideo(ctx, "failed")
 		if err != nil || video.PreviewStatus != "failed" {
 			t.Fatalf("failed attempt did not retain its state: %+v, %v", video, err)
 		}
-		// Normal queue refill, including maintenance after a scan, must not
+		// Waking the drive again, as maintenance does after a scan, must not
 		// turn a terminal failure into an endless retry loop.
-		app.enqueueDriveGeneration(ctx, drv.ID(), worker, nil)
-		if err := worker.WaitIdle(ctx); err != nil {
-			t.Fatal(err)
-		}
-		if attempts := len(gen.Events()); attempts != round {
+		app.wakeDriveGeneration(drv.ID())
+		waitGenerationIdle(t, app, drv.ID())
+		if attempts := gen.attempts(); attempts != round {
 			t.Fatalf("round %d generated %d attempts", round, attempts)
 		}
 	}
@@ -154,19 +155,16 @@ func TestMaintenanceRetriesFailedGenerationAndWaitsForCompletion(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			app, drv := failedGenerationScanApp(t, true)
 			gen := &failingRetryTeaserGenerator{}
-			worker := preview.NewWorker(gen, app.cat, drv)
-			app.workers = map[string]*preview.Worker{drv.ID(): worker}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			workerDone := make(chan struct{})
-			go func() { defer close(workerDone); worker.Run(ctx) }()
-			t.Cleanup(func() { cancel(); <-workerDone })
+			defer cancel()
+			generation := startPausedTestGeneration(t, ctx, app, drv, gen, gen)
 			runner := nightly.New(nightly.Config{
 				Settings: app.cat, StartTime: "05:00", Timezone: "Etc/UTC",
 				Now:             func() time.Time { return time.Date(2026, 9, 6, 6, 0, 0, 0, time.UTC) },
 				ListScanTargets: app.listScanTargetIDs, RunScan: app.runScan,
-				WaitPreviewQueuesIdle: app.waitAllPreviewQueuesIdle,
+				WaitGenerationIdle: app.waitAllGenerationIdle,
 				RunDedupeAssetCleanup: func(context.Context) error {
-					if len(gen.Events()) != 1 || worker.Status().State != "idle" {
+					if gen.attempts() != 1 || generation.Busy() {
 						return errors.New("maintenance started before retried generation finished")
 					}
 					return nil
@@ -186,7 +184,7 @@ func TestMaintenanceRetriesFailedGenerationAndWaitsForCompletion(t *testing.T) {
 				time.Sleep(10 * time.Millisecond)
 			}
 			status := runner.Status()
-			if ctx.Err() != nil || status.Outcome != scanjob.Succeeded || len(status.ScanResults) != 1 || len(gen.Events()) != 1 {
+			if ctx.Err() != nil || status.Outcome != scanjob.Succeeded || len(status.ScanResults) != 1 || gen.attempts() != 1 {
 				t.Fatalf("maintenance = %+v, attempts = %v, err = %v", status, gen.Events(), ctx.Err())
 			}
 		})

@@ -69,7 +69,7 @@ func TestScanAllSurfacesTargetListingAndLaterPhaseErrors(t *testing.T) {
 					return []string{"drive"}, nil
 				},
 				RunScan: func(context.Context, string) scanjob.Result { return scanjob.Result{State: scanjob.Succeeded} },
-				WaitPreviewQueuesIdle: func(context.Context) error {
+				WaitGenerationIdle: func(context.Context) error {
 					if stage == "wait" {
 						return boom
 					}

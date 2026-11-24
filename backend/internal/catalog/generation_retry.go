@@ -8,8 +8,7 @@ import (
 	"github.com/nianzhibai/91/backend/internal/driveevents"
 )
 
-// GenerationKinds selects the queues whose failed work may be retried.
-// The caller decides which generators are available and enabled.
+// GenerationKinds selects the kinds of failed work to retry.
 type GenerationKinds struct {
 	Thumbnails   bool
 	Previews     bool
@@ -23,10 +22,10 @@ type GenerationRetryCounts struct {
 }
 
 // ResetFailedGeneration admits one retry batch by moving eligible failed work
-// back to pending. Callers invoke it once before dispatching generation, never
-// from a recurring pending-queue poll. Conditional updates preserve work that
-// another worker has already completed; the transaction resets all selected
-// kinds before any of them can fail again.
+// back to pending and lifting the drive's deferrals. Callers invoke it once
+// per scan or explicit request, never from a recurring poll. Conditional
+// updates preserve work that has already completed; the transaction resets
+// all selected kinds before any of them can fail again.
 func (c *Catalog) ResetFailedGeneration(ctx context.Context, driveID string, kinds GenerationKinds) (resultValue GenerationRetryCounts, resultErr error) {
 	defer c.notifyDriveWrite(&resultErr, driveID, driveevents.GenerationChanged)
 	counts := GenerationRetryCounts{}
@@ -89,6 +88,10 @@ func (c *Catalog) ResetFailedGeneration(ctx context.Context, driveID string, kin
 		if err != nil {
 			return GenerationRetryCounts{}, err
 		}
+	}
+	// A retry also lifts the deferrals of steps that ended unsettled.
+	if _, err := tx.ExecContext(ctx, `UPDATE videos SET generation_after = 0 WHERE drive_id = ? AND generation_after > 0`, driveID); err != nil {
+		return GenerationRetryCounts{}, fmt.Errorf("lift generation deferrals: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return GenerationRetryCounts{}, err

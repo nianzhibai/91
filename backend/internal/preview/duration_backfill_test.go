@@ -9,6 +9,7 @@ import (
 
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/generation"
 )
 
 func existingDurationTestVideo(t *testing.T, id string) (*catalog.Catalog, *catalog.Video) {
@@ -21,7 +22,7 @@ func existingDurationTestVideo(t *testing.T, id string) (*catalog.Catalog, *cata
 	return cat, video
 }
 
-func TestDurationFailureWaitsForNextExplicitSweep(t *testing.T) {
+func TestDurationFailureLeavesAssetsForALaterAttempt(t *testing.T) {
 	ctx := context.Background()
 	cat, video := existingDurationTestVideo(t, "duration-timeout")
 	original, err := cat.GetVideo(ctx, video.ID)
@@ -29,19 +30,11 @@ func TestDurationFailureWaitsForNextExplicitSweep(t *testing.T) {
 		t.Fatal(err)
 	}
 	gen := &fakeThumbGenerator{probeErr: context.DeadlineExceeded}
-	worker := NewThumbWorker(gen, cat, &previewFakeDrive{})
-	if !worker.EnqueueDurationBlocking(ctx, video) {
-		t.Fatal("backfill enqueue failed")
+	worker := NewThumbnailJob(gen, cat, &previewFakeDrive{})
+	if got := worker.ProbeDuration(ctx, video); got != generation.StepUnsettled || gen.probeCalls != 1 {
+		t.Fatalf("outcome = %v calls = %d, want unsettled after one probe", got, gen.probeCalls)
 	}
-	task := <-worker.durationCh
-	worker.processQueuedTask(task.ctx, task.video, true)
-	if gen.probeCalls != 1 || worker.Status().QueueLength != 0 {
-		t.Fatal("failed duration was automatically requeued")
-	}
-	if err := worker.WaitIdle(ctx); err != nil {
-		t.Fatal(err)
-	}
-	worker.process(ctx, video)
+	worker.Run(ctx, video)
 	if gen.probeCalls != 1 {
 		t.Fatal("ordinary cover work repeated metadata failure")
 	}
@@ -53,14 +46,13 @@ func TestDurationFailureWaitsForNextExplicitSweep(t *testing.T) {
 		t.Fatal("failed probe changed existing assets")
 	}
 	gen.probeErr, gen.probeDuration = nil, 19
-	// The next round can try immediately; there is no timer or attempt budget.
-	worker.processDuration(ctx, video)
+	worker.ProbeDuration(ctx, video)
 	current, err = cat.GetVideo(ctx, video.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if current.DurationSeconds != 19 || gen.probeCalls != 2 || gen.generateCalls != 0 {
-		t.Fatalf("next round did not recover: %+v", current)
+		t.Fatalf("a later attempt did not recover: %+v", current)
 	}
 }
 
@@ -80,8 +72,8 @@ func TestStoreProbedDurationRequiresSuccessfulPersistence(t *testing.T) {
 
 func TestSubsecondBackfillDoesNotRemainUnknown(t *testing.T) {
 	cat, video := existingDurationTestVideo(t, "duration-subsecond")
-	worker := NewThumbWorker(&fakeThumbGenerator{probeDuration: 0.7}, cat, &previewFakeDrive{})
-	worker.processDuration(context.Background(), video)
+	worker := NewThumbnailJob(&fakeThumbGenerator{probeDuration: 0.7}, cat, &previewFakeDrive{})
+	worker.ProbeDuration(context.Background(), video)
 	current, err := cat.GetVideo(context.Background(), video.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -97,8 +89,8 @@ func TestDurationBackfillDoesNotRetryFailedThumbnail(t *testing.T) {
 		t.Fatal(err)
 	}
 	gen := &fakeThumbGenerator{probeDuration: 19}
-	worker := NewThumbWorker(gen, cat, &previewFakeDrive{})
-	worker.processDuration(context.Background(), video)
+	worker := NewThumbnailJob(gen, cat, &previewFakeDrive{})
+	worker.ProbeDuration(context.Background(), video)
 	current, err := cat.GetVideo(context.Background(), video.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -112,17 +104,12 @@ func TestDurationBackfillDoesNotRetryFailedThumbnail(t *testing.T) {
 	}
 }
 
-func TestDurationRateLimitDoesNotRequeueTheVideo(t *testing.T) {
+func TestDurationRateLimitCoolsTheDriveWithoutChangingTheCover(t *testing.T) {
 	cat, video := existingDurationTestVideo(t, "duration-rate-limit")
 	gen := &fakeThumbGenerator{probeErr: &drives.RateLimitError{RetryAfter: time.Hour, Err: errors.New("429")}}
-	worker := NewThumbWorker(gen, cat, &previewFakeDrive{})
-	if !worker.EnqueueDurationBlocking(context.Background(), video) {
-		t.Fatal("enqueue failed")
-	}
-	task := <-worker.durationCh
-	worker.processQueuedTask(task.ctx, task.video, true)
-	if gen.probeCalls != 1 || worker.Status().QueueLength != 0 {
-		t.Fatal("rate-limited metadata was requeued")
+	worker := NewThumbnailJob(gen, cat, &previewFakeDrive{})
+	if got := worker.ProbeDuration(context.Background(), video); got != generation.StepPaused || gen.probeCalls != 1 {
+		t.Fatalf("outcome = %v calls = %d, want paused behind the cooldown", got, gen.probeCalls)
 	}
 	ready, err := cat.ListVideosByThumbnailStatus(context.Background(), video.DriveID, "ready", 100)
 	if err != nil || len(ready) != 1 {
@@ -173,21 +160,17 @@ func TestDurationBackfillProviderErrorsCooldownWithoutThumbnailRetries(t *testin
 			} else {
 				gen.probeErr = tc.cause
 			}
-			worker := NewThumbWorker(gen, cat, drv)
+			worker := NewThumbnailJob(gen, cat, drv)
 			worker.RateLimitCooldown = tc.cooldown
-			if !worker.EnqueueDurationBlocking(ctx, video) {
-				t.Fatal("duration enqueue failed")
-			}
-			task := <-worker.durationCh
 			before := time.Now()
-			worker.processQueuedTask(task.ctx, task.video, true)
+			worker.ProbeDuration(ctx, video)
 			if tc.want > 0 {
-				assertCooldownAround(t, worker.Status().CooldownUntil, before, tc.want)
-			} else if !worker.Status().CooldownUntil.IsZero() {
+				assertCooldownAround(t, cooldownUntil(worker.Cooldown), before, tc.want)
+			} else if !cooldownUntil(worker.Cooldown).IsZero() {
 				t.Fatal("permanent media error cooled down the provider")
 			}
-			if worker.Status().QueueLength != 0 || gen.generateCalls != 0 {
-				t.Fatal("duration failure requeued work or generated a thumbnail")
+			if gen.generateCalls != 0 {
+				t.Fatal("duration failure generated a thumbnail")
 			}
 			ready, err := cat.ListVideosByThumbnailStatus(ctx, video.DriveID, "ready", 100)
 			if err != nil || len(ready) != 1 || ready[0].DurationSeconds != 0 {
@@ -198,112 +181,5 @@ func TestDurationBackfillProviderErrorsCooldownWithoutThumbnailRetries(t *testin
 				t.Fatalf("duration failure consumed thumbnail retries: failures=%d err=%v", failures, err)
 			}
 		})
-	}
-}
-
-type blockingDurationGenerator struct {
-	fakeThumbGenerator
-	started chan struct{}
-}
-
-func (g *blockingDurationGenerator) Probe(ctx context.Context, _ *drives.StreamLink) (float64, error) {
-	close(g.started)
-	<-ctx.Done()
-	return 0, ctx.Err()
-}
-
-func TestStoppingRoundCancelsDurationProbeWithoutStoppingWorker(t *testing.T) {
-	cat, video := existingDurationTestVideo(t, "duration-canceled")
-	gen := &blockingDurationGenerator{started: make(chan struct{})}
-	worker := NewThumbWorker(gen, cat, &previewFakeDrive{})
-	runCtx, stopWorker := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { defer close(done); worker.Run(runCtx) }()
-	t.Cleanup(func() { stopWorker(); <-done })
-	phaseCtx, stopPhase := context.WithCancel(runCtx)
-	defer stopPhase()
-	if !worker.EnqueueDurationBlocking(phaseCtx, video) {
-		t.Fatal("enqueue failed")
-	}
-	select {
-	case <-gen.started:
-	case <-time.After(time.Second):
-		t.Fatal("probe did not start")
-	}
-	stopPhase()
-	waitCtx, cancel := context.WithTimeout(runCtx, time.Second)
-	defer cancel()
-	if err := worker.WaitIdle(waitCtx); err != nil {
-		t.Fatalf("canceled probe did not drain: %v", err)
-	}
-	current, err := cat.GetVideo(runCtx, video.ID)
-	if err != nil || current.DurationSeconds != 0 {
-		t.Fatalf("canceled probe changed duration: %v, %v", current, err)
-	}
-	fresh := *video
-	fresh.ID, fresh.FileID, fresh.ThumbnailURL, fresh.DurationSeconds = "new-cover", "new-file", "", 42
-	if err := cat.UpsertVideo(runCtx, &fresh); err != nil {
-		t.Fatal(err)
-	}
-	if !worker.Enqueue(&fresh) {
-		t.Fatal("cover enqueue failed after canceled backfill")
-	}
-	if err := worker.WaitIdle(waitCtx); err != nil {
-		t.Fatal(err)
-	}
-	current, err = cat.GetVideo(runCtx, fresh.ID)
-	if err != nil || current.ThumbnailURL == "" {
-		t.Fatalf("worker stopped with the round: %v, %v", current, err)
-	}
-}
-
-func TestPreviewReadyFollowUpSurvivesCanceledDurationBackfill(t *testing.T) {
-	cat, video := seedPreviewTestVideo(t, "duration-cover-follow-up")
-	if err := cat.UpdateVideoMeta(context.Background(), video.ID, catalog.VideoMetaPatch{ThumbnailStatus: "failed"}); err != nil {
-		t.Fatal(err)
-	}
-	gen := &blockingDurationGenerator{started: make(chan struct{})}
-	worker := NewThumbWorker(gen, cat, &previewFakeDrive{})
-	runCtx, stopWorker := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { defer close(done); worker.Run(runCtx) }()
-	t.Cleanup(func() { stopWorker(); <-done })
-	phaseCtx, stopPhase := context.WithCancel(runCtx)
-	defer stopPhase()
-	if !worker.EnqueueDurationBlocking(phaseCtx, video) {
-		t.Fatal("duration enqueue failed")
-	}
-	select {
-	case <-gen.started:
-	case <-time.After(time.Second):
-		t.Fatal("duration probe did not start")
-	}
-	// A concurrently completed preview saves its duration and grants the failed
-	// cover another attempt while the metadata probe is still running.
-	if err := cat.UpdateVideoMeta(runCtx, video.ID, catalog.VideoMetaPatch{DurationSeconds: 42}); err != nil {
-		t.Fatal(err)
-	}
-	if err := cat.UpdatePreviewForSource(runCtx, video, "preview.mp4", "ready"); err != nil {
-		t.Fatal(err)
-	}
-	ready, err := cat.GetVideo(runCtx, video.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !worker.EnqueueFollowUp(ready) || !worker.EnqueueFollowUp(ready) {
-		t.Fatal("preview-ready cover enqueue failed")
-	}
-	stopPhase()
-	waitCtx, cancel := context.WithTimeout(runCtx, 2*time.Second)
-	defer cancel()
-	if err := worker.WaitIdle(waitCtx); err != nil {
-		t.Fatal(err)
-	}
-	current, err := cat.GetVideo(runCtx, video.ID)
-	if err != nil || current.ThumbnailURL == "" || current.DurationSeconds != 42 || current.PreviewStatus != "ready" {
-		t.Fatalf("canceling metadata discarded the cover follow-up: %v, %v", current, err)
-	}
-	if gen.generateCalls != 1 {
-		t.Fatalf("thumbnail generation calls = %d, want one deduplicated follow-up", gen.generateCalls)
 	}
 }

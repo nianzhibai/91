@@ -123,7 +123,7 @@ func (s *Scanner) reconcileExisting(
 	// A different size or provider hash proves new bytes.
 	contentChanged := entry.Size != existing.Size || (hashComparable && hash != previousHash)
 	// Equal provider hashes confirm the bytes even if the timestamp changed.
-	// Without them a new timestamp is only a suspicion: the fingerprint worker
+	// Without them a new timestamp is only a suspicion: the fingerprint step
 	// compares the sampled fingerprint again before any asset is discarded.
 	// A row without a fingerprint has nothing to compare and is reset.
 	if !contentChanged && !hashComparable && modTimeChanged {

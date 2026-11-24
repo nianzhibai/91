@@ -12,7 +12,6 @@ import (
 	"github.com/nianzhibai/91/backend/internal/fingerprint"
 	"github.com/nianzhibai/91/backend/internal/mediaasset"
 	"github.com/nianzhibai/91/backend/internal/persistence"
-	"github.com/nianzhibai/91/backend/internal/tasklimit"
 	"golang.org/x/net/proxy"
 	"io"
 	"log"
@@ -42,7 +41,6 @@ const (
 type ImporterConfig struct {
 	Driver                                               *Driver
 	Catalog                                              *catalog.Catalog
-	FingerprintLimiter                                   *tasklimit.Limiter
 	CrawlerName, FFmpegPath, FFprobePath, CommonThumbDir string
 	HTTPClient                                           *http.Client
 	DownloadTimeout                                      time.Duration
@@ -137,7 +135,7 @@ func (c *Importer) Import(downloadCtx, ctx context.Context, item Item) (ImportOu
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
-	sampled, err := fingerprint.Compute(ctx, c.cfg.Driver, v, fingerprint.Config{Limiter: c.cfg.FingerprintLimiter}, c.cfg.HTTPClient)
+	sampled, err := fingerprint.Compute(ctx, c.cfg.Driver, v, fingerprint.Config{}, c.cfg.HTTPClient)
 	if err != nil {
 		_ = os.Remove(videoPath)
 		return ImportFailed, fmt.Errorf("fingerprint: %w", err)

@@ -2,52 +2,11 @@ package catalog
 
 import (
 	"context"
-	"fmt"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
-
-func TestDurationBackfillCursorVisitsFailedCandidatesOncePerRound(t *testing.T) {
-	ctx := context.Background()
-	cat, err := Open(filepath.Join(t.TempDir(), "catalog.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cat.Close()
-	now := time.Now()
-	for i := 0; i < 205; i++ {
-		id := fmt.Sprintf("video-%03d", i)
-		if err := cat.UpsertVideo(ctx, &Video{ID: id, DriveID: "drive", FileID: id, Title: id, Size: 100,
-			ThumbnailURL: "/p/thumb/" + id, PublishedAt: now, CreatedAt: now, UpdatedAt: now}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for round := 0; round < 2; round++ {
-		seen := make(map[string]bool)
-		cursor := ""
-		for {
-			videos, err := cat.ListVideosNeedingDuration(ctx, "drive", cursor, 100)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(videos) == 0 {
-				break
-			}
-			for _, video := range videos {
-				if seen[video.ID] {
-					t.Fatalf("candidate retried within round: %s", video.ID)
-				}
-				seen[video.ID] = true
-			}
-			// Leave durations missing, exactly as a failed probe would.
-			cursor = videos[len(videos)-1].ID
-		}
-		if len(seen) != 205 {
-			t.Fatalf("round %d visited %d candidates", round, len(seen))
-		}
-	}
-}
 
 func TestDurationBackfillSelectionUsesCurrentMetadataAndCanonicalVisibility(t *testing.T) {
 	ctx := context.Background()
@@ -78,19 +37,14 @@ func TestDurationBackfillSelectionUsesCurrentMetadataAndCanonicalVisibility(t *t
 	if err := cat.UpdateVideoMeta(ctx, "thumbnail-failed", VideoMetaPatch{ThumbnailStatus: "failed"}); err != nil {
 		t.Fatal(err)
 	}
-	videos, err := cat.ListVideosNeedingDuration(ctx, "drive", "", 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(videos) != 2 || videos[0].ID != "pending" || videos[1].ID != "thumbnail-failed" {
-		t.Fatalf("candidates = %+v", videos)
+	if videos := dueForStep(t, cat, "drive", true, needsDuration); !reflect.DeepEqual(videos, []string{"pending", "thumbnail-failed"}) {
+		t.Fatalf("candidates = %v", videos)
 	}
 	if err := cat.UpdateVideoMeta(ctx, "pending", VideoMetaPatch{DurationSeconds: 19}); err != nil {
 		t.Fatal(err)
 	}
-	videos, err = cat.ListVideosNeedingDuration(ctx, "drive", "", 100)
-	if err != nil || len(videos) != 1 || videos[0].ID != "thumbnail-failed" {
-		t.Fatalf("completed candidate returned: %v, %v", videos, err)
+	if videos := dueForStep(t, cat, "drive", true, needsDuration); !reflect.DeepEqual(videos, []string{"thumbnail-failed"}) {
+		t.Fatalf("completed candidate returned: %v", videos)
 	}
 }
 
@@ -124,8 +78,7 @@ func TestLegacyDurationFailureMigrationKeepsExistingCoverReady(t *testing.T) {
 	if err != nil || len(ready) != 1 {
 		t.Fatalf("legacy cover not ready: %v, %v", ready, err)
 	}
-	missing, err := cat.ListVideosNeedingDuration(ctx, "drive", "", 100)
-	if err != nil || len(missing) != 1 {
-		t.Fatalf("legacy duration not eligible: %v, %v", missing, err)
+	if missing := dueForStep(t, cat, "drive", true, needsDuration); len(missing) != 1 {
+		t.Fatalf("legacy duration not eligible: %v", missing)
 	}
 }

@@ -46,10 +46,12 @@ func (a *App) runTelegramUploadMigration(ctx context.Context) error {
 			OnMigrated:        func(v *catalog.Video) { migrated = append(migrated, v) },
 		})
 	}()
-	// Release the upload's drive admission before admitting generation work;
-	// an intervening drive edit must not deadlock behind its own upload task.
+	woken := make(map[string]bool)
 	for _, v := range migrated {
-		a.enqueueUploadedVideo(ctx, v)
+		if !woken[v.DriveID] {
+			woken[v.DriveID] = true
+			a.wakeDriveGeneration(v.DriveID)
+		}
 	}
 	return err
 }

@@ -332,14 +332,12 @@ export type Schemas = {
     likes?: number;
   };
   configLiveSettings: {
-    fingerprintConcurrency: number;
+    generationConcurrency: number;
     nightlyDisabled: boolean;
     nightlyStartTime: string;
     nightlyTimezone: string;
-    previewConcurrency: number;
     previewEnabled: boolean;
     telegramEnabled: boolean;
-    thumbnailConcurrency: number;
     useGPU: boolean;
   };
   configSaveResult: {
@@ -487,6 +485,7 @@ export type Schemas = {
     fingerprintGenerationStatus: Schemas["GenerationStatus"];
     fingerprintPendingCount: number;
     fingerprintReadyCount: number;
+    generationParallelism: number;
     hasCredential: boolean;
     id: string;
     kind: string;
@@ -601,6 +600,10 @@ export type Schemas = {
   };
   FrontendUpdates: {
     updates: Schemas["FrontendUpdate"][];
+  };
+  generationParallelismReq: {
+    /** 0 keeps the drive kind's default; at most 5 */
+    parallelism: number;
   };
   GenerationStatus: {
     addedCount: number;

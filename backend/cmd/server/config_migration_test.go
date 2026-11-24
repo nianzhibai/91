@@ -55,7 +55,7 @@ func TestStartupConfigMigrationImportsLegacyValuesBeforeAddingDefaults(t *testin
 			if err != nil {
 				t.Fatal(err)
 			}
-			if cfg.Nightly.StartTime != "03:25" || cfg.Generation.PreviewConcurrency != 4 {
+			if cfg.Nightly.StartTime != "03:25" || cfg.Generation.Concurrency != 4 {
 				t.Fatal("startup defaults overwrote migrated or explicit runtime settings")
 			}
 			if explicit {

@@ -3,19 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/nianzhibai/91/backend/internal/api"
 	"github.com/nianzhibai/91/backend/internal/catalog"
 )
-
-type driveGenerationWork struct {
-	busy    bool
-	kinds   catalog.GenerationKinds
-	load    func(context.Context) ([]*catalog.Video, error)
-	enqueue func(context.Context, *catalog.Video) bool
-}
 
 func generationLabel(kind api.DriveGenerationKind) string {
 	switch kind {
@@ -30,197 +22,85 @@ func generationLabel(kind api.DriveGenerationKind) string {
 	}
 }
 
-func generationScope(kind api.DriveGenerationKind) driveTaskScope {
-	if kind == api.DriveGenerationPreviews {
-		return driveTaskScopePreview
+// generationRetryKinds selects the failed work a manual request retries.
+// Previews and signatures come from one media job.
+func generationRetryKinds(kind api.DriveGenerationKind) (catalog.GenerationKinds, error) {
+	switch kind {
+	case api.DriveGenerationThumbnails:
+		return catalog.GenerationKinds{Thumbnails: true}, nil
+	case api.DriveGenerationPreviews:
+		return catalog.GenerationKinds{Previews: true}, nil
+	case api.DriveGenerationFingerprints:
+		return catalog.GenerationKinds{Fingerprints: true}, nil
+	}
+	return catalog.GenerationKinds{}, fmt.Errorf("unknown generation kind: %s", kind)
+}
+
+func dueOfKind(counts catalog.GenerationCounts, kind api.DriveGenerationKind) int {
+	switch kind {
+	case api.DriveGenerationThumbnails:
+		return counts.Thumbnails
+	case api.DriveGenerationPreviews:
+		return counts.Media
+	case api.DriveGenerationFingerprints:
+		return counts.Fingerprints
 	}
 	return 0
 }
 
-func (a *App) driveGenerationWork(driveID string, kind api.DriveGenerationKind) (driveGenerationWork, error) {
-	a.mu.Lock()
-	previewWorker, thumbWorker, fingerprintWorker := a.workers[driveID], a.thumbWorkers[driveID], a.fingerprintWorkers[driveID]
-	a.mu.Unlock()
-	switch kind {
-	case api.DriveGenerationThumbnails:
-		if thumbWorker != nil {
-			return driveGenerationWork{
-				busy:  previewTaskBusy(thumbWorker.Status()) || (previewWorker != nil && previewTaskBusy(previewWorker.Status())),
-				kinds: catalog.GenerationKinds{Thumbnails: true},
-				load: func(ctx context.Context) ([]*catalog.Video, error) {
-					return a.cat.ListVideosNeedingThumbnail(ctx, driveID, 0)
-				},
-				// A due media job makes the thumbnail from the segments it
-				// reads anyway; only the rest need the thumbnail worker.
-				enqueue: func(ctx context.Context, video *catalog.Video) bool {
-					if previewWorker != nil && video.MediaWants(a.previewEnabled()).Any() {
-						return previewWorker.EnqueueBlocking(ctx, video)
-					}
-					return thumbWorker.EnqueueBlocking(ctx, video)
-				},
-			}, nil
-		}
-	case api.DriveGenerationPreviews:
-		if !a.previewEnabled() {
-			return driveGenerationWork{}, fmt.Errorf("预览生成已关闭")
-		}
-		if previewWorker != nil {
-			return driveGenerationWork{
-				busy: previewTaskBusy(previewWorker.Status()), kinds: catalog.GenerationKinds{Previews: true},
-				load: func(ctx context.Context) ([]*catalog.Video, error) {
-					return a.cat.ListVideosNeedingMedia(ctx, driveID, true)
-				},
-				enqueue: previewWorker.EnqueueBlocking,
-			}, nil
-		}
-	case api.DriveGenerationFingerprints:
-		if fingerprintWorker != nil {
-			return driveGenerationWork{
-				busy: fingerprintTaskBusy(fingerprintWorker.Status()) || a.fingerprintQueueingBusy(driveID), kinds: catalog.GenerationKinds{Fingerprints: true},
-				load: func(ctx context.Context) ([]*catalog.Video, error) {
-					return a.cat.ListVideosNeedingFingerprint(ctx, driveID, 0)
-				},
-				enqueue: fingerprintWorker.EnqueueBlocking,
-			}, nil
-		}
-	default:
-		return driveGenerationWork{}, fmt.Errorf("unknown generation kind: %s", kind)
-	}
-	return driveGenerationWork{}, fmt.Errorf("%s生成服务尚未就绪，请稍后重试", generationLabel(kind))
-}
-
-func (a *App) prepareDriveGeneration(ctx context.Context, driveID string, work driveGenerationWork) ([]*catalog.Video, error) {
-	if _, err := a.resetFailedGeneration(ctx, driveID, work.kinds); err != nil {
-		return nil, err
-	}
-	return work.load(ctx)
-}
-
-func enqueueDriveGenerationWork(ctx context.Context, driveID string, kind api.DriveGenerationKind, work driveGenerationWork, items []*catalog.Video) {
-	for i, video := range items {
-		if ctx.Err() != nil || !work.enqueue(ctx, video) {
-			log.Printf("[generation] enqueue canceled drive=%s kind=%s queued=%d", driveID, kind, i)
-			return
-		}
-	}
-	log.Printf("[generation] enqueued drive=%s kind=%s count=%d", driveID, kind, len(items))
-}
-
-func (a *App) regenerateDriveResources(ctx context.Context, driveID string, kind api.DriveGenerationKind) {
-	taskCtx, done, admitted := a.registerDriveTaskContext(ctx, driveID, generationScope(kind))
-	if !admitted {
-		return
-	}
-	defer done()
-	finishEnqueue := a.beginDriveResourceEnqueue(driveID)
-	defer finishEnqueue()
-	work, err := a.driveGenerationWork(driveID, kind)
-	if err != nil {
-		log.Printf("[generation] prepare drive=%s kind=%s: %v", driveID, kind, err)
-		return
-	}
-	items, err := a.prepareDriveGeneration(taskCtx, driveID, work)
-	if err != nil {
-		log.Printf("[generation] prepare drive=%s kind=%s: %v", driveID, kind, err)
-		return
-	}
-	enqueueDriveGenerationWork(taskCtx, driveID, kind, work, items)
-}
-
-func (a *App) requestDriveGeneration(reqCtx, runCtx context.Context, driveID string, kind api.DriveGenerationKind) (api.DriveGenerationResult, error) {
-	if _, err := a.cat.GetDrive(reqCtx, driveID); err != nil {
+// requestDriveGeneration retries the drive's failed work of one kind and
+// wakes its runner, which takes everything due in its own order.
+func (a *App) requestDriveGeneration(ctx context.Context, driveID string, kind api.DriveGenerationKind) (api.DriveGenerationResult, error) {
+	if _, err := a.cat.GetDrive(ctx, driveID); err != nil {
 		return api.DriveGenerationResult{}, err
 	}
-	gate := a.driveOperationGate(driveID)
-	gate.controlMu.Lock()
-	controlLocked := true
-	defer func() {
-		if controlLocked {
-			gate.controlMu.Unlock()
-		}
-	}()
+	kinds, err := generationRetryKinds(kind)
+	if err != nil {
+		return api.DriveGenerationResult{}, err
+	}
 	label := generationLabel(kind)
-	taskCtx, done, admitted := a.registerDriveTaskContext(runCtx, driveID, generationScope(kind))
+	if kind == api.DriveGenerationPreviews && !a.previewEnabled() {
+		return api.DriveGenerationResult{}, fmt.Errorf("预览生成已关闭")
+	}
+	taskCtx, done, admitted := a.registerDriveTaskContext(ctx, driveID, 0)
 	if !admitted {
 		return api.DriveGenerationResult{State: "busy", Message: "当前网盘配置正在切换或正在删除，请稍后重试"}, nil
 	}
-	reserved := false
-	finish := func() {
-		if reserved {
-			gate.mu.Lock()
-			delete(gate.generationRequests, kind)
-			gate.mu.Unlock()
-		}
-		done()
-		if reserved {
-			a.notifyDriveRuntime(driveID, true)
-		}
+	defer done()
+	if a.generationRunner(driveID) == nil {
+		return api.DriveGenerationResult{}, fmt.Errorf("%s生成服务尚未就绪，请稍后重试", label)
 	}
-	started := false
-	defer func() {
-		if !started {
-			finish()
-		}
-	}()
-	// Task admission keeps this worker snapshot alive across configuration
-	// updates. The reservation also covers preparation before queueing starts.
-	work, err := a.driveGenerationWork(driveID, kind)
+	if _, err := a.resetFailedGeneration(taskCtx, driveID, kinds); err != nil {
+		return api.DriveGenerationResult{}, err
+	}
+	counts, err := a.cat.CountDueGeneration(taskCtx, driveID, a.previewEnabled(), time.Now())
 	if err != nil {
 		return api.DriveGenerationResult{}, err
 	}
-	gate.mu.Lock()
-	if gate.generationRequests[kind] || work.busy {
-		gate.mu.Unlock()
-		return api.DriveGenerationResult{State: "busy", Message: label + "生成任务正在进行"}, nil
+	if dueOfKind(counts, kind) > 0 {
+		a.wakeDriveGeneration(driveID)
+		return api.DriveGenerationResult{State: "started", Message: "已触发" + label + "生成"}, nil
 	}
-	if gate.generationRequests == nil {
-		gate.generationRequests = make(map[api.DriveGenerationKind]bool)
-	}
-	gate.generationRequests[kind] = true
-	reserved = true
-	gate.mu.Unlock()
-	controlLocked = false
-	gate.controlMu.Unlock()
-	prepareCtx, cancel := context.WithTimeout(taskCtx, 10*time.Second)
-	defer cancel()
-	stopCancel := context.AfterFunc(reqCtx, cancel)
-	defer stopCancel()
-	items, err := a.prepareDriveGeneration(prepareCtx, driveID, work)
+	stats, err := a.cat.CountDriveAssetStatsForDrive(taskCtx, driveID)
 	if err != nil {
 		return api.DriveGenerationResult{}, err
 	}
-	if err := taskCtx.Err(); err != nil {
-		return api.DriveGenerationResult{}, err
+	remaining := 0
+	switch kind {
+	case api.DriveGenerationThumbnails:
+		remaining = stats.Thumbnails[driveID].Pending + stats.Thumbnails[driveID].Failed
+	case api.DriveGenerationPreviews:
+		remaining = stats.Teasers[driveID].Pending + stats.Teasers[driveID].Failed
+	case api.DriveGenerationFingerprints:
+		remaining = stats.Fingerprints[driveID].Pending + stats.Fingerprints[driveID].Failed
 	}
-	if len(items) == 0 {
-		stats, err := a.cat.CountDriveAssetStatsForDrive(prepareCtx, driveID)
-		if err != nil {
-			return api.DriveGenerationResult{}, err
-		}
-		remaining := 0
-		switch kind {
-		case api.DriveGenerationThumbnails:
-			counts := stats.Thumbnails[driveID]
-			remaining = counts.Pending + counts.Failed
-		case api.DriveGenerationPreviews:
-			counts := stats.Teasers[driveID]
-			remaining = counts.Pending + counts.Failed
-		case api.DriveGenerationFingerprints:
-			counts := stats.Fingerprints[driveID]
-			remaining = counts.Pending + counts.Failed
-		}
-		if remaining > 0 {
-			return api.DriveGenerationResult{}, fmt.Errorf("%s资源尚未就绪，但当前没有可生成的项目", label)
-		}
-		a.scheduleDriveDurationBackfill(driveID)
-		return api.DriveGenerationResult{State: "ready", Message: label + "已全部就绪"}, nil
+	if remaining > 0 {
+		return api.DriveGenerationResult{}, fmt.Errorf("%s资源尚未就绪，但当前没有可生成的项目", label)
 	}
-	started = true
-	go func() {
-		defer finish()
-		finishEnqueue := a.beginDriveResourceEnqueue(driveID)
-		defer finishEnqueue()
-		enqueueDriveGenerationWork(taskCtx, driveID, kind, work, items)
-	}()
-	return api.DriveGenerationResult{State: "started", Message: "已触发" + label + "生成"}, nil
+	// Durations complete after the other steps; a drive with nothing else
+	// due may still have some to probe.
+	if counts.Any() {
+		a.wakeDriveGeneration(driveID)
+	}
+	return api.DriveGenerationResult{State: "ready", Message: label + "已全部就绪"}, nil
 }

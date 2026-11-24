@@ -17,7 +17,7 @@ const duplicateLookupScope = `COALESCE(hidden, 0) = 0 AND COALESCE(file_id, '') 
 
 // contentVerifiedWhere excludes rows whose source may have been replaced in
 // place. Their thumbnails and teasers can still describe the previous bytes
-// until the fingerprint worker settles the verification, so perceptual
+// until the fingerprint step settles the verification, so perceptual
 // matching must not use them.
 const contentVerifiedWhere = `COALESCE(previous_sampled_sha256, '') = ''`
 

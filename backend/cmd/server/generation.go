@@ -4,84 +4,196 @@ import (
 	"context"
 	"log"
 	"strings"
-	"time"
 
-	"github.com/nianzhibai/91/backend/internal/api"
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/drives"
 	"github.com/nianzhibai/91/backend/internal/drives/localupload"
 	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
 	"github.com/nianzhibai/91/backend/internal/fingerprint"
+	"github.com/nianzhibai/91/backend/internal/generation"
 	"github.com/nianzhibai/91/backend/internal/persistence"
 	"github.com/nianzhibai/91/backend/internal/preview"
+	"github.com/nianzhibai/91/backend/internal/tasklimit"
 )
 
-func (a *App) enqueueUploadedVideo(ctx context.Context, v *catalog.Video) {
-	if v == nil {
-		return
-	}
-	release, _, admitted := a.driveOperationGate(v.DriveID).beginTask(ctx, driveTaskScopePreview)
-	if !admitted {
-		return
-	}
-	defer release()
-	finishEnqueue := a.beginDriveResourceEnqueue(v.DriveID)
-	defer finishEnqueue()
-	a.mu.Lock()
-	worker := a.workers[v.DriveID]
-	thumbWorker := a.thumbWorkers[v.DriveID]
-	fingerprintWorker := a.fingerprintWorkers[v.DriveID]
-	a.mu.Unlock()
-
-	enqueueVideoGeneration(worker, thumbWorker, v, a.previewEnabled())
-	if fingerprintWorker != nil && v.FingerprintStatus != "ready" {
-		fingerprintWorker.Enqueue(v)
-	}
+// generationLimiter is the application-wide budget of videos running asset
+// steps at once, shared fairly among sources; fingerprints take none.
+func (a *App) generationLimiter() *tasklimit.Limiter {
+	a.generationLimiterOnce.Do(func() {
+		a.driveGenerationLimiter = tasklimit.New(a.liveConfigSettings().GenerationConcurrency)
+	})
+	return a.driveGenerationLimiter
 }
 
-// linkThumbnailHandOff passes videos a media job left without a thumbnail to
-// the drive's thumbnail worker.
-func linkThumbnailHandOff(media *preview.Worker, thumbnails *preview.ThumbWorker) {
-	if media == nil || thumbnails == nil {
-		return
-	}
-	media.OnThumbnailMissing = func(video *catalog.Video) {
-		if !thumbnails.EnqueueFollowUp(video) {
-			log.Printf("[thumb] dependent enqueue full drive=%s video=%s; remains pending for the next reconciliation", video.DriveID, video.ID)
+func (a *App) newPreviewGenerator() *preview.Generator {
+	previewCfg := preview.Config{}
+	if a.cfg != nil {
+		previewCfg = preview.Config{
+			FFmpegPath:      a.cfg.Preview.FFmpegPath,
+			FFprobePath:     a.cfg.Preview.FFprobePath,
+			FFmpegThreads:   a.cfg.Preview.FFmpegThreads,
+			DurationSeconds: a.cfg.Preview.DurationSeconds,
+			Width:           a.cfg.Preview.Width,
+			Segments:        a.cfg.Preview.Segments,
+			LocalDir:        a.cfg.Storage.LocalPreviewDir,
 		}
 	}
+	previewCfg.Hardware = a.generationHardware()
+	return preview.New(previewCfg)
 }
 
-// thumbnailsWithoutMediaJob lists the drive's videos the thumbnail worker
-// must cover: a due media job makes the thumbnail from the segments it reads.
-func (a *App) thumbnailsWithoutMediaJob(ctx context.Context, driveID string) ([]*catalog.Video, error) {
-	listed, err := a.cat.ListVideosNeedingThumbnail(ctx, driveID, 0)
+// newDriveGenerationRunner wires the drive's steps to one runner. A nil
+// generator leaves its steps out.
+func (a *App) newDriveGenerationRunner(drv drives.Drive, media preview.MediaGenerator, thumbnails preview.ThumbnailGenerator, paused bool) *generation.Runner {
+	driveID := drv.ID()
+	// Every step reading this drive pauses together when the provider throttles.
+	cooldown := &tasklimit.Cooldown{}
+	cooldownWait := drives.CooldownFor(drv.Kind())
+	onCooldown := func() { a.notifyDriveRuntime(driveID, true) }
+	fingerprints := fingerprint.NewJob(a.cat, drv, fingerprint.Config{RateLimitCooldown: cooldownWait})
+	fingerprints.Cooldown, fingerprints.OnCooldown = cooldown, onCooldown
+	steps := generation.Steps{Fingerprint: fingerprints}
+	if media != nil {
+		job := preview.NewMediaJob(media, a.cat, drv)
+		job.Gate = &a.previewGate
+		job.RateLimitCooldown, job.Cooldown, job.OnCooldown = cooldownWait, cooldown, onCooldown
+		steps.Media = job
+	}
+	if thumbnails != nil {
+		job := preview.NewThumbnailJob(thumbnails, a.cat, drv)
+		job.RateLimitCooldown, job.Cooldown, job.OnCooldown = cooldownWait, cooldown, onCooldown
+		steps.Thumbnail, steps.Duration = job, generation.StepFunc(job.ProbeDuration)
+	}
+
+	// The runner belongs to the runtime generation that created it: it may
+	// finish its work while a configuration change is pending, but never runs
+	// after a remount has replaced it.
+	gate := a.driveOperationGate(driveID)
+	runtimeGeneration := gate.currentGeneration()
+	return generation.New(generation.Config{
+		DriveID:         driveID,
+		Store:           a.cat,
+		Steps:           steps,
+		Limiter:         a.generationLimiter(),
+		Parallelism:     a.driveGenerationParallelism(context.Background(), driveID, drv.Kind()),
+		Cooldown:        cooldown,
+		PreviewsEnabled: a.previewEnabled,
+		Admit: func() func() {
+			release, admitted := gate.tryBeginTaskGeneration(runtimeGeneration)
+			if !admitted {
+				return nil
+			}
+			return release
+		},
+		Paused:          paused,
+		OnStatusChanged: func(immediate bool) { a.notifyDriveRuntime(driveID, immediate) },
+	})
+}
+
+// driveGenerationParallelism is how many videos the source generates at once:
+// the administrator's number for the drive, or its kind's default. Local
+// sources other than directories have no drive row and take the default.
+func (a *App) driveGenerationParallelism(ctx context.Context, driveID, kind string) int {
+	override := 0
+	if d, err := a.cat.GetDrive(ctx, driveID); err == nil {
+		override = d.GenerationParallelism
+	}
+	return generationParallelism(override, kind)
+}
+
+func generationParallelism(override int, kind string) int {
+	if override > 0 {
+		return override
+	}
+	return drives.DefaultGenerationParallelism(kind)
+}
+
+// applyDriveGenerationParallelism hands the drive's saved parallelism to its
+// runner, which applies it from the next video on.
+func (a *App) applyDriveGenerationParallelism(ctx context.Context, driveID string) error {
+	d, err := a.cat.GetDrive(ctx, driveID)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	previews := a.previewEnabled()
-	pending := listed[:0]
-	for _, v := range listed {
-		if !v.MediaWants(previews).Any() {
-			pending = append(pending, v)
-		}
+	if runner := a.generationRunner(driveID); runner != nil {
+		runner.SetParallelism(generationParallelism(d.GenerationParallelism, d.Kind))
 	}
-	return pending, nil
+	return nil
 }
 
-// enqueueVideoGeneration routes a video to its media job, which also makes a
-// missing thumbnail, or to the thumbnail worker when no media job is due.
-func enqueueVideoGeneration(media *preview.Worker, thumbnails *preview.ThumbWorker, v *catalog.Video, previewsEnabled bool) {
-	if v == nil {
-		return
+// startDriveGeneration replaces the drive's runner. A paused runner waits for
+// the next wake, as after an explicit stop.
+func (a *App) startDriveGeneration(ctx context.Context, driveID string, drv drives.Drive, active bool) {
+	gen := a.newPreviewGenerator()
+	a.registerDriveGeneration(ctx, driveID, a.newDriveGenerationRunner(drv, gen, gen, !active))
+}
+
+// registerDriveGeneration runs the runner as the drive's only one.
+func (a *App) registerDriveGeneration(ctx context.Context, driveID string, runner *generation.Runner) {
+	runCtx, cancel := context.WithCancel(ctx)
+	a.mu.Lock()
+	if a.runners == nil {
+		a.runners = make(map[string]*generation.Runner)
 	}
-	if media != nil && v.MediaWants(previewsEnabled).Any() {
-		media.Enqueue(v)
-		return
+	if a.cancels == nil {
+		a.cancels = make(map[string]context.CancelFunc)
 	}
-	if thumbnails != nil && v.ThumbnailURL == "" {
-		thumbnails.Enqueue(v)
+	if old := a.cancels[driveID]; old != nil {
+		old()
 	}
+	a.runners[driveID] = runner
+	a.cancels[driveID] = cancel
+	a.mu.Unlock()
+	go runner.Run(runCtx)
+}
+
+func (a *App) generationRunner(driveID string) *generation.Runner {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.runners[driveID]
+}
+
+func (a *App) generationRunners() []*generation.Runner {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	runners := make([]*generation.Runner, 0, len(a.runners))
+	for _, runner := range a.runners {
+		runners = append(runners, runner)
+	}
+	return runners
+}
+
+// wakeDriveGeneration asks the drive to take the work just written to the
+// catalog. It also resumes a drive whose generation was stopped.
+func (a *App) wakeDriveGeneration(driveID string) {
+	if runner := a.generationRunner(driveID); runner != nil {
+		runner.Wake()
+	}
+}
+
+func (a *App) wakeAllDriveGeneration() {
+	for _, runner := range a.generationRunners() {
+		runner.Wake()
+	}
+}
+
+// waitDriveGenerationIdle blocks until the drive has no due work left.
+func (a *App) waitDriveGenerationIdle(ctx context.Context, driveID string) error {
+	if runner := a.generationRunner(driveID); runner != nil {
+		return runner.WaitIdle(ctx)
+	}
+	return ctx.Err()
+}
+
+// waitAllGenerationIdle blocks until every attached drive has no due work.
+// Drives attached later take their work when they start.
+func (a *App) waitAllGenerationIdle(ctx context.Context) error {
+	for _, runner := range a.generationRunners() {
+		if err := runner.WaitIdle(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (a *App) regenPreview(ctx context.Context, videoID string) {
@@ -96,19 +208,7 @@ func (a *App) regenPreview(ctx context.Context, videoID string) {
 	if err != nil {
 		return
 	}
-	taskCtx, done, admitted := a.registerDriveTaskContext(ctx, v.DriveID, driveTaskScopePreview)
-	if !admitted {
-		return
-	}
-	defer done()
-	finishEnqueue := a.beginDriveResourceEnqueue(v.DriveID)
-	defer finishEnqueue()
-	a.mu.Lock()
-	worker := a.workers[v.DriveID]
-	a.mu.Unlock()
-	if worker != nil {
-		worker.EnqueueBlocking(taskCtx, v)
-	}
+	a.wakeDriveGeneration(v.DriveID)
 }
 
 func (a *App) regenAllPreviews(ctx context.Context) {
@@ -128,54 +228,8 @@ func (a *App) regenAllPreviews(ctx context.Context) {
 		log.Printf("[preview] request renewal of all videos: %v", err)
 		return
 	}
-	log.Printf("[preview] enqueue all visible videos for regen count=%d total=%d", len(items), total)
-	queued := 0
-	type driveAdmission struct {
-		ctx  context.Context
-		done func()
-	}
-	admissions := make(map[string]driveAdmission)
-	rejected := make(map[string]bool)
-	defer func() {
-		for _, admission := range admissions {
-			admission.done()
-		}
-	}()
-	for _, v := range items {
-		if err := ctx.Err(); err != nil {
-			log.Printf("[preview] enqueue all canceled after %d videos: %v", queued, err)
-			return
-		}
-		if rejected[v.DriveID] {
-			continue
-		}
-		admission, ok := admissions[v.DriveID]
-		if !ok {
-			taskCtx, done, taskAdmitted := a.registerDriveTaskContext(ctx, v.DriveID, driveTaskScopePreview)
-			if !taskAdmitted {
-				rejected[v.DriveID] = true
-				continue
-			}
-			finishEnqueue := a.beginDriveResourceEnqueue(v.DriveID)
-			admission = driveAdmission{ctx: taskCtx, done: func() { finishEnqueue(); done() }}
-			admissions[v.DriveID] = admission
-		}
-		a.mu.Lock()
-		worker := a.workers[v.DriveID]
-		a.mu.Unlock()
-		if worker == nil {
-			continue
-		}
-		if !worker.EnqueueBlocking(admission.ctx, v) {
-			log.Printf("[preview] enqueue all canceled for drive=%s after %d videos", v.DriveID, queued)
-			admission.done()
-			delete(admissions, v.DriveID)
-			rejected[v.DriveID] = true
-			continue
-		}
-		queued++
-	}
-	log.Printf("[preview] enqueued all visible videos for regen queued=%d", queued)
+	log.Printf("[preview] requested renewal of all visible videos count=%d total=%d", len(items), total)
+	a.wakeAllDriveGeneration()
 }
 
 func (a *App) resetFailedGeneration(ctx context.Context, driveID string, kinds catalog.GenerationKinds) (catalog.GenerationRetryCounts, error) {
@@ -188,19 +242,6 @@ func (a *App) resetFailedGeneration(ctx context.Context, driveID string, kinds c
 		log.Printf("[generation-retry] drive=%s reset_failed thumbnails=%d previews=%d fingerprints=%d", driveID, counts.Thumbnails, counts.Previews, counts.Fingerprints)
 	}
 	return counts, err
-}
-
-func (a *App) regenFailedPreviews(ctx context.Context, driveID string) {
-	if !a.previewEnabled() {
-		return
-	}
-	a.regenerateDriveResources(ctx, driveID, api.DriveGenerationPreviews)
-}
-
-// regenFailedThumbnails retries missing failed covers. Duration-only work belongs
-// after this drive's resource generation and never changes existing thumbnail state.
-func (a *App) regenFailedThumbnails(ctx context.Context, driveID string) {
-	a.regenerateDriveResources(ctx, driveID, api.DriveGenerationThumbnails)
 }
 
 // listScanTargetIDs 返回 nightly Phase 1 应扫描的所有 drive ID
@@ -240,97 +281,6 @@ func (a *App) listCrawlerDriveIDs(ctx context.Context) []string {
 		out = append(out, d.ID)
 	}
 	return out
-}
-
-// waitAllPreviewQueuesIdle 阻塞直到所有 drive 的封面、预览视频和指纹 worker
-// 队列都为空且无 in-flight 任务。
-//
-// 顺序：先等预览视频，再等封面（预览完成会追加封面任务），最后等指纹。队列生成时互不等待；
-// nightly 只在 phase 边界统一等待它们都 drain，保证爬虫视频迁移前本地资产已产出。
-// 若 ctx 在等待中被取消（shutdown / 管理员停止），立即返回 ctx.Err。
-func (a *App) waitAllPreviewQueuesIdle(ctx context.Context) error {
-	a.mu.Lock()
-	thumbWorkers := make([]*preview.ThumbWorker, 0, len(a.thumbWorkers))
-	previewWorkers := make([]*preview.Worker, 0, len(a.workers))
-	fingerprintWorkers := make([]*fingerprint.Worker, 0, len(a.fingerprintWorkers))
-	for _, w := range a.thumbWorkers {
-		thumbWorkers = append(thumbWorkers, w)
-	}
-	for _, w := range a.workers {
-		previewWorkers = append(previewWorkers, w)
-	}
-	for _, w := range a.fingerprintWorkers {
-		fingerprintWorkers = append(fingerprintWorkers, w)
-	}
-	a.mu.Unlock()
-
-	for _, w := range previewWorkers {
-		if err := w.WaitIdle(ctx); err != nil {
-			return err
-		}
-	}
-	for _, w := range thumbWorkers {
-		if err := w.WaitIdle(ctx); err != nil {
-			return err
-		}
-	}
-	if err := a.waitFingerprintQueueingIdle(ctx, ""); err != nil {
-		return err
-	}
-	for _, w := range fingerprintWorkers {
-		if err := w.WaitIdle(ctx); err != nil {
-			return err
-		}
-	}
-	return a.waitDurationBackfillsIdle(ctx, "")
-}
-
-func (a *App) waitDriveGenerationQueuesIdle(ctx context.Context, driveID string) error {
-	a.mu.Lock()
-	thumbWorker := a.thumbWorkers[driveID]
-	previewWorker := a.workers[driveID]
-	fingerprintWorker := a.fingerprintWorkers[driveID]
-	a.mu.Unlock()
-	if err := previewWorker.WaitIdle(ctx); err != nil {
-		return err
-	}
-	if err := thumbWorker.WaitIdle(ctx); err != nil {
-		return err
-	}
-	if err := a.waitFingerprintQueueingIdle(ctx, driveID); err != nil {
-		return err
-	}
-	if err := fingerprintWorker.WaitIdle(ctx); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (a *App) waitFingerprintQueueingIdle(ctx context.Context, driveID string) error {
-	if !a.fingerprintQueueingBusy(driveID) {
-		return nil
-	}
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			if !a.fingerprintQueueingBusy(driveID) {
-				return nil
-			}
-		}
-	}
-}
-
-func (a *App) fingerprintQueueingBusy(driveID string) bool {
-	a.fingerprintQueueMu.Lock()
-	defer a.fingerprintQueueMu.Unlock()
-	if driveID != "" {
-		return a.fingerprintQueueing[driveID]
-	}
-	return len(a.fingerprintQueueing) > 0
 }
 
 func shouldScanDrive(d drives.Drive) bool {

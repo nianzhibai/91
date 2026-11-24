@@ -20,7 +20,6 @@ import (
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/crawljob"
 	"github.com/nianzhibai/91/backend/internal/persistence"
-	"github.com/nianzhibai/91/backend/internal/tasklimit"
 )
 
 const DefaultTargetNew = 10
@@ -28,21 +27,20 @@ const DefaultTargetNew = 10
 var errCrawlTimeLimit = errors.New("crawler time limit reached")
 
 type CrawlerConfig struct {
-	FingerprintLimiter *tasklimit.Limiter
-	Driver             *Driver
-	Catalog            *catalog.Catalog
-	CrawlerName        string
-	PythonPath         string
-	FFmpegPath         string
-	FFprobePath        string
-	ScriptPath         string
-	WorkDir            string
-	CommonThumbDir     string
-	ProxyURL           string
-	ConfigJSON         string
-	FeedID             string
-	HTTPClient         *http.Client
-	DownloadTimeout    time.Duration
+	Driver          *Driver
+	Catalog         *catalog.Catalog
+	CrawlerName     string
+	PythonPath      string
+	FFmpegPath      string
+	FFprobePath     string
+	ScriptPath      string
+	WorkDir         string
+	CommonThumbDir  string
+	ProxyURL        string
+	ConfigJSON      string
+	FeedID          string
+	HTTPClient      *http.Client
+	DownloadTimeout time.Duration
 	// RunTimeout bounds discovery and downloads, not processing completed media.
 	RunTimeout       time.Duration
 	OperationTimeout time.Duration
@@ -97,7 +95,7 @@ func NewCrawler(cfg CrawlerConfig) *Crawler {
 		_ = configureExplicitProxy(transport, cfg.ProxyURL)
 		cfg.HTTPClient = &http.Client{Transport: transport}
 	}
-	importer := &Importer{cfg: ImporterConfig{Driver: cfg.Driver, Catalog: cfg.Catalog, FingerprintLimiter: cfg.FingerprintLimiter, CrawlerName: cfg.CrawlerName, FFmpegPath: cfg.FFmpegPath, FFprobePath: cfg.FFprobePath, CommonThumbDir: cfg.CommonThumbDir, HTTPClient: cfg.HTTPClient, DownloadTimeout: cfg.DownloadTimeout}}
+	importer := &Importer{cfg: ImporterConfig{Driver: cfg.Driver, Catalog: cfg.Catalog, CrawlerName: cfg.CrawlerName, FFmpegPath: cfg.FFmpegPath, FFprobePath: cfg.FFprobePath, CommonThumbDir: cfg.CommonThumbDir, HTTPClient: cfg.HTTPClient, DownloadTimeout: cfg.DownloadTimeout}}
 	return &Crawler{cfg: cfg, Importer: importer}
 }
 

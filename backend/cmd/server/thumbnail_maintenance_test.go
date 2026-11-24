@@ -13,7 +13,6 @@ import (
 
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/config"
-	"github.com/nianzhibai/91/backend/internal/preview"
 )
 
 func TestNormalizeLegacyThumbnailFilesConvertsAndMarksMigration(t *testing.T) {
@@ -280,7 +279,7 @@ func TestReconcileMissingLocalPreviewFilesQueuesOnlyInvalidReadyReferences(t *te
 	}
 }
 
-func TestReconcileLocalGeneratedAssetsAdmitsRepairedWorkBeforeReturning(t *testing.T) {
+func TestReconcileLocalGeneratedAssetsWakesDrivesForRepairedWork(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	previewDir := filepath.Join(root, "previews")
@@ -293,92 +292,44 @@ func TestReconcileLocalGeneratedAssetsAdmitsRepairedWorkBeforeReturning(t *testi
 
 	now := time.Now()
 	video := &catalog.Video{
-		ID:            "missing-assets",
-		DriveID:       "drive-id",
-		FileID:        "missing-file",
-		Title:         "Missing Assets",
-		ThumbnailURL:  "/p/thumb/missing-assets",
-		PreviewLocal:  filepath.Join(previewDir, "missing-assets.mp4"),
-		PreviewStatus: "ready",
-		PublishedAt:   now,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		ID:              "missing-assets",
+		DriveID:         "drive-id",
+		FileID:          "missing-file",
+		Title:           "Missing Assets",
+		DurationSeconds: 30,
+		ThumbnailURL:    "/p/thumb/missing-assets",
+		PreviewLocal:    filepath.Join(previewDir, "missing-assets.mp4"),
+		PreviewStatus:   "ready",
+		PublishedAt:     now,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 	if err := cat.UpsertVideo(ctx, video); err != nil {
 		t.Fatalf("seed video: %v", err)
 	}
+	markMediaDone(t, cat, video.ID)
 
-	drive := &serverFakeDrive{}
-	generator := &serverFakeTeaserGenerator{}
-	previewWorker := preview.NewWorker(generator, cat, drive)
-	thumbnailWorker := preview.NewThumbWorker(generator, cat, drive)
 	app := &App{
-		cat:          cat,
-		cfg:          &config.Config{Storage: config.Storage{LocalPreviewDir: previewDir}},
-		workers:      map[string]*preview.Worker{"drive-id": previewWorker},
-		thumbWorkers: map[string]*preview.ThumbWorker{"drive-id": thumbnailWorker},
+		cat: cat,
+		cfg: &config.Config{Storage: config.Storage{LocalPreviewDir: previewDir}},
 	}
+	// Hold the only slot, so the repaired work stays due for inspection.
+	release, err := app.generationLimiter().Acquire(ctx, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	generator := &serverFakeTeaserGenerator{}
+	runner := startPausedTestGeneration(t, runCtx, app, &serverFakeDrive{}, generator, generator)
 
-	gate := app.driveOperationGate("drive-id")
-	gate.mu.Lock()
-	gate.beginBlockedLocked()
-	gate.mu.Unlock()
-	gateBlocked := true
-	defer func() {
-		if !gateBlocked {
-			return
-		}
-		gate.mu.Lock()
-		gate.endBlockedLocked()
-		gate.mu.Unlock()
-	}()
-
-	type reconciliationResult struct {
-		resets int
-		err    error
+	resets, err := app.reconcileLocalGeneratedAssets(ctx)
+	if err != nil {
+		t.Fatalf("reconcile generated assets: %v", err)
 	}
-	resultCh := make(chan reconciliationResult, 1)
-	go func() {
-		resets, err := app.reconcileLocalGeneratedAssets(ctx)
-		resultCh <- reconciliationResult{resets: resets, err: err}
-	}()
-
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		stored, getErr := cat.GetVideo(ctx, video.ID)
-		if getErr != nil {
-			t.Fatalf("get reconciled video: %v", getErr)
-		}
-		if stored.ThumbnailURL == "" && stored.PreviewStatus == "pending" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("assets were not reset before queue admission: thumbnail=%q preview_status=%q", stored.ThumbnailURL, stored.PreviewStatus)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	select {
-	case result := <-resultCh:
-		t.Fatalf("reconciliation returned before blocked queue admission completed: %+v", result)
-	default:
-	}
-
-	gate.mu.Lock()
-	gate.endBlockedLocked()
-	gate.mu.Unlock()
-	gateBlocked = false
-
-	var result reconciliationResult
-	select {
-	case result = <-resultCh:
-	case <-time.After(2 * time.Second):
-		t.Fatal("reconciliation did not return after queue admission unblocked")
-	}
-	if result.err != nil {
-		t.Fatalf("reconcile generated assets: %v", result.err)
-	}
-	if result.resets != 2 {
-		t.Fatalf("reset assets = %d, want thumbnail + preview", result.resets)
+	if resets != 2 {
+		t.Fatalf("reset assets = %d, want thumbnail + preview", resets)
 	}
 	stored, err := cat.GetVideo(ctx, video.ID)
 	if err != nil {
@@ -392,12 +343,13 @@ func TestReconcileLocalGeneratedAssetsAdmitsRepairedWorkBeforeReturning(t *testi
 			stored.PreviewLocal,
 		)
 	}
-	// The media job regenerates the teaser and the thumbnail together.
-	if got := thumbnailWorker.Status().QueueLength; got != 0 {
-		t.Fatalf("thumbnail queue length on return = %d, want 0", got)
+	if runner.Status().Paused {
+		t.Fatal("reconciliation did not wake the drive")
 	}
-	if got := previewWorker.Status().QueueLength; got != 1 {
-		t.Fatalf("preview queue length on return = %d, want admitted 1", got)
+	// The media job regenerates the teaser and the thumbnail together.
+	counts, err := cat.CountDueGeneration(ctx, "drive-id", true, time.Now())
+	if err != nil || counts.Media != 1 {
+		t.Fatalf("due work = %+v, %v; want the repaired media job", counts, err)
 	}
 }
 

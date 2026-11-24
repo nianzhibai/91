@@ -9,7 +9,7 @@ import (
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/config"
 	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
-	"github.com/nianzhibai/91/backend/internal/fingerprint"
+	"github.com/nianzhibai/91/backend/internal/generation"
 	"github.com/nianzhibai/91/backend/internal/nightly"
 	"github.com/nianzhibai/91/backend/internal/preview"
 	"github.com/nianzhibai/91/backend/internal/proxy"
@@ -22,19 +22,14 @@ type App struct {
 	registry *proxy.Registry
 	proxy    *proxy.Proxy
 
-	mu                 sync.Mutex
-	workers            map[string]*preview.Worker
-	thumbWorkers       map[string]*preview.ThumbWorker
-	fingerprintWorkers map[string]*fingerprint.Worker
-	// Each drive completes missing metadata after its own generation queues drain.
-	durationBackfills map[string]*driveDurationBackfill
+	mu sync.Mutex
+	// runners holds each attached drive's generation runner.
+	runners map[string]*generation.Runner
 	// Shared for the lifetime of the app, including drive remounts.
-	generationLimitsOnce   sync.Once
+	generationLimiterOnce  sync.Once
+	driveGenerationLimiter *tasklimit.Limiter
 	generationHardwareOnce sync.Once
 	hardware               *preview.Hardware
-	thumbnailLimiter       *tasklimit.Limiter
-	previewLimiter         *tasklimit.Limiter
-	fingerprintLimiter     *tasklimit.Limiter
 	// previewGate is the only runtime source of the global preview switch.
 	previewGate preview.Gate
 	cancels     map[string]context.CancelFunc
@@ -42,7 +37,7 @@ type App struct {
 	scriptCrawlers map[string]*scriptcrawler.Crawler
 
 	// driveAttachMu 串行化云盘挂载/重挂载。挂载会访问上游服务，可能较慢；
-	// 串行化可以避免启动后台挂载和手动扫盘按需挂载同一个 drive 时重复创建 worker。
+	// 串行化可以避免启动后台挂载和手动扫盘按需挂载同一个 drive 时重复创建运行时。
 	driveAttachMu sync.Mutex
 
 	// driveOperationGates coordinate task generations with configuration writes.
@@ -82,15 +77,10 @@ type App struct {
 	scanProgress map[string]driveScanProgress
 
 	// taskCancelMu 保护 driveTaskCancels。这里登记的是可被"停止任务"按钮中断
-	// 的 drive 级任务上下文：扫盘、91 爬取、指纹补队列、失败生成重试等。
+	// 的 drive 级任务上下文：扫盘、91 爬取、手动生成请求等。
 	taskCancelMu       sync.Mutex
 	driveTaskCancelSeq uint64
 	driveTaskCancels   map[string]map[uint64]context.CancelFunc
-
-	// fingerprintQueueing 去重每个 drive 的 pending 指纹补队列任务，避免定时
-	// reconcile 和扫盘结束同时为同一批 pending 视频启动多个长时间入队 goroutine。
-	fingerprintQueueMu  sync.Mutex
-	fingerprintQueueing map[string]bool
 
 	// crawlerUploadRunning 去重管理员手动发起的单爬虫上传任务。
 	crawlerUploadMu      sync.Mutex

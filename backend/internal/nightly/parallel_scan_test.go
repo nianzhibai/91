@@ -48,7 +48,7 @@ func TestMaintenanceScansDrivesConcurrentlyBeforeLaterPhases(t *testing.T) {
 					completed.Add(1)
 					return result
 				},
-				WaitPreviewQueuesIdle: func(ctx context.Context) error {
+				WaitGenerationIdle: func(ctx context.Context) error {
 					if got := completed.Load(); got != int32(len(ids)) {
 						t.Errorf("queue wait started after %d scans, want %d", got, len(ids))
 					}
@@ -175,7 +175,7 @@ func TestStopMaintenanceWaitsForEveryScanToExit(t *testing.T) {
 					<-releaseCleanup
 					return scanjob.Result{DriveID: id, State: scanjob.Canceled}
 				},
-				WaitPreviewQueuesIdle: func(context.Context) error { rec.push("wait"); return nil },
+				WaitGenerationIdle: func(context.Context) error { rec.push("wait"); return nil },
 				RunLocalAssetReconciliation: func(context.Context) (int, error) {
 					rec.push("reconcile")
 					return 0, nil

@@ -33,10 +33,9 @@ func (a *App) runStartupThumbnailNormalization(ctx context.Context) {
 }
 
 // reconcileLocalGeneratedAssets repairs local thumbnail and preview
-// references, then waits for every currently registered drive to finish
-// admitting the resulting pending work. Generation itself remains asynchronous;
-// the nightly runner establishes the queue-idle boundary after this method
-// returns. Previews are skipped while the switch is off; enabling it runs
+// references and wakes every drive to regenerate them. Generation itself
+// remains asynchronous; the nightly runner waits for the drives to go idle
+// after this method returns. Previews are skipped while the switch is off; enabling it runs
 // their reconciliation instead.
 func (a *App) reconcileLocalGeneratedAssets(ctx context.Context) (int, error) {
 	thumbnailStats, thumbnailErr := a.reconcileMissingLocalThumbnailFiles(ctx)
@@ -54,13 +53,11 @@ func (a *App) reconcileLocalGeneratedAssets(ctx context.Context) (int, error) {
 		return resets, errors.Join(reconcileErr, err)
 	}
 	log.Printf(
-		"[asset-reconciliation] admitting repaired assets thumbnail_resets=%d preview_resets=%d",
+		"[asset-reconciliation] waking drives for repaired assets thumbnail_resets=%d preview_resets=%d",
 		thumbnailStats.Reset,
 		previewStats.Reset,
 	)
-	if err := a.enqueueRegisteredDriveGenerationAndWait(ctx); err != nil {
-		return resets, errors.Join(reconcileErr, err)
-	}
+	a.wakeAllDriveGeneration()
 	return resets, reconcileErr
 }
 

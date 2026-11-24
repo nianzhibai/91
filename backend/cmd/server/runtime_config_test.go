@@ -48,7 +48,7 @@ func TestConfigSavePersistsAndHotUpdatesRuntimeSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	next, err := manager.ReplaceYAML([]byte("nightly:\n  disabled: true\n  start_time: \"00:45\"\n  timezone: Asia/Shanghai\ntags:\n  builtin_pack_enabled: false\ngeneration:\n  preview_concurrency: 4\n  thumbnail_concurrency: 2\n  fingerprint_concurrency: 3\n"), version)
+	next, err := manager.ReplaceYAML([]byte("nightly:\n  disabled: true\n  start_time: \"00:45\"\n  timezone: Asia/Shanghai\ntags:\n  builtin_pack_enabled: false\ngeneration:\n  concurrency: 4\n"), version)
 	if err != nil {
 		t.Fatalf("replace config: %v", err)
 	}
@@ -68,19 +68,12 @@ func TestConfigSavePersistsAndHotUpdatesRuntimeSettings(t *testing.T) {
 		t.Fatalf("live scheduler disabled state was not applied: %#v", next.Settings)
 	}
 	if next.RestartRequired {
-		t.Fatal("preview concurrency should hot update without a restart")
+		t.Fatal("generation concurrency should hot update without a restart")
 	}
-	if next.Settings.PreviewConcurrency != 4 || next.Settings.ThumbnailConcurrency != 2 || next.Settings.FingerprintConcurrency != 3 {
+	if next.Settings.GenerationConcurrency != 4 {
 		t.Fatalf("global settings not applied: %+v", next.Settings)
 	}
-	thumbnails, previews, fingerprints := app.generationLimits()
-	assertBudgetAvailable(t, thumbnails, 2)
-	assertBudgetAvailable(t, previews, 4)
-	assertBudgetAvailable(t, fingerprints, 3)
-	latePreview, lateThumb, lateFingerprint := app.newDriveGenerationWorkers(&serverFakeDrive{})
-	if latePreview.Limiter != previews || lateThumb.Limiter != thumbnails || lateFingerprint.Config.Limiter != fingerprints {
-		t.Fatal("late attached drive did not receive live global limits")
-	}
+	assertBudgetAvailable(t, app.generationLimiter(), 4)
 	if tagCacheInvalidations != 0 {
 		t.Fatalf("configuration changes invalidated tags: %d", tagCacheInvalidations)
 	}

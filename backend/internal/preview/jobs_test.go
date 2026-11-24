@@ -3,28 +3,28 @@ package preview
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/generation"
 	"github.com/nianzhibai/91/backend/internal/mediasig"
+	"github.com/nianzhibai/91/backend/internal/tasklimit"
 )
 
-func TestThumbWorkerUpdatesThumbnailAndDurationWithoutChangingPreviewStatus(t *testing.T) {
+func TestThumbnailJobUpdatesThumbnailAndDurationWithoutChangingPreviewStatus(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "thumb-worker-video")
 
 	gen := &fakeThumbGenerator{probeDuration: 42}
 	drv := &previewFakeDrive{}
-	worker := NewThumbWorker(gen, cat, drv)
+	worker := NewThumbnailJob(gen, cat, drv)
 
-	worker.process(ctx, video)
+	worker.Run(ctx, video)
 
 	got, err := cat.GetVideo(ctx, video.ID)
 	if err != nil {
@@ -53,7 +53,7 @@ func TestThumbWorkerUpdatesThumbnailAndDurationWithoutChangingPreviewStatus(t *t
 	}
 }
 
-func TestThumbWorkerDefersDurationUntilFinalBackfill(t *testing.T) {
+func TestThumbnailJobLeavesExistingCoverDurationToProbe(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "thumb-worker-existing-thumbnail")
 	video.ThumbnailURL = "/p/thumb/" + video.ID
@@ -63,13 +63,13 @@ func TestThumbWorkerDefersDurationUntilFinalBackfill(t *testing.T) {
 
 	gen := &fakeThumbGenerator{probeDuration: 19}
 	drv := &previewFakeDrive{}
-	worker := NewThumbWorker(gen, cat, drv)
+	worker := NewThumbnailJob(gen, cat, drv)
 
-	worker.process(ctx, video)
+	worker.Run(ctx, video)
 	if gen.probeCalls != 0 {
 		t.Fatal("ordinary cover work probed existing thumbnail duration")
 	}
-	worker.processDuration(ctx, video)
+	worker.ProbeDuration(ctx, video)
 
 	got, err := cat.GetVideo(ctx, video.ID)
 	if err != nil {
@@ -96,15 +96,15 @@ func TestThumbWorkerDefersDurationUntilFinalBackfill(t *testing.T) {
 	}
 }
 
-func TestThumbWorkerGeneratesThumbnailForCrawlerLikeVideoID(t *testing.T) {
+func TestThumbnailJobGeneratesThumbnailForCrawlerLikeVideoID(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "scriptcrawler-crawler-main-source001")
 
 	gen := &fakeThumbGenerator{probeDuration: 42}
 	drv := &previewFakeDrive{kind: "pikpak"}
-	worker := NewThumbWorker(gen, cat, drv)
+	worker := NewThumbnailJob(gen, cat, drv)
 
-	worker.process(ctx, video)
+	worker.Run(ctx, video)
 
 	got, err := cat.GetVideo(ctx, video.ID)
 	if err != nil {
@@ -135,9 +135,9 @@ func TestDurationBackfillFailurePreservesReadyThumbnail(t *testing.T) {
 
 	gen := &fakeThumbGenerator{probeErr: errors.New("invalid data found when processing input")}
 	drv := &previewFakeDrive{}
-	worker := NewThumbWorker(gen, cat, drv)
+	worker := NewThumbnailJob(gen, cat, drv)
 
-	worker.processDuration(ctx, video)
+	worker.ProbeDuration(ctx, video)
 
 	got, err := cat.GetVideo(ctx, video.ID)
 	if err != nil {
@@ -156,20 +156,20 @@ func TestDurationBackfillFailurePreservesReadyThumbnail(t *testing.T) {
 	if len(ready) != 1 || ready[0].ID != video.ID {
 		t.Fatalf("ready thumbnails = %#v, want only %s", ready, video.ID)
 	}
-	worker.process(ctx, video)
+	worker.Run(ctx, video)
 	if gen.probeCalls != 1 {
 		t.Fatalf("ordinary cover work repeated duration probe %d times", gen.probeCalls)
 	}
-	missing, err := cat.CountVideosNeedingThumbnail(ctx, video.DriveID)
+	counts, err := cat.CountDueGeneration(ctx, video.DriveID, true, time.Now())
 	if err != nil {
-		t.Fatalf("count videos needing thumbnail: %v", err)
+		t.Fatalf("count due generation: %v", err)
 	}
-	if missing != 0 {
-		t.Fatalf("missing thumbnails = %d, want 0 for an existing cover", missing)
+	if counts.Thumbnails != 0 {
+		t.Fatalf("missing thumbnails = %d, want 0 for an existing cover", counts.Thumbnails)
 	}
 }
 
-func TestThumbWorkerUsesOriginalVideoWhenLocalPreviewExists(t *testing.T) {
+func TestThumbnailJobUsesOriginalVideoWhenLocalPreviewExists(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "thumb-worker-original-with-local-preview")
 	localPreview := filepath.Join(t.TempDir(), "preview.mp4")
@@ -183,9 +183,9 @@ func TestThumbWorkerUsesOriginalVideoWhenLocalPreviewExists(t *testing.T) {
 
 	gen := &fakeThumbGenerator{probeDuration: 42}
 	drv := &previewFakeDrive{}
-	worker := NewThumbWorker(gen, cat, drv)
+	worker := NewThumbnailJob(gen, cat, drv)
 
-	worker.process(ctx, video)
+	worker.Run(ctx, video)
 
 	got, err := cat.GetVideo(ctx, video.ID)
 	if err != nil {
@@ -205,7 +205,7 @@ func TestThumbWorkerUsesOriginalVideoWhenLocalPreviewExists(t *testing.T) {
 	}
 }
 
-func TestPreviewWorkerGeneratesTeaserWithoutReplacingExistingThumbnail(t *testing.T) {
+func TestMediaJobGeneratesTeaserWithoutReplacingExistingThumbnail(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "preview-worker-video")
 	video.ThumbnailURL = "https://thumbnail.example/original.jpg"
@@ -215,9 +215,9 @@ func TestPreviewWorkerGeneratesTeaserWithoutReplacingExistingThumbnail(t *testin
 
 	gen := &fakeTeaserGenerator{}
 	drv := &previewFakeDrive{}
-	worker := NewWorker(gen, cat, drv)
+	worker := NewMediaJob(gen, cat, drv)
 
-	worker.process(ctx, video)
+	worker.Run(ctx, video)
 
 	got, err := cat.GetVideo(ctx, video.ID)
 	if err != nil {
@@ -234,15 +234,15 @@ func TestPreviewWorkerGeneratesTeaserWithoutReplacingExistingThumbnail(t *testin
 	}
 }
 
-func TestPreviewWorkerStoresTeaserSignature(t *testing.T) {
+func TestMediaJobStoresTeaserSignature(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "signed-preview-video")
 	signature := &mediasig.Signature{Duration: time.Minute, Frames: []mediasig.Frame{
 		{At: 12 * time.Second, Hash: 0x1234, Informative: true},
 	}}
-	worker := NewWorker(&fakeTeaserGenerator{signature: signature}, cat, &previewFakeDrive{})
+	worker := NewMediaJob(&fakeTeaserGenerator{signature: signature}, cat, &previewFakeDrive{})
 
-	worker.process(ctx, video)
+	worker.Run(ctx, video)
 
 	stored, err := cat.LoadVideoSignatures(ctx, []string{video.ID})
 	if err != nil {
@@ -253,22 +253,20 @@ func TestPreviewWorkerStoresTeaserSignature(t *testing.T) {
 	}
 }
 
-func TestMediaJobHandsMissingThumbnailToThumbnailWorker(t *testing.T) {
+func TestMediaJobLeavesThumbnailPendingWhenSegmentsGiveNone(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "media-without-thumbnail")
-	worker := NewWorker(&fakeTeaserGenerator{}, cat, &previewFakeDrive{})
-	var handedOff *catalog.Video
-	worker.OnThumbnailMissing = func(video *catalog.Video) {
-		handedOff = video
-	}
+	worker := NewMediaJob(&fakeTeaserGenerator{}, cat, &previewFakeDrive{})
 
-	worker.process(ctx, video)
+	worker.Run(ctx, video)
 
-	if handedOff == nil || handedOff.ID != video.ID {
-		t.Fatalf("handed off video = %#v, want %s", handedOff, video.ID)
+	got, err := cat.GetVideo(ctx, video.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if handedOff.PreviewStatus != "ready" || handedOff.PreviewLocal == "" {
-		t.Fatalf("handed off preview status=%q local=%q", handedOff.PreviewStatus, handedOff.PreviewLocal)
+	if got.PreviewStatus != "ready" || got.PreviewLocal == "" || got.ThumbnailURL != "" {
+		t.Fatalf("preview status=%q local=%q thumbnail=%q, want the teaser and the cover left to its step",
+			got.PreviewStatus, got.PreviewLocal, got.ThumbnailURL)
 	}
 }
 
@@ -280,12 +278,9 @@ func TestMediaJobSavesThumbnailFromItsSegments(t *testing.T) {
 		t.Fatal(err)
 	}
 	gen := &fakeTeaserGenerator{thumbnailPath: thumbnail}
-	worker := NewWorker(gen, cat, &previewFakeDrive{})
-	worker.OnThumbnailMissing = func(video *catalog.Video) {
-		t.Errorf("thumbnail handed off although the job produced one: %s", video.ID)
-	}
+	worker := NewMediaJob(gen, cat, &previewFakeDrive{})
 
-	worker.process(ctx, video)
+	worker.Run(ctx, video)
 
 	if len(gen.requests) != 1 || !gen.requests[0].Thumbnail {
 		t.Fatalf("requests = %+v, want the missing thumbnail requested", gen.requests)
@@ -307,7 +302,7 @@ func TestMediaJobSettlesForVideosTooShortToSign(t *testing.T) {
 		t.Fatal(err)
 	}
 	gen := &fakeTeaserGenerator{}
-	worker := NewWorker(gen, cat, &previewFakeDrive{})
+	worker := NewMediaJob(gen, cat, &previewFakeDrive{})
 	stored, err := cat.GetVideo(ctx, video.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -316,7 +311,7 @@ func TestMediaJobSettlesForVideosTooShortToSign(t *testing.T) {
 		t.Fatalf("wants = %+v, want only the teaser", wants)
 	}
 
-	worker.process(ctx, stored)
+	worker.Run(ctx, stored)
 
 	got, err := cat.GetVideo(ctx, video.ID)
 	if err != nil {
@@ -325,8 +320,8 @@ func TestMediaJobSettlesForVideosTooShortToSign(t *testing.T) {
 	if got.PreviewStatus != "ready" || got.MediaStatus != "ready" {
 		t.Fatalf("preview = %q media = %q, want both settled", got.PreviewStatus, got.MediaStatus)
 	}
-	if due, err := cat.ListVideosNeedingMedia(ctx, video.DriveID, true); err != nil || len(due) != 0 {
-		t.Fatalf("due = %d err = %v, want the finished job not queued again", len(due), err)
+	if counts, err := cat.CountDueGeneration(ctx, video.DriveID, true, time.Now()); err != nil || counts.Media != 0 {
+		t.Fatalf("due = %+v err = %v, want the finished job not due again", counts, err)
 	}
 	if gen.generateCalls != 1 {
 		t.Fatalf("generate calls = %d, want one", gen.generateCalls)
@@ -365,7 +360,7 @@ func TestMediaRenewalReplacesOnlyGeneratedThumbnails(t *testing.T) {
 			t.Fatal(err)
 		}
 		gen := &fakeTeaserGenerator{thumbnailPath: thumbnail}
-		NewWorker(gen, cat, &previewFakeDrive{}).process(ctx, before)
+		NewMediaJob(gen, cat, &previewFakeDrive{}).Run(ctx, before)
 
 		if len(gen.requests) != 1 || gen.requests[0].Thumbnail != tc.renewed {
 			t.Fatalf("%s: requests = %+v, want thumbnail requested = %v", tc.source, gen.requests, tc.renewed)
@@ -381,276 +376,7 @@ func TestMediaRenewalReplacesOnlyGeneratedThumbnails(t *testing.T) {
 	}
 }
 
-func TestPreviewReadyFollowUpSurvivesRunningThumbnailAttempt(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	cat, video := seedPreviewTestVideo(t, "preview-ready-running-thumbnail")
-	gen := &followUpThumbGenerator{
-		started:      make(chan int, 2),
-		releaseFirst: make(chan struct{}),
-	}
-	worker := NewThumbWorker(gen, cat, &previewFakeDrive{})
-	go worker.Run(ctx)
-	if !worker.Enqueue(video) {
-		t.Fatal("enqueue initial thumbnail returned false")
-	}
-
-	select {
-	case call := <-gen.started:
-		if call != 1 {
-			t.Fatalf("first thumbnail call = %d, want 1", call)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("initial thumbnail generation did not start")
-	}
-	if err := cat.UpdatePreviewForSource(ctx, video, "/tmp/preview.mp4", "ready"); err != nil {
-		t.Fatalf("mark preview ready: %v", err)
-	}
-	ready := *video
-	ready.PreviewLocal = "/tmp/preview.mp4"
-	ready.PreviewStatus = "ready"
-	if !worker.EnqueueFollowUp(&ready) {
-		t.Fatal("enqueue preview-ready follow-up returned false")
-	}
-	close(gen.releaseFirst)
-
-	select {
-	case call := <-gen.started:
-		if call != 2 {
-			t.Fatalf("follow-up thumbnail call = %d, want 2", call)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("preview-ready follow-up was swallowed by queue deduplication")
-	}
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		got, err := cat.GetVideo(ctx, video.ID)
-		if err != nil {
-			t.Fatalf("get video: %v", err)
-		}
-		if got.ThumbnailURL == "/p/thumb/"+video.ID {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("follow-up thumbnail did not become ready")
-}
-
-func TestPreviewWorkerDeduplicatesQueuedVideos(t *testing.T) {
-	ctx := context.Background()
-	cat, video := seedPreviewTestVideo(t, "preview-dedupe-video")
-
-	gen := &fakeTeaserGenerator{}
-	drv := &previewFakeDrive{}
-	worker := NewWorker(gen, cat, drv)
-
-	if !worker.EnqueueBlocking(ctx, video) {
-		t.Fatal("first enqueue returned false, want true")
-	}
-	if !worker.EnqueueBlocking(ctx, video) {
-		t.Fatal("duplicate enqueue returned false, want idempotent success")
-	}
-	if got := worker.Status().QueueLength; got != 1 {
-		t.Fatalf("queue length = %d, want 1 unique video", got)
-	}
-
-	queued := <-worker.ch
-	if !worker.Enqueue(video) {
-		t.Fatal("enqueue while the same video is reserved returned false, want idempotent success")
-	}
-	select {
-	case <-worker.ch:
-		t.Fatal("duplicate enqueue added another queued video")
-	default:
-	}
-
-	worker.processQueued(ctx, queued)
-	if !worker.Enqueue(video) {
-		t.Fatal("enqueue after processing returned false, want true")
-	}
-}
-
-func TestSingleDriveUsesGlobalPreviewConcurrency(t *testing.T) {
-	ctx := context.Background()
-	cat, first := seedPreviewTestVideo(t, "preview-concurrent-1")
-	videos := []*catalog.Video{first}
-	for i := 2; i <= 3; i++ {
-		video := *first
-		video.ID = fmt.Sprintf("preview-concurrent-%d", i)
-		video.FileID = fmt.Sprintf("file-id-%d", i)
-		if err := cat.UpsertVideo(ctx, &video); err != nil {
-			t.Fatalf("seed video %d: %v", i, err)
-		}
-		videos = append(videos, &video)
-	}
-
-	release := make(chan struct{})
-	var releaseOnce sync.Once
-	releaseGenerator := func() {
-		releaseOnce.Do(func() { close(release) })
-	}
-	gen := &blockingTeaserGenerator{
-		started: make(chan struct{}, len(videos)),
-		release: release,
-	}
-	worker := NewWorker(gen, cat, &concurrentPreviewDrive{})
-	worker.Limiter.SetLimit(3)
-	runCtx, cancel := context.WithCancel(ctx)
-	runDone := make(chan struct{})
-	go func() {
-		worker.Run(runCtx)
-		close(runDone)
-	}()
-	// seedPreviewTestVideo registered the catalog cleanup first. Test cleanups
-	// run in reverse order, so this always stops the worker before the catalog
-	// is closed, including assertion-failure paths.
-	t.Cleanup(func() {
-		cancel()
-		releaseGenerator()
-		select {
-		case <-runDone:
-		case <-time.After(time.Second):
-			t.Error("preview worker did not stop during test cleanup")
-		}
-	})
-
-	for _, video := range videos {
-		if !worker.EnqueueBlocking(runCtx, video) {
-			t.Fatalf("enqueue %s returned false", video.ID)
-		}
-	}
-	for range videos {
-		select {
-		case <-gen.started:
-		case <-time.After(2 * time.Second):
-			cancel()
-			t.Fatal("three preview tasks did not start concurrently")
-		}
-	}
-	status := worker.Status()
-	if status.State != "generating" || status.QueueLength != 0 {
-		t.Fatalf("status while blocked = %#v, want three active tasks and no queued tasks", status)
-	}
-
-	releaseGenerator()
-	waitCtx, waitCancel := context.WithTimeout(ctx, 2*time.Second)
-	defer waitCancel()
-	if err := worker.WaitIdle(waitCtx); err != nil {
-		t.Fatalf("wait for concurrent worker: %v", err)
-	}
-	cancel()
-	select {
-	case <-runDone:
-	case <-time.After(time.Second):
-		t.Fatal("worker did not stop after cancellation")
-	}
-	for _, video := range videos {
-		stored, err := cat.GetVideo(ctx, video.ID)
-		if err != nil {
-			t.Fatalf("get %s: %v", video.ID, err)
-		}
-		if stored.PreviewStatus != "ready" {
-			t.Fatalf("preview status for %s = %q, want ready", video.ID, stored.PreviewStatus)
-		}
-	}
-}
-
-func TestPreviewWorkerAppliesGlobalConcurrencyUpdatesWhileRunning(t *testing.T) {
-	ctx := context.Background()
-	cat, first := seedPreviewTestVideo(t, "preview-resize-1")
-	second := *first
-	second.ID = "preview-resize-2"
-	second.FileID = "preview-resize-file-2"
-	if err := cat.UpsertVideo(ctx, &second); err != nil {
-		t.Fatalf("seed second video: %v", err)
-	}
-
-	release := make(chan struct{})
-	gen := &blockingTeaserGenerator{
-		started: make(chan struct{}, 2),
-		release: release,
-	}
-	worker := NewWorker(gen, cat, &concurrentPreviewDrive{})
-	worker.Limiter.SetLimit(1)
-	runCtx, cancel := context.WithCancel(ctx)
-	runDone := make(chan struct{})
-	go func() {
-		worker.Run(runCtx)
-		close(runDone)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-runDone:
-		case <-time.After(time.Second):
-			t.Error("preview worker did not stop during test cleanup")
-		}
-	})
-
-	if !worker.EnqueueBlocking(runCtx, first) || !worker.EnqueueBlocking(runCtx, &second) {
-		t.Fatal("enqueue preview resize videos failed")
-	}
-	select {
-	case <-gen.started:
-	case <-time.After(2 * time.Second):
-		t.Fatal("first preview task did not start")
-	}
-	select {
-	case <-gen.started:
-		t.Fatal("second preview task started before concurrency increased")
-	case <-time.After(100 * time.Millisecond):
-	}
-
-	worker.Limiter.SetLimit(2)
-	select {
-	case <-gen.started:
-	case <-time.After(2 * time.Second):
-		t.Fatal("second preview task did not start after concurrency increased")
-	}
-	close(release)
-
-	waitCtx, waitCancel := context.WithTimeout(ctx, 2*time.Second)
-	defer waitCancel()
-	if err := worker.WaitIdle(waitCtx); err != nil {
-		t.Fatalf("wait for resized worker: %v", err)
-	}
-}
-
-func TestThumbWorkerDeduplicatesQueuedVideos(t *testing.T) {
-	ctx := context.Background()
-	cat, video := seedPreviewTestVideo(t, "thumb-dedupe-video")
-
-	gen := &fakeThumbGenerator{}
-	drv := &previewFakeDrive{}
-	worker := NewThumbWorker(gen, cat, drv)
-
-	if !worker.Enqueue(video) {
-		t.Fatal("first enqueue returned false, want true")
-	}
-	if !worker.Enqueue(video) {
-		t.Fatal("duplicate enqueue returned false, want idempotent success")
-	}
-	if got := worker.Status().QueueLength; got != 1 {
-		t.Fatalf("queue length = %d, want 1 unique video", got)
-	}
-
-	queued := <-worker.ch
-	if !worker.Enqueue(video) {
-		t.Fatal("enqueue while the same thumbnail is reserved returned false, want idempotent success")
-	}
-	select {
-	case <-worker.ch:
-		t.Fatal("duplicate enqueue added another queued thumbnail")
-	default:
-	}
-
-	worker.processQueued(ctx, queued)
-	if !worker.Enqueue(video) {
-		t.Fatal("enqueue after release returned false, want true")
-	}
-}
-
-func TestPreviewWorkerRemovesPreviousLocalTeaserAfterNewTeaserIsReady(t *testing.T) {
+func TestMediaJobRemovesPreviousLocalTeaserAfterNewTeaserIsReady(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "preview-cleanup-video")
 	oldPath := filepath.Join(t.TempDir(), "old-teaser.mp4")
@@ -667,9 +393,9 @@ func TestPreviewWorkerRemovesPreviousLocalTeaserAfterNewTeaserIsReady(t *testing
 		localPath: filepath.Join(filepath.Dir(oldPath), "new-teaser.mp4"),
 	}
 	drv := &previewFakeDrive{}
-	worker := NewWorker(gen, cat, drv)
+	worker := NewMediaJob(gen, cat, drv)
 
-	worker.process(ctx, video)
+	worker.Run(ctx, video)
 
 	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
 		t.Fatalf("old teaser still exists or stat failed with unexpected error: %v", err)
@@ -707,7 +433,7 @@ func seedReadyStableTeaser(t *testing.T, id string) (*catalog.Catalog, *catalog.
 	return cat, snapshot, localPath
 }
 
-func TestPreviewWorkerKeepsReferencedTeaserWhenStaleWriteIsRejected(t *testing.T) {
+func TestMediaJobKeepsReferencedTeaserWhenStaleWriteIsRejected(t *testing.T) {
 	ctx := context.Background()
 	cat, snapshot, localPath := seedReadyStableTeaser(t, "stale-same-bytes")
 	// A scan fills in a missing provider hash: same bytes, same teaser reference.
@@ -715,7 +441,7 @@ func TestPreviewWorkerKeepsReferencedTeaserWhenStaleWriteIsRejected(t *testing.T
 		t.Fatal(err)
 	}
 
-	NewWorker(&fakeTeaserGenerator{localPath: localPath}, cat, &previewFakeDrive{}).process(ctx, snapshot)
+	NewMediaJob(&fakeTeaserGenerator{localPath: localPath}, cat, &previewFakeDrive{}).Run(ctx, snapshot)
 
 	if _, err := os.Stat(localPath); err != nil {
 		t.Fatalf("referenced teaser removed after rejected write: %v", err)
@@ -726,7 +452,7 @@ func TestPreviewWorkerKeepsReferencedTeaserWhenStaleWriteIsRejected(t *testing.T
 	}
 }
 
-func TestPreviewWorkerRemovesUnreferencedTeaserWhenStaleWriteIsRejected(t *testing.T) {
+func TestMediaJobRemovesUnreferencedTeaserWhenStaleWriteIsRejected(t *testing.T) {
 	ctx := context.Background()
 	cat, snapshot, localPath := seedReadyStableTeaser(t, "stale-new-bytes")
 	// The file was replaced in place: the reset clears the teaser reference.
@@ -734,7 +460,7 @@ func TestPreviewWorkerRemovesUnreferencedTeaserWhenStaleWriteIsRejected(t *testi
 		t.Fatal(err)
 	}
 
-	NewWorker(&fakeTeaserGenerator{localPath: localPath}, cat, &previewFakeDrive{}).process(ctx, snapshot)
+	NewMediaJob(&fakeTeaserGenerator{localPath: localPath}, cat, &previewFakeDrive{}).Run(ctx, snapshot)
 
 	if _, err := os.Stat(localPath); !os.IsNotExist(err) {
 		t.Fatalf("teaser for replaced bytes still exists: %v", err)
@@ -745,15 +471,15 @@ func TestPreviewWorkerRemovesUnreferencedTeaserWhenStaleWriteIsRejected(t *testi
 	}
 }
 
-func TestPreviewWorkerNeverCallsDriveUploadOrEnsureDir(t *testing.T) {
+func TestMediaJobNeverCallsDriveUploadOrEnsureDir(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "preview-local-only-video")
 	localPath := filepath.Join(t.TempDir(), "local-only-teaser.mp4")
 	gen := &fakeTeaserGenerator{localPath: localPath}
 	drv := &previewFakeDrive{}
-	worker := NewWorker(gen, cat, drv)
+	worker := NewMediaJob(gen, cat, drv)
 
-	worker.process(ctx, video)
+	worker.Run(ctx, video)
 
 	got, err := cat.GetVideo(ctx, video.ID)
 	if err != nil {
@@ -776,7 +502,7 @@ func TestPreviewWorkerNeverCallsDriveUploadOrEnsureDir(t *testing.T) {
 	}
 }
 
-func TestPreviewWorkerGeneratesTeaserForLargeVideo(t *testing.T) {
+func TestMediaJobGeneratesTeaserForLargeVideo(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "preview-large-video")
 	video.Size = 6 * 1024 * 1024 * 1024
@@ -786,9 +512,9 @@ func TestPreviewWorkerGeneratesTeaserForLargeVideo(t *testing.T) {
 
 	gen := &fakeTeaserGenerator{}
 	drv := &previewFakeDrive{}
-	worker := NewWorker(gen, cat, drv)
+	worker := NewMediaJob(gen, cat, drv)
 
-	worker.process(ctx, video)
+	worker.Run(ctx, video)
 
 	got, err := cat.GetVideo(ctx, video.ID)
 	if err != nil {
@@ -805,7 +531,7 @@ func TestPreviewWorkerGeneratesTeaserForLargeVideo(t *testing.T) {
 	}
 }
 
-func TestPreviewWorkerDiscardsImplausibleStoredDuration(t *testing.T) {
+func TestMediaJobDiscardsImplausibleStoredDuration(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "preview-implausible-duration")
 	video.Size = 24_184_736
@@ -815,8 +541,8 @@ func TestPreviewWorkerDiscardsImplausibleStoredDuration(t *testing.T) {
 	}
 
 	gen := &fakeTeaserGenerator{}
-	worker := NewWorker(gen, cat, &previewFakeDrive{})
-	worker.process(ctx, video)
+	worker := NewMediaJob(gen, cat, &previewFakeDrive{})
+	worker.Run(ctx, video)
 
 	got, err := cat.GetVideo(ctx, video.ID)
 	if err != nil {
@@ -830,7 +556,7 @@ func TestPreviewWorkerDiscardsImplausibleStoredDuration(t *testing.T) {
 	}
 }
 
-func TestPreviewWorkerRateLimitLeavesCurrentPendingAndSkipsNextVideo(t *testing.T) {
+func TestMediaJobRateLimitLeavesCurrentPendingAndSkipsNextVideo(t *testing.T) {
 	ctx := context.Background()
 	cat, first := seedPreviewTestVideo(t, "preview-rate-limit-1")
 	second := *first
@@ -848,10 +574,10 @@ func TestPreviewWorkerRateLimitLeavesCurrentPendingAndSkipsNextVideo(t *testing.
 		},
 	}
 	drv := &previewFakeDrive{}
-	worker := NewWorker(gen, cat, drv)
+	worker := NewMediaJob(gen, cat, drv)
 
 	before := time.Now()
-	worker.process(ctx, first)
+	worker.Run(ctx, first)
 	gotFirst, err := cat.GetVideo(ctx, first.ID)
 	if err != nil {
 		t.Fatalf("get first video: %v", err)
@@ -862,10 +588,10 @@ func TestPreviewWorkerRateLimitLeavesCurrentPendingAndSkipsNextVideo(t *testing.
 	if gen.generateCalls != 1 {
 		t.Fatalf("generate calls = %d, want 1", gen.generateCalls)
 	}
-	assertCooldownAround(t, worker.Status().CooldownUntil, before, 2*time.Hour)
+	assertCooldownAround(t, cooldownUntil(worker.Cooldown), before, 2*time.Hour)
 
 	gen.generateErr = nil
-	worker.process(ctx, &second)
+	worker.Run(ctx, &second)
 	gotSecond, err := cat.GetVideo(ctx, second.ID)
 	if err != nil {
 		t.Fatalf("get second video: %v", err)
@@ -878,50 +604,43 @@ func TestPreviewWorkerRateLimitLeavesCurrentPendingAndSkipsNextVideo(t *testing.
 	}
 }
 
-func TestPreviewWorkerRequeuesRecoverableFailureAfterCooldown(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	cat, video := seedPreviewTestVideo(t, "preview-rate-limit-requeue")
+func TestMediaJobKeepsRecoverableFailurePendingUntilCooldownEnds(t *testing.T) {
+	ctx := context.Background()
+	cat, video := seedPreviewTestVideo(t, "preview-rate-limit-retry")
 	gen := &fakeTeaserGenerator{generateErrs: []error{
 		&drives.RateLimitError{
 			Provider:   "p115",
-			RetryAfter: time.Millisecond,
+			RetryAfter: 20 * time.Millisecond,
 			Err:        errors.New("429 Too Many Requests"),
 		},
 		nil,
 	}}
-	worker := NewWorker(gen, cat, &previewFakeDrive{kind: "p115"})
+	worker := NewMediaJob(gen, cat, &previewFakeDrive{kind: "p115"})
 
-	if !worker.EnqueueBlocking(ctx, video) {
-		t.Fatal("enqueue returned false")
+	if got := worker.Run(ctx, video); got != generation.StepPaused {
+		t.Fatalf("recoverable preview failure outcome = %v, want paused", got)
 	}
-	first := <-worker.ch
-	worker.processQueued(ctx, first)
-
-	var retry *catalog.Video
-	select {
-	case retry = <-worker.ch:
-	case <-ctx.Done():
-		t.Fatal("recoverable preview failure was not requeued")
+	if got := worker.Run(ctx, video); got != generation.StepPaused || gen.generateCalls != 1 {
+		t.Fatalf("job read the drive during its cooldown: outcome=%v calls=%d", got, gen.generateCalls)
 	}
-	worker.processQueued(ctx, retry)
-
+	time.Sleep(30 * time.Millisecond)
+	current, err := cat.GetVideo(ctx, video.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := worker.Run(ctx, current); got != generation.StepSettled {
+		t.Fatalf("retry after the cooldown outcome = %v, want settled", got)
+	}
 	got, err := cat.GetVideo(ctx, video.ID)
 	if err != nil {
 		t.Fatalf("get video: %v", err)
 	}
-	if got.PreviewStatus != "ready" {
-		t.Fatalf("preview status = %q, want ready after retry", got.PreviewStatus)
-	}
-	if gen.generateCalls != 2 {
-		t.Fatalf("generate calls = %d, want initial attempt and one retry", gen.generateCalls)
-	}
-	if got := worker.Status().QueueLength; got != 0 {
-		t.Fatalf("queue length = %d, want empty after successful retry", got)
+	if got.PreviewStatus != "ready" || gen.generateCalls != 2 {
+		t.Fatalf("preview status = %q after %d calls, want ready after one retry", got.PreviewStatus, gen.generateCalls)
 	}
 }
 
-func TestThumbWorkerRateLimitHonorsRetryAfter(t *testing.T) {
+func TestThumbnailJobRateLimitHonorsRetryAfter(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "thumb-rate-limit")
 
@@ -933,10 +652,10 @@ func TestThumbWorkerRateLimitHonorsRetryAfter(t *testing.T) {
 		},
 	}
 	drv := &previewFakeDrive{}
-	worker := NewThumbWorker(gen, cat, drv)
+	worker := NewThumbnailJob(gen, cat, drv)
 
 	before := time.Now()
-	worker.process(ctx, video)
+	worker.Run(ctx, video)
 
 	got, err := cat.GetVideo(ctx, video.ID)
 	if err != nil {
@@ -945,10 +664,10 @@ func TestThumbWorkerRateLimitHonorsRetryAfter(t *testing.T) {
 	if got.ThumbnailURL != "" {
 		t.Fatalf("thumbnail = %q, want unchanged after rate limit", got.ThumbnailURL)
 	}
-	assertCooldownAround(t, worker.Status().CooldownUntil, before, 2*time.Hour)
+	assertCooldownAround(t, cooldownUntil(worker.Cooldown), before, 2*time.Hour)
 }
 
-func TestThumbWorkerProviderErrorsRespectThumbnailRetryLimit(t *testing.T) {
+func TestThumbnailJobProviderErrorsRespectThumbnailRetryLimit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	cat, video := seedPreviewTestVideo(t, "thumb-provider-retry-limit")
@@ -956,20 +675,19 @@ func TestThumbWorkerProviderErrorsRespectThumbnailRetryLimit(t *testing.T) {
 		probeDuration: 42,
 		generateErr:   errors.New("Server returned 503 Service Unavailable"),
 	}
-	worker := NewThumbWorker(gen, cat, &previewFakeDrive{kind: "pikpak"})
+	worker := NewThumbnailJob(gen, cat, &previewFakeDrive{kind: "pikpak"})
 	worker.RateLimitCooldown = time.Millisecond
-	if !worker.EnqueueBlocking(ctx, video) {
-		t.Fatal("thumbnail enqueue failed")
-	}
-	for attempt := 0; attempt < defaultThumbTransientMediaMaxFailures; attempt++ {
-		select {
-		case queued := <-worker.ch:
-			worker.processQueued(ctx, queued)
-		case <-ctx.Done():
-			t.Fatal("thumbnail retry was not queued")
+	for attempt := 1; attempt <= defaultThumbTransientMediaMaxFailures; attempt++ {
+		time.Sleep(2 * time.Millisecond)
+		want := generation.StepSettled
+		if attempt < defaultThumbTransientMediaMaxFailures {
+			want = generation.StepPaused
+		}
+		if got := worker.Run(ctx, video); got != want {
+			t.Fatalf("attempt %d outcome = %v, want %v", attempt, got, want)
 		}
 	}
-	if worker.Status().QueueLength != 0 || gen.generateCalls != defaultThumbTransientMediaMaxFailures {
+	if gen.generateCalls != defaultThumbTransientMediaMaxFailures {
 		t.Fatal("thumbnail retry limit was not enforced")
 	}
 	failed, err := cat.ListVideosByThumbnailStatus(ctx, video.DriveID, "failed", 100)
@@ -989,9 +707,9 @@ func TestP115WAFStreamRateLimitKeepsPreviewPending(t *testing.T) {
 			Err:        errors.New(`<!doctypehtml><html><title>405</title><p>blocked</p>`),
 		},
 	}
-	worker := NewWorker(&fakeTeaserGenerator{}, cat, drv)
+	worker := NewMediaJob(&fakeTeaserGenerator{}, cat, drv)
 
-	worker.process(ctx, video)
+	worker.Run(ctx, video)
 	got, err := cat.GetVideo(ctx, video.ID)
 	if err != nil {
 		t.Fatalf("get video: %v", err)
@@ -999,7 +717,7 @@ func TestP115WAFStreamRateLimitKeepsPreviewPending(t *testing.T) {
 	if got.PreviewStatus != "pending" {
 		t.Fatalf("preview status = %q, want pending", got.PreviewStatus)
 	}
-	if worker.Status().CooldownUntil.IsZero() {
+	if cooldownUntil(worker.Cooldown).IsZero() {
 		t.Fatal("preview worker should enter cooldown")
 	}
 }
@@ -1015,9 +733,9 @@ func TestP115WAFStreamRateLimitKeepsThumbnailPending(t *testing.T) {
 			Err:        errors.New(`<!doctypehtml><html><title>405</title><p>blocked</p>`),
 		},
 	}
-	worker := NewThumbWorker(&fakeThumbGenerator{}, cat, drv)
+	worker := NewThumbnailJob(&fakeThumbGenerator{}, cat, drv)
 
-	retry := worker.process(ctx, video)
+	outcome := worker.Run(ctx, video)
 	pending, err := cat.ListVideosByThumbnailStatus(ctx, video.DriveID, "pending", 0)
 	if err != nil {
 		t.Fatalf("list pending thumbnails: %v", err)
@@ -1025,15 +743,15 @@ func TestP115WAFStreamRateLimitKeepsThumbnailPending(t *testing.T) {
 	if len(pending) != 1 || pending[0].ID != video.ID {
 		t.Fatalf("pending thumbnails = %#v, want only %s", pending, video.ID)
 	}
-	if !retry {
-		t.Fatal("thumbnail should be requeued after cooldown")
+	if outcome != generation.StepPaused {
+		t.Fatalf("outcome = %v, want paused after cooldown", outcome)
 	}
-	if worker.Status().CooldownUntil.IsZero() {
+	if cooldownUntil(worker.Cooldown).IsZero() {
 		t.Fatal("thumbnail worker should enter cooldown")
 	}
 }
 
-func TestThumbWorkerP115MessageOnlyErrorFailsWithoutCooldown(t *testing.T) {
+func TestThumbnailJobP115MessageOnlyErrorFailsWithoutCooldown(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "thumb-p115-message-only")
 
@@ -1041,9 +759,9 @@ func TestThumbWorkerP115MessageOnlyErrorFailsWithoutCooldown(t *testing.T) {
 		generateErr: errors.New("ffmpeg thumb: exit status 183, stderr: partial file Cannot determine format of input 0:0 after EOF"),
 	}
 	drv := &previewFakeDrive{kind: "p115"}
-	worker := NewThumbWorker(gen, cat, drv)
+	worker := NewThumbnailJob(gen, cat, drv)
 
-	worker.process(ctx, video)
+	worker.Run(ctx, video)
 
 	failed, err := cat.ListVideosByThumbnailStatus(ctx, video.DriveID, "failed", 0)
 	if err != nil {
@@ -1052,15 +770,15 @@ func TestThumbWorkerP115MessageOnlyErrorFailsWithoutCooldown(t *testing.T) {
 	if len(failed) != 1 || failed[0].ID != video.ID {
 		t.Fatalf("failed thumbnails = %#v, want only %s", failed, video.ID)
 	}
-	if !worker.Status().CooldownUntil.IsZero() {
-		t.Fatalf("cooldown until = %s, want no cooldown for message-only media error", worker.Status().CooldownUntil)
+	if !cooldownUntil(worker.Cooldown).IsZero() {
+		t.Fatalf("cooldown until = %s, want no cooldown for message-only media error", cooldownUntil(worker.Cooldown))
 	}
 	if gen.generateCalls != 2 || drv.streamCalls != 2 {
 		t.Fatalf("calls generate=%d stream=%d, want one failure-driven link refresh before the terminal failure", gen.generateCalls, drv.streamCalls)
 	}
 }
 
-func TestThumbWorkerDoesNotRequeueP115MessageOnlyError(t *testing.T) {
+func TestThumbnailJobSettlesP115MessageOnlyError(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "thumb-p115-no-requeue")
 
@@ -1068,14 +786,10 @@ func TestThumbWorkerDoesNotRequeueP115MessageOnlyError(t *testing.T) {
 		generateErr: errors.New("ffmpeg thumb: partial file Cannot determine format of input 0:0 after EOF"),
 	}
 	drv := &previewFakeDrive{kind: "p115"}
-	worker := NewThumbWorker(gen, cat, drv)
+	worker := NewThumbnailJob(gen, cat, drv)
 
-	worker.processQueued(ctx, video)
-
-	select {
-	case queued := <-worker.ch:
-		t.Fatalf("unexpected requeued video id = %q", queued.ID)
-	default:
+	if got := worker.Run(ctx, video); got == generation.StepPaused {
+		t.Fatal("message-only failure stayed pending")
 	}
 
 	got, err := cat.GetVideo(ctx, video.ID)
@@ -1094,7 +808,7 @@ func TestThumbWorkerDoesNotRequeueP115MessageOnlyError(t *testing.T) {
 	}
 }
 
-func TestThumbWorkerPikPakMoovAtomErrorFailsWithoutCooldown(t *testing.T) {
+func TestThumbnailJobPikPakMoovAtomErrorFailsWithoutCooldown(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "thumb-pikpak-missing-moov")
 
@@ -1104,9 +818,9 @@ func TestThumbWorkerPikPakMoovAtomErrorFailsWithoutCooldown(t *testing.T) {
 		generateErr: mediaErr,
 	}
 	drv := &previewFakeDrive{kind: "pikpak"}
-	worker := NewThumbWorker(gen, cat, drv)
+	worker := NewThumbnailJob(gen, cat, drv)
 
-	worker.process(ctx, video)
+	worker.Run(ctx, video)
 
 	failed, err := cat.ListVideosByThumbnailStatus(ctx, video.DriveID, "failed", 0)
 	if err != nil {
@@ -1115,15 +829,15 @@ func TestThumbWorkerPikPakMoovAtomErrorFailsWithoutCooldown(t *testing.T) {
 	if len(failed) != 1 || failed[0].ID != video.ID {
 		t.Fatalf("failed thumbnails = %#v, want only %s", failed, video.ID)
 	}
-	if !worker.Status().CooldownUntil.IsZero() {
-		t.Fatalf("cooldown until = %s, want no cooldown for invalid PikPak MP4", worker.Status().CooldownUntil)
+	if !cooldownUntil(worker.Cooldown).IsZero() {
+		t.Fatalf("cooldown until = %s, want no cooldown for invalid PikPak MP4", cooldownUntil(worker.Cooldown))
 	}
 	if gen.generateCalls != 1 {
 		t.Fatalf("generate calls = %d, want 1", gen.generateCalls)
 	}
 }
 
-func TestPreviewWorkerP115ForbiddenFailsOnlyThisVideo(t *testing.T) {
+func TestMediaJobP115ForbiddenFailsOnlyThisVideo(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "preview-p115-transient")
 
@@ -1131,9 +845,9 @@ func TestPreviewWorkerP115ForbiddenFailsOnlyThisVideo(t *testing.T) {
 		generateErr: errors.New("ffmpeg: exit status 1, stderr: Server returned 403 Forbidden"),
 	}
 	drv := &previewFakeDrive{kind: "p115"}
-	worker := NewWorker(gen, cat, drv)
+	worker := NewMediaJob(gen, cat, drv)
 
-	worker.process(ctx, video)
+	worker.Run(ctx, video)
 
 	got, err := cat.GetVideo(ctx, video.ID)
 	if err != nil {
@@ -1142,7 +856,7 @@ func TestPreviewWorkerP115ForbiddenFailsOnlyThisVideo(t *testing.T) {
 	if got.PreviewStatus != "failed" {
 		t.Fatalf("preview status = %q, want failed after rejected original source", got.PreviewStatus)
 	}
-	if !worker.Status().CooldownUntil.IsZero() {
+	if !cooldownUntil(worker.Cooldown).IsZero() {
 		t.Fatal("one rejected file must not cool down the drive")
 	}
 	if gen.generateCalls != 1 {
@@ -1230,14 +944,14 @@ func TestGoogleDriveMediaErrorsShouldCooldown(t *testing.T) {
 	}
 }
 
-func TestThumbWorkerPrefersGenerationStream(t *testing.T) {
+func TestThumbnailJobPrefersGenerationStream(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "thumb-generation-stream")
 	gen := &fakeThumbGenerator{}
 	drv := &generationPreviewDrive{previewFakeDrive: &previewFakeDrive{kind: "p115"}}
-	worker := NewThumbWorker(gen, cat, drv)
+	worker := NewThumbnailJob(gen, cat, drv)
 
-	worker.process(ctx, video)
+	worker.Run(ctx, video)
 
 	if gen.thumbnailURL != "https://hls.example/initial.m3u8" {
 		t.Fatalf("thumbnail source = %q", gen.thumbnailURL)
@@ -1250,14 +964,14 @@ func TestThumbWorkerPrefersGenerationStream(t *testing.T) {
 	}
 }
 
-func TestThumbWorkerFallsBackToOriginalAfterGenerationDecodeError(t *testing.T) {
+func TestThumbnailJobFallsBackToOriginalAfterGenerationDecodeError(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "thumb-generation-fallback")
 	gen := &fakeThumbGenerator{generateErrs: []error{errors.New("invalid HLS data"), nil}}
 	drv := &generationPreviewDrive{previewFakeDrive: &previewFakeDrive{kind: "p115"}}
-	worker := NewThumbWorker(gen, cat, drv)
+	worker := NewThumbnailJob(gen, cat, drv)
 
-	worker.process(ctx, video)
+	worker.Run(ctx, video)
 
 	if len(gen.thumbnailURLs) != 2 || gen.thumbnailURLs[0] != "https://hls.example/initial.m3u8" || gen.thumbnailURLs[1] != "https://video.example/clip.mp4" {
 		t.Fatalf("thumbnail sources = %#v", gen.thumbnailURLs)
@@ -1267,7 +981,7 @@ func TestThumbWorkerFallsBackToOriginalAfterGenerationDecodeError(t *testing.T) 
 	}
 }
 
-func TestThumbWorkerRefreshesRejectedGenerationStreamOnce(t *testing.T) {
+func TestThumbnailJobRefreshesRejectedGenerationStreamOnce(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "thumb-generation-refresh")
 	forbidden := &drives.RateLimitError{
@@ -1276,9 +990,9 @@ func TestThumbWorkerRefreshesRejectedGenerationStreamOnce(t *testing.T) {
 	}
 	gen := &fakeThumbGenerator{generateErrs: []error{forbidden, nil}}
 	drv := &generationPreviewDrive{previewFakeDrive: &previewFakeDrive{kind: "p115"}}
-	worker := NewThumbWorker(gen, cat, drv)
+	worker := NewThumbnailJob(gen, cat, drv)
 
-	worker.process(ctx, video)
+	worker.Run(ctx, video)
 
 	if len(gen.thumbnailURLs) != 2 || gen.thumbnailURLs[1] != "https://hls.example/refreshed.m3u8" {
 		t.Fatalf("thumbnail sources = %#v", gen.thumbnailURLs)
@@ -1291,7 +1005,7 @@ func TestThumbWorkerRefreshesRejectedGenerationStreamOnce(t *testing.T) {
 	}
 }
 
-func TestThumbWorkerRefreshesP115OriginalOnlyAfterReadFailure(t *testing.T) {
+func TestThumbnailJobRefreshesP115OriginalOnlyAfterReadFailure(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "thumb-original-on-demand-refresh")
 	gen := &fakeThumbGenerator{generateErrs: []error{
@@ -1299,9 +1013,9 @@ func TestThumbWorkerRefreshesP115OriginalOnlyAfterReadFailure(t *testing.T) {
 		nil,
 	}}
 	drv := &previewFakeDrive{kind: "p115"}
-	worker := NewThumbWorker(gen, cat, drv)
+	worker := NewThumbnailJob(gen, cat, drv)
 
-	worker.process(ctx, video)
+	worker.Run(ctx, video)
 
 	if drv.streamCalls != 2 {
 		t.Fatalf("stream calls = %d, want initial resolution plus one failure-driven refresh", drv.streamCalls)
@@ -1318,14 +1032,14 @@ func TestThumbWorkerRefreshesP115OriginalOnlyAfterReadFailure(t *testing.T) {
 	}
 }
 
-func TestPreviewWorkerPrefersGenerationStreamWithoutOriginalRefreshes(t *testing.T) {
+func TestMediaJobPrefersGenerationStreamWithoutOriginalRefreshes(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "preview-generation-stream")
 	gen := &fakeTeaserGenerator{}
 	drv := &generationPreviewDrive{previewFakeDrive: &previewFakeDrive{kind: "p115"}}
-	worker := NewWorker(gen, cat, drv)
+	worker := NewMediaJob(gen, cat, drv)
 
-	worker.process(ctx, video)
+	worker.Run(ctx, video)
 
 	if len(gen.generatedURLs) != 1 || gen.generatedURLs[0] != "https://hls.example/initial.m3u8" {
 		t.Fatalf("preview sources = %#v", gen.generatedURLs)
@@ -1335,7 +1049,7 @@ func TestPreviewWorkerPrefersGenerationStreamWithoutOriginalRefreshes(t *testing
 	}
 }
 
-func TestPreviewWorkerFallsBackWhenGenerationStreamUnavailable(t *testing.T) {
+func TestMediaJobFallsBackWhenGenerationStreamUnavailable(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "preview-generation-unavailable")
 	gen := &fakeTeaserGenerator{}
@@ -1343,9 +1057,9 @@ func TestPreviewWorkerFallsBackWhenGenerationStreamUnavailable(t *testing.T) {
 		previewFakeDrive: &previewFakeDrive{kind: "p115"},
 		generationErrs:   []error{drives.ErrGenerationStreamUnavailable},
 	}
-	worker := NewWorker(gen, cat, drv)
+	worker := NewMediaJob(gen, cat, drv)
 
-	worker.process(ctx, video)
+	worker.Run(ctx, video)
 
 	if len(gen.generatedURLs) != 1 || gen.generatedURLs[0] != "https://video.example/clip.mp4" {
 		t.Fatalf("preview sources = %#v", gen.generatedURLs)
@@ -1367,7 +1081,7 @@ func assertCooldownAround(t *testing.T, until time.Time, before time.Time, want 
 	}
 }
 
-func TestPreviewWorkerReusesP115LinkAcrossTeaserInputs(t *testing.T) {
+func TestMediaJobReusesP115LinkAcrossTeaserInputs(t *testing.T) {
 	ctx := context.Background()
 	cat, video := seedPreviewTestVideo(t, "preview-p115-refresh")
 	video.DurationSeconds = 81
@@ -1377,9 +1091,9 @@ func TestPreviewWorkerReusesP115LinkAcrossTeaserInputs(t *testing.T) {
 
 	gen := &fakeTeaserGenerator{}
 	drv := &previewFakeDrive{kind: "p115"}
-	worker := NewWorker(gen, cat, drv)
+	worker := NewMediaJob(gen, cat, drv)
 
-	worker.process(ctx, video)
+	worker.Run(ctx, video)
 
 	if drv.streamCalls != 1 {
 		t.Fatalf("stream calls = %d, want one task-scoped original link", drv.streamCalls)
@@ -1432,38 +1146,6 @@ type fakeThumbGenerator struct {
 	thumbnailURLs     []string
 }
 
-type followUpThumbGenerator struct {
-	mu           sync.Mutex
-	calls        int
-	started      chan int
-	releaseFirst chan struct{}
-}
-
-func (g *followUpThumbGenerator) Probe(context.Context, *drives.StreamLink) (float64, error) {
-	return 42, nil
-}
-
-func (g *followUpThumbGenerator) GenerateThumbnail(ctx context.Context, _ *drives.StreamLink, videoID string, _ float64) (string, error) {
-	g.mu.Lock()
-	g.calls++
-	call := g.calls
-	g.mu.Unlock()
-	select {
-	case g.started <- call:
-	case <-ctx.Done():
-		return "", ctx.Err()
-	}
-	if call == 1 {
-		select {
-		case <-g.releaseFirst:
-			return "", errors.New("invalid media")
-		case <-ctx.Done():
-			return "", ctx.Err()
-		}
-	}
-	return "/tmp/" + videoID + ".jpg", nil
-}
-
 func (g *fakeThumbGenerator) Probe(context.Context, *drives.StreamLink) (float64, error) {
 	g.probeCalls++
 	if g.probeErr != nil {
@@ -1504,53 +1186,6 @@ type fakeTeaserGenerator struct {
 	partialSignature  bool
 	thumbnailPath     string
 	requests          []MediaRequest
-}
-
-type blockingTeaserGenerator struct {
-	started chan struct{}
-	release <-chan struct{}
-}
-
-func (g *blockingTeaserGenerator) Probe(context.Context, *drives.StreamLink) (float64, error) {
-	return 60, nil
-}
-
-func (g *blockingTeaserGenerator) Generate(ctx context.Context, _ *drives.StreamLink, _ float64, _ MediaRequest) (Media, error) {
-	select {
-	case g.started <- struct{}{}:
-	case <-ctx.Done():
-		return Media{}, ctx.Err()
-	}
-	select {
-	case <-g.release:
-		return Media{TeaserPath: "/tmp/source-teaser.mp4"}, nil
-	case <-ctx.Done():
-		return Media{}, ctx.Err()
-	}
-}
-
-func (g *blockingTeaserGenerator) MoveThumbnailToLocal(_ string, videoID string) (string, error) {
-	return "/tmp/" + videoID + ".jpg", nil
-}
-
-func (g *blockingTeaserGenerator) MoveToLocal(_ string, videoID string) (string, error) {
-	return "/tmp/" + videoID + ".mp4", nil
-}
-
-type concurrentPreviewDrive struct {
-	previewFakeDrive
-	id string
-}
-
-func (d *concurrentPreviewDrive) ID() string {
-	if d.id != "" {
-		return d.id
-	}
-	return d.previewFakeDrive.ID()
-}
-
-func (d *concurrentPreviewDrive) StreamURL(_ context.Context, fileID string) (*drives.StreamLink, error) {
-	return &drives.StreamLink{URL: "https://video.example/" + fileID}, nil
 }
 
 func (g *fakeTeaserGenerator) Probe(context.Context, *drives.StreamLink) (float64, error) {
@@ -1664,83 +1299,6 @@ func (d *previewFakeDrive) EnsureDir(context.Context, string) (string, error) {
 }
 func (d *previewFakeDrive) RootID() string { return "root" }
 
-func TestWorkerWaitIdleReturnsImmediatelyWhenQueueEmpty(t *testing.T) {
-	worker := NewWorker(&fakeTeaserGenerator{}, nil, &previewFakeDrive{})
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	start := time.Now()
-	if err := worker.WaitIdle(ctx); err != nil {
-		t.Fatalf("WaitIdle on empty queue: %v", err)
-	}
-	if took := time.Since(start); took > 50*time.Millisecond {
-		t.Fatalf("WaitIdle on empty queue took %s, want immediate return", took)
-	}
-}
-
-func TestWorkerWaitIdleBlocksUntilQueueDrains(t *testing.T) {
-	worker := NewWorker(&fakeTeaserGenerator{}, nil, &previewFakeDrive{})
-	v := &catalog.Video{ID: "wait-idle-vid"}
-	if !worker.queue.reserve(v) {
-		t.Fatalf("reserve should succeed on fresh queue")
-	}
-
-	go func() {
-		time.Sleep(120 * time.Millisecond)
-		worker.queue.release(v)
-	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	start := time.Now()
-	if err := worker.WaitIdle(ctx); err != nil {
-		t.Fatalf("WaitIdle: %v", err)
-	}
-	took := time.Since(start)
-	if took < 100*time.Millisecond {
-		t.Fatalf("WaitIdle returned in %s, expected to wait until release", took)
-	}
-	if took > time.Second {
-		t.Fatalf("WaitIdle took %s, expected to return shortly after release", took)
-	}
-}
-
-func TestWorkerWaitIdleHonoursContextCancel(t *testing.T) {
-	worker := NewWorker(&fakeTeaserGenerator{}, nil, &previewFakeDrive{})
-	v := &catalog.Video{ID: "ctx-cancel"}
-	if !worker.queue.reserve(v) {
-		t.Fatalf("reserve should succeed")
-	}
-	t.Cleanup(func() { worker.queue.release(v) })
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	if err := worker.WaitIdle(ctx); err == nil {
-		t.Fatalf("WaitIdle expected ctx.Err, got nil")
-	}
-}
-
-func TestThumbWorkerWaitIdleBlocksUntilQueueDrains(t *testing.T) {
-	worker := NewThumbWorker(&fakeThumbGenerator{}, nil, &previewFakeDrive{})
-	v := &catalog.Video{ID: "thumb-wait-idle"}
-	if !worker.queue.reserve(v) {
-		t.Fatalf("reserve should succeed")
-	}
-
-	go func() {
-		time.Sleep(80 * time.Millisecond)
-		worker.queue.release(v)
-	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if err := worker.WaitIdle(ctx); err != nil {
-		t.Fatalf("ThumbWorker.WaitIdle: %v", err)
-	}
-}
-
 func TestRejectedRefreshedHLSFallsBackToOriginal(t *testing.T) {
 	for _, kind := range []string{"thumbnail", "preview"} {
 		t.Run(kind, func(t *testing.T) {
@@ -1751,18 +1309,18 @@ func TestRejectedRefreshedHLSFallsBackToOriginal(t *testing.T) {
 			var sources []string
 			if kind == "thumbnail" {
 				gen := &fakeThumbGenerator{generateErrs: []error{rejected, rejected, nil}}
-				w := NewThumbWorker(gen, cat, drv)
-				w.process(ctx, v)
+				w := NewThumbnailJob(gen, cat, drv)
+				w.Run(ctx, v)
 				sources = gen.thumbnailURLs
-				if !w.Status().CooldownUntil.IsZero() {
+				if !cooldownUntil(w.Cooldown).IsZero() {
 					t.Fatal("HLS failure cooled down healthy original")
 				}
 			} else {
 				gen := &fakeTeaserGenerator{generateErrs: []error{rejected, rejected, nil}}
-				w := NewWorker(gen, cat, drv)
-				w.process(ctx, v)
+				w := NewMediaJob(gen, cat, drv)
+				w.Run(ctx, v)
 				sources = gen.generatedURLs
-				if !w.Status().CooldownUntil.IsZero() {
+				if !cooldownUntil(w.Cooldown).IsZero() {
 					t.Fatal("HLS failure cooled down healthy original")
 				}
 			}
@@ -1779,8 +1337,13 @@ func TestHLS429DoesNotFallBackAndMultiplyRequests(t *testing.T) {
 	err := &drives.RateLimitError{Provider: "p115", Err: errors.New("HTTP status=429")}
 	drv := &generationPreviewDrive{previewFakeDrive: &previewFakeDrive{kind: "p115"}}
 	gen := &fakeTeaserGenerator{generateErr: err}
-	worker := NewWorker(gen, cat, drv)
-	if !worker.process(ctx, v) || drv.streamCalls != 0 {
-		t.Fatal("explicit limit should pause instead of requesting original")
+	worker := NewMediaJob(gen, cat, drv)
+	if got := worker.Run(ctx, v); got != generation.StepPaused || drv.streamCalls != 0 {
+		t.Fatalf("explicit limit should pause instead of requesting original: outcome=%v streamCalls=%d", got, drv.streamCalls)
 	}
+}
+
+func cooldownUntil(cooldown *tasklimit.Cooldown) time.Time {
+	until, _ := cooldown.Until(time.Now())
+	return until
 }

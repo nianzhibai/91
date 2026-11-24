@@ -36,13 +36,13 @@ nightly:
   start_time: "01:00"
   timezone: "Asia/Shanghai"
 
-# 媒体生成：热更新；各类并发数独立，所有来源共享，范围 1–5
+# 媒体生成：热更新
 generation:
   # 硬件加速封面和预览生成；自动检测 VAAPI / NVIDIA / Rockchip MPP+RGA，不支持的视频回退 CPU
   use_gpu: false
-  thumbnail_concurrency: 1
-  preview_concurrency: 1
-  fingerprint_concurrency: 1
+  # 全部来源同时生成封面、预览和时长的视频数（1-5），按来源公平分配；指纹计算不占名额。
+  # 云盘默认一次一个视频，本地来源可用满名额；单个网盘可通过管理接口单独设置
+  concurrency: 1
 
 # 预览：enabled 热更新，其余字段重启后用于后续生成
 preview:

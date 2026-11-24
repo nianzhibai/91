@@ -12,7 +12,7 @@ import (
 	"github.com/nianzhibai/91/backend/internal/tagging"
 )
 
-func TestListVideosNeedingThumbnailExcludesDurationOnlyWork(t *testing.T) {
+func TestThumbnailStepExcludesDurationOnlyWork(t *testing.T) {
 	ctx := context.Background()
 	cat, err := Open(t.TempDir() + "/catalog.db")
 	if err != nil {
@@ -76,23 +76,11 @@ func TestListVideosNeedingThumbnailExcludesDurationOnlyWork(t *testing.T) {
 		t.Fatalf("mark failed thumbnail: %v", err)
 	}
 
-	items, err := cat.ListVideosNeedingThumbnail(ctx, "drive", 0)
-	if err != nil {
-		t.Fatalf("list videos needing thumbnail: %v", err)
+	if items := dueForStep(t, cat, "drive", true, needsThumbnail); len(items) != 1 || items[0] != "missing-thumb" {
+		t.Fatalf("items = %v, want only missing-thumb", items)
 	}
-	if len(items) != 1 {
-		t.Fatalf("items = %#v, want only missing-thumb", items)
-	}
-	if items[0].ID != "missing-thumb" {
-		t.Fatalf("item id = %q, want missing-thumb", items[0].ID)
-	}
-
-	count, err := cat.CountVideosNeedingThumbnail(ctx, "drive")
-	if err != nil {
-		t.Fatalf("count videos needing thumbnail: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("count = %d, want 1", count)
+	if counts, err := cat.CountDueGeneration(ctx, "drive", true, time.Now()); err != nil || counts.Thumbnails != 1 {
+		t.Fatalf("counts = %+v err = %v, want one thumbnail", counts, err)
 	}
 
 	stats, err := cat.CountDriveAssetStats(ctx)
@@ -106,12 +94,8 @@ func TestListVideosNeedingThumbnailExcludesDurationOnlyWork(t *testing.T) {
 	if err := cat.UpdateVideoMeta(ctx, "duration-only", VideoMetaPatch{DurationSeconds: 19}); err != nil {
 		t.Fatalf("complete duration backfill: %v", err)
 	}
-	count, err = cat.CountVideosNeedingThumbnail(ctx, "drive")
-	if err != nil {
-		t.Fatalf("count videos needing thumbnail after backfill: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("count after backfill = %d, want 1", count)
+	if counts, err := cat.CountDueGeneration(ctx, "drive", true, time.Now()); err != nil || counts.Thumbnails != 1 {
+		t.Fatalf("counts after backfill = %+v err = %v, want one thumbnail", counts, err)
 	}
 	stats, err = cat.CountDriveAssetStats(ctx)
 	if err != nil {
@@ -2298,12 +2282,12 @@ func TestRequeueInactivePreviews(t *testing.T) {
 		}
 	}
 
-	due, err := cat.ListVideosNeedingMedia(ctx, "d", true)
-	if err != nil {
-		t.Fatalf("list media work: %v", err)
-	}
 	pending := 0
-	for _, video := range due {
+	for _, id := range dueForStep(t, cat, "d", true, needsMedia) {
+		video, err := cat.GetVideo(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if video.PreviewStatus == "pending" {
 			pending++
 		}

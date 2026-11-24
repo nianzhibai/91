@@ -18,12 +18,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/generation"
 	"github.com/nianzhibai/91/backend/internal/localpath"
 	"github.com/nianzhibai/91/backend/internal/mediaasset"
 	"github.com/nianzhibai/91/backend/internal/mediasig"
@@ -259,7 +259,7 @@ func appendUniqueStart(starts []float64, start, eachSec float64) []float64 {
 	return append(starts, start)
 }
 
-// thumbnailOffsets returns where the thumbnail worker samples cover spans, in
+// thumbnailOffsets returns where the thumbnail job samples cover spans, in
 // order: the middle of the video, then 30% and 70% for a middle without a
 // usable frame, then early offsets that partially readable files still serve.
 func thumbnailOffsets(duration float64) []float64 {
@@ -1331,685 +1331,74 @@ func copyFile(src, dst string) error {
 	return err
 }
 
-// --- Worker ---
+// --- Jobs ---
 
-// Worker runs a drive's media jobs: each reads a video's teaser segments once
-// for the signature, the teaser and a missing thumbnail.
-type Worker struct {
+// MediaJob is the media step of a drive: one read of a video's teaser
+// segments yields the perceptual signature, the teaser while previews are
+// enabled, and a thumbnail the job owns.
+type MediaJob struct {
 	Gen     MediaGenerator
 	Catalog *catalog.Catalog
 	Drive   drives.Drive
 	// Gate is the shared preview switch. Jobs run either way; it decides
-	// whether they produce teasers. Nil enables standalone workers.
+	// whether they produce teasers. Nil enables teasers.
 	Gate *Gate
-	// OnThumbnailMissing receives videos a job left without a thumbnail, so
-	// the application can hand them to the thumbnail worker.
-	OnThumbnailMissing func(*catalog.Video)
-	// OnStatusChanged runs after a queue, activity or cooldown transition.
-	OnStatusChanged func(bool)
-	// TaskGuard holds application-level task admission for the complete provider
-	// operation. A nil release means this worker belongs to a retired runtime
-	// generation and the queued item must remain pending for its replacement.
-	TaskGuard func() func()
-	// Limiter is shared by all preview workers in the application.
-	Limiter *tasklimit.Limiter
-	ch      chan *catalog.Video
-	queue   videoQueue
-
 	// RateLimitCooldown is the pause when a throttling error gives no retry time.
 	RateLimitCooldown time.Duration
-	// Cooldown is shared by all workers of the drive. The application injects
-	// it before Run starts; standalone workers get their own.
-	Cooldown   *tasklimit.Cooldown
-	activities taskActivities
+	// Cooldown is the drive's provider cooldown, shared with its other steps.
+	Cooldown *tasklimit.Cooldown
+	// OnCooldown runs after a provider error paused the drive.
+	OnCooldown func()
 }
 
-func NewWorker(gen MediaGenerator, cat *catalog.Catalog, drv drives.Drive) *Worker {
-	return &Worker{
-		Gen:     gen,
-		Catalog: cat,
-		Drive:   drv,
-		// Standalone workers default to one slot. The application injects its
-		// shared preview budget before Run starts.
-		Limiter:  tasklimit.New(1),
-		Cooldown: &tasklimit.Cooldown{},
-		ch:       make(chan *catalog.Video, defaultWorkerQueueSize),
-	}
+func NewMediaJob(gen MediaGenerator, cat *catalog.Catalog, drv drives.Drive) *MediaJob {
+	return &MediaJob{Gen: gen, Catalog: cat, Drive: drv, Cooldown: &tasklimit.Cooldown{}}
 }
 
-func (w *Worker) Enqueue(v *catalog.Video) bool {
-	defer w.notifyStatus(false)
-	if v == nil {
-		return false
-	}
-	if !w.queue.reserve(v) {
-		return true
-	}
-	select {
-	case w.ch <- v:
-		return true
-	default:
-		w.queue.release(v)
-		return false
-	}
-}
-
-func (w *Worker) EnqueueBlocking(ctx context.Context, v *catalog.Video) bool {
-	defer w.notifyStatus(false)
-	if v == nil {
-		return false
-	}
-	if !w.queue.reserve(v) {
-		return true
-	}
-	select {
-	case w.ch <- v:
-		return true
-	case <-ctx.Done():
-		w.queue.release(v)
-		return false
-	}
-}
-
-func (w *Worker) enabled() bool {
+func (w *MediaJob) enabled() bool {
 	return w.Gate.Enabled()
 }
 
-type ThumbWorker struct {
-	OnStatusChanged func(bool)
-	Gen             ThumbnailGenerator
-	Catalog         *catalog.Catalog
-	Drive           drives.Drive
-	TaskGuard       func() func()
-	// Limiter is shared by all thumbnail workers in the application.
-	Limiter    *tasklimit.Limiter
-	ch         chan *catalog.Video
-	durationCh chan durationTask
-	queue      videoQueue
-	// Metadata reservations must not suppress a later cover-generation request.
-	durationQueue videoQueue
-
-	// followUps preserves a state-change notification that arrives while the
-	// same video's thumbnail is already being processed. A plain deduplicating
-	// enqueue cannot express this: it would report success while silently folding
-	// the notification into the attempt that started before the state changed.
-	followUpMu        sync.Mutex
-	activeThumbnailID string
-	followUps         map[string]*catalog.Video
-
+// ThumbnailJob is the cover step of a drive for videos the media job left
+// without one, and probes durations the other steps did not store.
+type ThumbnailJob struct {
+	Gen     ThumbnailGenerator
+	Catalog *catalog.Catalog
+	Drive   drives.Drive
 	// RateLimitCooldown is the pause when a throttling error gives no retry time.
 	RateLimitCooldown time.Duration
-	// Cooldown is shared by all workers of the drive; see Worker.Cooldown.
+	// Cooldown is the drive's provider cooldown, shared with its other steps.
 	Cooldown *tasklimit.Cooldown
-	activity taskActivity
+	// OnCooldown runs after a provider error paused the drive.
+	OnCooldown func()
 }
 
-const (
-	defaultThumbTransientMediaMaxFailures = 3
-	defaultWorkerQueueSize                = 10000
-)
-
-type TaskStatus struct {
-	State         string
-	CurrentTitle  string
-	QueueLength   int
-	CooldownUntil time.Time
+func NewThumbnailJob(gen ThumbnailGenerator, cat *catalog.Catalog, drv drives.Drive) *ThumbnailJob {
+	return &ThumbnailJob{Gen: gen, Catalog: cat, Drive: drv, Cooldown: &tasklimit.Cooldown{}}
 }
 
-type taskActivity struct {
-	mu           sync.Mutex
-	currentID    string
-	currentTitle string
-}
+const defaultThumbTransientMediaMaxFailures = 3
 
-type taskActivities struct {
-	mu     sync.Mutex
-	titles map[string]string
-}
-
-type videoQueue struct {
-	mu  sync.Mutex
-	ids map[string]struct{}
-}
-
-func (q *videoQueue) reserve(v *catalog.Video) bool {
-	if v == nil {
-		return false
-	}
-	if v.ID == "" {
-		return true
-	}
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if q.ids == nil {
-		q.ids = make(map[string]struct{})
-	}
-	if _, ok := q.ids[v.ID]; ok {
-		return false
-	}
-	q.ids[v.ID] = struct{}{}
-	return true
-}
-
-func (q *videoQueue) release(v *catalog.Video) {
-	if v == nil || v.ID == "" {
-		return
-	}
-	q.mu.Lock()
-	delete(q.ids, v.ID)
-	q.mu.Unlock()
-}
-
-func (q *videoQueue) idsSnapshot() []string {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if len(q.ids) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(q.ids))
-	for id := range q.ids {
-		out = append(out, id)
-	}
-	return out
-}
-
-func (q *videoQueue) lengthExcluding(currentID string) int {
-	if currentID == "" {
-		return q.lengthExcludingIDs(nil)
-	}
-	return q.lengthExcludingIDs([]string{currentID})
-}
-
-func (q *videoQueue) lengthExcludingIDs(activeIDs []string) int {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	n := len(q.ids)
-	for _, activeID := range activeIDs {
-		if _, ok := q.ids[activeID]; ok {
-			n--
-		}
-	}
-	if n < 0 {
-		return 0
-	}
-	return n
-}
-
-func (a *taskActivity) start(v *catalog.Video) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if v == nil {
-		a.currentID = ""
-		a.currentTitle = ""
-		return
-	}
-	a.currentID = v.ID
-	a.currentTitle = v.Title
-}
-
-func (a *taskActivity) done() {
-	a.mu.Lock()
-	a.currentID = ""
-	a.currentTitle = ""
-	a.mu.Unlock()
-}
-
-func (a *taskActivity) current() (string, string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.currentID, a.currentTitle
-}
-
-func (a *taskActivities) start(v *catalog.Video) {
-	if v == nil || v.ID == "" {
-		return
-	}
-	a.mu.Lock()
-	if a.titles == nil {
-		a.titles = make(map[string]string)
-	}
-	a.titles[v.ID] = v.Title
-	a.mu.Unlock()
-}
-
-func (a *taskActivities) done(videoID string) {
-	if videoID == "" {
-		return
-	}
-	a.mu.Lock()
-	delete(a.titles, videoID)
-	a.mu.Unlock()
-}
-
-func (a *taskActivities) snapshot() (string, []string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if len(a.titles) == 0 {
-		return "", nil
-	}
-	activeIDs := make([]string, 0, len(a.titles))
-	currentTitle := ""
-	for id, title := range a.titles {
-		activeIDs = append(activeIDs, id)
-		if currentTitle == "" {
-			currentTitle = title
-		}
-	}
-	return currentTitle, activeIDs
-}
-
-func NewThumbWorker(gen ThumbnailGenerator, cat *catalog.Catalog, drv drives.Drive) *ThumbWorker {
-	return &ThumbWorker{
-		Gen:        gen,
-		Catalog:    cat,
-		Drive:      drv,
-		Cooldown:   &tasklimit.Cooldown{},
-		ch:         make(chan *catalog.Video, defaultWorkerQueueSize),
-		durationCh: make(chan durationTask, defaultWorkerQueueSize),
-	}
-}
-
-func (w *ThumbWorker) Enqueue(v *catalog.Video) bool {
-	defer w.notifyStatus(false)
-	if v == nil {
-		return false
-	}
-	if !w.queue.reserve(v) {
-		return true
-	}
-	select {
-	case w.ch <- v:
-		return true
-	default:
-		w.queue.release(v)
-		return false
-	}
-}
-
-func (w *ThumbWorker) EnqueueBlocking(ctx context.Context, v *catalog.Video) bool {
-	defer w.notifyStatus(false)
-	if v == nil {
-		return false
-	}
-	if !w.queue.reserve(v) {
-		return true
-	}
-	select {
-	case w.ch <- v:
-		return true
-	case <-ctx.Done():
-		w.queue.release(v)
-		return false
-	}
-}
-
-// EnqueueFollowUp schedules thumbnail work after the currently running
-// attempt when necessary. It is intended for catalog state changes (for
-// example a preview becoming ready) that grant a failed thumbnail a new
-// attempt. Ordinary duplicate queue submissions should continue to use
-// Enqueue or EnqueueBlocking.
-func (w *ThumbWorker) EnqueueFollowUp(v *catalog.Video) bool {
-	if v == nil {
-		return false
-	}
-	w.followUpMu.Lock()
-	if v.ID != "" && w.activeThumbnailID == v.ID {
-		if w.followUps == nil {
-			w.followUps = make(map[string]*catalog.Video)
-		}
-		copy := *v
-		w.followUps[v.ID] = &copy
-		w.followUpMu.Unlock()
-		return true
-	}
-	w.followUpMu.Unlock()
-	return w.Enqueue(v)
-}
-
-func (w *Worker) Status() TaskStatus {
-	if w == nil {
-		return TaskStatus{State: "idle"}
-	}
-	currentTitle, activeIDs := w.activities.snapshot()
-	return taskStatus(currentTitle, len(activeIDs) > 0, w.Cooldown, w.queue.lengthExcludingIDs(activeIDs))
-}
-
-func (w *Worker) ActiveVideoIDs() []string {
-	if w == nil {
-		return nil
-	}
-	return w.queue.idsSnapshot()
-}
-
-func (w *ThumbWorker) Status() TaskStatus {
-	if w == nil {
-		return TaskStatus{State: "idle"}
-	}
-	currentID, currentTitle := w.activity.current()
-	queued := w.queue.lengthExcluding("") + w.durationQueue.lengthExcluding("")
-	if currentID != "" {
-		queued = max(0, queued-1)
-	}
-	return taskStatus(currentTitle, currentID != "", w.Cooldown, queued)
-}
-
-// WaitIdle 阻塞直到 worker 队列为空且当前没有正在处理的任务。
-//
-// "队列空"的判定基于 videoQueue —— 它在 Enqueue 时 reserve、processQueued
-// defer 里 release，因此 lengthExcluding("") == 0 同时覆盖：
-//   - channel 中尚未被消费的项
-//   - 当前正在 processQueued 的项（哪怕处于 cooldown 等待中）
-//
-// 调用方应通过 ctx 传入超时 / cancel；ctx 结束时返回 ctx.Err()。
-// 200ms 轮询：开销极低，凌晨流水线对几百毫秒级响应延迟不敏感。
-func (w *Worker) WaitIdle(ctx context.Context) error {
-	if w == nil {
-		return nil
-	}
-	return waitQueueIdle(ctx, &w.queue)
-}
-
-// WaitIdle 见 Worker.WaitIdle 注释。
-func (w *ThumbWorker) WaitIdle(ctx context.Context) error {
-	if w == nil {
-		return nil
-	}
-	return waitQueueIdle(ctx, &w.queue, &w.durationQueue)
-}
-
-func waitQueueIdle(ctx context.Context, queues ...*videoQueue) error {
-	idle := func() bool {
-		for _, queue := range queues {
-			if queue.lengthExcluding("") != 0 {
-				return false
-			}
-		}
-		return true
-	}
-	if idle() {
-		return nil
-	}
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			if idle() {
-				return nil
-			}
-		}
-	}
-}
-
-func taskStatus(currentTitle string, active bool, cooldown *tasklimit.Cooldown, queueLength int) TaskStatus {
-	if queueLength < 0 {
-		queueLength = 0
-	}
-	status := TaskStatus{
-		State:       "idle",
-		QueueLength: queueLength,
-	}
-	if until, ok := cooldown.Until(time.Now()); ok {
-		status.State = "cooling"
-		status.CooldownUntil = until
-		return status
-	}
-	if active {
-		status.State = "generating"
-		status.CurrentTitle = currentTitle
-		return status
-	}
-	if queueLength > 0 {
-		status.State = "queued"
-	}
-	return status
-}
-
-// Run 阻塞运行直到 ctx 取消
-func (w *Worker) Run(ctx context.Context) {
-	var tasks sync.WaitGroup
-	defer tasks.Wait()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case v := <-w.ch:
-			// Each drive has at most one task waiting for a global slot. FIFO
-			// admission lets other drives advance without a per-drive limit or
-			// a goroutine for every queued video.
-			run := w.prepareQueued(ctx, v)
-			if run == nil {
-				continue
-			}
-			tasks.Add(1)
-			go func() {
-				defer tasks.Done()
-				run()
-			}()
-			// Pace this drive's dispatch without occupying a global slot after
-			// processing or accumulating goroutines that only wait on a timer.
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(500 * time.Millisecond):
-			}
-		}
-	}
-}
-
-// Run 阻塞运行直到 ctx 取消
-func (w *ThumbWorker) Run(ctx context.Context) {
-	for {
-		var video *catalog.Video
-		durationOnly := false
-		var durationContext context.Context
-		// Drain missing thumbnails before dispatching metadata-only work.
-		select {
-		case <-ctx.Done():
-			return
-		case video = <-w.ch:
-		default:
-			select {
-			case <-ctx.Done():
-				return
-			case video = <-w.ch:
-			case task := <-w.durationCh:
-				video = task.video
-				durationOnly = true
-				durationContext = task.ctx
-			}
-		}
-		if durationOnly {
-			taskCtx, cancel := context.WithCancel(durationContext)
-			stop := context.AfterFunc(ctx, cancel)
-			w.processQueuedTask(taskCtx, video, true)
-			canceled := taskCtx.Err() != nil
-			stop()
-			cancel()
-			if canceled {
-				continue
-			}
-		} else {
-			w.processQueuedTask(ctx, video, false)
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
-}
-
-func (w *Worker) processQueued(ctx context.Context, v *catalog.Video) {
-	if run := w.prepareQueued(ctx, v); run != nil {
-		run()
-	}
-}
-
-// prepareQueued waits in the dispatcher and transfers admission/resource
-// ownership to the returned task. No processing goroutine exists before this
-// succeeds, even when a drive has thousands of queued videos. Without a task
-// the queue reservation is released.
-func (w *Worker) prepareQueued(ctx context.Context, v *catalog.Video) func() {
-	if v == nil {
-		return nil
-	}
-	prepared := false
-	taskRelease := func() {}
-	defer func() {
-		if !prepared {
-			taskRelease()
-			w.releaseQueued(v)
-		}
-	}()
-	if w.Catalog == nil || v.ID == "" || ctx.Err() != nil {
-		return nil
-	}
-	taskCtx := applog.WithFields(applog.NewTask(ctx, "preview", generationDriveID(w.Drive)), applog.Fields{VideoID: v.ID, FileID: v.FileID})
-	if w.TaskGuard != nil {
-		release := w.TaskGuard()
-		if release == nil {
-			return nil
-		}
-		taskRelease = release
-	}
-	current, err := w.Catalog.GetVideo(taskCtx, v.ID)
-	if err != nil {
-		if taskCtx.Err() == nil {
-			applog.Error(taskCtx, "Read queued video failed", err, applog.Fields{Stage: "lookup"})
-		}
-		return nil
-	}
-	if current.Hidden || current.DriveID != generationDriveID(w.Drive) {
-		return nil
-	}
-	release, err := w.Limiter.AcquireAfter(taskCtx, w.Cooldown)
-	if err != nil {
-		return nil
-	}
-	prepared = true
-	return func() {
-		defer taskRelease()
-		defer release()
-		w.activities.start(current)
-		w.notifyStatus(true)
-		retry := w.process(taskCtx, current)
-		release()
-		// Release before requeueing because videoQueue deduplicates reserved
-		// IDs. Keep activity visible throughout the transition for admission.
-		w.queue.release(v)
-		if retry && ctx.Err() == nil {
-			w.EnqueueBlocking(ctx, current)
-		}
-		w.activities.done(current.ID)
-		w.notifyStatus(true)
-	}
-}
-
-func (w *Worker) releaseQueued(v *catalog.Video) {
-	w.queue.release(v)
-	w.notifyStatus(true)
-}
-
-func (w *ThumbWorker) processQueued(ctx context.Context, v *catalog.Video) {
-	w.processQueuedTask(ctx, v, false)
-}
-
-func (w *ThumbWorker) processQueuedTask(ctx context.Context, v *catalog.Video, durationOnly bool) {
-	if v == nil {
-		return
-	}
-	ctx = applog.WithFields(applog.NewTask(ctx, "thumb", generationDriveID(w.Drive)), applog.Fields{VideoID: v.ID, FileID: v.FileID})
-	if !durationOnly {
-		w.followUpMu.Lock()
-		w.activeThumbnailID = v.ID
-		w.followUpMu.Unlock()
-	}
-
-	retry := false
-	activityStarted := false
-	var taskRelease func()
-	defer func() {
-		w.finishQueued(ctx, v, retry, durationOnly)
-		if activityStarted {
-			w.activity.done()
-		}
-		if taskRelease != nil {
-			taskRelease()
-		}
-		w.notifyStatus(true)
-	}()
-
-	if w.TaskGuard != nil {
-		taskRelease = w.TaskGuard()
-		if taskRelease == nil {
-			return
-		}
-	}
-	if err := ctx.Err(); err != nil {
-		return
-	}
-	if release, err := w.Limiter.AcquireAfter(ctx, w.Cooldown); err == nil {
-		w.activity.start(v)
-		w.notifyStatus(true)
-		activityStarted = true
-		if durationOnly {
-			w.processDuration(ctx, v)
-		} else {
-			retry = w.process(ctx, v)
-		}
-		release()
-	}
-}
-
-func (w *ThumbWorker) finishQueued(ctx context.Context, v *catalog.Video, retry, durationOnly bool) {
-	if durationOnly {
-		// Cover notifications enter the independent thumbnail queue immediately,
-		// so ending the metadata phase cannot discard them.
-		w.durationQueue.release(v)
-		return
-	}
-	// Keep activity non-idle across release-and-requeue. Configuration admission
-	// checks worker status while holding its queue gate; an idle gap here could
-	// otherwise let a runtime update start just before this retry is queued.
-	w.followUpMu.Lock()
-	followUp := w.followUps[v.ID]
-	delete(w.followUps, v.ID)
-	if w.activeThumbnailID == v.ID {
-		w.activeThumbnailID = ""
-	}
-	w.queue.release(v)
-	if ctx.Err() == nil && (retry || followUp != nil) {
-		if followUp == nil {
-			followUp = v
-		}
-		w.EnqueueBlocking(ctx, followUp)
-	}
-	w.followUpMu.Unlock()
-}
-
-func (w *Worker) skipIfRateLimited(v *catalog.Video) bool {
+func (w *MediaJob) skipIfRateLimited() bool {
 	until, ok := w.Cooldown.Until(time.Now())
 	if ok {
-		log.Printf("[preview] drive=%s cooling down until=%s; keep queued video pending", generationDriveID(w.Drive), until.Format(time.RFC3339))
+		log.Printf("[preview] drive=%s cooling down until=%s; keep media job pending", generationDriveID(w.Drive), until.Format(time.RFC3339))
 	}
 	return ok
 }
 
-func (w *Worker) pauseForRateLimit(err error, step, title string) bool {
+func (w *MediaJob) pauseForRateLimit(err error, step, title string) bool {
 	wait, ok := drives.RateLimitRetryAfter(err)
 	if !ok {
 		return false
 	}
 	until := pauseDrive(w.Cooldown, wait, w.RateLimitCooldown)
-	w.notifyStatus(true)
+	w.notifyCooldown()
 	log.Printf("[preview] drive=%s rate-limited until=%s step=%s video=%s: %v", w.Drive.ID(), until.Format(time.RFC3339), step, title, err)
 	return true
 }
 
-func (w *Worker) pauseForRecoverableError(err error, step, title string) bool {
+func (w *MediaJob) pauseForRecoverableError(err error, step, title string) bool {
 	if w.pauseForRateLimit(err, step, title) {
 		return true
 	}
@@ -2017,33 +1406,33 @@ func (w *Worker) pauseForRecoverableError(err error, step, title string) bool {
 		return false
 	}
 	until := pauseDrive(w.Cooldown, 0, w.RateLimitCooldown)
-	w.notifyStatus(true)
+	w.notifyCooldown()
 	log.Printf("[preview] drive=%s transient media source error until=%s step=%s video=%s: %v", w.Drive.ID(), until.Format(time.RFC3339), step, title, err)
 	return true
 }
 
-func (w *ThumbWorker) skipIfRateLimited(v *catalog.Video) bool {
+func (w *ThumbnailJob) skipIfRateLimited() bool {
 	until, ok := w.Cooldown.Until(time.Now())
 	if ok {
-		log.Printf("[thumb] drive=%s cooling down until=%s; keep queued thumbnail pending", generationDriveID(w.Drive), until.Format(time.RFC3339))
+		log.Printf("[thumb] drive=%s cooling down until=%s; keep thumbnail pending", generationDriveID(w.Drive), until.Format(time.RFC3339))
 	}
 	return ok
 }
 
 // pauseForProviderError shares provider cooldowns with metadata work without
-// consuming thumbnail retries or deciding whether to requeue the current task.
-func (w *ThumbWorker) pauseForProviderError(err error, step, title string) bool {
+// consuming thumbnail retries.
+func (w *ThumbnailJob) pauseForProviderError(err error, step, title string) bool {
 	wait, limited := drives.RateLimitRetryAfter(err)
 	if !limited && !driveErrorShouldCooldown(w.Drive, err) {
 		return false
 	}
 	until := pauseDrive(w.Cooldown, wait, w.RateLimitCooldown)
-	w.notifyStatus(true)
+	w.notifyCooldown()
 	log.Printf("[thumb] drive=%s provider error cooldown until=%s step=%s video=%s: %v", generationDriveID(w.Drive), until.Format(time.RFC3339), step, title, err)
 	return true
 }
 
-func (w *ThumbWorker) pauseForRecoverableError(ctx context.Context, v *catalog.Video, err error, step string) bool {
+func (w *ThumbnailJob) pauseForRecoverableError(ctx context.Context, v *catalog.Video, err error, step string) bool {
 	title := ""
 	videoID := ""
 	if v != nil {
@@ -2074,7 +1463,7 @@ func (w *ThumbWorker) pauseForRecoverableError(ctx context.Context, v *catalog.V
 }
 
 // pauseDrive pauses the drive for the provider's retry time, or for the
-// worker's configured cooldown when the provider gave none.
+// job's configured cooldown when the provider gave none.
 func pauseDrive(cooldown *tasklimit.Cooldown, retryAfter, configured time.Duration) time.Time {
 	wait := retryAfter
 	if wait <= 0 {
@@ -2090,48 +1479,62 @@ func driveErrorShouldCooldown(d drives.Drive, err error) bool {
 	return d != nil && drives.ShouldCooldown(d.Kind(), err)
 }
 
-func (w *ThumbWorker) process(ctx context.Context, v *catalog.Video) bool {
-	if w.skipIfRateLimited(v) {
-		return false
+// Run generates a missing cover for v. It reports StepPaused when v stays
+// pending because the drive is cooling down or the task was interrupted,
+// StepUnsettled when the cover finished without obtaining a duration or
+// saving metadata so later duration steps do not immediately re-probe the same
+// source, and StepSettled otherwise.
+func (w *ThumbnailJob) Run(ctx context.Context, v *catalog.Video) generation.StepOutcome {
+	if w.skipIfRateLimited() {
+		return generation.StepPaused
 	}
-	if w.Catalog == nil || v == nil || v.ID == "" {
-		return false
+	if w.Catalog == nil || v == nil || v.ID == "" || v.Hidden || v.ThumbnailURL != "" {
+		return generation.StepSettled
 	}
-	loaded, err := w.Catalog.GetVideo(ctx, v.ID)
-	if err != nil || loaded.Hidden || loaded.DriveID != generationDriveID(w.Drive) {
-		return false
-	}
-	v = loaded
-	if v.ThumbnailURL != "" {
-		return false
-	}
+	ctx = applog.WithFields(applog.NewTask(ctx, "thumb", generationDriveID(w.Drive)), applog.Fields{VideoID: v.ID, FileID: v.FileID})
 	_ = w.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{ExpectedSource: v, ThumbnailStatus: "pending"})
 	input, err := resolveGenerationInput(ctx, w.Drive, v.FileID)
 	if err != nil {
+		if ctx.Err() != nil {
+			return generation.StepPaused
+		}
 		if w.pauseForRecoverableError(ctx, v, err, "streamURL") {
-			return true
+			return generation.StepPaused
 		}
 		applog.Error(ctx, "Thumbnail stream link failed: "+v.Title, err, applog.Fields{Component: "thumb", DriveID: generationDriveID(w.Drive), VideoID: v.ID, FileID: v.FileID, Stage: "streamURL"})
 		_ = w.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{ExpectedSource: v, ThumbnailStatus: "failed"})
-		return false
+		if v.DurationSeconds <= 0 {
+			return generation.StepUnsettled
+		}
+		return generation.StepSettled
 	}
 	defer input.Close()
-	if w.probeDuration(ctx, v, input) {
-		return true
+	probeOutcome := w.probeDuration(ctx, v, input)
+	if probeOutcome == generation.StepPaused {
+		return generation.StepPaused
 	}
 
 	if err := w.generateThumbnailWithFallback(ctx, v, input); err != nil {
+		if ctx.Err() != nil {
+			return generation.StepPaused
+		}
 		if w.pauseForRecoverableError(ctx, v, err, "generate") {
-			return true
+			return generation.StepPaused
 		}
 		applog.Error(ctx, "Thumbnail generation failed: "+v.Title, err, applog.Fields{Component: "thumb", DriveID: generationDriveID(w.Drive), VideoID: v.ID, FileID: v.FileID, Stage: "generate"})
 		_ = w.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{ExpectedSource: v, ThumbnailStatus: "failed"})
-		return false
+		if probeOutcome == generation.StepUnsettled {
+			return generation.StepUnsettled
+		}
+		return generation.StepSettled
 	}
-	return false
+	if probeOutcome == generation.StepUnsettled {
+		return generation.StepUnsettled
+	}
+	return generation.StepSettled
 }
 
-func (w *ThumbWorker) generateThumbnailFromLink(ctx context.Context, v *catalog.Video, link *drives.StreamLink, duration float64) error {
+func (w *ThumbnailJob) generateThumbnailFromLink(ctx context.Context, v *catalog.Video, link *drives.StreamLink, duration float64) error {
 	persistence.RLock()
 	defer persistence.RUnlock()
 	local, err := w.Gen.GenerateThumbnail(ctx, link, v.ID, duration)
@@ -2143,11 +1546,12 @@ func (w *ThumbWorker) generateThumbnailFromLink(ctx context.Context, v *catalog.
 		applog.Error(ctx, "Save thumbnail metadata failed: "+v.Title, err, applog.Fields{Component: "thumb", DriveID: generationDriveID(w.Drive), VideoID: v.ID, Stage: "save"})
 		return nil
 	}
+	v.ThumbnailURL = "/p/thumb/" + v.ID
 	applog.Info(ctx, "Thumbnail ready: "+v.Title, applog.Fields{Component: "thumb", DriveID: generationDriveID(w.Drive), VideoID: v.ID})
 	return nil
 }
 
-func (w *ThumbWorker) generateThumbnailWithFallback(ctx context.Context, v *catalog.Video, input *generationInput) error {
+func (w *ThumbnailJob) generateThumbnailWithFallback(ctx context.Context, v *catalog.Video, input *generationInput) error {
 	duration := float64(v.DurationSeconds)
 	return input.run(ctx, func(ctx context.Context, link *drives.StreamLink) error {
 		err := w.generateThumbnailFromLink(ctx, v, link, duration)
@@ -2158,7 +1562,7 @@ func (w *ThumbWorker) generateThumbnailWithFallback(ctx context.Context, v *cata
 	})
 }
 
-func (w *ThumbWorker) retryThumbnailWithFreshOriginal(ctx context.Context, v *catalog.Video, cause error, duration float64) error {
+func (w *ThumbnailJob) retryThumbnailWithFreshOriginal(ctx context.Context, v *catalog.Video, cause error, duration float64) error {
 	if cause == nil || w.Drive == nil || w.Drive.Kind() != "p115" || !directMediaLinkRefreshAllowed(cause) {
 		return cause
 	}
@@ -2169,32 +1573,37 @@ func (w *ThumbWorker) retryThumbnailWithFreshOriginal(ctx context.Context, v *ca
 	return w.generateThumbnailFromLink(ctx, v, refreshed, duration)
 }
 
-// process runs the media job for v: one pass over the teaser segments yields
-// the perceptual signature, the teaser while previews are enabled, and a
-// missing thumbnail. It returns true when v must be retried after the shared
-// drive cooldown or an interruption; settled outcomes return false.
-func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
-	if w.skipIfRateLimited(v) {
-		return true
+// Run performs v's media job: one pass over the teaser segments yields the
+// perceptual signature, the teaser while previews are enabled, and the
+// thumbnail the job owns. It reports StepPaused when v stays pending because
+// the drive is cooling down or the task was interrupted, StepUnsettled when
+// the source could not be resolved or probed cleanly so later steps do not
+// immediately re-hit the same source, and StepSettled otherwise.
+func (w *MediaJob) Run(ctx context.Context, v *catalog.Video) generation.StepOutcome {
+	if w.skipIfRateLimited() {
+		return generation.StepPaused
 	}
 	previews := w.enabled()
-	if !v.MediaWants(previews).Any() {
-		w.handOffThumbnail(v)
-		return false
+	if v == nil || !v.MediaWants(previews).Any() {
+		return generation.StepSettled
 	}
+	ctx = applog.WithFields(applog.NewTask(ctx, "preview", generationDriveID(w.Drive)), applog.Fields{VideoID: v.ID, FileID: v.FileID})
 	// An interrupted task is neither a media failure nor a provider cooldown:
 	// the video stays pending and is retried once its context allows it.
 	input, err := resolveGenerationInput(ctx, w.Drive, v.FileID)
 	if err != nil {
 		if ctx.Err() != nil {
-			return true
+			return generation.StepPaused
 		}
 		if w.pauseForRecoverableError(err, "streamURL", v.Title) {
-			return true
+			return generation.StepPaused
 		}
 		applog.Error(ctx, "Media stream link failed: "+v.Title, err, w.logFields(v, "streamURL"))
 		w.failMedia(ctx, v, v.MediaWants(previews))
-		return false
+		if v.ThumbnailURL == "" || v.DurationSeconds <= 0 {
+			return generation.StepUnsettled
+		}
+		return generation.StepSettled
 	}
 	defer input.Close()
 
@@ -2205,10 +1614,10 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
 	})
 	if probeErr != nil {
 		if ctx.Err() != nil {
-			return true
+			return generation.StepPaused
 		}
 		if w.pauseForRecoverableError(probeErr, "probe", v.Title) {
-			return true
+			return generation.StepPaused
 		}
 		applog.Error(ctx, "Media duration probe failed: "+v.Title, probeErr, w.logFields(v, "probe"))
 	}
@@ -2220,8 +1629,7 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
 		if v.MediaPending() {
 			_ = w.Catalog.CompleteMediaForSource(ctx, v, nil)
 		}
-		w.handOffThumbnail(v)
-		return false
+		return generation.StepSettled
 	}
 
 	// The job owns covers it generated and renews them with every read.
@@ -2229,15 +1637,17 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
 	media, err := w.generateMedia(ctx, v, input, duration, request)
 	if err != nil {
 		if ctx.Err() != nil {
-			return true
+			return generation.StepPaused
 		}
 		if w.pauseForRecoverableError(err, "generate", v.Title) {
-			return true
+			return generation.StepPaused
 		}
 		applog.Error(ctx, "Media generation failed: "+v.Title, err, w.logFields(v, "generate"))
 		w.failMedia(ctx, v, wants)
-		w.handOffThumbnail(v)
-		return false
+		if probeErr != nil && v.ThumbnailURL != "" {
+			return generation.StepUnsettled
+		}
+		return generation.StepSettled
 	}
 
 	// The outputs exist; saving them is cheaper than discarding finished work.
@@ -2251,14 +1661,16 @@ func (w *Worker) process(ctx context.Context, v *catalog.Video) bool {
 	if media.ThumbnailPath != "" {
 		w.saveThumbnail(ctx, v, media.ThumbnailPath)
 	}
-	w.handOffThumbnail(v)
 	applog.Info(ctx, fmt.Sprintf("Media ready: %s (duration=%.1fs teaser=%v sampled=%v thumbnail=%v)",
 		v.Title, duration, media.TeaserPath != "", media.Signature != nil, media.ThumbnailPath != ""),
 		applog.Fields{Component: "preview", DriveID: generationDriveID(w.Drive), VideoID: v.ID})
-	return false
+	if probeErr != nil && v.ThumbnailURL != "" {
+		return generation.StepUnsettled
+	}
+	return generation.StepSettled
 }
 
-func (w *Worker) logFields(v *catalog.Video, stage string) applog.Fields {
+func (w *MediaJob) logFields(v *catalog.Video, stage string) applog.Fields {
 	return applog.Fields{Component: "preview", DriveID: generationDriveID(w.Drive), VideoID: v.ID, FileID: v.FileID, Stage: stage}
 }
 
@@ -2269,7 +1681,7 @@ func (w *Worker) logFields(v *catalog.Video, stage string) applog.Fields {
 // so a retry admits it again. Any other due job is done, including one for a
 // video too short to sign. A teaser generated for a job that was not due
 // leaves the job and its signature as they are.
-func (w *Worker) completeMedia(ctx context.Context, v *catalog.Video, wants catalog.MediaWants, duration float64, media Media) {
+func (w *MediaJob) completeMedia(ctx context.Context, v *catalog.Video, wants catalog.MediaWants, duration float64, media Media) {
 	var err error
 	switch signature := media.Signature; {
 	case signature != nil && !media.SignatureComplete:
@@ -2286,9 +1698,9 @@ func (w *Worker) completeMedia(ctx context.Context, v *catalog.Video, wants cata
 	}
 }
 
-// failMedia settles a failed media job so the video is not queued again until
+// failMedia settles a failed media job so the video is not taken again until
 // a retry resets it. A failed renewal keeps the teaser the video already has.
-func (w *Worker) failMedia(ctx context.Context, v *catalog.Video, wants catalog.MediaWants) {
+func (w *MediaJob) failMedia(ctx context.Context, v *catalog.Video, wants catalog.MediaWants) {
 	if wants.Teaser && v.PreviewStatus != "ready" {
 		_ = w.Catalog.UpdatePreviewForSource(ctx, v, "", "failed")
 	}
@@ -2297,7 +1709,7 @@ func (w *Worker) failMedia(ctx context.Context, v *catalog.Video, wants catalog.
 	}
 }
 
-func (w *Worker) saveTeaser(ctx context.Context, v *catalog.Video, path string) {
+func (w *MediaJob) saveTeaser(ctx context.Context, v *catalog.Video, path string) {
 	local, err := w.Gen.MoveToLocal(path, v.ID)
 	if err != nil {
 		_ = os.Remove(path)
@@ -2319,7 +1731,7 @@ func (w *Worker) saveTeaser(ctx context.Context, v *catalog.Video, path string) 
 	v.PreviewLocal, v.PreviewStatus = reference, "ready"
 }
 
-func (w *Worker) saveThumbnail(ctx context.Context, v *catalog.Video, path string) {
+func (w *MediaJob) saveThumbnail(ctx context.Context, v *catalog.Video, path string) {
 	local, err := w.Gen.MoveThumbnailToLocal(path, v.ID)
 	if err != nil {
 		_ = os.Remove(path)
@@ -2329,18 +1741,12 @@ func (w *Worker) saveThumbnail(ctx context.Context, v *catalog.Video, path strin
 	if err := w.Catalog.SaveGeneratedThumbnailForSource(ctx, v); err != nil {
 		_ = os.Remove(local)
 		applog.Error(ctx, "Save thumbnail metadata failed: "+v.Title, err, w.logFields(v, "thumbnail"))
+		return
 	}
+	v.ThumbnailURL = "/p/thumb/" + v.ID
 }
 
-// handOffThumbnail passes a video the media job left without a thumbnail to
-// the thumbnail worker.
-func (w *Worker) handOffThumbnail(v *catalog.Video) {
-	if v != nil && v.ThumbnailURL == "" && w.OnThumbnailMissing != nil {
-		w.OnThumbnailMissing(v)
-	}
-}
-
-func (w *Worker) generateMedia(ctx context.Context, v *catalog.Video, input *generationInput, duration float64, request MediaRequest) (Media, error) {
+func (w *MediaJob) generateMedia(ctx context.Context, v *catalog.Video, input *generationInput, duration float64, request MediaRequest) (Media, error) {
 	var media Media
 	err := input.run(ctx, func(ctx context.Context, link *drives.StreamLink) error {
 		var err error
@@ -2354,7 +1760,7 @@ func (w *Worker) generateMedia(ctx context.Context, v *catalog.Video, input *gen
 	return media, err
 }
 
-func (w *Worker) generateMediaFromOriginal(ctx context.Context, v *catalog.Video, link *drives.StreamLink, duration float64, request MediaRequest) (Media, error) {
+func (w *MediaJob) generateMediaFromOriginal(ctx context.Context, v *catalog.Video, link *drives.StreamLink, duration float64, request MediaRequest) (Media, error) {
 	gen, ok := w.Gen.(refreshingMediaGenerator)
 	if !ok || w.Drive == nil || w.Drive.Kind() != "p115" {
 		return w.Gen.Generate(ctx, link, duration, request)
@@ -2373,7 +1779,7 @@ func isRateLimitError(err error) bool {
 // MoveToLocal writes the stable per-video path, so the row may still reference
 // that file. A source update that keeps the reference keeps the same bytes;
 // one that changes the content clears the reference first.
-func (w *Worker) discardUnsavedTeaser(ctx context.Context, videoID, local string) {
+func (w *MediaJob) discardUnsavedTeaser(ctx context.Context, videoID, local string) {
 	current, err := w.Catalog.GetVideo(ctx, videoID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return
@@ -2399,6 +1805,18 @@ func removePreviousLocalTeaser(previous, current string) {
 	}
 }
 
+func (w *MediaJob) notifyCooldown() {
+	if w.OnCooldown != nil {
+		w.OnCooldown()
+	}
+}
+
+func (w *ThumbnailJob) notifyCooldown() {
+	if w.OnCooldown != nil {
+		w.OnCooldown()
+	}
+}
+
 // --- utils ---
 
 func buildHeaders(h map[string][]string) string {
@@ -2421,15 +1839,4 @@ func buildHeaders(h map[string][]string) string {
 		}
 	}
 	return sb.String()
-}
-
-func (w *Worker) notifyStatus(immediate bool) {
-	if w.OnStatusChanged != nil {
-		w.OnStatusChanged(immediate)
-	}
-}
-func (w *ThumbWorker) notifyStatus(immediate bool) {
-	if w.OnStatusChanged != nil {
-		w.OnStatusChanged(immediate)
-	}
 }

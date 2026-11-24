@@ -449,8 +449,7 @@ func (a *App) removeProviderSource(ctx context.Context, v *catalog.Video, check 
 				return catalog.ErrMergedSourceReplaced
 			}
 		case check == mergedSource && v.SampledSHA256 != "":
-			_, _, limiter := a.generationLimits()
-			sum, err := fingerprint.Compute(ctx, drv, v, fingerprint.Config{Limiter: limiter}, nil)
+			sum, err := fingerprint.Compute(ctx, drv, v, fingerprint.Config{}, nil)
 			if err != nil {
 				return fmt.Errorf("%w: %v", catalog.ErrMergedSourceUnverified, err)
 			}
@@ -553,11 +552,7 @@ func (a *App) restoreDeletedVideo(ctx context.Context, videoID string) error {
 		return err
 	}
 	if result.Video != nil {
-		// The catalog commit is already durable. A client disconnect at this point
-		// must not strand the restored row in pending derived-asset state.
-		postRestoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		a.enqueueUploadedVideo(postRestoreCtx, result.Video)
-		cancel()
+		a.wakeDriveGeneration(result.Video.DriveID)
 		if a.onTagsChanged != nil {
 			a.onTagsChanged()
 		}

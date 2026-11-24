@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,15 +26,13 @@ var ErrVersionConflict = errors.New("config.yaml changed since it was loaded")
 // LiveSettings is the subset of config.yaml that the running process can
 // safely apply without rebuilding its long-lived dependencies.
 type LiveSettings struct {
-	UseGPU                 bool   `json:"useGPU"`
-	TelegramEnabled        bool   `json:"telegramEnabled"`
-	PreviewEnabled         bool   `json:"previewEnabled"`
-	ThumbnailConcurrency   int    `json:"thumbnailConcurrency"`
-	FingerprintConcurrency int    `json:"fingerprintConcurrency"`
-	NightlyDisabled        bool   `json:"nightlyDisabled"`
-	NightlyStartTime       string `json:"nightlyStartTime"`
-	NightlyTimezone        string `json:"nightlyTimezone"`
-	PreviewConcurrency     int    `json:"previewConcurrency"`
+	UseGPU                bool   `json:"useGPU"`
+	TelegramEnabled       bool   `json:"telegramEnabled"`
+	PreviewEnabled        bool   `json:"previewEnabled"`
+	GenerationConcurrency int    `json:"generationConcurrency"`
+	NightlyDisabled       bool   `json:"nightlyDisabled"`
+	NightlyStartTime      string `json:"nightlyStartTime"`
+	NightlyTimezone       string `json:"nightlyTimezone"`
 }
 
 // LegacyRuntimeSettings carries values written by the short-lived SQLite
@@ -97,13 +96,11 @@ func NewManager(path string) (*Manager, error) {
 
 func DefaultLiveSettings() LiveSettings {
 	return LiveSettings{
-		PreviewEnabled:         true,
-		NightlyDisabled:        DefaultNightlyDisabled,
-		NightlyStartTime:       DefaultNightlyStartTime,
-		NightlyTimezone:        DefaultNightlyTimezone,
-		PreviewConcurrency:     DefaultGenerationConcurrency,
-		ThumbnailConcurrency:   DefaultGenerationConcurrency,
-		FingerprintConcurrency: DefaultGenerationConcurrency,
+		PreviewEnabled:        true,
+		NightlyDisabled:       DefaultNightlyDisabled,
+		NightlyStartTime:      DefaultNightlyStartTime,
+		NightlyTimezone:       DefaultNightlyTimezone,
+		GenerationConcurrency: DefaultGenerationConcurrency,
 	}
 }
 
@@ -112,15 +109,13 @@ func liveSettingsFromConfig(cfg *Config) LiveSettings {
 		return DefaultLiveSettings()
 	}
 	return LiveSettings{
-		TelegramEnabled:        cfg.Telegram.Enabled,
-		UseGPU:                 cfg.Generation.UseGPU,
-		PreviewEnabled:         cfg.Preview.Enabled,
-		NightlyDisabled:        cfg.Nightly.Disabled,
-		NightlyStartTime:       cfg.Nightly.StartTime,
-		NightlyTimezone:        cfg.Nightly.Timezone,
-		PreviewConcurrency:     cfg.Generation.PreviewConcurrency,
-		ThumbnailConcurrency:   cfg.Generation.ThumbnailConcurrency,
-		FingerprintConcurrency: cfg.Generation.FingerprintConcurrency,
+		TelegramEnabled:       cfg.Telegram.Enabled,
+		UseGPU:                cfg.Generation.UseGPU,
+		PreviewEnabled:        cfg.Preview.Enabled,
+		NightlyDisabled:       cfg.Nightly.Disabled,
+		NightlyStartTime:      cfg.Nightly.StartTime,
+		NightlyTimezone:       cfg.Nightly.Timezone,
+		GenerationConcurrency: cfg.Generation.Concurrency,
 	}
 }
 
@@ -280,16 +275,28 @@ func (m *Manager) MigrateLegacyRuntimeSettings(legacy LegacyRuntimeSettings) (bo
 	if deleteMappingValue(document, "drives") {
 		changed = true
 	}
-	// The former per-drive preview limit and shared media budget no longer
-	// control generation. Remove them so the source editor cannot present
-	// ineffective controls alongside the three independent global limits.
+	// The former per-drive preview limit, shared media budget and per-step
+	// limits no longer control generation. Remove them so the source editor
+	// cannot present ineffective controls. The media budget bounded the
+	// heaviest work by videos at once, so it carries over as the concurrency.
 	preview, _ := mappingValue(document, "preview")
 	if deleteMappingValue(preview, "concurrency") {
 		changed = true
 	}
 	generation, _ := mappingValue(document, "generation")
-	if deleteMappingValue(generation, "media_concurrency") {
-		changed = true
+	if previous, ok := mappingValue(generation, "preview_concurrency"); ok {
+		if _, exists := mappingValue(generation, "concurrency"); !exists {
+			videos, err := strconv.Atoi(strings.TrimSpace(previous.Value))
+			if err != nil || videos < 1 || videos > MaxGenerationConcurrency {
+				videos = DefaultGenerationConcurrency
+			}
+			setIntValue(generation, "concurrency", videos)
+		}
+	}
+	for _, key := range []string{"media_concurrency", "preview_concurrency", "thumbnail_concurrency", "fingerprint_concurrency"} {
+		if deleteMappingValue(generation, key) {
+			changed = true
+		}
 	}
 
 	if !changed {
@@ -470,9 +477,7 @@ func removeLiveDocumentValues(document any) {
 	removeNestedValue(root, "nightly", "disabled")
 	delete(root, "tags")
 	removeNestedValue(root, "preview", "enabled")
-	removeNestedValue(root, "generation", "preview_concurrency")
-	removeNestedValue(root, "generation", "thumbnail_concurrency")
-	removeNestedValue(root, "generation", "fingerprint_concurrency")
+	removeNestedValue(root, "generation", "concurrency")
 	removeNestedValue(root, "generation", "use_gpu")
 }
 

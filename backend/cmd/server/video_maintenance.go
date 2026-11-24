@@ -93,7 +93,7 @@ func (a *App) cleanupDuplicateVideoAssets(ctx context.Context) error {
 // which waits for the generation queues it started.
 const mediaRenewalBatch = 1000
 
-// renewStaleMedia queues the next batch of stale media jobs. They run after
+// renewStaleMedia makes the next batch of stale media jobs due. They run after
 // maintenance, and their signatures join the next deduplication.
 func (a *App) renewStaleMedia(ctx context.Context) error {
 	if err := persistence.RLockContext(ctx); err != nil {
@@ -104,8 +104,12 @@ func (a *App) renewStaleMedia(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	woken := make(map[string]bool)
 	for _, video := range videos {
-		a.enqueueUploadedVideo(ctx, video)
+		if !woken[video.DriveID] {
+			woken[video.DriveID] = true
+			a.wakeDriveGeneration(video.DriveID)
+		}
 	}
 	if len(videos) > 0 {
 		log.Printf("[dedupe-maintenance] queued %d media renewals", len(videos))

@@ -14,7 +14,6 @@ import (
 	"github.com/nianzhibai/91/backend/internal/config"
 	"github.com/nianzhibai/91/backend/internal/drives"
 	"github.com/nianzhibai/91/backend/internal/mediaasset"
-	"github.com/nianzhibai/91/backend/internal/preview"
 	"github.com/nianzhibai/91/backend/internal/proxy"
 	"github.com/nianzhibai/91/backend/internal/scanner"
 )
@@ -71,11 +70,6 @@ func assertDeferredAssets(t *testing.T, paths []string, retained bool) {
 func TestCancelBlacklistDuringGraceKeepsAssetsAndSkipsRegeneration(t *testing.T) {
 	ctx := context.Background()
 	app, video, paths := seedDeferredVideoAssets(t)
-	gen := &serverFakeTeaserGenerator{}
-	worker := preview.NewWorker(gen, app.cat, nil)
-	thumbWorker := preview.NewThumbWorker(gen, app.cat, nil)
-	app.workers = map[string]*preview.Worker{video.DriveID: worker}
-	app.thumbWorkers = map[string]*preview.ThumbWorker{video.DriveID: thumbWorker}
 	invalidations := 0
 	app.onTagsChanged = func() { invalidations++ }
 	if _, err := app.deleteVideo(ctx, video.ID, catalog.VideoDeletionOptions{}); err != nil {
@@ -91,8 +85,9 @@ func TestCancelBlacklistDuringGraceKeepsAssetsAndSkipsRegeneration(t *testing.T)
 	}
 	// The retained teaser and thumbnail stay; the recreated row only needs its
 	// signature sampled again.
-	if worker.Status().QueueLength != 1 || thumbWorker.Status().QueueLength != 0 || invalidations != 1 {
-		t.Fatalf("undo generation queues = %d/%d, tag invalidations=%d", worker.Status().QueueLength, thumbWorker.Status().QueueLength, invalidations)
+	counts, err := app.cat.CountDueGeneration(ctx, video.DriveID, true, time.Now())
+	if err != nil || counts.Media != 1 || counts.Thumbnails != 0 || invalidations != 1 {
+		t.Fatalf("undo due work = %+v, %v, tag invalidations=%d", counts, err, invalidations)
 	}
 	if err := app.cleanupExpiredDeletedVideoAssets(ctx, time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)

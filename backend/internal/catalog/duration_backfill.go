@@ -5,31 +5,6 @@ import (
 	"time"
 )
 
-// ListVideosNeedingDuration uses a keyset cursor so failed probes cannot be
-// selected again later in the same sweep. The next round starts with no cursor.
-func (c *Catalog) ListVideosNeedingDuration(ctx context.Context, driveID, afterID string, limit int) ([]*Video, error) {
-	if limit <= 0 {
-		limit = 100
-	}
-	rows, err := c.db.QueryContext(ctx, `SELECT `+allVideoCols+` FROM videos
-        WHERE drive_id = ? AND id > ? AND COALESCE(duration_seconds, 0) <= 0
-        AND COALESCE(hidden, 0) = 0 AND `+uniqueVideoWhereSQL+`
-        ORDER BY id ASC LIMIT ?`, driveID, afterID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var videos []*Video
-	for rows.Next() {
-		video, err := scanVideo(rows)
-		if err != nil {
-			return nil, err
-		}
-		videos = append(videos, video)
-	}
-	return videos, rows.Err()
-}
-
 // Older duration-only failures were written into thumbnail_status. Repair that
 // legacy state once; missing duration itself is sufficient to admit backfill.
 func (c *Catalog) migrateLegacyDurationBackfill(ctx context.Context) error {

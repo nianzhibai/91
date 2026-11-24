@@ -93,7 +93,7 @@ future_section:
 	if strings.Contains(text, "builtin_pack_enabled") {
 		t.Fatalf("retired tag setting remains:\n%s", text)
 	}
-	want := LiveSettings{PreviewEnabled: true, NightlyStartTime: "04:25", NightlyTimezone: "Asia/Shanghai", PreviewConcurrency: DefaultGenerationConcurrency, ThumbnailConcurrency: 1, FingerprintConcurrency: 1}
+	want := LiveSettings{PreviewEnabled: true, NightlyStartTime: "04:25", NightlyTimezone: "Asia/Shanghai", GenerationConcurrency: DefaultGenerationConcurrency}
 	if got := manager.LiveSettings(); got != want {
 		t.Fatalf("live settings = %#v, want %#v", got, want)
 	}
@@ -108,7 +108,7 @@ func TestManagerYAMLValuesWinOverLegacySQLiteValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := LiveSettings{PreviewEnabled: true, NightlyStartTime: "02:10", NightlyTimezone: "Asia/Shanghai", PreviewConcurrency: DefaultGenerationConcurrency, ThumbnailConcurrency: 1, FingerprintConcurrency: 1}
+	want := LiveSettings{PreviewEnabled: true, NightlyStartTime: "02:10", NightlyTimezone: "Asia/Shanghai", GenerationConcurrency: DefaultGenerationConcurrency}
 	if got := manager.LiveSettings(); got != want {
 		t.Fatalf("live settings = %#v, want YAML %#v", got, want)
 	}
@@ -179,7 +179,7 @@ func TestManagerReloadPublishesExternalValidChangeAndKeepsLastGoodOnError(t *tes
 	if err != nil || !changed {
 		t.Fatalf("reload changed=%v err=%v", changed, err)
 	}
-	want := LiveSettings{PreviewEnabled: true, NightlyDisabled: true, NightlyStartTime: "06:30", NightlyTimezone: "Asia/Shanghai", PreviewConcurrency: DefaultGenerationConcurrency, ThumbnailConcurrency: 1, FingerprintConcurrency: 1}
+	want := LiveSettings{PreviewEnabled: true, NightlyDisabled: true, NightlyStartTime: "06:30", NightlyTimezone: "Asia/Shanghai", GenerationConcurrency: DefaultGenerationConcurrency}
 	if got := manager.LiveSettings(); got != want {
 		t.Fatalf("settings = %#v, want %#v", got, want)
 	}
@@ -199,7 +199,7 @@ func TestManagerReloadPublishesExternalValidChangeAndKeepsLastGoodOnError(t *tes
 
 func TestRestartRequiredComparisonIgnoresOnlyLivePaths(t *testing.T) {
 	before := []byte("nightly:\n  start_time: \"01:00\"\nfuture:\n  value: one\n")
-	liveOnly := []byte("nightly:\n  disabled: true\n  start_time: \"03:15\"\n  timezone: Asia/Shanghai\ntags:\n  builtin_pack_enabled: false\ngeneration:\n  thumbnail_concurrency: 2\n  preview_concurrency: 4\n  fingerprint_concurrency: 3\nfuture:\n  value: one\n")
+	liveOnly := []byte("nightly:\n  disabled: true\n  start_time: \"03:15\"\n  timezone: Asia/Shanghai\ntags:\n  builtin_pack_enabled: false\ngeneration:\n  concurrency: 3\nfuture:\n  value: one\n")
 	if hasRestartRequiredChange(before, liveOnly) {
 		t.Fatal("live-only values were reported as restart-required")
 	}
@@ -245,7 +245,7 @@ func TestManagerRestoresYAMLAndLiveSnapshotWhenLiveApplyFails(t *testing.T) {
 	}
 }
 
-func TestManagerRemovesRetiredGenerationLimitsAndPreservesIndependentLimits(t *testing.T) {
+func TestManagerReplacesRetiredGenerationLimitsWithConcurrency(t *testing.T) {
 	manager, path := newManagerForTest(t, `nightly:
   start_time: "01:00"
   timezone: Asia/Shanghai
@@ -277,15 +277,20 @@ generation:
 	if _, exists := document["preview"]["concurrency"]; exists {
 		t.Fatal("retained obsolete per-drive limit")
 	}
-	if _, exists := document["generation"]["media_concurrency"]; exists {
-		t.Fatal("retained obsolete combined limit")
+	for _, key := range []string{"media_concurrency", "thumbnail_concurrency", "preview_concurrency", "fingerprint_concurrency"} {
+		if _, exists := document["generation"][key]; exists {
+			t.Fatalf("retained obsolete limit %s", key)
+		}
+	}
+	if document["generation"]["concurrency"] != 3 {
+		t.Fatalf("generation concurrency = %v, want the former media budget", document["generation"]["concurrency"])
 	}
 	if document["generation"]["future_option"] != "keep" || !strings.Contains(string(data), "# keep ffmpeg settings") {
 		t.Fatal("discarded unrelated config")
 	}
 	settings := manager.LiveSettings()
-	if settings.ThumbnailConcurrency != 2 || settings.PreviewConcurrency != 3 || settings.FingerprintConcurrency != 4 {
-		t.Fatalf("changed explicit global limits: %+v", settings)
+	if settings.GenerationConcurrency != 3 {
+		t.Fatalf("live settings = %+v, want three generation concurrency", settings)
 	}
 	changed, err = manager.MigrateLegacyRuntimeSettings(LegacyRuntimeSettings{})
 	if err != nil || changed {

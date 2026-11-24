@@ -67,7 +67,7 @@ type GenerationSource struct {
 }
 
 // GenerationStreamScanResetter resets optional stream availability when a new
-// scan starts. The state remains shared by its background generation workers
+// scan starts. The state remains shared by the drive's background generation
 // until the next scan, including work that finishes after discovery returns.
 type GenerationStreamScanResetter interface {
 	ResetGenerationStreamForScan()

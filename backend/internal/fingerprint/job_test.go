@@ -16,7 +16,7 @@ import (
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/dedupe"
 	"github.com/nianzhibai/91/backend/internal/drives"
-	"github.com/nianzhibai/91/backend/internal/tasklimit"
+	"github.com/nianzhibai/91/backend/internal/generation"
 )
 
 func TestComputeLocalFilesWithSameContentMatch(t *testing.T) {
@@ -219,7 +219,7 @@ func TestComputeP115PersistentRangeForbiddenReturnsRateLimit(t *testing.T) {
 	}
 }
 
-func TestWorkerP115PersistentRangeForbiddenKeepsFingerprintPending(t *testing.T) {
+func TestJobP115PersistentRangeForbiddenKeepsFingerprintPending(t *testing.T) {
 	ctx := context.Background()
 	rejected := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "signed url rejected", http.StatusForbidden)
@@ -245,11 +245,13 @@ func TestWorkerP115PersistentRangeForbiddenKeepsFingerprintPending(t *testing.T)
 		t.Fatalf("seed video: %v", err)
 	}
 	drv := &fakeDrive{kind: "p115", streamURLs: []string{rejected.URL, rejected.URL}}
-	worker := NewWorker(cat, drv, Config{
+	job := NewJob(cat, drv, Config{
 		RateLimitCooldown: time.Millisecond,
 		HTTPClient:        rejected.Client(),
 	})
-	worker.processQueued(ctx, video)
+	if got := job.Run(ctx, video); got != generation.StepPaused {
+		t.Fatalf("outcome = %v, want paused for a rejected signed link", got)
+	}
 
 	got, err := cat.GetVideo(ctx, video.ID)
 	if err != nil {
@@ -260,7 +262,7 @@ func TestWorkerP115PersistentRangeForbiddenKeepsFingerprintPending(t *testing.T)
 	}
 }
 
-func TestWorkerSchedulesAssetsWhenVerificationFindsNewBytes(t *testing.T) {
+func TestJobResetsAssetsWhenVerificationFindsNewBytes(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "clip.mp4")
 	if err := os.WriteFile(path, []byte("original"), 0o644); err != nil {
@@ -288,17 +290,20 @@ func TestWorkerSchedulesAssetsWhenVerificationFindsNewBytes(t *testing.T) {
 	if err := os.WriteFile(path, []byte("replaced"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	var scheduled *catalog.Video
-	worker := NewWorker(cat, drv, Config{})
-	worker.OnContentReplaced = func(v *catalog.Video) { scheduled = v }
-	worker.processQueued(ctx, video)
-
-	if scheduled == nil || scheduled.PreviewStatus != "pending" || scheduled.ThumbnailURL != "" || scheduled.SampledSHA256 == video.SampledSHA256 {
-		t.Fatalf("scheduled = %+v, want reset row with the new fingerprint", scheduled)
+	current, err := cat.GetVideo(ctx, video.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := NewJob(cat, drv, Config{}).Run(ctx, current); got != generation.StepSettled {
+		t.Fatalf("verification outcome = %v, want settled", got)
+	}
+	got, err := cat.GetVideo(ctx, video.ID)
+	if err != nil || got.PreviewStatus != "pending" || got.ThumbnailURL != "" || got.SampledSHA256 == video.SampledSHA256 {
+		t.Fatalf("video = %+v, %v; want reset row with the new fingerprint", got, err)
 	}
 }
 
-func TestWorkerProviderStatusCoolsDownOnlyForItsKind(t *testing.T) {
+func TestJobProviderStatusCoolsDownOnlyForItsKind(t *testing.T) {
 	ctx := context.Background()
 	unavailable := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -316,10 +321,16 @@ func TestWorkerProviderStatusCoolsDownOnlyForItsKind(t *testing.T) {
 		t.Run(tc.kind, func(t *testing.T) {
 			cat := openTestCatalog(t)
 			video := seedPendingVideo(t, cat, "status-"+tc.kind, 10)
-			worker := NewWorker(cat, &fakeDrive{kind: tc.kind, paths: map[string]string{"remote": unavailable.URL}}, Config{
+			job := NewJob(cat, &fakeDrive{kind: tc.kind, paths: map[string]string{"remote": unavailable.URL}}, Config{
 				HTTPClient: unavailable.Client(),
 			})
-			worker.processQueued(ctx, video)
+			wantOutcome := generation.StepSettled
+			if tc.wantCooling {
+				wantOutcome = generation.StepPaused
+			}
+			if got := job.Run(ctx, video); got != wantOutcome {
+				t.Fatalf("outcome = %v, want %v", got, wantOutcome)
+			}
 
 			got, err := cat.GetVideo(ctx, video.ID)
 			if err != nil {
@@ -328,7 +339,7 @@ func TestWorkerProviderStatusCoolsDownOnlyForItsKind(t *testing.T) {
 			if got.FingerprintStatus != tc.wantStatus {
 				t.Fatalf("fingerprint status = %q, want %q", got.FingerprintStatus, tc.wantStatus)
 			}
-			if cooling := worker.Status().State == "cooling"; cooling != tc.wantCooling {
+			if _, cooling := job.Cooldown.Until(time.Now()); cooling != tc.wantCooling {
 				t.Fatalf("cooling = %v, want %v", cooling, tc.wantCooling)
 			}
 		})
@@ -383,42 +394,19 @@ func TestComputeSlowProgressingReadIsNotStalled(t *testing.T) {
 	}
 }
 
-func TestWorkerWaitsOutCooldownSharedWithOtherWorkers(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "clip.mp4")
-	if err := os.WriteFile(path, []byte("clip"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cat := openTestCatalog(t)
-	video := seedPendingVideo(t, cat, "shared-cooldown", 4)
-	drv := &fakeDrive{paths: map[string]string{"remote": path}}
-	worker := NewWorker(cat, drv, Config{})
-	// Another worker of the same drive was throttled.
-	shared := &tasklimit.Cooldown{}
-	until := shared.Pause(time.Now(), 50*time.Millisecond)
-	worker.Cooldown = shared
-
-	worker.processQueued(ctx, video)
-
-	if time.Now().Before(until) {
-		t.Fatal("fingerprint read the drive during its cooldown")
-	}
-	got, err := cat.GetVideo(ctx, video.ID)
-	if err != nil || got.FingerprintStatus != "ready" || drv.streamCalls != 1 {
-		t.Fatalf("video=%+v calls=%d err=%v, want ready after the cooldown", got, drv.streamCalls, err)
-	}
-}
-
-func TestWorkerSkipsFingerprintedVideoWithoutReadingTheDrive(t *testing.T) {
+func TestJobSkipsFingerprintedVideoWithoutReadingTheDrive(t *testing.T) {
 	cat := openTestCatalog(t)
 	video := seedPendingVideo(t, cat, "done", 10)
 	if _, err := cat.UpdateVideoFingerprintForSource(context.Background(), video, "s2:abc", "ready", ""); err != nil {
 		t.Fatal(err)
 	}
+	current, err := cat.GetVideo(context.Background(), video.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	drv := &fakeDrive{}
-	worker := NewWorker(cat, drv, Config{})
-	if worker.processQueued(context.Background(), video) || drv.streamCalls != 0 {
-		t.Fatalf("worker read the drive for a fingerprinted video: calls=%d", drv.streamCalls)
+	if got := NewJob(cat, drv, Config{}).Run(context.Background(), current); got != generation.StepSettled || drv.streamCalls != 0 {
+		t.Fatalf("job read the drive for a fingerprinted video: outcome=%v calls=%d", got, drv.streamCalls)
 	}
 }
 
@@ -577,50 +565,3 @@ func (d *fakeDrive) EnsureDir(context.Context, string) (string, error) {
 	return "", drives.ErrNotSupported
 }
 func (d *fakeDrive) RootID() string { return "root" }
-
-func TestFingerprintCooldownReleasesGlobalBudget(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTooManyRequests) }))
-	defer srv.Close()
-	cat, err := catalog.Open(filepath.Join(t.TempDir(), "catalog.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cat.Close()
-	v := &catalog.Video{ID: "cooling", DriveID: "fake", FileID: "file", Title: "clip", Size: 10, FingerprintStatus: "pending"}
-	if err := cat.UpsertVideo(context.Background(), v); err != nil {
-		t.Fatal(err)
-	}
-	limiter := tasklimit.New(1)
-	w := NewWorker(cat, &fakeDrive{paths: map[string]string{"file": srv.URL}}, Config{Limiter: limiter, RateLimitCooldown: time.Minute})
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	defer func() { cancel(); <-done }()
-	go func() { defer close(done); w.processQueued(ctx, v) }()
-	deadline := time.Now().Add(time.Second)
-	for w.Status().State != "cooling" && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if w.Status().State != "cooling" {
-		t.Fatal("fingerprint task did not enter cooldown")
-	}
-	other, stop := context.WithTimeout(ctx, time.Second)
-	defer stop()
-	release, err := limiter.Acquire(other)
-	if err != nil {
-		t.Fatalf("cooldown held global budget: %v", err)
-	}
-	release()
-}
-
-func TestDirectComputeWaitsForSharedFingerprintBudget(t *testing.T) {
-	limiter := tasklimit.New(1)
-	release, _ := limiter.Acquire(context.Background())
-	defer release()
-	drv := &fakeDrive{}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	_, err := Compute(ctx, drv, &catalog.Video{Size: 10}, Config{Limiter: limiter}, nil)
-	if !errors.Is(err, context.DeadlineExceeded) || drv.streamCalls != 0 {
-		t.Fatalf("direct compute bypassed budget: calls=%d err=%v", drv.streamCalls, err)
-	}
-}

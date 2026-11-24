@@ -46,7 +46,7 @@ func TestCoolingDriveDoesNotOccupySharedSlot(t *testing.T) {
 	cooling.Pause(time.Now(), time.Minute)
 	done := make(chan error, 1)
 	go func() {
-		release, err := limiter.AcquireAfter(ctx, &cooling)
+		release, err := limiter.AcquireAfter(ctx, "cooling", &cooling)
 		if err == nil {
 			release()
 		}
@@ -54,7 +54,7 @@ func TestCoolingDriveDoesNotOccupySharedSlot(t *testing.T) {
 	}()
 	healthyCtx, stop := context.WithTimeout(ctx, time.Second)
 	defer stop()
-	release, err := limiter.AcquireAfter(healthyCtx, &healthy)
+	release, err := limiter.AcquireAfter(healthyCtx, "healthy", &healthy)
 	if err != nil {
 		t.Fatalf("cooling drive blocked healthy drive: %v", err)
 	}
@@ -72,14 +72,14 @@ func TestCoolingDriveDoesNotOccupySharedSlot(t *testing.T) {
 
 func TestAcquireAfterReturnsSlotWhenCooldownStartsInLine(t *testing.T) {
 	limiter := New(1)
-	holder, err := limiter.Acquire(context.Background())
+	holder, err := limiter.Acquire(context.Background(), "holder")
 	if err != nil {
 		t.Fatal(err)
 	}
 	var c Cooldown
 	acquired := make(chan func(), 1)
 	go func() {
-		release, err := limiter.AcquireAfter(context.Background(), &c)
+		release, err := limiter.AcquireAfter(context.Background(), "drive", &c)
 		if err == nil {
 			acquired <- release
 		}
@@ -91,7 +91,7 @@ func TestAcquireAfterReturnsSlotWhenCooldownStartsInLine(t *testing.T) {
 
 	other, stop := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer stop()
-	release, err := limiter.Acquire(other)
+	release, err := limiter.Acquire(other, "other")
 	if err != nil {
 		t.Fatalf("cooling task kept the slot: %v", err)
 	}

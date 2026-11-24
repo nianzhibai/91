@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/nianzhibai/91/backend/internal/drives"
+	"github.com/nianzhibai/91/backend/internal/generation"
 )
 
 type hlsTestDrive struct {
@@ -169,9 +170,9 @@ func TestHLSGenerationWithRealFFmpeg(t *testing.T) {
 			t.Setenv("https_proxy", "http://127.0.0.1:1")
 			cat, video := seedPreviewTestVideo(t, "hls-real-"+format)
 			gen := New(Config{FFmpegPath: ffmpeg, FFprobePath: ffprobe, LocalDir: t.TempDir(), Width: 160, FFmpegThreads: 1})
-			thumb := NewThumbWorker(gen, cat, drive)
-			if thumb.process(ctx, video) {
-				t.Fatal("thumbnail entered cooldown")
+			thumb := NewThumbnailJob(gen, cat, drive)
+			if outcome := thumb.Run(ctx, video); outcome != generation.StepSettled {
+				t.Fatalf("thumbnail outcome = %v, want settled", outcome)
 			}
 			current, err := cat.GetVideo(ctx, video.ID)
 			if err != nil || current.ThumbnailURL == "" || current.DurationSeconds <= 0 {
@@ -179,9 +180,9 @@ func TestHLSGenerationWithRealFFmpeg(t *testing.T) {
 			}
 			cookie.Store("session=rotated")
 			rejectInitial.Store(true)
-			worker := NewWorker(gen, cat, drive)
-			if worker.process(ctx, current) {
-				t.Fatal("preview entered cooldown")
+			worker := NewMediaJob(gen, cat, drive)
+			if outcome := worker.Run(ctx, current); outcome != generation.StepSettled {
+				t.Fatalf("preview outcome = %v, want settled", outcome)
 			}
 			current, err = cat.GetVideo(ctx, video.ID)
 			if err != nil || current.PreviewStatus != "ready" || !strings.HasSuffix(current.PreviewLocal, ".mp4") {

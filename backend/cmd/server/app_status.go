@@ -4,14 +4,14 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/nianzhibai/91/backend/internal/api"
 	"github.com/nianzhibai/91/backend/internal/crawlerupload"
 	"github.com/nianzhibai/91/backend/internal/driveevents"
-	"github.com/nianzhibai/91/backend/internal/fingerprint"
-	"github.com/nianzhibai/91/backend/internal/preview"
+	"github.com/nianzhibai/91/backend/internal/generation"
 )
 
 // Theme 线程安全读当前主题。
@@ -113,21 +113,13 @@ func (a *App) driveGenerationStatuses() map[string]api.DriveGenerationStatuses {
 	a.crawlerUploadMu.Unlock()
 
 	a.mu.Lock()
-	previewWorkers := make(map[string]*preview.Worker, len(a.workers))
-	for id, worker := range a.workers {
-		previewWorkers[id] = worker
-	}
-	thumbWorkers := make(map[string]*preview.ThumbWorker, len(a.thumbWorkers))
-	for id, worker := range a.thumbWorkers {
-		thumbWorkers[id] = worker
-	}
-	fingerprintWorkers := make(map[string]*fingerprint.Worker, len(a.fingerprintWorkers))
-	for id, worker := range a.fingerprintWorkers {
-		fingerprintWorkers[id] = worker
+	runners := make(map[string]*generation.Runner, len(a.runners))
+	for id, runner := range a.runners {
+		runners[id] = runner
 	}
 	a.mu.Unlock()
 
-	out := make(map[string]api.DriveGenerationStatuses, len(scanningDrives)+len(previewWorkers)+len(thumbWorkers)+len(fingerprintWorkers)+len(uploadProgresses))
+	out := make(map[string]api.DriveGenerationStatuses, len(scanningDrives)+len(runners)+len(uploadProgresses))
 	now := time.Now()
 	for id, running := range scanningDrives {
 		if !running {
@@ -149,19 +141,9 @@ func (a *App) driveGenerationStatuses() map[string]api.DriveGenerationStatuses {
 		}
 		out[id] = status
 	}
-	for id, worker := range previewWorkers {
+	for id, runner := range runners {
 		status := out[id]
-		status.Preview = generationStatusFromPreview(worker.Status())
-		out[id] = status
-	}
-	for id, worker := range thumbWorkers {
-		status := out[id]
-		status.Thumbnail = generationStatusFromPreview(worker.Status())
-		out[id] = status
-	}
-	for id, worker := range fingerprintWorkers {
-		status := out[id]
-		status.Fingerprint = generationStatusFromFingerprint(worker.Status())
+		status.Thumbnail, status.Preview, status.Fingerprint = runnerGenerationStatuses(runner.Status())
 		out[id] = status
 	}
 	for id, progress := range uploadProgresses {
@@ -196,9 +178,6 @@ func (a *App) driveGenerationStatus(id string) api.DriveGenerationStatuses {
 	a.scanQueueMu.Lock()
 	scanning, progress := a.scanQueued[id], a.scanProgress[id]
 	a.scanQueueMu.Unlock()
-	a.mu.Lock()
-	previewWorker, thumbWorker, fingerprintWorker := a.workers[id], a.thumbWorkers[id], a.fingerprintWorkers[id]
-	a.mu.Unlock()
 	status := api.DriveGenerationStatuses{}
 	if scanning {
 		status.Scan = api.GenerationStatus{State: "scanning", ScannedCount: progress.Scanned, AddedCount: progress.Added}
@@ -207,9 +186,11 @@ func (a *App) driveGenerationStatus(id string) api.DriveGenerationStatuses {
 			status.Scan.CooldownUntil = formatOptionalRFC3339(progress.CooldownUntil)
 		}
 	}
-	status.Preview = generationStatusFromPreview(previewWorker.Status())
-	status.Thumbnail = generationStatusFromPreview(thumbWorker.Status())
-	status.Fingerprint = generationStatusFromFingerprint(fingerprintWorker.Status())
+	runnerStatus := generation.Status{State: "idle"}
+	if runner := a.generationRunner(id); runner != nil {
+		runnerStatus = runner.Status()
+	}
+	status.Thumbnail, status.Preview, status.Fingerprint = runnerGenerationStatuses(runnerStatus)
 	return status
 }
 
@@ -219,18 +200,14 @@ func (a *App) notifyDriveRuntime(id string, immediate bool) {
 	}
 }
 
+// previewGenerationVideoIDs lists the videos whose media job is running.
 func (a *App) previewGenerationVideoIDs() map[string]bool {
-	a.mu.Lock()
-	previewWorkers := make([]*preview.Worker, 0, len(a.workers))
-	for _, worker := range a.workers {
-		previewWorkers = append(previewWorkers, worker)
-	}
-	a.mu.Unlock()
-
 	out := make(map[string]bool)
-	for _, worker := range previewWorkers {
-		for _, id := range worker.ActiveVideoIDs() {
-			out[id] = true
+	for _, runner := range a.generationRunners() {
+		for _, activity := range runner.Status().Active {
+			if activity.Kind == generation.KindMedia {
+				out[activity.ID] = true
+			}
 		}
 	}
 	return out
@@ -276,34 +253,38 @@ func (a *App) clearCrawlerUploadProgress(driveID string) bool {
 	return ok
 }
 
-func generationStatusFromPreview(status preview.TaskStatus) api.GenerationStatus {
-	state := status.State
-	if state == "" {
-		state = "idle"
+// runnerGenerationStatuses projects a drive's runner onto the API's per-step
+// statuses. Duration probes count with covers, which own them; a video
+// missing both counts once.
+func runnerGenerationStatuses(status generation.Status) (thumbnail, preview, fingerprint api.GenerationStatus) {
+	project := func(due int, kinds ...generation.Kind) api.GenerationStatus {
+		out := api.GenerationStatus{State: "idle"}
+		if status.Paused || status.State == "idle" {
+			due = 0
+		}
+		var running []generation.Activity
+		for _, activity := range status.Active {
+			if slices.Contains(kinds, activity.Kind) {
+				running = append(running, activity)
+			}
+		}
+		switch {
+		case !status.CooldownUntil.IsZero():
+			out.State = "cooling"
+			out.CooldownUntil = status.CooldownUntil.Format(time.RFC3339)
+		case len(running) > 0:
+			out.State = "generating"
+			out.CurrentTitle = running[0].Title
+			due -= len(running)
+		case due > 0:
+			out.State = "queued"
+		}
+		out.QueueLength = max(due, 0)
+		return out
 	}
-	out := api.GenerationStatus{
-		State:        state,
-		CurrentTitle: status.CurrentTitle,
-		QueueLength:  status.QueueLength,
-	}
-	if !status.CooldownUntil.IsZero() {
-		out.CooldownUntil = status.CooldownUntil.Format(time.RFC3339)
-	}
-	return out
-}
-
-func generationStatusFromFingerprint(status fingerprint.TaskStatus) api.GenerationStatus {
-	state := status.State
-	if state == "" {
-		state = "idle"
-	}
-	out := api.GenerationStatus{
-		State:        state,
-		CurrentTitle: status.CurrentTitle,
-		QueueLength:  status.QueueLength,
-	}
-	if !status.CooldownUntil.IsZero() {
-		out.CooldownUntil = status.CooldownUntil.Format(time.RFC3339)
-	}
-	return out
+	counts := status.Counts
+	thumbnail = project(counts.Covers, generation.KindThumbnail, generation.KindDuration)
+	preview = project(counts.Media, generation.KindMedia)
+	fingerprint = project(counts.Fingerprints, generation.KindFingerprint)
+	return thumbnail, preview, fingerprint
 }

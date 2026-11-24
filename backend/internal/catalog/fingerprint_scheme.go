@@ -53,8 +53,8 @@ func (c *Catalog) retireLegacyFingerprintsOnce(ctx context.Context) error {
 // RetireLegacyFingerprints moves stored fingerprints to the current sampling
 // scheme without losing the evidence they hold.
 //
-// A video keeps its earlier fingerprint and is queued to be fingerprinted
-// again. Until the worker replaces it, the old value still separates the
+// A video keeps its earlier fingerprint and becomes due to be fingerprinted
+// again. Until the fingerprint step replaces it, the old value still separates the
 // video from same-named files of the same size that the old scheme proved
 // different, so the file name and size fallback cannot group them, and it
 // never equals a current fingerprint. A video awaiting content verification

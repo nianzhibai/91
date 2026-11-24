@@ -27,20 +27,16 @@ import (
 	"github.com/nianzhibai/91/backend/internal/crawlerupload"
 	"github.com/nianzhibai/91/backend/internal/driveevents"
 	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
-	"github.com/nianzhibai/91/backend/internal/fingerprint"
 	"github.com/nianzhibai/91/backend/internal/frontend"
 	"github.com/nianzhibai/91/backend/internal/httpapi"
 	"github.com/nianzhibai/91/backend/internal/mediaimport"
 	"github.com/nianzhibai/91/backend/internal/nightly"
-	"github.com/nianzhibai/91/backend/internal/preview"
 	"github.com/nianzhibai/91/backend/internal/proxy"
 	"github.com/nianzhibai/91/backend/internal/subtitles"
 	"github.com/nianzhibai/91/backend/internal/telegram"
 )
 
 const (
-	fingerprintReconcileInterval = time.Minute
-
 	blacklistSourceDeletePace            = 250 * time.Millisecond
 	blacklistSourceDeleteDefaultCooldown = 30 * time.Second
 	blacklistSourceDeleteMaxAttempts     = 4
@@ -138,14 +134,11 @@ func main() {
 	}
 
 	app := &App{
-		cfg:                cfg,
-		cat:                cat,
-		configManager:      configManager,
-		registry:           proxy.NewRegistry(),
-		workers:            make(map[string]*preview.Worker),
-		thumbWorkers:       make(map[string]*preview.ThumbWorker),
-		fingerprintWorkers: make(map[string]*fingerprint.Worker),
-		scriptCrawlers:     make(map[string]*scriptcrawler.Crawler),
+		cfg:            cfg,
+		cat:            cat,
+		configManager:  configManager,
+		registry:       proxy.NewRegistry(),
+		scriptCrawlers: make(map[string]*scriptcrawler.Crawler),
 	}
 	app.proxy = proxy.New(app.registry)
 	app.proxy.SetAllowForcedRelay(cfg.Proxy.AllowsForcedRelay())
@@ -199,7 +192,6 @@ func main() {
 	if err := app.cleanupTelegramUploadSources(ctx); err != nil {
 		log.Printf("[telegram-upload] startup source cleanup: %v", err)
 	}
-	go app.runFingerprintReconciler(ctx)
 	go app.runDeletedVideoAssetCleanup(ctx)
 
 	telegramService := telegram.NewIntegration(cat, configManager, app.localUploadDir(), cfg.RemoteUpload.DiskReserveBytes)
@@ -217,7 +209,7 @@ func main() {
 		DiskReserve:    cfg.RemoteUpload.DiskReserveBytes,
 		IdleTimeout:    time.Duration(cfg.RemoteUpload.IdleTimeoutSeconds) * time.Second,
 		OnVideoUploaded: func(v *catalog.Video) {
-			app.enqueueUploadedVideo(ctx, v)
+			app.wakeDriveGeneration(v.DriveID)
 		},
 	})
 	if err != nil {
@@ -280,7 +272,7 @@ func main() {
 		LocalDir:       cfg.Storage.LocalPreviewDir,
 		UploadDir:      app.localUploadDir(),
 		OnVideoUploaded: func(v *catalog.Video) {
-			app.enqueueUploadedVideo(ctx, v)
+			app.wakeDriveGeneration(v.DriveID)
 		},
 		RemoteUploads: remoteUploader,
 		// 前台「不再展示」走拉黑逻辑：删记录 + 删本地封面/预览 + 写墓碑，
@@ -313,6 +305,9 @@ func main() {
 		BeginDriveConfigUpdate: app.beginDriveConfigUpdate,
 		OnDriveRuntimeConfigChanged: func(driveID string) error {
 			return app.reloadDriveRuntime(ctx, driveID)
+		},
+		OnDriveGenerationParallelismChanged: func(driveID string) error {
+			return app.applyDriveGenerationParallelism(ctx, driveID)
 		},
 		OnPrepareDriveDelete: func(deleteCtx context.Context, driveID string) error {
 			app.cancelDriveTasks(ctx, driveID)
@@ -361,7 +356,7 @@ func main() {
 			go app.regenAllPreviews(ctx)
 		},
 		OnDriveGenerationRequested: func(reqCtx context.Context, driveID string, kind api.DriveGenerationKind) (api.DriveGenerationResult, error) {
-			return app.requestDriveGeneration(reqCtx, ctx, driveID, kind)
+			return app.requestDriveGeneration(reqCtx, driveID, kind)
 		},
 		OnDeleteVideo:          app.deleteVideo,
 		OnDeleteMergedSource:   app.deleteMergedSource,
@@ -455,7 +450,7 @@ func main() {
 		RunScan:                     app.runScan,
 		ListCrawlerDrives:           app.listCrawlerDriveIDs,
 		RunCrawlerCrawl:             app.runScriptCrawlerCrawl,
-		WaitPreviewQueuesIdle:       app.waitAllPreviewQueuesIdle,
+		WaitGenerationIdle:          app.waitAllGenerationIdle,
 		RunLocalAssetReconciliation: app.reconcileLocalGeneratedAssets,
 
 		RunTelegramUpload: app.runTelegramUploadMigration,

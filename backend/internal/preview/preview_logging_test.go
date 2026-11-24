@@ -57,7 +57,7 @@ func TestGenerateLogsDegradationAsWarningWithTaskContext(t *testing.T) {
 	}
 }
 
-func TestPreviewWorkerLogsFinalOutcomeAtItsOwnLevel(t *testing.T) {
+func TestMediaJobLogsFinalOutcomeAtItsOwnLevel(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		cause   error
@@ -75,12 +75,9 @@ func TestPreviewWorkerLogsFinalOutcomeAtItsOwnLevel(t *testing.T) {
 			if err := cat.UpsertVideo(context.Background(), video); err != nil {
 				t.Fatal(err)
 			}
-			worker := NewWorker(&fakeTeaserGenerator{generateErr: tc.cause}, cat, &previewFakeDrive{})
+			worker := NewMediaJob(&fakeTeaserGenerator{generateErr: tc.cause}, cat, &previewFakeDrive{})
 			ctx := context.Background()
-			if !worker.Enqueue(video) {
-				t.Fatal("enqueue preview failed")
-			}
-			worker.processQueued(ctx, <-worker.ch)
+			worker.Run(ctx, video)
 			snapshot, err := store.Query(ctx, applog.Query{Limit: 10})
 			if err != nil {
 				t.Fatal(err)

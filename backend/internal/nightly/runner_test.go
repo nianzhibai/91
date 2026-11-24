@@ -296,7 +296,7 @@ func TestRunPipelineHonoursPhaseOrder(t *testing.T) {
 			rec.push("crawl:" + id)
 			return nil
 		},
-		WaitPreviewQueuesIdle: func(context.Context) error {
+		WaitGenerationIdle: func(context.Context) error {
 			rec.push("wait-idle")
 			return nil
 		},
@@ -342,7 +342,7 @@ func TestRunPipelineReconcilesLocalAssetsWithoutScanTargets(t *testing.T) {
 	r := New(Config{
 		Settings:        newStubSettings(),
 		ListScanTargets: func(context.Context) ([]string, error) { return nil, nil },
-		WaitPreviewQueuesIdle: func(context.Context) error {
+		WaitGenerationIdle: func(context.Context) error {
 			rec.push("wait-idle")
 			return nil
 		},
@@ -384,7 +384,7 @@ func TestUploadedResourcesCompleteBeforeDuplicateMaintenance(t *testing.T) {
 			uploaded = true
 			return nil
 		},
-		WaitPreviewQueuesIdle: func(ctx context.Context) error {
+		WaitGenerationIdle: func(ctx context.Context) error {
 			if !uploaded {
 				return nil
 			}
@@ -441,7 +441,7 @@ func TestRunScanAllOnlyScansConfiguredDrivesAndDedupes(t *testing.T) {
 
 			return scanjob.Result{State: scanjob.Succeeded}
 		},
-		WaitPreviewQueuesIdle: func(context.Context) error {
+		WaitGenerationIdle: func(context.Context) error {
 			rec.push("wait-idle")
 			return nil
 		},
@@ -508,7 +508,7 @@ func TestRunPipelineSkipsMigrationWhenNoCrawler(t *testing.T) {
 		},
 		ListCrawlerDrives: func(context.Context) []string { return nil },
 		RunCrawlerCrawl:   func(_ context.Context, id string) error { rec.push("crawl:" + id); return nil },
-		WaitPreviewQueuesIdle: func(context.Context) error {
+		WaitGenerationIdle: func(context.Context) error {
 			rec.push("wait-idle")
 			return nil
 		},
@@ -565,9 +565,9 @@ func TestRunPipelineExitsWhenContextCancelledMidPhase(t *testing.T) {
 
 			return scanjob.Result{State: scanjob.Succeeded}
 		},
-		ListCrawlerDrives:     func(context.Context) []string { return []string{"x"} },
-		RunCrawlerCrawl:       func(context.Context, string) error { rec.push("crawl"); return nil },
-		WaitPreviewQueuesIdle: func(context.Context) error { rec.push("wait-idle"); return nil },
+		ListCrawlerDrives:  func(context.Context) []string { return []string{"x"} },
+		RunCrawlerCrawl:    func(context.Context, string) error { rec.push("crawl"); return nil },
+		WaitGenerationIdle: func(context.Context) error { rec.push("wait-idle"); return nil },
 		RunLocalAssetReconciliation: func(context.Context) (int, error) {
 			rec.push("asset-reconciliation")
 			return 0, nil
@@ -592,10 +592,10 @@ func TestRunPipelineRecordsLastRunDateAfterCompletion(t *testing.T) {
 	settings := newStubSettings()
 	now := time.Date(2026, 5, 27, 1, 5, 0, 0, time.UTC)
 	r := New(Config{
-		Settings:              settings,
-		Now:                   func() time.Time { return now },
-		ListScanTargets:       func(context.Context) ([]string, error) { return nil, nil },
-		WaitPreviewQueuesIdle: func(context.Context) error { return nil },
+		Settings:           settings,
+		Now:                func() time.Time { return now },
+		ListScanTargets:    func(context.Context) ([]string, error) { return nil, nil },
+		WaitGenerationIdle: func(context.Context) error { return nil },
 	})
 
 	r.runModeLocked(context.Background(), runModeScheduled)
@@ -618,7 +618,7 @@ func TestRunModeLockedDropsOverlappingRuns(t *testing.T) {
 			<-releaseFirst
 			return nil, nil
 		},
-		WaitPreviewQueuesIdle: func(context.Context) error { return nil },
+		WaitGenerationIdle: func(context.Context) error { return nil },
 	})
 
 	go r.runModeLocked(context.Background(), runModeScheduled)
@@ -644,7 +644,7 @@ func TestCtxCancelPreventsLaterPhases(t *testing.T) {
 	r := New(Config{
 		Settings:        settings,
 		ListScanTargets: func(context.Context) ([]string, error) { return nil, nil },
-		WaitPreviewQueuesIdle: func(ctx context.Context) error {
+		WaitGenerationIdle: func(ctx context.Context) error {
 			return ctx.Err()
 		},
 		ListCrawlerDrives: func(context.Context) []string {

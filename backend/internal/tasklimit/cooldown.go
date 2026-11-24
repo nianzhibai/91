@@ -58,12 +58,12 @@ func (c *Cooldown) Wait(ctx context.Context) error {
 // AcquireAfter waits out cooldown before taking a slot, so a cooling drive
 // never holds shared budget. A cooldown can begin while the caller waits in
 // line; the slot is then returned and the wait starts over.
-func (l *Limiter) AcquireAfter(ctx context.Context, cooldown *Cooldown) (release func(), err error) {
+func (l *Limiter) AcquireAfter(ctx context.Context, owner string, cooldown *Cooldown) (release func(), err error) {
 	for {
 		if err := cooldown.Wait(ctx); err != nil {
 			return nil, err
 		}
-		release, err := l.Acquire(ctx)
+		release, err := l.Acquire(ctx, owner)
 		if err != nil {
 			return nil, err
 		}
