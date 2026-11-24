@@ -1667,6 +1667,9 @@ func (s *Server) videoSource(v *catalog.Video) string {
 }
 
 // playbackMediaType describes the original resource selected by videoSource.
+// Leave containers such as .mov untyped: browsers answer canPlayType("video/quicktime")
+// with "" even though they can often decode the stream, so players should attempt
+// playback and fall back on actual decode errors instead of rejecting the source upfront.
 func playbackMediaType(v *catalog.Video) string {
 	if v == nil {
 		return ""
@@ -1680,8 +1683,6 @@ func playbackMediaType(v *catalog.Video) string {
 		return "video/ogg"
 	case "ts", "mts", "m2ts":
 		return "video/mp2t"
-	case "mov":
-		return "video/quicktime"
 	default:
 		return ""
 	}

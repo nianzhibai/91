@@ -121,6 +121,11 @@ func TestPlaybackMediaTypeDescribesSelectedResource(t *testing.T) {
 			want:  "video/mp4",
 		},
 		{
+			name:  "mov",
+			video: &catalog.Video{Ext: ".mov"},
+			want:  "",
+		},
+		{
 			name:  "mkv",
 			video: &catalog.Video{Ext: "mkv"},
 			want:  "",
