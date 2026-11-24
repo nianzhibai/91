@@ -566,7 +566,7 @@ func (s *Server) videoCollection(ctx context.Context, current *catalog.Video) (*
 		return nil, items, nil
 	}
 	sort.SliceStable(items, func(i, j int) bool {
-		return naturalVideoCollectionLess(items[i], items[j])
+		return catalog.NaturalVideoOrderLess(items[i], items[j])
 	})
 	currentIndex := 0
 	for index, item := range items {
@@ -615,7 +615,7 @@ func (s *Server) videoCollectionSummary(ctx context.Context, current *catalog.Vi
 		return nil, nil
 	}
 	sort.Slice(items, func(i, j int) bool {
-		return naturalVideoCollectionFieldsLess(
+		return catalog.NaturalVideoOrderFieldsLess(
 			items[i].FileName,
 			items[i].Title,
 			items[i].ID,
@@ -653,117 +653,6 @@ func (s *Server) videoCollectionSummary(ctx context.Context, current *catalog.Vi
 		Total:        len(items),
 		CurrentIndex: currentIndex,
 	}, nil
-}
-
-func naturalVideoCollectionLess(left, right *catalog.Video) bool {
-	if left == nil || right == nil {
-		return left != nil
-	}
-	return naturalVideoCollectionFieldsLess(
-		left.FileName,
-		left.Title,
-		left.ID,
-		left.CreatedAt,
-		right.FileName,
-		right.Title,
-		right.ID,
-		right.CreatedAt,
-	)
-}
-
-func naturalVideoCollectionFieldsLess(
-	leftFileName, leftTitle, leftID string,
-	leftCreatedAt time.Time,
-	rightFileName, rightTitle, rightID string,
-	rightCreatedAt time.Time,
-) bool {
-	leftName := firstNonEmptyString(leftFileName, leftTitle, leftID)
-	rightName := firstNonEmptyString(rightFileName, rightTitle, rightID)
-	if compared := naturalCompare(leftName, rightName); compared != 0 {
-		return compared < 0
-	}
-	if !leftCreatedAt.Equal(rightCreatedAt) {
-		return leftCreatedAt.Before(rightCreatedAt)
-	}
-	return leftID < rightID
-}
-
-// naturalCompare compares ASCII digit runs numerically while keeping all other
-// Unicode runes in a deterministic case-insensitive order (episode 2 < 10).
-func naturalCompare(left, right string) int {
-	leftRunes := []rune(strings.ToLower(strings.TrimSpace(left)))
-	rightRunes := []rune(strings.ToLower(strings.TrimSpace(right)))
-	for li, ri := 0, 0; li < len(leftRunes) && ri < len(rightRunes); {
-		if isASCIIDigit(leftRunes[li]) && isASCIIDigit(rightRunes[ri]) {
-			leftEnd, rightEnd := li, ri
-			for leftEnd < len(leftRunes) && isASCIIDigit(leftRunes[leftEnd]) {
-				leftEnd++
-			}
-			for rightEnd < len(rightRunes) && isASCIIDigit(rightRunes[rightEnd]) {
-				rightEnd++
-			}
-			leftSignificant, rightSignificant := li, ri
-			for leftSignificant < leftEnd-1 && leftRunes[leftSignificant] == '0' {
-				leftSignificant++
-			}
-			for rightSignificant < rightEnd-1 && rightRunes[rightSignificant] == '0' {
-				rightSignificant++
-			}
-			leftDigits := leftRunes[leftSignificant:leftEnd]
-			rightDigits := rightRunes[rightSignificant:rightEnd]
-			if len(leftDigits) != len(rightDigits) {
-				if len(leftDigits) < len(rightDigits) {
-					return -1
-				}
-				return 1
-			}
-			for index := range leftDigits {
-				if leftDigits[index] < rightDigits[index] {
-					return -1
-				}
-				if leftDigits[index] > rightDigits[index] {
-					return 1
-				}
-			}
-			// Numerically equal runs use the shorter spelling first: 2 before 02.
-			if leftEnd-li != rightEnd-ri {
-				if leftEnd-li < rightEnd-ri {
-					return -1
-				}
-				return 1
-			}
-			li, ri = leftEnd, rightEnd
-			continue
-		}
-		if leftRunes[li] < rightRunes[ri] {
-			return -1
-		}
-		if leftRunes[li] > rightRunes[ri] {
-			return 1
-		}
-		li++
-		ri++
-	}
-	if len(leftRunes) < len(rightRunes) {
-		return -1
-	}
-	if len(leftRunes) > len(rightRunes) {
-		return 1
-	}
-	return 0
-}
-
-func isASCIIDigit(value rune) bool {
-	return value >= '0' && value <= '9'
-}
-
-func firstNonEmptyString(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 const recommendationCandidateWindow = 48
