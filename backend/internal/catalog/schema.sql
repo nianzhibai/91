@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS videos (
     ancestor_dir_ids TEXT NOT NULL DEFAULT '',  -- JSON array；扫描起点到直接父目录（含两端）
     ancestor_dir_names TEXT NOT NULL DEFAULT '', -- JSON array；同一路径上的目录名，供标签匹配使用
     dir_name         TEXT DEFAULT '',           -- 所在目录名（扫盘时落库，供标签重算使用）
+    dir_path         TEXT NOT NULL DEFAULT '',  -- 扫描根之下的目录链，以 / 连接，由触发器维护，供关键词搜索
     title            TEXT NOT NULL,
     author           TEXT,
     tags             TEXT,                      -- JSON array

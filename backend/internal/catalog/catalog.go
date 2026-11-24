@@ -1638,8 +1638,10 @@ func (c *Catalog) ListDeletedVideos(ctx context.Context, p ListParams) ([]*Delet
 	var args []any
 	where = append(where, "COALESCE(dv.restore_requested, 0) = 0")
 	if kw := strings.TrimSpace(p.Keyword); kw != "" {
-		where = append(where, "dv.file_name LIKE ?")
-		args = append(args, "%"+kw+"%")
+		for _, term := range searchTerms(kw) {
+			where = append(where, `dv.file_name LIKE ? ESCAPE '\'`)
+			args = append(args, keywordLikePattern(term))
+		}
 	}
 	if driveID := strings.TrimSpace(p.DriveID); driveID != "" {
 		where = append(where, "dv.drive_id = ?")
@@ -2580,9 +2582,9 @@ type videoListQuery struct {
 func buildVideoListQuery(p ListParams) videoListQuery {
 	var where []string
 	var args []any
-	if p.Keyword != "" {
-		where = append(where, "(title LIKE ? OR author LIKE ? OR file_name LIKE ?)")
-		like := "%" + p.Keyword + "%"
+	for _, term := range searchTerms(p.Keyword) {
+		where = append(where, `(title LIKE ? ESCAPE '\' OR author LIKE ? ESCAPE '\' OR `+videoPathSQL+` LIKE ? ESCAPE '\')`)
+		like := keywordLikePattern(term)
 		args = append(args, like, like, like)
 	}
 	if p.DriveID != "" {
@@ -3321,6 +3323,18 @@ func cleanCrawlerIDPrefixes(prefixes []string) []string {
 		out = append(out, prefix)
 	}
 	return out
+}
+
+// searchTerms splits a user query into whitespace-delimited terms; a video
+// matches a keyword search only when it matches every term.
+func searchTerms(keyword string) []string {
+	return strings.Fields(keyword)
+}
+
+// keywordLikePattern matches keyword literally anywhere in a value compared
+// with LIKE ? ESCAPE '\', so % and _ in a search are ordinary characters.
+func keywordLikePattern(keyword string) string {
+	return "%" + escapeSQLLike(keyword) + "%"
 }
 
 func escapeSQLLike(raw string) string {

@@ -1000,7 +1000,7 @@
           {
             "name": "q",
             "in": "query",
-            "description": "Search video titles, authors and file names.",
+            "description": "Search video titles, authors, file names and directory paths below the library root. Whitespace-separated terms must all match.",
             "schema": {
               "type": "string"
             }
@@ -1093,7 +1093,7 @@
           {
             "name": "q",
             "in": "query",
-            "description": "Search video titles, authors and file names.",
+            "description": "Search video titles, authors, file names and directory paths below the library root. Whitespace-separated terms must all match.",
             "schema": {
               "type": "string"
             }

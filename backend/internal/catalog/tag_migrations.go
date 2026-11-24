@@ -134,6 +134,9 @@ UPDATE videos
 	if err := c.addColumnIfMissing(ctx, "videos", "dir_name", "TEXT DEFAULT ''"); err != nil {
 		return err
 	}
+	if err := c.addVideoDirPathColumn(ctx); err != nil {
+		return err
+	}
 	// tags.match_rules：标签匹配规则 JSON；video_tags.evidence：命中证据。
 	if err := c.addColumnIfMissing(ctx, "tags", "match_rules", "TEXT NOT NULL DEFAULT '{}'"); err != nil {
 		return err
@@ -249,6 +252,9 @@ CREATE TABLE IF NOT EXISTS deleted_videos (
 		return err
 	}
 	if err := c.ensureMergedVideoGuards(ctx); err != nil {
+		return err
+	}
+	if err := c.ensureVideoDirPathTriggers(ctx); err != nil {
 		return err
 	}
 	if err := c.syncDriveScanRootIDToRootID(ctx); err != nil {
@@ -937,6 +943,7 @@ var currentVideoColumnNames = []string{
 	"ancestor_dir_ids",
 	"ancestor_dir_names",
 	"dir_name",
+	"dir_path",
 	"title",
 	"author",
 	"tags",
@@ -988,6 +995,7 @@ CREATE TABLE videos_schema_rebuild_new (
     ancestor_dir_ids   TEXT NOT NULL DEFAULT '',
     ancestor_dir_names TEXT NOT NULL DEFAULT '',
     dir_name           TEXT DEFAULT '',
+    dir_path           TEXT NOT NULL DEFAULT '',
     title              TEXT NOT NULL,
     author             TEXT,
     tags               TEXT,

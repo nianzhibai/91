@@ -168,7 +168,7 @@ func TestOpenAddsAncestorDirectoryNamesToExistingVideos(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cat.db.ExecContext(ctx, `ALTER TABLE videos DROP COLUMN ancestor_dir_names`); err != nil {
+	if _, err := cat.db.ExecContext(ctx, `DROP TRIGGER sync_video_dir_path_on_insert; DROP TRIGGER sync_video_dir_path_on_update; ALTER TABLE videos DROP COLUMN dir_path; ALTER TABLE videos DROP COLUMN ancestor_dir_names`); err != nil {
 		t.Fatal(err)
 	}
 	if err := cat.Close(); err != nil {
