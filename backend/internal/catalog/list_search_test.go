@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -248,6 +249,110 @@ func TestOpenBackfillsVideoDirectoryPaths(t *testing.T) {
 	}
 }
 
+func TestRelevanceSearchOrderRanksNamesThenGroupsDirectories(t *testing.T) {
+	ctx := context.Background()
+	cat, err := Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = cat.Close() })
+
+	now := time.Now()
+	seed := func(id, fileName, parentID string, likes int, dirs ...string) {
+		t.Helper()
+		video := &Video{
+			ID: id, DriveID: "drive", FileID: id, FileName: fileName, Title: strings.TrimSuffix(fileName, ".mp4"),
+			ParentID: parentID, AncestorDirNames: dirs, Likes: likes,
+			PublishedAt: now, CreatedAt: now, UpdatedAt: now,
+		}
+		if len(dirs) > 0 {
+			video.DirName = dirs[len(dirs)-1]
+			video.AncestorDirNames = append([]string{"片库"}, dirs...)
+		}
+		if err := cat.UpsertVideo(ctx, video); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	seed("exact", "大三.mp4", "", 1)
+	seed("exact-in-dir", "大三.mp4", "junior", 0, "大三")
+	seed("partial-hot", "大三上学期.mp4", "", 9)
+	seed("partial", "大三下学期.mp4", "", 5)
+	// Exact directory segment "大三" (group best likes 100) + matched subdirectory "大三/期末".
+	seed("ep10", "第10集.mp4", "junior", 100, "大三")
+	seed("ep2", "第2集.mp4", "junior", 0, "大三")
+	seed("titled", "大三开学.mp4", "junior", 0, "大三")
+	seed("finals", "a.mp4", "finals", 0, "大三", "期末")
+	// Exact direct parent segment under another root (lower group likes than "大三").
+	seed("nested", "z.mp4", "college", 10, "大学", "大三")
+	// Exact ancestor segment (dist 1) without matched parent folder.
+	seed("ancestor-only", "c.mp4", "old-sub", 500, "00_归档", "大三", "备份")
+	// Partial directory segment even with lexicographically earlier root and high likes.
+	seed("partial-dir", "b.mp4", "archive-partial", 999, "01_旧归档", "大三合集")
+	// Its own name already matches, so the partially matching directory is
+	// incidental and the video stays among the name matches.
+	seed("name-in-partial-dir", "大三花絮.mp4", "archive-partial", 0, "01_旧归档", "大三合集")
+	seed("unrelated", "其他.mp4", "", 50)
+
+	want := []string{
+		"exact", "exact-in-dir",
+		"partial-hot", "partial", "name-in-partial-dir",
+		"titled", "ep2", "ep10", "finals",
+		"nested",
+		"ancestor-only",
+		"partial-dir",
+	}
+	ids, err := cat.ListVideoIDs(ctx, ListParams{Keyword: "大三", Sort: SortRelevance}, 0)
+	if err != nil {
+		t.Fatalf("list ids: %v", err)
+	}
+	if !slices.Equal(ids, want) {
+		t.Fatalf("ids = %v, want %v", ids, want)
+	}
+
+	// Searching with the file extension still triggers exact name ranking.
+	seed("ext-partial", "新版大三.mp4", "", 99)
+	extIDs, err := cat.ListVideoIDs(ctx, ListParams{Keyword: "大三.mp4", Sort: SortRelevance}, 0)
+	if err != nil {
+		t.Fatalf("list exact filename: %v", err)
+	}
+	if wantExt := []string{"exact", "exact-in-dir", "ext-partial"}; !slices.Equal(extIDs, wantExt) {
+		t.Fatalf("exact filename ids = %v, want %v", extIDs, wantExt)
+	}
+
+	items, total, err := cat.ListVideos(ctx, ListParams{Keyword: "大三", Sort: SortRelevance, Page: 2, PageSize: 3})
+	if err != nil {
+		t.Fatalf("list page: %v", err)
+	}
+	var page []string
+	for _, item := range items {
+		page = append(page, item.ID)
+	}
+	wantAll := []string{
+		"exact", "exact-in-dir",
+		"ext-partial", "partial-hot", "partial", "name-in-partial-dir",
+		"titled", "ep2", "ep10", "finals",
+		"nested",
+		"ancestor-only",
+		"partial-dir",
+	}
+	if total != len(wantAll) || !slices.Equal(page, wantAll[3:6]) {
+		t.Fatalf("page 2 = %v (total %d), want %v (total %d)", page, total, wantAll[3:6], len(wantAll))
+	}
+
+	// Without a keyword there is nothing to rank; the order is SortHot's.
+	hot, err := cat.ListVideoIDs(ctx, ListParams{Sort: SortHot}, 0)
+	if err != nil {
+		t.Fatalf("list hot: %v", err)
+	}
+	fallback, err := cat.ListVideoIDs(ctx, ListParams{Sort: SortRelevance}, 0)
+	if err != nil {
+		t.Fatalf("list relevance without keyword: %v", err)
+	}
+	if !slices.Equal(fallback, hot) {
+		t.Fatalf("relevance without keyword = %v, want hot order %v", fallback, hot)
+	}
+}
+
 func TestListVideosKeywordMultiTermSearch(t *testing.T) {
 	ctx := context.Background()
 	cat, err := Open(t.TempDir() + "/catalog.db")
@@ -290,10 +395,11 @@ func TestListVideosKeywordMultiTermSearch(t *testing.T) {
 	}
 
 	// Directory + file name / title across terms.
-	assertIDs("旅行 2025", "hot", "trip-clip", "trip-other")
-	assertIDs("大三 第2集", "hot", "junior-ep2")
-	assertIDs("alice 片段", "hot", "trip-clip")
-	assertIDs("   旅行   片段  ", "hot", "trip-clip")
+	assertIDs("旅行 2025", SortRelevance, "trip-other", "trip-clip")
+	assertIDs("大三 第2集", SortRelevance, "junior-ep2")
+	assertIDs("alice 片段", SortRelevance, "trip-clip")
+	assertIDs("   旅行   片段  ", SortRelevance, "trip-clip")
+	assertIDs("旅行 2025", SortHot, "trip-clip", "trip-other")
 }
 
 func TestListVideosKeywordMatchesLikeWildcardsLiterally(t *testing.T) {
@@ -327,7 +433,7 @@ func TestListVideosKeywordMatchesLikeWildcardsLiterally(t *testing.T) {
 		"100%":     "percent",
 		`\`:        "backslash",
 	} {
-		for _, sort := range []string{"latest", "hot"} {
+		for _, sort := range []string{SortHot, SortRelevance} {
 			items, total, err := cat.ListVideos(ctx, ListParams{Keyword: keyword, Sort: sort, Page: 1, PageSize: 10})
 			if err != nil {
 				t.Fatalf("list %q: %v", keyword, err)

@@ -12,7 +12,7 @@ export type VideoDetail = Schema<"VideoDetailDTO">;
 export type VideoSubtitle = Schema<"SubtitleDTO">;
 export type TagItem = Schema<"TagDTO">;
 
-export type SortKey = "latest" | "hot" | "recent";
+export type SortKey = "relevance" | "latest" | "hot" | "recent";
 export type Theme = "dark" | "light";
 export type VideoReaction = Schema<"Reaction">["reaction"];
 export type VideoReactionCounts = Pick<Schema<"Reaction">, "likes" | "dislikes">;

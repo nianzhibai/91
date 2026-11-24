@@ -445,7 +445,7 @@ func publicListParams(r *http.Request) catalog.ListParams {
 	}
 	sortKey := strings.TrimSpace(q.Get("sort"))
 	switch sortKey {
-	case "", "latest", "hot", "recent":
+	case "", catalog.SortRelevance, catalog.SortLatest, catalog.SortHot, catalog.SortRecent:
 	default:
 		sortKey = ""
 	}
@@ -456,7 +456,7 @@ func publicListParams(r *http.Request) catalog.ListParams {
 		Page:                  page,
 		PageSize:              size,
 		SkipTotal:             strings.EqualFold(q.Get("count"), "false"),
-		PreferReadyThumbnails: sortKey == "" || sortKey == "latest",
+		PreferReadyThumbnails: sortKey == "" || sortKey == catalog.SortLatest,
 	}
 }
 

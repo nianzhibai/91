@@ -151,7 +151,7 @@ func (s *Server) newVideoFeedSnapshot(r *http.Request) (videoFeedSnapshotSeed, e
 		if kind == "latest" {
 			params.Keyword = ""
 			params.Tag = ""
-			params.Sort = "latest"
+			params.Sort = catalog.SortLatest
 			params.PreferReadyThumbnails = true
 		}
 		videoIDs, err := s.Catalog.ListVideoIDs(r.Context(), params, 0)
@@ -160,7 +160,7 @@ func (s *Server) newVideoFeedSnapshot(r *http.Request) (videoFeedSnapshotSeed, e
 		}
 		sortKey := params.Sort
 		if sortKey == "" {
-			sortKey = "latest"
+			sortKey = catalog.SortLatest
 		}
 		sharedKey := videoFeedSnapshotKey{
 			keyword: params.Keyword,

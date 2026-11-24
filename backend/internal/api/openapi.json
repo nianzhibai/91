@@ -1016,10 +1016,11 @@
           {
             "name": "sort",
             "in": "query",
-            "description": "Sort by publication, likes, or last view. Defaults to latest.",
+            "description": "Sort by search relevance, publication, likes, or last view. `relevance` puts exact title or file name matches first, then other title, file name and author matches, then videos found through their directory, grouped by directory and ranked by directory match strength and popularity; without `q` it sorts like `hot`. Defaults to latest.",
             "schema": {
               "type": "string",
               "enum": [
+                "relevance",
                 "latest",
                 "hot",
                 "recent"
@@ -1109,10 +1110,11 @@
           {
             "name": "sort",
             "in": "query",
-            "description": "Sort by publication, likes, or last view. Defaults to latest.",
+            "description": "Sort by search relevance, publication, likes, or last view. `relevance` puts exact title or file name matches first, then other title, file name and author matches, then videos found through their directory, grouped by directory and ranked by directory match strength and popularity; without `q` it sorts like `hot`. Defaults to latest.",
             "schema": {
               "type": "string",
               "enum": [
+                "relevance",
                 "latest",
                 "hot",
                 "recent"

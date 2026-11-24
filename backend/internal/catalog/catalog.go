@@ -2556,7 +2556,7 @@ type ListParams struct {
 	CrawlerID             string
 	SourceKind            string // telegram; import provenance independent of current drive
 	Tag                   string
-	Sort                  string // latest | hot | recent
+	Sort                  string // relevance | latest | hot | recent
 	LikedOnly             bool
 	ThumbnailReadyOnly    bool
 	PreferReadyThumbnails bool
@@ -2573,6 +2573,10 @@ type videoListQuery struct {
 	whereSQL string
 	orderBy  string
 	args     []any
+	// searchKeyword and searchTerms are set when the order is SortRelevance's
+	// keyword ranking, which searchOrderedVideoIDs applies instead of orderBy.
+	searchKeyword string
+	searchTerms   []string
 }
 
 // buildVideoListQuery owns the public-list filtering and ordering contract.
@@ -2582,7 +2586,9 @@ type videoListQuery struct {
 func buildVideoListQuery(p ListParams) videoListQuery {
 	var where []string
 	var args []any
-	for _, term := range searchTerms(p.Keyword) {
+	keyword := strings.TrimSpace(p.Keyword)
+	terms := searchTerms(keyword)
+	for _, term := range terms {
 		where = append(where, `(title LIKE ? ESCAPE '\' OR author LIKE ? ESCAPE '\' OR `+videoPathSQL+` LIKE ? ESCAPE '\')`)
 		like := keywordLikePattern(term)
 		args = append(args, like, like, like)
@@ -2649,14 +2655,19 @@ func buildVideoListQuery(p ListParams) videoListQuery {
 	// order even when timestamps and reaction counters are tied.
 	orderBy := " ORDER BY " + readyOrderPrefix + "videos.published_at DESC, videos.id ASC"
 	switch p.Sort {
-	case "hot":
+	case SortHot, SortRelevance:
 		// 热度 = 点赞数；点赞数相同按最近点赞时间，最后用发布时间兜底。
 		orderBy = " ORDER BY " + readyOrderPrefix + "videos.likes DESC, COALESCE(videos.last_liked_at, 0) DESC, videos.published_at DESC, videos.id ASC"
-	case "recent":
+	case SortRecent:
 		orderBy = " ORDER BY " + readyOrderPrefix + "COALESCE(videos.last_viewed_at, 0) DESC, videos.published_at DESC, videos.id ASC"
 	}
 
-	return videoListQuery{whereSQL: whereSQL, orderBy: orderBy, args: args}
+	query := videoListQuery{whereSQL: whereSQL, orderBy: orderBy, args: args}
+	if p.Sort == SortRelevance && len(terms) > 0 {
+		query.searchKeyword = keyword
+		query.searchTerms = terms
+	}
+	return query
 }
 
 func (c *Catalog) ListVideos(ctx context.Context, p ListParams) ([]*Video, int, error) {
@@ -2667,6 +2678,19 @@ func (c *Catalog) ListVideos(ctx context.Context, p ListParams) ([]*Video, int, 
 		p.Page = 1
 	}
 	query := buildVideoListQuery(p)
+	offset := (p.Page - 1) * p.PageSize
+	if query.searchKeyword != "" {
+		ids, err := c.searchOrderedVideoIDs(ctx, query)
+		if err != nil {
+			return nil, 0, err
+		}
+		page := ids[min(offset, len(ids)):min(offset+p.PageSize, len(ids))]
+		out, err := c.VisibleVideosByIDs(ctx, page)
+		if err != nil {
+			return nil, 0, err
+		}
+		return out, len(ids), nil
+	}
 
 	var total int
 	if !p.SkipTotal {
@@ -2675,8 +2699,6 @@ func (c *Catalog) ListVideos(ctx context.Context, p ListParams) ([]*Video, int, 
 		}
 	}
 
-	// list
-	offset := (p.Page - 1) * p.PageSize
 	queryArgs := append(append([]any(nil), query.args...), p.PageSize, offset)
 	rows, err := c.db.QueryContext(ctx,
 		"SELECT "+allVideoCols+" FROM videos"+query.whereSQL+query.orderBy+" LIMIT ? OFFSET ?",
@@ -2706,6 +2728,16 @@ func (c *Catalog) ListVideos(ctx context.Context, p ListParams) ([]*Video, int, 
 // to a live, mutable ordering.
 func (c *Catalog) ListVideoIDs(ctx context.Context, p ListParams, limit int) ([]string, error) {
 	query := buildVideoListQuery(p)
+	if query.searchKeyword != "" {
+		ids, err := c.searchOrderedVideoIDs(ctx, query)
+		if err != nil {
+			return nil, err
+		}
+		if limit > 0 && len(ids) > limit {
+			ids = ids[:limit]
+		}
+		return ids, nil
+	}
 	querySQL := "SELECT videos.id FROM videos" + query.whereSQL + query.orderBy
 	if limit > 0 {
 		querySQL += " LIMIT ?"
