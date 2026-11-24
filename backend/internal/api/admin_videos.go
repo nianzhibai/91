@@ -14,9 +14,11 @@ import (
 	"github.com/nianzhibai/91/backend/internal/catalog"
 )
 
+const maxAdminVideoAuthorBytes = 1024
+
 type updateVideoReq struct {
 	Title       json.RawMessage `json:"title"`
-	Author      json.RawMessage `json:"author"`
+	Author      *string         `json:"author"`
 	Tags        []string        `json:"tags"`
 	Badges      []string        `json:"badges"`
 	Thumbnail   string          `json:"thumbnail"`
@@ -113,14 +115,27 @@ func (a *AdminServer) handleUpdateVideo(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, r, http.StatusBadRequest, err)
 		return
 	}
-	if len(body.Title) > 0 || len(body.Author) > 0 {
-		writeErr(w, r, http.StatusBadRequest, errors.New("video title and author are read-only"))
+	if len(body.Title) > 0 {
+		writeErr(w, r, http.StatusBadRequest, errors.New("video title is read-only"))
 		return
+	}
+	var nextAuthor string
+	if body.Author != nil {
+		nextAuthor = strings.TrimSpace(*body.Author)
+		if len(nextAuthor) > maxAdminVideoAuthorBytes {
+			writeErr(w, r, http.StatusBadRequest, errors.New("video author is too long"))
+			return
+		}
 	}
 	v, err := a.Catalog.GetVideo(r.Context(), id)
 	if err != nil {
 		writeErr(w, r, http.StatusNotFound, err)
 		return
+	}
+	authorChanged := false
+	if body.Author != nil && v.Author != nextAuthor {
+		v.Author = nextAuthor
+		authorChanged = true
 	}
 	if body.Badges != nil {
 		v.Badges = body.Badges
@@ -135,6 +150,7 @@ func (a *AdminServer) handleUpdateVideo(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, r, http.StatusInternalServerError, err)
 		return
 	}
+	reload := false
 	if body.Tags != nil {
 		if err := a.Catalog.SetManualVideoTags(r.Context(), id, body.Tags); err != nil {
 			if errors.Is(err, catalog.ErrUnknownTag) {
@@ -144,6 +160,21 @@ func (a *AdminServer) handleUpdateVideo(w http.ResponseWriter, r *http.Request) 
 			writeErr(w, r, http.StatusInternalServerError, err)
 			return
 		}
+		reload = true
+	} else if authorChanged {
+		assignments, err := a.Catalog.MatchTagAssignments(r.Context(), v.Title, v.FileName, v.Author, v.DirName, v.AncestorDirNames...)
+		if err != nil {
+			writeErr(w, r, http.StatusInternalServerError, err)
+			return
+		}
+		changed, err := a.Catalog.ReplaceAutoVideoTags(r.Context(), id, assignments)
+		if err != nil {
+			writeErr(w, r, http.StatusInternalServerError, err)
+			return
+		}
+		reload = changed
+	}
+	if reload {
 		v, err = a.Catalog.GetVideo(r.Context(), id)
 		if err != nil {
 			writeErr(w, r, http.StatusInternalServerError, err)

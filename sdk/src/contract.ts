@@ -961,12 +961,12 @@ export type Schemas = {
     matchRules?: Schemas["taggingRule"];
   };
   updateVideoReq: {
-    author?: number[] | null;
+    /** Explicit author name; pass an empty string to clear it. */
+    author?: string;
     badges?: string[] | null;
     durationSeconds?: number;
     tags?: string[] | null;
     thumbnail?: string;
-    title?: number[] | null;
   };
   updateVideoTagsReq: {
     tags?: string[] | null;

@@ -11367,13 +11367,8 @@
       "updateVideoReq": {
         "properties": {
           "author": {
-            "items": {
-              "type": "integer"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
+            "description": "Explicit author name; pass an empty string to clear it.",
+            "type": "string"
           },
           "badges": {
             "items": {
@@ -11398,15 +11393,6 @@
           },
           "thumbnail": {
             "type": "string"
-          },
-          "title": {
-            "items": {
-              "type": "integer"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
           }
         },
         "type": "object"

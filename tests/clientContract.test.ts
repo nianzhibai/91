@@ -96,3 +96,16 @@ test("admin previews source deletion before submitting the chosen scope", async 
   });
   assert.equal(calls[1], "DELETE /admin/api/videos/video%20id");
 });
+
+test("admin updates video author through the documented payload", async () => {
+  const bodies: unknown[] = [];
+  const client = createClient({ baseURL: "https://api.example", fetch: async (input, init) => {
+    assert.equal(init?.method, "PUT");
+    assert.equal(new URL(String(input)).pathname, "/admin/api/videos/video%20id");
+    bodies.push(JSON.parse(String(init?.body)));
+    return Response.json({ id: "video id", author: "Alice" });
+  } });
+  await client.admin.updateVideo("video id", { author: "Alice" });
+  await client.admin.updateVideo("video id", { author: "" });
+  assert.deepEqual(bodies, [{ author: "Alice" }, { author: "" }]);
+});

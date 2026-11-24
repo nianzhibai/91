@@ -490,6 +490,7 @@ export type BlacklistSourceDeleteStatus = {
 };
 
 export type UpdateVideoInput = Partial<{
+  author: string;
   tags: string[];
   badges: string[];
   thumbnail: string;

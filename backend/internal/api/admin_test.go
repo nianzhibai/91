@@ -57,7 +57,7 @@ func (lease *adminTestDriveConfigLease) Release() {
 	lease.released = true
 }
 
-func TestHandleUpdateVideoRejectsReadOnlyTitleAndAuthor(t *testing.T) {
+func TestHandleUpdateVideoRejectsReadOnlyTitle(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
 	if err != nil {
@@ -86,6 +86,81 @@ func TestHandleUpdateVideoRejectsReadOnlyTitleAndAuthor(t *testing.T) {
 	}
 	if got.Title != "file" || got.Author != "author" {
 		t.Fatalf("metadata changed: title=%q author=%q", got.Title, got.Author)
+	}
+}
+
+func TestHandleUpdateVideoUpdatesAuthorAndRefreshesAutoTags(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	defer cat.Close()
+	if _, err := cat.EnsureTag(ctx, "Alice", "user"); err != nil {
+		t.Fatalf("ensure tag: %v", err)
+	}
+	now := time.Now()
+	if err := cat.UpsertVideo(ctx, &catalog.Video{
+		ID: "video-author", DriveID: "drive", FileID: "file", FileName: "clip.mp4",
+		Title: "clip", PublishedAt: now, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed video: %v", err)
+	}
+
+	put := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPut, "/admin/api/videos/video-author", strings.NewReader(body))
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("id", "video-author")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		rr := httptest.NewRecorder()
+		(&AdminServer{Catalog: cat}).handleUpdateVideo(rr, req)
+		return rr
+	}
+
+	// Setting an author trims whitespace and refreshes auto tags.
+	rr := put(`{"author":"  Alice  "}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("set author status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var dto adminVideoDTO
+	if err := json.Unmarshal(rr.Body.Bytes(), &dto); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if dto.Author != "Alice" || len(dto.Tags) != 1 || dto.Tags[0] != "Alice" {
+		t.Fatalf("response = author %q tags %v, want Alice / [Alice]", dto.Author, dto.Tags)
+	}
+
+	// Omitting author preserves the stored author.
+	rr = put(`{"badges":["featured"]}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update badges status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	got, err := cat.GetVideo(ctx, "video-author")
+	if err != nil {
+		t.Fatalf("get video: %v", err)
+	}
+	if got.Author != "Alice" || len(got.Badges) != 1 || got.Badges[0] != "featured" {
+		t.Fatalf("after badge update: author=%q badges=%v", got.Author, got.Badges)
+	}
+
+	// Clearing author removes it and clears auto tags derived only from that author.
+	rr = put(`{"author":"   "}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("clear author status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	got, err = cat.GetVideo(ctx, "video-author")
+	if err != nil {
+		t.Fatalf("get video after clear: %v", err)
+	}
+	if got.Author != "" || len(got.Tags) != 0 {
+		t.Fatalf("after clear: author=%q tags=%v, want empty", got.Author, got.Tags)
+	}
+
+	// Overlong author is rejected without changing stored metadata.
+	rr = put(`{"author":"` + strings.Repeat("a", maxAdminVideoAuthorBytes+1) + `"}`)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("overlong author status = %d body=%s, want 400", rr.Code, rr.Body.String())
 	}
 }
 
