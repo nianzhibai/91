@@ -875,6 +875,7 @@ export type Schemas = {
     previewSrc: string;
     previewStrategy: "teaser-file";
     publishedAt: string;
+    reaction?: "none" | "like" | "dislike";
     sizeBytes?: number;
     sourceLabel?: string;
     tags?: string[];
@@ -882,6 +883,12 @@ export type Schemas = {
     title: string;
     videoSrc: string;
     views: number;
+  };
+  shortsPrewarmRequest: {
+    videoIds: string[];
+  };
+  shortsPrewarmResponse: {
+    scheduled: number;
   };
   skipDirsReq: {
     dirIds?: string[] | null;

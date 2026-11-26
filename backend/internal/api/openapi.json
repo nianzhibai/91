@@ -1759,7 +1759,20 @@
             "name": "mode",
             "in": "query",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "recommend",
+                "latest",
+                "hot"
+              ]
+            }
+          },
+          {
+            "name": "visitId",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 128
             }
           }
         ],
@@ -1781,7 +1794,46 @@
             "$ref": "#/components/responses/Unauthorized"
           }
         },
-        "description": "Start with an empty feedToken and cursor=0. Continue with the returned token and nextCursor. A 410 means the snapshot expired: discard the token and restart. Abandon old requests when filters change."
+        "description": "Start with an empty feedToken and cursor=0. Continue with the returned token and nextCursor. A 410 means the snapshot expired or belonged to another mode: discard the token and restart. Pass visitId to hydrate per-visit reactions."
+      }
+    },
+    "/api/shorts/prewarm": {
+      "post": {
+        "operationId": "post_api_shorts_prewarm",
+        "summary": "Prewarm Shorts Stream Links",
+        "tags": [
+          "Library"
+        ],
+        "x-role": "user",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/shortsPrewarmRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/shortsPrewarmResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "description": "Triggers rolling-window background stream link resolution for up to three upcoming shorts video IDs."
       }
     },
     "/p/stream/{driveID}/{filePath}": {
@@ -8528,6 +8580,14 @@
           "publishedAt": {
             "type": "string"
           },
+          "reaction": {
+            "enum": [
+              "none",
+              "like",
+              "dislike"
+            ],
+            "type": "string"
+          },
           "sizeBytes": {
             "type": "integer"
           },
@@ -11202,6 +11262,31 @@
           "feedToken",
           "nextCursor",
           "roundComplete"
+        ],
+        "type": "object"
+      },
+      "shortsPrewarmRequest": {
+        "properties": {
+          "videoIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "videoIds"
+        ],
+        "type": "object"
+      },
+      "shortsPrewarmResponse": {
+        "properties": {
+          "scheduled": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "scheduled"
         ],
         "type": "object"
       },

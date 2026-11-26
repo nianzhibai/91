@@ -364,7 +364,7 @@ export function createVideoClient(http: Transport) {
     cursor: number,
     count: number,
     mode: ShortsFeedMode = "recommend",
-    options: { signal?: AbortSignal } = {}
+    options: { signal?: AbortSignal; visitId?: string } = {}
   ): Promise<ShortsNextResponse> {
     const params = new URLSearchParams({
       cursor: String(cursor),
@@ -372,6 +372,7 @@ export function createVideoClient(http: Transport) {
       mode,
     });
     if (feedToken) params.set("feedToken", feedToken);
+    if (options.visitId) params.set("visitId", options.visitId);
 
     let result: ShortsNextResponse;
     try {
@@ -408,6 +409,17 @@ export function createVideoClient(http: Transport) {
     return result;
   }
 
+  function prewarmShorts(
+    videoIds: string[],
+    options: { signal?: AbortSignal } = {}
+  ): Promise<{ scheduled: number }> {
+    return http.request<{ scheduled: number }>("/api/shorts/prewarm", {
+      method: "POST",
+      body: JSON.stringify({ videoIds }),
+      signal: options.signal,
+    });
+  }
+
   // Reads are idempotent: retry once on transient failures and bound their wait.
   function read<T>(path: string, options: { signal?: AbortSignal } = {}): Promise<T> {
     return http.request<T>(path, { signal: options.signal, retry: true, timeoutMs: 10_000 });
@@ -435,6 +447,7 @@ export function createVideoClient(http: Transport) {
     setLike,
     setReaction,
     listTags,
-    getShorts
+    getShorts,
+    prewarmShorts
   };
 }

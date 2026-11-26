@@ -63,8 +63,8 @@ func TestVideoFeedUsesAnIdempotentSnapshotCursor(t *testing.T) {
 	if shared.FeedToken != first.FeedToken {
 		t.Fatalf("identical deterministic feed token = %q, want shared %q", shared.FeedToken, first.FeedToken)
 	}
-	if len(server.videoFeeds) != 1 {
-		t.Fatalf("identical deterministic feeds stored %d snapshots, want 1", len(server.videoFeeds))
+	if server.videoFeeds.len() != 1 {
+		t.Fatalf("identical deterministic feeds stored %d snapshots, want 1", server.videoFeeds.len())
 	}
 	repeated := request("/api/feed?kind=listing&feedToken=" + first.FeedToken + "&cursor=0&count=3")
 	if got, want := videoFeedIDs(repeated.Items), videoFeedIDs(first.Items); !equalStrings(got, want) {
@@ -89,7 +89,8 @@ func TestVideoFeedUsesAnIdempotentSnapshotCursor(t *testing.T) {
 		t.Fatalf("changed deterministic feed reused stale snapshot: %#v", fresh)
 	}
 
-	stored := append([]string(nil), server.videoFeeds[first.FeedToken].videoIDs...)
+	peeked, _ := server.videoFeeds.peek(first.FeedToken)
+	stored := append([]string(nil), peeked...)
 	next := request("/api/feed?kind=listing&feedToken=" + first.FeedToken + "&cursor=3&count=3")
 	if got, want := videoFeedIDs(next.Items), stored[3:6]; !equalStrings(got, want) {
 		t.Fatalf("next batch = %v, want frozen range %v", got, want)
@@ -172,8 +173,8 @@ func TestVideoFeedAvoidsCompletedSnapshotsAndKeepsRecommendationsPrivate(t *test
 	if completed.FeedToken != "" || !completed.Exhausted || completed.NextCursor != 5 {
 		t.Fatalf("completed first batch = %#v", completed)
 	}
-	if len(server.videoFeeds) != 0 {
-		t.Fatalf("completed first batch retained %d snapshots, want 0", len(server.videoFeeds))
+	if server.videoFeeds.len() != 0 {
+		t.Fatalf("completed first batch retained %d snapshots, want 0", server.videoFeeds.len())
 	}
 	encoded, err := json.Marshal(completed.Items[0])
 	if err != nil {
@@ -190,8 +191,8 @@ func TestVideoFeedAvoidsCompletedSnapshotsAndKeepsRecommendationsPrivate(t *test
 	if firstRandom.FeedToken == "" || secondRandom.FeedToken == "" || firstRandom.FeedToken == secondRandom.FeedToken {
 		t.Fatalf("random recommendation tokens must stay private: %q / %q", firstRandom.FeedToken, secondRandom.FeedToken)
 	}
-	if len(server.videoFeeds) != 2 {
-		t.Fatalf("random recommendations stored %d snapshots, want 2", len(server.videoFeeds))
+	if server.videoFeeds.len() != 2 {
+		t.Fatalf("random recommendations stored %d snapshots, want 2", server.videoFeeds.len())
 	}
 }
 
@@ -263,8 +264,8 @@ func TestVideoFeedSharesDeterministicSnapshotConcurrently(t *testing.T) {
 			t.Fatalf("concurrent deterministic token = %q, want %q", token, sharedToken)
 		}
 	}
-	if len(server.videoFeeds) != 1 {
-		t.Fatalf("concurrent deterministic feeds stored %d snapshots, want 1", len(server.videoFeeds))
+	if server.videoFeeds.len() != 1 {
+		t.Fatalf("concurrent deterministic feeds stored %d snapshots, want 1", server.videoFeeds.len())
 	}
 }
 
@@ -310,7 +311,8 @@ func TestVideoFeedSkipsRemovedSnapshotRowsAndExpires(t *testing.T) {
 		t.Fatalf("decode first: %v", err)
 	}
 
-	removedID := server.videoFeeds[first.FeedToken].videoIDs[first.NextCursor]
+	peeked, _ := server.videoFeeds.peek(first.FeedToken)
+	removedID := peeked[first.NextCursor]
 	removed, err := cat.GetVideo(ctx, removedID)
 	if err != nil {
 		t.Fatal(err)

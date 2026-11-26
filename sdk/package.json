@@ -40,6 +40,10 @@
     "./frontend": {
       "types": "./dist/frontend.d.ts",
       "import": "./dist/frontend.js"
+    },
+    "./shorts": {
+      "types": "./dist/shorts.d.ts",
+      "import": "./dist/shorts.js"
     }
   },
   "scripts": {

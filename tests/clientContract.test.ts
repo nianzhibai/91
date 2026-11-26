@@ -286,6 +286,9 @@ test("SDK runtime requests match OpenAPI operations in both directions", async (
       if (url.pathname === "/api/shorts/next") {
         return Response.json({ items: [], total: 0, feedToken: "", nextCursor: 0, roundComplete: true });
       }
+      if (url.pathname === "/api/shorts/prewarm") {
+        return Response.json({ scheduled: 1 });
+      }
       if (url.pathname.endsWith("/playback") || url.pathname.endsWith("/playback/prepare")) {
         return Response.json({
           sources: [
@@ -352,7 +355,8 @@ test("SDK runtime requests match OpenAPI operations in both directions", async (
   await videos.setLike("v1", false);
   await videos.setReaction("v1", "visit-1", "like");
   await videos.listTags();
-  await videos.getShorts("", 0, 5);
+  await videos.getShorts("", 0, 5, "recommend", { visitId: "shorts-visit-id-0123456789abcdef" });
+  await videos.prewarmShorts(["v1"]);
 
   // Playback (video + share, resolve + prepare)
   await playback.get("v1");

@@ -2279,7 +2279,7 @@ func TestHandleShortsNextSkipsVideosHiddenAfterFeedCreation(t *testing.T) {
 	}
 
 	server := &Server{Catalog: cat}
-	firstReq := httptest.NewRequest(http.MethodGet, "/api/shorts/next?count=1", nil)
+	firstReq := httptest.NewRequest(http.MethodGet, "/api/shorts/next?mode=latest&count=1", nil)
 	firstRR := httptest.NewRecorder()
 	server.handleShortsNext(firstRR, firstReq)
 	var first shortsFeedResponse
@@ -2290,11 +2290,11 @@ func TestHandleShortsNextSkipsVideosHiddenAfterFeedCreation(t *testing.T) {
 		t.Fatalf("decode first: %v", err)
 	}
 
-	feed := server.shortsFeeds[first.FeedToken]
-	if feed == nil || len(feed.videoIDs) != 3 {
+	feed, _ := server.shortsFeeds.peek(first.FeedToken)
+	if feed == nil || len(feed.VideoIDs) != 3 {
 		t.Fatalf("stored feed = %#v, want 3 ids", feed)
 	}
-	hiddenID := feed.videoIDs[first.NextCursor]
+	hiddenID := feed.VideoIDs[first.NextCursor]
 	hidden, err := cat.GetVideo(ctx, hiddenID)
 	if err != nil {
 		t.Fatal(err)
@@ -2305,7 +2305,7 @@ func TestHandleShortsNextSkipsVideosHiddenAfterFeedCreation(t *testing.T) {
 
 	nextReq := httptest.NewRequest(
 		http.MethodGet,
-		"/api/shorts/next?feedToken="+first.FeedToken+"&cursor="+strconv.Itoa(first.NextCursor)+"&count=1",
+		"/api/shorts/next?mode=latest&feedToken="+first.FeedToken+"&cursor="+strconv.Itoa(first.NextCursor)+"&count=1",
 		nil,
 	)
 	nextRR := httptest.NewRecorder()
@@ -2372,13 +2372,13 @@ func TestShortsFeedStoreEvictsLeastRecentlyUsedSession(t *testing.T) {
 		clock = clock.Add(time.Second)
 	}
 
-	if len(server.shortsFeeds) != maxShortsFeedSessions {
-		t.Fatalf("stored feeds = %d, want bounded size %d", len(server.shortsFeeds), maxShortsFeedSessions)
+	if server.shortsFeeds.len() != maxShortsFeedSessions {
+		t.Fatalf("stored feeds = %d, want bounded size %d", server.shortsFeeds.len(), maxShortsFeedSessions)
 	}
-	if server.shortsFeeds["feed-0"] != nil {
+	if _, ok := server.shortsFeeds.peek("feed-0"); ok {
 		t.Fatal("oldest feed was not evicted")
 	}
-	if server.shortsFeeds["feed-"+strconv.Itoa(maxShortsFeedSessions)] == nil {
+	if _, ok := server.shortsFeeds.peek("feed-" + strconv.Itoa(maxShortsFeedSessions)); !ok {
 		t.Fatal("newest feed was unexpectedly evicted")
 	}
 }

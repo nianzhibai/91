@@ -2,13 +2,10 @@ package api
 
 import (
 	"context"
-	crand "crypto/rand"
-	"encoding/hex"
 	"errors"
 	"math/rand/v2"
 	"net/http"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -27,12 +24,6 @@ var (
 	errVideoFeedExpired     = errors.New("video feed expired")
 	errInvalidVideoFeedKind = errors.New("invalid video feed kind")
 )
-
-type videoFeedSession struct {
-	videoIDs   []string
-	lastAccess time.Time
-	sharedKey  *videoFeedSnapshotKey
-}
 
 // videoFeedSnapshotKey identifies deterministic feeds whose complete ordered
 // ID set is identical for every authenticated user. Batch size is deliberately
@@ -62,12 +53,12 @@ type videoFeedResponse struct {
 // inserts, deletes, thumbnail readiness and reaction changes therefore cannot
 // shift a later batch boundary.
 func (s *Server) handleVideoFeed(w http.ResponseWriter, r *http.Request) {
-	count, err := videoFeedQueryInt(r, "count", defaultVideoFeedBatchSize)
+	count, err := feedQueryInt(r, "count", defaultVideoFeedBatchSize)
 	if err != nil || count < 1 || count > maxVideoFeedBatchSize {
 		writeErr(w, r, http.StatusBadRequest, errors.New("invalid video feed count"))
 		return
 	}
-	cursor, err := videoFeedQueryInt(r, "cursor", 0)
+	cursor, err := feedQueryInt(r, "cursor", 0)
 	if err != nil || cursor < 0 {
 		writeErr(w, r, http.StatusBadRequest, errors.New("invalid video feed cursor"))
 		return
@@ -122,7 +113,7 @@ func (s *Server) handleVideoFeed(w http.ResponseWriter, r *http.Request) {
 	}
 	exhausted := nextCursor >= len(videoIDs)
 	if newFeed && !exhausted {
-		candidateToken, err := newVideoFeedToken()
+		candidateToken, err := newFeedToken()
 		if err != nil {
 			writeErr(w, r, http.StatusInternalServerError, err)
 			return
@@ -185,22 +176,6 @@ func (s *Server) newVideoFeedSnapshot(r *http.Request) (videoFeedSnapshotSeed, e
 	}
 }
 
-func videoFeedQueryInt(r *http.Request, name string, fallback int) (int, error) {
-	raw := strings.TrimSpace(r.URL.Query().Get(name))
-	if raw == "" {
-		return fallback, nil
-	}
-	return strconv.Atoi(raw)
-}
-
-func newVideoFeedToken() (string, error) {
-	var token [16]byte
-	if _, err := crand.Read(token[:]); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(token[:]), nil
-}
-
 func (s *Server) videoFeedTime() time.Time {
 	if s.videoFeedNow != nil {
 		return s.videoFeedNow()
@@ -213,97 +188,23 @@ func (s *Server) storeVideoFeed(
 	videoIDs []string,
 	sharedKey *videoFeedSnapshotKey,
 ) (string, []string) {
-	now := s.videoFeedTime()
-	s.videoFeedMu.Lock()
-	defer s.videoFeedMu.Unlock()
-
-	if s.videoFeeds == nil {
-		s.videoFeeds = make(map[string]*videoFeedSession)
-	}
-	if s.videoFeedShared == nil {
-		s.videoFeedShared = make(map[videoFeedSnapshotKey]string)
-	}
-	s.pruneVideoFeedsLocked(now)
-
-	// Deterministic feeds with the same query and the same current ordered IDs
-	// share both their token and their immutable slice. We still query the
-	// catalog for a new session so inserts and ordering changes are observed; an
-	// old token keeps pointing at its old snapshot for stable pagination.
-	if sharedKey != nil {
-		if existingToken := s.videoFeedShared[*sharedKey]; existingToken != "" {
-			if existing := s.videoFeeds[existingToken]; existing != nil {
-				if slices.Equal(existing.videoIDs, videoIDs) {
-					existing.lastAccess = now
-					return existingToken, existing.videoIDs
-				}
-			} else {
-				delete(s.videoFeedShared, *sharedKey)
-			}
-		}
-	}
-
-	for len(s.videoFeeds) >= maxVideoFeedSessions {
-		var oldestToken string
-		var oldestAccess time.Time
-		for candidateToken, feed := range s.videoFeeds {
-			if oldestToken == "" || feed.lastAccess.Before(oldestAccess) {
-				oldestToken = candidateToken
-				oldestAccess = feed.lastAccess
-			}
-		}
-		if oldestToken == "" {
-			break
-		}
-		s.deleteVideoFeedLocked(oldestToken)
-	}
-
-	var storedSharedKey *videoFeedSnapshotKey
-	if sharedKey != nil {
-		key := *sharedKey
-		storedSharedKey = &key
-	}
-	s.videoFeeds[token] = &videoFeedSession{
-		videoIDs:   videoIDs,
-		lastAccess: now,
-		sharedKey:  storedSharedKey,
-	}
-	if storedSharedKey != nil {
-		s.videoFeedShared[*storedSharedKey] = token
-	}
-	return token, videoIDs
+	return s.videoFeeds.put(
+		token,
+		videoIDs,
+		s.videoFeedTime(),
+		videoFeedTTL,
+		maxVideoFeedSessions,
+		sharedKey,
+		slices.Equal[[]string],
+	)
 }
 
 func (s *Server) loadVideoFeed(token string) ([]string, error) {
-	now := s.videoFeedTime()
-	s.videoFeedMu.Lock()
-	defer s.videoFeedMu.Unlock()
-
-	s.pruneVideoFeedsLocked(now)
-	feed := s.videoFeeds[token]
-	if feed == nil {
+	videoIDs, ok := s.videoFeeds.get(token, s.videoFeedTime(), videoFeedTTL)
+	if !ok {
 		return nil, errVideoFeedExpired
 	}
-	feed.lastAccess = now
-	return feed.videoIDs, nil
-}
-
-func (s *Server) pruneVideoFeedsLocked(now time.Time) {
-	for token, feed := range s.videoFeeds {
-		if now.Sub(feed.lastAccess) >= videoFeedTTL {
-			s.deleteVideoFeedLocked(token)
-		}
-	}
-}
-
-func (s *Server) deleteVideoFeedLocked(token string) {
-	feed := s.videoFeeds[token]
-	if feed == nil {
-		return
-	}
-	delete(s.videoFeeds, token)
-	if feed.sharedKey != nil && s.videoFeedShared[*feed.sharedKey] == token {
-		delete(s.videoFeedShared, *feed.sharedKey)
-	}
+	return videoIDs, nil
 }
 
 // loadVisibleVideoFeedBatch skips snapshot entries that stopped being public

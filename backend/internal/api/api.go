@@ -66,14 +66,11 @@ type Server struct {
 	tagCache        []TagDTO
 	tagCacheVersion uint64
 
-	shortsFeedMu  sync.Mutex
-	shortsFeeds   map[string]*shortsFeedSession
+	shortsFeeds   feedSessionStore[struct{}, *catalog.ShortsFeedSnapshot]
 	shortsFeedNow func() time.Time
 
-	videoFeedMu     sync.Mutex
-	videoFeeds      map[string]*videoFeedSession
-	videoFeedShared map[videoFeedSnapshotKey]string
-	videoFeedNow    func() time.Time
+	videoFeeds   feedSessionStore[videoFeedSnapshotKey, []string]
+	videoFeedNow func() time.Time
 
 	homeRecommendationMu       sync.Mutex
 	homeRecommendationSessions map[string]*homeRecommendationSession
@@ -293,6 +290,7 @@ func (s *Server) RegisterRoutes(r chi.Router, a *auth.Authenticator) {
 		r.Post("/api/video/{id}/view", s.handleView)
 		r.Get("/api/tags", s.handleTags)
 		r.Get("/api/shorts/next", s.handleShortsNext)
+		r.Post("/api/shorts/prewarm", s.handleShortsPrewarm)
 
 		// 代理路由同样需要鉴权，防止绕过
 		r.Get("/p/stream/{driveID}/*", s.handleStream)

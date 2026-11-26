@@ -145,6 +145,57 @@ UPDATE video_reaction_visits
 	return result, nil
 }
 
+// VisitReactionsByVideoIDs returns non-none reactions recorded for visitID
+// across the given video IDs. Invalid or empty visit IDs return an empty map
+// without error so optional callers (like shorts feeds) can pass client values
+// safely.
+func (c *Catalog) VisitReactionsByVideoIDs(
+	ctx context.Context,
+	visitID string,
+	videoIDs []string,
+) (map[string]VideoReaction, error) {
+	visitID = strings.TrimSpace(visitID)
+	cleaned := cleanVideoIDs(videoIDs)
+	if !validVideoReactionVisitID(visitID) || len(cleaned) == 0 {
+		return nil, nil
+	}
+
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(cleaned)), ",")
+	args := make([]any, 0, len(cleaned)+1)
+	args = append(args, visitID)
+	for _, id := range cleaned {
+		args = append(args, id)
+	}
+	rows, err := c.db.QueryContext(ctx, `
+SELECT video_id, reaction
+  FROM video_reaction_visits
+ WHERE visit_id = ?
+   AND video_id IN (`+placeholders+`)
+   AND reaction != 'none'`,
+		args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]VideoReaction)
+	for rows.Next() {
+		var videoID string
+		var reaction VideoReaction
+		if err := rows.Scan(&videoID, &reaction); err != nil {
+			return nil, err
+		}
+		if reaction.Valid() && reaction != VideoReactionNone {
+			out[videoID] = reaction
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (r VideoReaction) Valid() bool {
 	switch r {
 	case VideoReactionNone, VideoReactionLike, VideoReactionDislike:
