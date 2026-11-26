@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createClient, APIResponseError, UnauthorizedError, ConfigConflictError } from "../sdk/src/index";
+import {
+  createClient,
+  APIResponseError,
+  UnauthorizedError,
+  ConfigConflictError,
+  isAPIErrorStatus,
+  hasAPIErrorCode,
+} from "../sdk/src/index";
 
 const original = { id: "original", label: "原画", kind: "original", protocol: "file", status: "ready", url: "/p/upload/demo" };
 
@@ -38,6 +45,11 @@ test("the shared error type preserves HTTP status and structured server details"
   const client = createClient({ fetch: async () => Response.json({ code: "forbidden", error: "Administrator required" }, { status: 403 }) });
   await assert.rejects(client.admin.listUsers(), error => {
     assert.ok(error instanceof APIResponseError);
+    assert.equal(isAPIErrorStatus(error, 403), true);
+    assert.equal(isAPIErrorStatus(error, 409), false);
+    assert.equal(hasAPIErrorCode(error, "forbidden", 403), true);
+    assert.equal(hasAPIErrorCode(error, "forbidden", 409), false);
+    assert.equal(hasAPIErrorCode(error, "other"), false);
     assert.equal(error.status, 403);
     assert.equal(error.code, "forbidden");
     assert.equal(error.message, "Administrator required");

@@ -23,6 +23,22 @@ export class UnauthorizedError extends APIResponseError {
   }
 }
 
+export function isAPIErrorStatus(error: unknown, status: number): error is APIResponseError {
+  return error instanceof APIResponseError && error.status === status;
+}
+
+export function hasAPIErrorCode<Code extends string>(
+  error: unknown,
+  code: Code,
+  status?: number
+): error is APIResponseError & { code: Code } {
+  return (
+    error instanceof APIResponseError &&
+    error.code === code &&
+    (status === undefined || error.status === status)
+  );
+}
+
 export async function responseError(response: Response): Promise<APIResponseError> {
   const text = await response.text().catch(() => "");
   let message = text;

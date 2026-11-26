@@ -1,6 +1,6 @@
 import { APIResponseError, type Transport } from "./http.js";
 import type { Schema } from "./contract.js";
-import type { TagItem, VideoCollection, VideoCollectionSummary, VideoDetail, VideoItem, VideoSubtitle, VideoReaction, ShortsFeedMode } from "./types.js";
+import type { TagItem, VideoCollection, VideoCollectionSummary, VideoDetail, VideoItem, VideoSubtitle, VideoReaction, ShortsFeedMode, SortKey } from "./types.js";
 
 export type VideoShareClaim = Schema<"consumeVideoShareResponse">;
 
@@ -79,7 +79,7 @@ export function createVideoClient(http: Transport) {
   async function list(
     page: number,
     pageSize: number,
-    params?: { q?: string; tag?: string; sort?: string; includeTotal?: boolean },
+    params?: { q?: string; tag?: string; sort?: SortKey; includeTotal?: boolean },
     options: { signal?: AbortSignal } = {}
   ): Promise<{ items: VideoItem[]; total: number }> {
     const qs = new URLSearchParams({
@@ -111,7 +111,7 @@ export function createVideoClient(http: Transport) {
       count: number;
       q?: string;
       tag?: string;
-      sort?: string;
+      sort?: SortKey;
     },
     options: { signal?: AbortSignal } = {}
   ): Promise<VideoFeedResponse> {
@@ -255,8 +255,8 @@ export function createVideoClient(http: Transport) {
     return read<VideoSubtitle[]>(`/api/video/${encodeURIComponent(id)}/subtitles`);
   }
 
-  function createShare(id: string): Promise<{ url: string; token: string }> {
-    return post<{ url: string; token: string }>(`/api/video/${encodeURIComponent(id)}/share`);
+  function createShare(id: string): Promise<Schema<"createVideoShareResponse">> {
+    return post<Schema<"createVideoShareResponse">>(`/api/video/${encodeURIComponent(id)}/share`);
   }
 
   // React StrictMode 会在开发环境重复运行 effect。共享同一个领取 Promise，

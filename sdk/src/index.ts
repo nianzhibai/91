@@ -6,7 +6,7 @@ import { createPlaybackClient } from "./playback.js";
 import { createFrontendClient } from "./frontend.js";
 import type { Schema } from "./contract.js";
 
-export { APIResponseError, UnauthorizedError } from "./http.js";
+export { APIResponseError, UnauthorizedError, isAPIErrorStatus, hasAPIErrorCode } from "./http.js";
 export type { ClientOptions, RequestOptions } from "./http.js";
 export * from "./types.js";
 export type { Schema, Schemas } from "./contract.js";
