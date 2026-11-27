@@ -126,12 +126,22 @@ test("channel promotion reuses published version images instead of rebuilt diges
   ]);
 });
 
-test("Docker builds isolate the Rockchip ARM64 runtime from standard images", () => {
+test("Docker builds isolate the Rockchip ARM64 runtime while sharing the ARM64 runner and cache", () => {
   const builds = workflow.jobs.build.strategy.matrix.include;
-  assert.deepEqual(builds.map(({ id, arch, target }: { id: string; arch: string; target: string }) =>
-    [id, arch, target]), [
-    ["amd64", "amd64", "runtime"],
-    ["arm64", "arm64", "runtime"],
-    ["rockchip-arm64", "arm64", "rockchip"],
+  assert.deepEqual(builds.map(({ id, arch, rockchip }: { id: string; arch: string; rockchip: boolean }) =>
+    [id, arch, rockchip]), [
+    ["amd64", "amd64", false],
+    ["arm64", "arm64", true],
   ]);
+  const steps = workflow.jobs.build.steps as Array<{ id?: string; if?: string; with?: Record<string, string> }>;
+  const standard = steps.find((step) => step.id === "build");
+  const rockchip = steps.find((step) => step.id === "build_rockchip");
+  assert.equal(standard?.with?.target, "runtime");
+  assert.equal(rockchip?.if, "matrix.rockchip");
+  assert.equal(rockchip?.with?.target, "rockchip");
+  assert.equal(rockchip?.with?.platforms, "linux/arm64");
+  assert.match(standard?.with?.["cache-to"] ?? "", /inputs\.push/);
+  assert.match(rockchip?.with?.["cache-to"] ?? "", /inputs\.push/);
+  assert.match(rockchip?.with?.["cache-from"] ?? "", /scope=91-arm64/);
+  assert.equal(workflow.jobs.prepare.steps[0].if, "inputs.version == ''");
 });

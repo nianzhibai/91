@@ -42,12 +42,14 @@ jobs:
       backend: true
 
   # Artifacts build alongside the checks; only publish waits for both.
-  frontend:
+  frontend-bundle:
     needs: preflight
     uses: ./.github/workflows/prepare-frontend.yml
+    with:
+      retention-days: 30
 
   images:
-    needs: [preflight, frontend]
+    needs: [preflight, frontend-bundle]
     permissions:
       contents: read
       packages: write
@@ -55,36 +57,29 @@ jobs:
     with:
       push: true
       version: ${{ needs.preflight.outputs.version }}
-      frontend-artifact: ${{ needs.frontend.outputs.artifact }}
+      frontend-artifact: ${{ needs.frontend-bundle.outputs.artifact }}
+      retention-days: 30
 
   packages:
     name: Build Linux packages
-    needs: [preflight, frontend]
+    needs: [preflight, frontend-bundle]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7.0.1
-        with:
-          fetch-depth: 0
       - name: Download verified frontend archive
         uses: actions/download-artifact@v8.0.2
         with:
-          name: ${{ needs.frontend.outputs.artifact }}
+          name: ${{ needs.frontend-bundle.outputs.artifact }}
           path: frontend-bundle
       - uses: actions/setup-go@v7.0.0
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
-      - uses: actions/setup-node@v7.1.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
       - name: Build release packages
         env:
           VERSION: ${{ needs.preflight.outputs.version }}
-        run: |
-          npm install --global "$(node -p "require('./package.json').packageManager")"
-          scripts/build-release.sh 2>&1 | tee "$RUNNER_TEMP/package-build.log"
+        run: scripts/build-release.sh 2>&1 | tee "$RUNNER_TEMP/package-build.log"
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: linux-packages
@@ -113,8 +108,6 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v7.0.1
-        with:
-          fetch-depth: 0
       - uses: actions/download-artifact@v8.0.2
         with:
           name: linux-packages

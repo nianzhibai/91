@@ -34,11 +34,16 @@ jobs:
       - name: Install test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-yaml
-          npm install --global "$(node -p "require('./package.json').packageManager")"
+          sudo apt-get install -y --no-install-recommends python3-yaml
+          expected="$(node -p "require('./package.json').packageManager.replace(/^npm@/, '')")"
+          if [[ "$(npm -v)" != "$expected" ]]; then
+            npm install --global "npm@$expected"
+          fi
           npm ci 2>&1 | tee "$RUNNER_TEMP/frontend-install.log"
-      - name: Check frontend dependencies and source
-        run: npm run check 2>&1 | tee "$RUNNER_TEMP/frontend-check.log"
+      - name: Lint workflow and release shell scripts
+        run: shellcheck .github/scripts/publish-images.sh scripts/build-release.sh scripts/prepare-frontend.sh
+      - name: Verify SDK, example build, and deployment tests
+        run: npm run verify 2>&1 | tee "$RUNNER_TEMP/frontend-check.log"
       - name: Upload failure logs
         if: failure()
         uses: actions/upload-artifact@v7.0.2
@@ -62,10 +67,10 @@ jobs:
       - name: Install media and crawler test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg python3-yaml python3-requests python3-bs4 python3-lxml python3-socks
-      - name: Test Linux backend
+          sudo apt-get install -y --no-install-recommends ffmpeg python3-yaml python3-requests python3-bs4 python3-lxml python3-socks
+      - name: Vet and test Linux backend
         working-directory: backend
-        run: go test -count=1 -timeout=15m ./... 2>&1 | tee "$RUNNER_TEMP/backend-test.log"
+        run: (go vet ./... && go test -count=1 -timeout=15m ./...) 2>&1 | tee "$RUNNER_TEMP/backend-test.log"
       - name: Upload failure logs
         if: failure()
         uses: actions/upload-artifact@v7.0.2

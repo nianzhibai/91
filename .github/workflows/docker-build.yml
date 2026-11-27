@@ -13,6 +13,10 @@ on:
         description: Verified frontend archive from the preparation job
         type: string
         required: true
+      retention-days:
+        description: Digest artifact retention in days
+        type: number
+        default: 7
     outputs:
       image:
         description: Registry image name
@@ -29,7 +33,8 @@ jobs:
       image: ${{ steps.metadata.outputs.image }}
       version: ${{ steps.metadata.outputs.version }}
     steps:
-      - uses: actions/checkout@v7.0.1
+      - if: inputs.version == ''
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
       - name: Determine image metadata
@@ -59,16 +64,12 @@ jobs:
         include:
           - id: amd64
             arch: amd64
-            target: runtime
             runner: ubuntu-24.04
+            rockchip: false
           - id: arm64
             arch: arm64
-            target: runtime
             runner: ubuntu-24.04-arm
-          - id: rockchip-arm64
-            arch: arm64
-            target: rockchip
-            runner: ubuntu-24.04-arm
+            rockchip: true
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -90,12 +91,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build Docker image
+      - name: Build standard Docker image
         id: build
         uses: docker/build-push-action@v7.4.0
         with:
           context: .
-          target: ${{ matrix.target }}
+          target: runtime
           platforms: linux/${{ matrix.arch }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
@@ -106,9 +107,9 @@ jobs:
           # Only the publish job updates shared tags after all builds succeed.
           outputs: type=image,name=${{ needs.prepare.outputs.image }},push-by-digest=true,name-canonical=true,push=${{ inputs.push }}
           cache-from: type=gha,scope=91-${{ matrix.id }}
-          cache-to: type=gha,mode=max,scope=91-${{ matrix.id }}
+          cache-to: ${{ inputs.push && format('type=gha,mode=max,scope=91-{0}', matrix.id) || '' }}
 
-      - name: Export image digest
+      - name: Export standard image digest
         if: inputs.push
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
@@ -117,7 +118,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/digests"
           printf '%s\n' "$DIGEST" > "$RUNNER_TEMP/digests/digest.txt"
 
-      - name: Upload image digest
+      - name: Upload standard image digest
         if: inputs.push
         uses: actions/upload-artifact@v7.0.2
         with:
@@ -125,5 +126,46 @@ jobs:
           archive: true
           path: ${{ runner.temp }}/digests/digest.txt
           if-no-files-found: error
-          retention-days: 30
+          retention-days: ${{ inputs.retention-days }}
+          overwrite: true
+
+      # Reuse the warm local BuildKit cache for the shared arm64 backend, frontend and application stages.
+      - name: Build Rockchip ARM64 Docker image
+        if: matrix.rockchip
+        id: build_rockchip
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: .
+          target: rockchip
+          platforms: linux/arm64
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+          build-args: |
+            VERSION=${{ needs.prepare.outputs.version }}
+          outputs: type=image,name=${{ needs.prepare.outputs.image }},push-by-digest=true,name-canonical=true,push=${{ inputs.push }}
+          cache-from: |
+            type=gha,scope=91-arm64
+            type=gha,scope=91-rockchip-arm64
+          cache-to: ${{ inputs.push && 'type=gha,mode=max,scope=91-rockchip-arm64' || '' }}
+
+      - name: Export Rockchip image digest
+        if: matrix.rockchip && inputs.push
+        env:
+          DIGEST: ${{ steps.build_rockchip.outputs.digest }}
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests-rockchip"
+          printf '%s\n' "$DIGEST" > "$RUNNER_TEMP/digests-rockchip/digest.txt"
+
+      - name: Upload Rockchip image digest
+        if: matrix.rockchip && inputs.push
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: docker-digests-rockchip-arm64
+          archive: true
+          path: ${{ runner.temp }}/digests-rockchip/digest.txt
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention-days }}
           overwrite: true

@@ -1,0 +1,43 @@
+name: Clean up GHCR images
+
+on:
+  schedule:
+    - cron: "0 4 * * 0"
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: List versions that would be deleted without deleting them
+        type: boolean
+        default: false
+      keep-days:
+        description: Minimum age in days before untagged or stale sha-* versions are pruned
+        type: string
+        default: "14"
+
+permissions:
+  contents: read
+  packages: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  cleanup:
+    name: Prune stale GHCR versions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: docker/setup-buildx-action@v4.4.1
+      - uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Prune unreferenced and stale sha-* image versions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry-run || 'false' }}
+          KEEP_DAYS: ${{ inputs.keep-days || '14' }}
+        run: node .github/scripts/cleanup-ghcr.mjs

@@ -10,15 +10,26 @@ import { classifyChanges, detectChanges } from "../.github/scripts/ci-changes.mj
 
 test("documentation-only changes skip builds while deployment and unknown inputs run everything", () => {
   const all = { frontend: true, backend: true, images: true };
-  assert.deepEqual(classifyChanges(["README.md", "backend/README.md", "docs/README.md", "docs/CRAWLER_PROTOCOL.md", "AGENTS.md"]),
+  assert.deepEqual(classifyChanges(["README.md", "backend/README.md", "docs/README.md", "docs/CRAWLER_PROTOCOL.md", "ReadMeImage/home.png", "AGENTS.md"]),
     { frontend: false, backend: false, images: false });
-  for (const path of ["install.sh", "docker-entrypoint.sh", "scripts/build-release.sh", "Dockerfile", ".github/workflows/ci.yml", ".github/scripts/release.mjs", "new-build-input"]) {
+  for (const path of ["install.sh", "docker-entrypoint.sh", "scripts/build-release.sh", "scripts/migrate-compose.py", "scripts/prepare-frontend.sh", "Dockerfile", ".github/workflows/ci.yml", ".github/scripts/release.mjs", "new-build-input"]) {
     assert.deepEqual(classifyChanges([path]), all, path);
   }
 });
 
 test("source changes cover cross-language assertions and rebuild images only for image inputs", () => {
-  for (const path of ["package.json", "package-lock.json", ".nvmrc", ".npmrc", "sdk/src/index.ts", "examples/custom-frontend/src/main.ts"]) {
+  for (const path of [
+    "package.json",
+    "package-lock.json",
+    ".nvmrc",
+    ".npmrc",
+    "sdk/src/index.ts",
+    "examples/custom-frontend/src/main.ts",
+    "scripts/generate-sdk-types.mjs",
+    "scripts/sync-sdk.mjs",
+    "scripts/prepare-dev-config.mjs",
+    "scripts/package-frontend.sh",
+  ]) {
     assert.deepEqual(classifyChanges([path]), { frontend: true, backend: false, images: false }, path);
   }
   assert.deepEqual(classifyChanges(["backend/internal/api/admin.go"]), { frontend: true, backend: true, images: true });
@@ -84,10 +95,12 @@ test("renaming runtime source into documentation still runs checks for the remov
 test("pushes rebuild changes from replaced or failed runs since the last successful run", (t) => {
   const f = pushFixture(t);
   const published = f.commit("backend/main.go", "package main\n");
-  f.commit("backend/main.go", "package main // changed\n");
+  const changed = f.commit("backend/main.go", "package main // changed\n");
   const docs = f.commit("README.md", "docs\n");
-  assert.equal(f.detect(docs), "frontend=false\nbackend=false\nimages=false\n");
+  assert.equal(f.detect(changed), "frontend=false\nbackend=false\nimages=false\n");
   assert.equal(f.detect(published), "frontend=true\nbackend=true\nimages=true\n");
+  // Rerunning the already-succeeded HEAD commit compares HEAD against itself and runs everything.
+  assert.equal(f.detect(docs), "frontend=true\nbackend=true\nimages=true\n");
 });
 
 test("pushes without a usable last successful run run everything", (t) => {
@@ -123,9 +136,9 @@ test("the branch-protection Check rejects failed or unexpectedly skipped fronten
   const workflow = parse(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"));
   const directory = mkdtempSync(join(tmpdir(), "91-ci-images-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const run = (checks: string, frontend: string, images: string, affected = "true", changes = "success") => spawnSync("bash", ["-e", "-o", "pipefail", "-c", workflow.jobs.check.steps[0].run], {
+  const run = (checks: string, frontendBundle: string, images: string, affected = "true", changes = "success") => spawnSync("bash", ["-e", "-o", "pipefail", "-c", workflow.jobs.check.steps[0].run], {
     encoding: "utf8", env: { ...process.env, GITHUB_STEP_SUMMARY: join(directory, "summary"), RESULTS: JSON.stringify({
-      changes: { result: changes, outputs: { images: affected } }, checks: { result: checks }, frontend: { result: frontend }, images: { result: images },
+      changes: { result: changes, outputs: { images: affected } }, checks: { result: checks }, "frontend-bundle": { result: frontendBundle }, images: { result: images },
     }) },
   });
   assert.equal(run("success", "success", "success").status, 0);

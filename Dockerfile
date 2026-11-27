@@ -26,13 +26,16 @@ COPY backend/vendor/ vendor/
 COPY backend/cmd/ cmd/
 COPY backend/internal/ internal/
 COPY backend/config_template.go backend/config.example.yaml ./
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
+RUN --mount=type=cache,id=go-build-${TARGETARCH},target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server \
+    && chmod 755 /out/server
 
 # ---- Fetch and verify the pinned frontend releases (or offline artifacts) ----
 FROM backend AS frontend
 COPY frontend.lock.json /app/frontend.lock.json
 COPY frontend-bundle/ /bundle/
-RUN CGO_ENABLED=0 go build -o /out/frontend-package ./cmd/frontend-package \
+RUN --mount=type=cache,id=go-build-host,target=/root/.cache/go-build \
+    CGO_ENABLED=0 go build -o /out/frontend-package ./cmd/frontend-package \
     && if ls /bundle/*.tar.gz >/dev/null 2>&1; then \
          /out/frontend-package --lock /app/frontend.lock.json --archives /bundle --output /out/frontend; \
        else \
@@ -77,6 +80,8 @@ COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 COPY docker-compose.yml docker-compose.gpu-nvidia.yml docker-compose.gpu-vaapi.yml docker-compose.gpu-rockchip.yml /usr/local/share/91/deploy/
 COPY scripts/migrate-compose.py /usr/local/share/91/migrate-compose.py
 
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 ARG VERSION=dev
 
 LABEL io.91.database-filename="91.db"
@@ -85,8 +90,6 @@ ENV VIDEO_FRONTEND_DIR=/opt/91/dist \
     VIDEO_GITHUB_REPO=nianzhibai/91 \
     VIDEO_IMAGE_VERSION=${VERSION} \
     VIDEO_LISTEN_PORT=9191
-
-RUN chmod +x ./server /usr/local/bin/docker-entrypoint.sh
 
 VOLUME ["/opt/91/data"]
 EXPOSE 9191

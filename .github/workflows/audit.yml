@@ -1,0 +1,40 @@
+name: Dependency audit
+
+on:
+  schedule:
+    - cron: "0 3 * * 1"
+  pull_request:
+    branches: [main]
+    paths:
+      - package.json
+      - package-lock.json
+      - .nvmrc
+      - .npmrc
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  npm-audit:
+    name: Audit Node dependencies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Ensure pinned npm version
+        run: |
+          expected="$(node -p "require('./package.json').packageManager.replace(/^npm@/, '')")"
+          if [[ "$(npm -v)" != "$expected" ]]; then
+            npm install --global "npm@$expected"
+          fi
+      - name: Run npm audit
+        run: npm run audit

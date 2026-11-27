@@ -7,9 +7,13 @@ const all = () => ({ frontend: true, backend: true, images: true });
 export function classifyChanges(paths) {
   const checks = { frontend: false, backend: false, images: false };
   for (const path of paths) {
-    if (/^(docs\/|backend\/docs\/)/.test(path) || /(^|\/)(README[^/]*\.md|AGENTS\.md|CHANGELOG\.md|LICENSE)$/.test(path)) continue;
-    if (/^(tests|sdk|examples)\//.test(path) || /^(package(-lock)?\.json|\.nvmrc|\.npmrc)$/.test(path)) {
-      // Node tooling is not part of the image; frontends ship from frontend.lock.json.
+    if (/^(docs\/|backend\/docs\/|ReadMeImage\/)/.test(path) || /(^|\/)(README[^/]*\.md|AGENTS\.md|CHANGELOG\.md|LICENSE)$/.test(path)) continue;
+    if (
+      /^(tests|sdk|examples)\//.test(path) ||
+      /^(package(-lock)?\.json|\.nvmrc|\.npmrc)$/.test(path) ||
+      /^scripts\/(generate-sdk-types\.mjs|sync-sdk\.mjs|prepare-dev-config\.mjs|package-frontend\.sh)$/.test(path)
+    ) {
+      // Node tooling and SDK helper scripts are not part of the image; frontends ship from frontend.lock.json.
       checks.frontend = true;
     } else if (path.startsWith('backend/')) {
       // Several Node tests also verify backend source and configuration.
@@ -43,6 +47,8 @@ export function detectChanges(env = process.env) {
     const pullRequest = env.GITHUB_EVENT_NAME === 'pull_request';
     const base = pullRequest ? JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, 'utf8')).pull_request.base.sha : lastSuccessfulCommit(env);
     if (![base, head].every(isCommit)) return all();
+    // Rerunning an already-succeeded push commit yields an empty diff against itself; run everything instead of skipping.
+    if (!pullRequest && base === head) return all();
     // A rerun of an older commit or rewritten history cannot be diffed safely.
     if (!pullRequest) execFileSync('git', ['merge-base', '--is-ancestor', base, head], { stdio: 'pipe' });
     const range = pullRequest ? `${base}...${head}` : `${base}..${head}`;
