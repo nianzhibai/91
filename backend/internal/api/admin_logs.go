@@ -128,6 +128,9 @@ func (a *AdminServer) handleLogStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
+	if _, err := fmt.Fprint(w, ": connected\n\n"); err != nil {
+		return
+	}
 	flusher.Flush()
 
 	writeSSE := func(rec applog.Record) error {

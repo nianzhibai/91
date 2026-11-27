@@ -203,6 +203,32 @@ func TestHandleLogStreamResumesFromLastEventIDAndStreamsLive(t *testing.T) {
 	}
 }
 
+func TestHandleLogStreamFlushesInitialCommentImmediately(t *testing.T) {
+	store := newAdminLogsTestStore(t)
+	server := httptest.NewServer(http.HandlerFunc((&AdminServer{Logs: store}).handleLogStream))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	scanner := bufio.NewScanner(resp.Body)
+	if !scanner.Scan() {
+		t.Fatalf("expected initial SSE comment frame, err=%v", scanner.Err())
+	}
+	if got := scanner.Text(); got != ": connected" {
+		t.Fatalf("first SSE line = %q, want %q", got, ": connected")
+	}
+}
+
 func TestHandleLogsValidatesQueryAndUnavailableStore(t *testing.T) {
 	rr := httptest.NewRecorder()
 	(&AdminServer{}).handleLogs(rr, httptest.NewRequest(http.MethodGet, "/admin/api/logs", nil))
