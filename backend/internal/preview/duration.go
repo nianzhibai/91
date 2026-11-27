@@ -62,7 +62,7 @@ func (w *ThumbnailJob) ProbeDuration(ctx context.Context, video *catalog.Video) 
 		return generation.StepPaused
 	}
 	applog.Error(ctx, "Duration backfill failed: "+video.Title, err,
-		applog.Fields{Component: "media-metadata", DriveID: video.DriveID, VideoID: video.ID, Stage: "duration"})
+		"component", "media-metadata", "driveId", video.DriveID, "videoId", video.ID, "stage", "duration")
 	if w.pauseForProviderError(err, "duration", video.Title) {
 		return generation.StepPaused
 	}
@@ -85,6 +85,6 @@ func (w *ThumbnailJob) probeDuration(ctx context.Context, video *catalog.Video, 
 		return generation.StepPaused
 	}
 	applog.Error(ctx, "Thumbnail duration probe failed: "+video.Title, err,
-		applog.Fields{Component: "thumb", DriveID: generationDriveID(w.Drive), VideoID: video.ID, Stage: "probe"})
+		"component", "thumb", "driveId", generationDriveID(w.Drive), "videoId", video.ID, "stage", "probe")
 	return generation.StepUnsettled
 }

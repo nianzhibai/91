@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/nianzhibai/91/backend/internal/api"
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/crawljob"
 	"github.com/nianzhibai/91/backend/internal/driveevents"
@@ -97,20 +97,20 @@ func (a *App) ensureDriveAttached(ctx context.Context, driveID string) error {
 func (a *App) attachExistingDrives(ctx context.Context) {
 	existing, err := a.cat.ListDrives(ctx)
 	if err != nil {
-		log.Printf("[drive] list existing drives: %v", err)
+		applog.Error(ctx, "list existing drives failed", err, "component", "drive")
 		return
 	}
-	log.Printf("[drive] attaching %d configured drive(s) in background", len(existing))
+	applog.Info(ctx, "attaching configured drives in background", "component", "drive", "count", len(existing))
 	for _, d := range existing {
 		if err := ctx.Err(); err != nil {
-			log.Printf("[drive] background attach stopped: %v", err)
+			applog.Warn(ctx, "background drive attach stopped", err, "component", "drive")
 			return
 		}
 		if err := a.attachDrive(ctx, d); err != nil {
-			log.Printf("[drive %s] attach failed: %v", d.ID, err)
+			applog.Error(ctx, "drive attach failed", err, "component", "drive", "driveId", d.ID)
 		}
 	}
-	log.Printf("[drive] background attach complete")
+	applog.Info(ctx, "background drive attach complete", "component", "drive")
 }
 
 func (a *App) recordPlaybackDriveStatus(driveID, status, lastError string) {
@@ -124,7 +124,7 @@ func (a *App) recordDriveRuntimeStatus(driveID, status, lastError string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := a.cat.SetDriveRuntimeStatus(ctx, driveID, status, lastError); err != nil {
-		log.Printf("[drive %s] persist runtime status %s: %v", driveID, status, err)
+		applog.Warn(ctx, "persist drive runtime status failed", err, "component", "drive", "driveId", driveID, "status", status)
 	}
 }
 
@@ -641,7 +641,7 @@ func (a *App) applyPendingDriveConfigLocked(driveID string, gate *driveOperation
 
 	if scopes&api.DriveConfigUpdateRuntime != 0 {
 		if err := safelyApplyDriveConfig(runtimeApply); err != nil {
-			log.Printf("[drive %s] apply deferred runtime configuration: %v", driveID, err)
+			applog.Error(context.Background(), "apply deferred runtime configuration failed", err, "component", "drive", "driveId", driveID)
 		}
 	}
 	// At this point the old task generation is fully drained. Publish the latest
@@ -650,7 +650,7 @@ func (a *App) applyPendingDriveConfigLocked(driveID string, gate *driveOperation
 	a.refreshActiveDriveConfigAfterApply(driveID)
 	if scopes&api.DriveConfigUpdateScan != 0 {
 		if err := safelyApplyDriveConfig(scanApply); err != nil {
-			log.Printf("[drive %s] apply deferred scan configuration: %v", driveID, err)
+			applog.Error(context.Background(), "apply deferred scan configuration failed", err, "component", "drive", "driveId", driveID)
 		}
 	}
 
@@ -666,7 +666,7 @@ func (a *App) applyPendingDriveConfigLocked(driveID string, gate *driveOperation
 	if scopes&api.DriveConfigUpdateRuntime != 0 {
 		a.notifyDriveRuntimeChanged(driveID)
 	}
-	log.Printf("[drive %s] deferred configuration is now active", driveID)
+	applog.Info(context.Background(), "deferred drive configuration is now active", "component", "drive", "driveId", driveID)
 }
 
 func (a *App) notifyDriveRuntimeChanged(driveID string) {
@@ -800,7 +800,7 @@ func (a *App) refreshActiveDriveConfigAfterApply(driveID string) {
 	defer cancel()
 	d, err := a.cat.GetDrive(ctx, driveID)
 	if err != nil {
-		log.Printf("[drive %s] refresh active configuration snapshot: %v", driveID, err)
+		applog.Warn(ctx, "refresh active drive configuration snapshot failed", err, "component", "drive", "driveId", driveID)
 		return
 	}
 	a.setActiveDriveConfig(d)
@@ -915,11 +915,11 @@ func (a *App) persistDriveCredentials(lease driveCredentialLease, updates map[st
 		a.proxy.InvalidateDriveLinks(lease.driveID)
 	}
 	if err != nil {
-		log.Printf("[drive %s] persist refreshed credentials: %v", lease.driveID, err)
+		applog.Warn(persistCtx, "persist refreshed drive credentials failed", err, "component", "drive", "driveId", lease.driveID)
 		return
 	}
 	if !applied {
-		log.Printf("[drive %s] discard refreshed credentials: persisted %s changed", lease.driveID, lease.state.anchorKey)
+		applog.Warn(persistCtx, "discarded refreshed drive credentials because persisted anchor changed", nil, "component", "drive", "driveId", lease.driveID, "anchorKey", lease.state.anchorKey)
 		return
 	}
 	if value, ok := updates[lease.state.anchorKey]; ok {
@@ -1135,7 +1135,7 @@ func (a *App) attachDriveConfigUnlocked(ctx context.Context, d *catalog.Drive, r
 		d.Status = "error"
 		d.LastError = err.Error()
 		if persistErr := a.cat.SetDriveRuntimeStatus(ctx, d.ID, d.Status, d.LastError); persistErr != nil {
-			log.Printf("[drive %s] persist attach failure: %v", d.ID, persistErr)
+			applog.Warn(ctx, "persist drive attach failure status failed", persistErr, "component", "drive", "driveId", d.ID)
 		}
 		return err
 	}
@@ -1143,7 +1143,7 @@ func (a *App) attachDriveConfigUnlocked(ctx context.Context, d *catalog.Drive, r
 	d.Status = "ok"
 	d.LastError = ""
 	if err := a.cat.SetDriveRuntimeStatus(ctx, d.ID, d.Status, d.LastError); err != nil {
-		log.Printf("[drive %s] persist attach success: %v", d.ID, err)
+		applog.Warn(ctx, "persist drive attach success status failed", err, "component", "drive", "driveId", d.ID)
 	}
 	if a.proxy != nil {
 		a.proxy.InvalidateDrive(d.ID)
@@ -1212,7 +1212,7 @@ func (a *App) attachScriptCrawler(d *catalog.Drive, drv *scriptcrawler.Driver) {
 	}
 	scriptPath, err := scriptcrawler.ScriptPath(d.Credentials, filepath.Join(filepath.Dir(a.cfg.Storage.LocalPreviewDir), "crawler-scripts"))
 	if err != nil {
-		log.Printf("[scriptcrawler] drive=%s invalid script reference: %v", d.ID, err)
+		applog.Error(context.Background(), "invalid scriptcrawler script reference", err, "component", "scriptcrawler", "driveId", d.ID)
 		return
 	}
 	proxyURL := strings.TrimSpace(d.Credentials["proxy"])
@@ -1261,7 +1261,7 @@ func (a *App) ensureScriptCrawlerNameTag(driveID, crawlerName string) {
 		defer cancel()
 		prefix := scriptcrawler.BuildVideoID(driveID, "")
 		if _, err := a.cat.EnsureCrawlerTagForVideoIDPrefix(bgCtx, prefix, tagName); err != nil {
-			log.Printf("[scriptcrawler] drive=%s ensure crawler tag %q: %v", driveID, tagName, err)
+			applog.Warn(bgCtx, "ensure crawler name tag failed", err, "component", "scriptcrawler", "driveId", driveID, "tag", tagName)
 		}
 	}()
 }
@@ -1535,14 +1535,21 @@ func (a *App) cancelDriveTasks(ctx context.Context, driveID string) bool {
 		generating = runner.Stop()
 	}
 	stopped := canceled > 0 || queued || uploading || generating
-	log.Printf("[tasks] stop drive=%s stopped=%v canceled_tasks=%d queued=%v uploading=%v generating=%v",
-		driveID, stopped, canceled, queued, uploading, generating)
+	applog.Info(ctx, "stopped drive tasks",
+		"component", "tasks",
+		"driveId", driveID,
+		"stopped", stopped,
+		"canceledTasks", canceled,
+		"queued", queued,
+		"uploading", uploading,
+		"generating", generating,
+	)
 	return stopped
 }
 
 func (a *App) stopAllDriveTasks(ctx context.Context) int {
 	if a.nightlyRunner != nil && a.nightlyRunner.StopCurrent() {
-		log.Printf("[tasks] requested nightly pipeline stop")
+		applog.Info(ctx, "requested nightly pipeline stop", "component", "tasks")
 	}
 	stopped := 0
 	for _, driveID := range a.driveTaskIDs() {
@@ -1550,7 +1557,7 @@ func (a *App) stopAllDriveTasks(ctx context.Context) int {
 			stopped++
 		}
 	}
-	log.Printf("[tasks] stop all drive tasks drives=%d", stopped)
+	applog.Info(ctx, "stopped all drive tasks", "component", "tasks", "drives", stopped)
 	return stopped
 }
 
@@ -1708,8 +1715,14 @@ func (a *App) listDriveDirChildren(ctx context.Context, driveID, parentID string
 		}
 		return drv.List(ctx, parentID)
 	}, readretry.Options{OnRetry: func(retry int, delay time.Duration, err error) {
-		log.Printf("[dirtree] drive=%s directory=%s read failed; retry=%d/%d delay=%s: %v",
-			driveID, parentID, retry, readretry.MaxRetries, delay, err)
+		applog.Warn(ctx, "directory listing read failed; retrying", err,
+			"component", "dirtree",
+			"driveId", driveID,
+			"directoryId", parentID,
+			"retry", retry,
+			"maxRetries", readretry.MaxRetries,
+			"delay", delay,
+		)
 	}})
 	if err != nil {
 		return nil, fmt.Errorf("list drive %s parent %s: %w", driveID, parentID, err)

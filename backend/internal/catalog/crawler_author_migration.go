@@ -3,8 +3,9 @@ package catalog
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
+
+	"github.com/nianzhibai/91/backend/internal/applog"
 )
 
 const settingCrawlerSyntheticAuthorsCleaned = "crawler.synthetic_authors_cleaned_v1"
@@ -59,7 +60,7 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.upd
 		return 0, err
 	}
 	if removed > 0 {
-		log.Printf("[migrate] cleared %d synthetic crawler author value(s)", removed)
+		applog.Info(ctx, "cleared synthetic crawler author values", "component", "catalog", "stage", "migrate", "removed", removed)
 	}
 	return removed, nil
 }

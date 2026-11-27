@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/dedupe"
 	"github.com/nianzhibai/91/backend/internal/mediaasset"
@@ -53,8 +53,17 @@ func (a *App) buildDuplicateMaintenancePlan(ctx context.Context, localDir string
 	}
 	for _, match := range plan.Matches {
 		if c := match.Signature; c != nil {
-			log.Printf("[dedupe-maintenance] signature duplicate matched left=%s right=%s frames=%d/%d windows=%d/%d median_distance=%d static=%v",
-				match.LeftID, match.RightID, c.MatchedFrames, c.Frames, c.MatchedWindows, c.Windows, c.MedianDistance, c.Static)
+			applog.Info(ctx, "signature duplicate matched",
+				"component", "dedupe-maintenance",
+				"leftId", match.LeftID,
+				"rightId", match.RightID,
+				"matchedFrames", c.MatchedFrames,
+				"frames", c.Frames,
+				"matchedWindows", c.MatchedWindows,
+				"windows", c.Windows,
+				"medianDistance", c.MedianDistance,
+				"static", c.Static,
+			)
 		}
 	}
 	return plan, nil
@@ -102,7 +111,12 @@ func (a *App) applyDuplicateMaintenancePlan(ctx context.Context, localDir string
 		return fmt.Errorf("apply duplicate plan after retries: %w", applyErr)
 	}
 	for _, action := range plan.Actions {
-		log.Printf("[dedupe-maintenance] %s duplicate merged id=%s canonical=%s", action.Stage, action.VideoID, action.CanonicalVideoID)
+		applog.Info(ctx, "duplicate merged",
+			"component", "dedupe-maintenance",
+			"stage", action.Stage,
+			"videoId", action.VideoID,
+			"canonicalVideoId", action.CanonicalVideoID,
+		)
 	}
 	return a.cleanupPendingDuplicateAssetsLocked(ctx, localDir)
 }
@@ -164,7 +178,11 @@ func (a *App) mergeDuplicateReview(ctx context.Context, keepID, mergeID string) 
 	}
 	if err := a.cleanupPendingDuplicateAssetsLocked(ctx, localDir); err != nil {
 		// The merge is committed; maintenance retries the cleanup jobs.
-		log.Printf("[duplicate-review] asset cleanup after merging %s into %s: %v", mergeID, keepID, err)
+		applog.Warn(ctx, "asset cleanup after duplicate review merge failed", err,
+			"component", "duplicate-review",
+			"videoId", mergeID,
+			"canonicalVideoId", keepID,
+		)
 	}
 	return nil
 }

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -17,6 +16,7 @@ import (
 	"github.com/aliyun/aliyun-oss-go-sdk/oss"
 	"github.com/go-resty/resty/v2"
 
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/scopedproxy"
 )
 
@@ -161,7 +161,7 @@ func (d *Driver) UploadAndReportHash(ctx context.Context, parentID, name string,
 			if !shouldRetryPikPakUploadAttempt(lastErr, attempt) {
 				return UploadResult{}, lastErr
 			}
-			d.logUploadRetry(name, attempt, lastErr)
+			d.logUploadRetry(ctx, name, attempt, lastErr)
 			if err := pikpakSleepContext(ctx, pikpakUploadRetryDelay(attempt)); err != nil {
 				return UploadResult{}, err
 			}
@@ -176,7 +176,7 @@ func (d *Driver) UploadAndReportHash(ctx context.Context, parentID, name string,
 		if !shouldRetryPikPakUploadAttempt(lastErr, attempt) {
 			return UploadResult{}, lastErr
 		}
-		d.logUploadRetry(name, attempt, lastErr)
+		d.logUploadRetry(ctx, name, attempt, lastErr)
 		if err := pikpakSleepContext(ctx, pikpakUploadRetryDelay(attempt)); err != nil {
 			return UploadResult{}, err
 		}
@@ -248,9 +248,9 @@ func pikpakUploadRetryDelay(attempt int) time.Duration {
 	return time.Duration(attempt) * time.Second
 }
 
-func (d *Driver) logUploadRetry(name string, attempt int, err error) {
-	log.Printf("[pikpak] upload retry drive=%s name=%q next_attempt=%d/%d err=%v",
-		d.id, name, attempt+1, pikpakUploadMaxAttempts, err)
+func (d *Driver) logUploadRetry(ctx context.Context, name string, attempt int, err error) {
+	applog.Warn(ctx, "upload retry", err,
+		"component", "pikpak", "driveId", d.id, "stage", "upload", "name", name, "nextAttempt", attempt+1, "maxAttempts", pikpakUploadMaxAttempts)
 }
 
 func isRetryablePikPakUploadError(err error) bool {

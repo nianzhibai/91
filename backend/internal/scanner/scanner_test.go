@@ -5,18 +5,19 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"github.com/nianzhibai/91/backend/internal/tagging"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/drives"
 	"github.com/nianzhibai/91/backend/internal/readretry"
+	"github.com/nianzhibai/91/backend/internal/tagging"
 )
 
 func TestRunIgnoresRemoteThumbnailFromDriveEntry(t *testing.T) {
@@ -1460,19 +1461,24 @@ func (d *discoveryTestSource) List(_ context.Context, dirID string) ([]drives.En
 }
 func (d *discoveryTestSource) RootID() string { return "root" }
 
-// captureLog 把 log 包默认输出引到一个 bytes.Buffer，便于断言进度日志被打印；
+// captureLog 把默认 slog 输出引到一个 strings.Builder，便于断言进度日志被打印；
 // 测试结束自动恢复。
 func captureLog(t *testing.T) *strings.Builder {
 	t.Helper()
 	buf := &strings.Builder{}
-	originalOutput := log.Writer()
-	originalFlags := log.Flags()
-	log.SetOutput(buf)
-	log.SetFlags(0)
-	t.Cleanup(func() {
-		log.SetOutput(originalOutput)
-		log.SetFlags(originalFlags)
+	rt, err := applog.OpenRuntime(applog.RuntimeConfig{
+		Directory:     t.TempDir(),
+		Level:         applog.LevelInfo,
+		ConsoleWriter: buf,
+		FileEnabled:   true,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rt.Close() })
+	prev := slog.Default()
+	slog.SetDefault(rt.Logger())
+	t.Cleanup(func() { slog.SetDefault(prev) })
 	return buf
 }
 
@@ -1506,7 +1512,7 @@ func TestScannerProgressHeartbeatEmits(t *testing.T) {
 	}
 
 	out := buf.String()
-	if !strings.Contains(out, "[scanner] drive=drive progress:") {
+	if !strings.Contains(out, "[scanner] Scan progress") || !strings.Contains(out, "driveId=drive") {
 		t.Fatalf("expected progress heartbeat in log, got:\n%s", out)
 	}
 }
@@ -1530,7 +1536,7 @@ func TestScannerProgressHeartbeatDisabled(t *testing.T) {
 		t.Fatalf("scan: %v", err)
 	}
 
-	if strings.Contains(buf.String(), "progress:") {
+	if strings.Contains(buf.String(), "Scan progress") {
 		t.Fatalf("progress heartbeat should be silenced when interval < 0, got:\n%s", buf.String())
 	}
 }

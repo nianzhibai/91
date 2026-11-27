@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -18,7 +17,7 @@ import (
 func (a *App) scheduleScriptCrawlerCrawl(ctx context.Context, driveID string) bool {
 	_, err := a.startScriptCrawlerCrawl(ctx, driveID)
 	if err != nil {
-		log.Printf("[scriptcrawler] drive=%s rejected: %v", driveID, err)
+		applog.Warn(ctx, "crawler request rejected", err, "component", "scriptcrawler", "driveId", driveID)
 	}
 	return err == nil
 }
@@ -81,7 +80,7 @@ func (a *App) startScriptCrawlerCrawl(ctx context.Context, driveID string) (stri
 	go func() {
 		defer release()
 		if _, err := a.executeCrawlerTask(taskCtx, driveID, crawler, task); err != nil {
-			log.Printf("[scriptcrawler] task=%s: %v", task.Result.TaskID, err)
+			applog.Error(taskCtx, "crawler task failed", err, "component", "scriptcrawler", "driveId", driveID, "taskId", task.Result.TaskID)
 		}
 	}()
 	return task.Result.TaskID, nil
@@ -165,18 +164,18 @@ func (a *App) scheduleManualCrawlerUploadMigration(ctx context.Context, driveID 
 
 	_, localCount, err := a.cat.CrawlerUploadScope(taskCtx, driveID)
 	if err != nil {
-		log.Printf("[scriptcrawler] drive=%s manual upload candidates: %v", driveID, err)
+		applog.Error(taskCtx, "list manual upload candidates failed", err, "component", "scriptcrawler", "driveId", driveID)
 		return false, "读取待上传视频失败"
 	}
 	if localCount == 0 {
 		return false, "没有待上传的本地视频"
 	}
 	if err := a.ensureDriveAttached(taskCtx, driveID); err != nil {
-		log.Printf("[scriptcrawler] drive=%s manual upload source attach: %v", driveID, err)
+		applog.Error(taskCtx, "attach manual upload source drive failed", err, "component", "scriptcrawler", "driveId", driveID)
 		return false, "爬虫本地存储不可用"
 	}
 	if err := a.ensureDriveAttached(targetCtx, targetDriveID); err != nil {
-		log.Printf("[scriptcrawler] drive=%s manual upload target=%s attach: %v", driveID, targetDriveID, err)
+		applog.Error(targetCtx, "attach manual upload target drive failed", err, "component", "scriptcrawler", "driveId", driveID, "targetDriveId", targetDriveID)
 		return false, "上传网盘不可用：" + err.Error()
 	}
 
@@ -209,7 +208,7 @@ func (a *App) scheduleManualCrawlerUploadMigration(ctx context.Context, driveID 
 	}
 	sourceOwned = false
 	targetOwned = false
-	log.Printf("[scriptcrawler] drive=%s running manual upload migration target=%s", driveID, targetDriveID)
+	applog.Info(runCtx, "manual upload migration started", "component", "scriptcrawler", "driveId", driveID, "targetDriveId", targetDriveID)
 	go func() {
 		defer func() {
 			runCancel()
@@ -220,7 +219,7 @@ func (a *App) scheduleManualCrawlerUploadMigration(ctx context.Context, driveID 
 			a.crawlerUploadMu.Unlock()
 		}()
 		if err := <-runDone; err != nil {
-			log.Printf("[scriptcrawler] drive=%s manual upload migration: %v", driveID, err)
+			applog.Error(runCtx, "manual upload migration failed", err, "component", "scriptcrawler", "driveId", driveID, "targetDriveId", targetDriveID)
 		}
 	}()
 	return true, ""

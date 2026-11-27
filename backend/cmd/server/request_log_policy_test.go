@@ -1,130 +1,82 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/nianzhibai/91/backend/internal/applog"
 )
 
-func TestRequestLogPolicyFiltersBothOutputs(t *testing.T) {
+func TestRequestLogLevelPolicy(t *testing.T) {
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
 	for _, tc := range []struct {
 		name    string
-		method  string
-		target  string
-		pattern string
+		req     *http.Request
+		mode    applog.RequestLogMode
 		status  int
 		elapsed time.Duration
-		level   applog.Level
+		want    applog.Level
 	}{
-		{name: "status query", method: "GET", target: "/admin/api/telegram/status", status: 200},
-		{name: "Telegram configuration query", method: "GET", target: "/admin/api/telegram/availability", status: 200},
-		{name: "public settings query", method: "GET", target: "/api/settings/preview", status: 200},
-		{name: "import list query", method: "GET", target: "/admin/api/import-jobs?source=telegram", status: 200},
-		{name: "backup list query", method: "GET", target: "/admin/api/backups", status: 200},
-		{name: "drive login poll", method: "GET", target: "/admin/api/drive-logins/one", pattern: "/admin/api/drive-logins/{id}", status: 200},
-		{name: "viewer query", method: "GET", target: "/admin/api/logs?q=error", status: 200},
-		{name: "query below slow threshold", method: "GET", target: "/admin/api/drives", status: 200, elapsed: time.Second - time.Nanosecond},
-		{name: "slow query", method: "GET", target: "/admin/api/drives", status: 200, elapsed: time.Second, level: applog.LevelWarning},
-		{name: "slow viewer query", method: "GET", target: "/admin/api/logs", status: 200, elapsed: 2 * time.Second, level: applog.LevelWarning},
-		{name: "unauthorized viewer", method: "GET", target: "/admin/api/logs", status: 401, level: applog.LevelWarning},
-		{name: "invalid query", method: "GET", target: "/admin/api/backups?limit=bad", status: 400, level: applog.LevelWarning},
-		{name: "failed viewer", method: "GET", target: "/admin/api/logs", status: 503, level: applog.LevelError},
-		{name: "failed drive login poll", method: "GET", target: "/admin/api/drive-logins/one", pattern: "/admin/api/drive-logins/{id}", status: 502, level: applog.LevelError},
-		{name: "backup creation", method: "POST", target: "/admin/api/backups", status: 202, level: applog.LevelInfo},
-		{name: "log deletion", method: "DELETE", target: "/admin/api/logs", status: 200, level: applog.LevelInfo},
-		{name: "log download", method: "GET", target: "/admin/api/logs?download=1", status: 200, level: applog.LevelInfo},
-		{name: "backup download", method: "GET", target: "/admin/api/backups/one/download", pattern: "/admin/api/backups/{id}/download", status: 200, elapsed: time.Minute, level: applog.LevelInfo},
-		{name: "public browsing", method: "GET", target: "/api/videos", status: 200, level: applog.LevelInfo},
-		{name: "unknown status endpoint", method: "GET", target: "/admin/api/example/status", status: 200, level: applog.LevelInfo},
-		{name: "credential access", method: "GET", target: "/admin/api/drives/one/credentials", pattern: "/admin/api/drives/{id}/credentials", status: 200, level: applog.LevelInfo},
-		{name: "long-lived event stream", method: "GET", target: "/admin/api/drives/one/events", pattern: "/admin/api/drives/{id}/events", status: 200, elapsed: time.Hour},
-		{name: "failed event stream", method: "GET", target: "/admin/api/drives/one/events", pattern: "/admin/api/drives/{id}/events", status: 503, level: applog.LevelError},
+		{name: "default 200", mode: applog.RequestLogDefault, status: 200, elapsed: 10 * time.Millisecond, want: applog.LevelInfo},
+		{name: "quiet fast 200", mode: applog.RequestLogQuiet, status: 200, elapsed: time.Second - time.Nanosecond, want: ""},
+		{name: "quiet slow 200", mode: applog.RequestLogQuiet, status: 200, elapsed: time.Second, want: applog.LevelWarn},
+		{name: "quiet 401", mode: applog.RequestLogQuiet, status: 401, elapsed: 2 * time.Millisecond, want: applog.LevelWarn},
+		{name: "quiet 503", mode: applog.RequestLogQuiet, status: 503, elapsed: 2 * time.Millisecond, want: applog.LevelError},
+		{name: "stream long 200", mode: applog.RequestLogSkipSuccess, status: 200, elapsed: time.Hour, want: ""},
+		{name: "stream 503", mode: applog.RequestLogSkipSuccess, status: 503, elapsed: time.Second, want: applog.LevelError},
+		{name: "client canceled", req: httptest.NewRequest(http.MethodGet, "/api/list", nil).WithContext(canceledCtx), mode: applog.RequestLogDefault, status: 500, want: applog.LevelWarn},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			store, err := applog.Open(applog.Config{Directory: t.TempDir()})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = store.Close() })
-			var output bytes.Buffer
-			formatter := capturedLogFormatter{
-				access: &middleware.DefaultLogFormatter{Logger: log.New(&output, "", 0), NoColor: true},
-				logs:   store,
-			}
-			request := httptest.NewRequest(tc.method, tc.target, nil)
-			if tc.pattern != "" {
-				routeContext := chi.NewRouteContext()
-				routeContext.RoutePatterns = []string{tc.pattern}
-				request = request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, routeContext))
-			}
-			formatter.NewLogEntry(request).Write(tc.status, 10, http.Header{}, tc.elapsed, nil)
-			result, err := store.Query(context.Background(), applog.Query{Limit: 10})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if tc.level == "" {
-				if output.Len() != 0 || len(result.Entries) != 0 {
-					t.Fatalf("routine query was logged: stdout=%q entries=%+v", output.String(), result.Entries)
-				}
-				return
-			}
-			if output.Len() == 0 || len(result.Entries) != 1 {
-				t.Fatalf("request not logged in both outputs: stdout=%q entries=%+v", output.String(), result.Entries)
-			}
-			entry := result.Entries[0]
-			if entry.Level != tc.level || entry.Status != tc.status || entry.Method != applog.Method(tc.method) {
-				t.Fatalf("unexpected entry: %+v", entry)
+			if got := requestLogLevel(tc.req, tc.mode, tc.status, tc.elapsed); got != tc.want {
+				t.Fatalf("requestLogLevel() = %q, want %q", got, tc.want)
 			}
 		})
 	}
 }
 
-func TestRequestLogMiddlewareUsesMatchedNestedRoutes(t *testing.T) {
-	store, err := applog.Open(applog.Config{Directory: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	var output bytes.Buffer
-	logger := log.New(&output, "", 0)
+func TestRequestLogMiddlewareDeclarativeGroups(t *testing.T) {
+	rt, console := installTestLogRuntime(t)
+
 	router := chi.NewRouter()
-	router.Use(requestLogMiddleware(logger, logger, store))
-	router.Route("/admin/api", func(router chi.Router) {
-		router.Get("/drives/{id}/runtime", func(w http.ResponseWriter, r *http.Request) {
+	router.Use(requestLogMiddleware())
+	router.Route("/admin/api", func(r chi.Router) {
+		r.Group(func(r chi.Router) {
+			r.Use(applog.QuietRequestLog)
+			r.Get("/drives/{id}/runtime", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+			r.Get("/logs", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusUnauthorized) })
+		})
+		r.With(applog.SkipSuccessRequestLog).Get("/logs/stream", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})
-		router.Get("/drive-logins/{id}", func(w http.ResponseWriter, r *http.Request) {
+		r.Post("/drives/{id}/tasks/stop", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
-		})
-		router.Post("/drives/{id}/tasks/stop", func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-		})
-		router.Get("/logs", func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusUnauthorized)
 		})
 	})
-	for _, target := range []string{"/admin/api/drives/one/runtime", "/admin/api/drive-logins/session"} {
-		router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, target, nil))
+
+	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/admin/api/drives/one/runtime", nil))
+	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/admin/api/logs/stream", nil))
+	if console.Len() != 0 {
+		t.Fatalf("quiet/stream 200 requests were logged: %q", console.String())
 	}
-	if output.Len() != 0 {
-		t.Fatalf("successful matched queries were logged: %q", output.String())
-	}
+
 	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/admin/api/drives/one/tasks/stop", nil))
 	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/admin/api/logs", nil))
-	result, err := store.Query(context.Background(), applog.Query{Limit: 10})
+
+	result, err := rt.Store().Query(context.Background(), applog.Query{Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Entries) != 2 || result.Entries[0].Level != applog.LevelInfo || result.Entries[1].Level != applog.LevelWarning {
-		t.Fatalf("operation and viewer failure logs = %+v", result.Entries)
+	if len(result.Entries) != 2 || result.Entries[0].Level != applog.LevelInfo || result.Entries[1].Level != applog.LevelWarn {
+		t.Fatalf("entries = %+v", result.Entries)
+	}
+	if result.Entries[0].HTTP == nil || result.Entries[0].HTTP.Route != "/admin/api/drives/{id}/tasks/stop" {
+		t.Fatalf("route pattern not captured: %+v", result.Entries[0].HTTP)
 	}
 }

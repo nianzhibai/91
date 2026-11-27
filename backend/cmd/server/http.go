@@ -7,10 +7,10 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
+	"math"
 	"mime"
 	"net/http"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -49,120 +49,73 @@ var dynamicCompressibleContentTypes = map[string]struct{}{
 	"text/plain":                {},
 }
 
-type capturedLogFormatter struct {
-	access      *middleware.DefaultLogFormatter
-	panicLogger *log.Logger
-	logs        *applog.Store
+type panicLogEntry struct {
+	request *http.Request
+	remote  string
 }
 
-func (f *capturedLogFormatter) NewLogEntry(r *http.Request) middleware.LogEntry {
-	remote := requestmeta.ClientIP(r)
-	requestForAccessLog := r.Clone(r.Context())
-	requestForAccessLog.URL, _ = url.Parse(applog.RedactURL(r.URL.String()))
-	requestForAccessLog.RequestURI = applog.RedactURL(r.URL.RequestURI())
-	if remote != "" {
-		requestForAccessLog.RemoteAddr = remote
+func (panicLogEntry) Write(int, int, http.Header, time.Duration, any) {}
+
+func (e panicLogEntry) Panic(value any, stack []byte) {
+	var httpRec *applog.HTTPRecord
+	if e.request != nil {
+		httpRec = &applog.HTTPRecord{
+			Method: applog.Method(e.request.Method),
+			Path:   applog.RedactURL(e.request.URL.RequestURI()),
+			Route:  requestLogRoute(e.request),
+			Status: http.StatusInternalServerError,
+			Remote: e.remote,
+		}
 	}
-	return &capturedLogEntry{
-		LogEntry:    f.access.NewLogEntry(requestForAccessLog),
-		panicLogger: f.panicLogger,
-		logs:        f.logs,
-		request:     r,
-		remote:      remote,
+	ctx := context.Background()
+	if e.request != nil {
+		ctx = e.request.Context()
 	}
+	applog.LogPanic(ctx, httpRec, value, stack)
 }
 
-type capturedLogEntry struct {
-	middleware.LogEntry
-	panicLogger *log.Logger
-	logs        *applog.Store
-	request     *http.Request
-	remote      string
-}
-
-func (e *capturedLogEntry) Write(status, bytes int, header http.Header, elapsed time.Duration, extra any) {
-	level := requestLogLevel(e.request, status, elapsed)
-	if level == "" {
-		return
-	}
-	// Keep the human-readable operational stream independently of file logging.
-	e.LogEntry.Write(status, bytes, header, elapsed, extra)
-	if e.logs == nil || e.request == nil {
-		return
-	}
-	target := applog.RedactURL(e.request.URL.RequestURI())
-	if target == "" {
-		target = "/"
-	}
-	scheme := "http"
-	if e.request.TLS != nil {
-		scheme = "https"
-	}
-	requestID := middleware.GetReqID(e.request.Context())
-	prefix := ""
-	if requestID != "" {
-		prefix = "[" + requestID + "] "
-	}
-	remote := e.remote
-	if remote == "" {
-		remote = e.request.RemoteAddr
-	}
-	message := fmt.Sprintf("%s%q from %s - %d %dB in %s",
-		prefix,
-		e.request.Method+" "+scheme+"://"+e.request.Host+target+" "+e.request.Proto,
-		remote,
-		status,
-		bytes,
-		elapsed,
-	)
-	_ = e.logs.AppendEntry(applog.Entry{
-		Timestamp: time.Now(),
-		Source:    applog.SourceHTTP,
-		Level:     level,
-		Method:    applog.Method(e.request.Method),
-		Status:    status,
-		Path:      target,
-		Remote:    remote,
-		Bytes:     bytes,
-		Elapsed:   elapsed.String(),
-		Fields:    applog.Fields{RequestID: requestID},
-		Message:   message,
-	})
-}
-
-func (e *capturedLogEntry) Panic(value any, stack []byte) {
-	logger := e.panicLogger
-	if logger == nil {
-		logger = log.New(applog.Output(os.Stderr, nil), "", log.LstdFlags)
-	}
-	applog.LogEntry(logger, applog.Entry{
-		Timestamp: time.Now(), Source: applog.SourceApplication, Level: applog.LevelError,
-		Fields:  applog.ContextFields(e.request.Context()),
-		Message: fmt.Sprintf("[http] panic: %v", value), Stack: string(stack),
-		Method: applog.Method(e.request.Method), Path: e.request.URL.RequestURI(),
-	})
-}
-
-// requestLogMiddleware writes a human-readable access line to stdout and a
-// structured durable entry for the admin viewer. Routine queries are filtered
-// after completion so failures and slow responses remain observable.
-func requestLogMiddleware(accessLogger, panicLogger *log.Logger, logs *applog.Store) func(http.Handler) http.Handler {
-	requestLogger := middleware.RequestLogger(&capturedLogFormatter{
-		access: &middleware.DefaultLogFormatter{
-			Logger:  accessLogger,
-			NoColor: true,
-		},
-		panicLogger: panicLogger,
-		logs:        logs,
-	})
+// requestLogMiddleware assigns a server-generated request ID, attaches a
+// mutable RequestLogHint for inner route groups, hooks chi Recoverer panics,
+// and emits one structured HTTP access record on completion.
+func requestLogMiddleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
-		logged := requestLogger(next)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			started := time.Now()
 			requestID := applog.NewID()
+			remote := requestmeta.ClientIP(r)
+			if remote == "" {
+				remote = r.RemoteAddr
+			}
+
 			ctx := context.WithValue(r.Context(), middleware.RequestIDKey, requestID)
-			r = r.WithContext(applog.WithFields(ctx, applog.Fields{RequestID: requestID}))
+			ctx = applog.WithFields(ctx, applog.Fields{RequestID: requestID})
+			ctx, hint := applog.WithRequestLogHint(ctx)
+			r = r.WithContext(ctx)
+			r = middleware.WithLogEntry(r, panicLogEntry{request: r, remote: remote})
 			w.Header().Set("X-Request-ID", requestID)
-			logged.ServeHTTP(w, r)
+
+			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+			next.ServeHTTP(ww, r)
+
+			elapsed := time.Since(started)
+			status := ww.Status()
+			level := requestLogLevel(r, hint.Mode, status, elapsed)
+			if level == "" {
+				return
+			}
+			target := applog.RedactURL(r.URL.RequestURI())
+			if target == "" {
+				target = "/"
+			}
+			applog.LogHTTP(r.Context(), level, applog.HTTPRecord{
+				Method:     applog.Method(r.Method),
+				Path:       target,
+				Route:      requestLogRoute(r),
+				Status:     status,
+				Bytes:      ww.BytesWritten(),
+				DurationMs: math.Round(float64(elapsed.Microseconds())/10.0) / 100.0,
+				Remote:     remote,
+			}, "")
 		})
 	}
 }
@@ -461,7 +414,7 @@ func mountFrontend(r chi.Router, manager *frontend.Manager) error {
 		if err != nil {
 			return err
 		}
-		log.Printf("serving bundled frontend from %s", site)
+		slog.Info("serving bundled frontend", "component", "frontend", "dir", site)
 		dir = site
 	}
 	if manager != nil {

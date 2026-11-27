@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
-	"log"
 	"strings"
 
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/drives"
 	"github.com/nianzhibai/91/backend/internal/drives/localupload"
@@ -201,7 +201,7 @@ func (a *App) regenPreview(ctx context.Context, videoID string) {
 		return
 	}
 	if err := a.cat.RequestMediaRenewal(ctx, []string{videoID}); err != nil {
-		log.Printf("[preview] request renewal video=%s: %v", videoID, err)
+		applog.Error(ctx, "request media renewal failed", err, "component", "preview", "videoId", videoID)
 		return
 	}
 	v, err := a.cat.GetVideo(ctx, videoID)
@@ -217,7 +217,7 @@ func (a *App) regenAllPreviews(ctx context.Context) {
 	}
 	items, total, err := a.cat.ListVideos(ctx, catalog.ListParams{Page: 1, PageSize: 1000000})
 	if err != nil {
-		log.Printf("[preview] list all videos for regen: %v", err)
+		applog.Error(ctx, "list all videos for preview renewal failed", err, "component", "preview")
 		return
 	}
 	ids := make([]string, 0, len(items))
@@ -225,10 +225,10 @@ func (a *App) regenAllPreviews(ctx context.Context) {
 		ids = append(ids, v.ID)
 	}
 	if err := a.cat.RequestMediaRenewal(ctx, ids); err != nil {
-		log.Printf("[preview] request renewal of all videos: %v", err)
+		applog.Error(ctx, "request media renewal for all videos failed", err, "component", "preview")
 		return
 	}
-	log.Printf("[preview] requested renewal of all visible videos count=%d total=%d", len(items), total)
+	applog.Info(ctx, "requested preview renewal for all visible videos", "component", "preview", "count", len(items), "total", total)
 	a.wakeAllDriveGeneration()
 }
 
@@ -239,7 +239,13 @@ func (a *App) resetFailedGeneration(ctx context.Context, driveID string, kinds c
 	defer persistence.RUnlock()
 	counts, err := a.cat.ResetFailedGeneration(ctx, driveID, kinds)
 	if err == nil && (counts.Thumbnails > 0 || counts.Previews > 0 || counts.Fingerprints > 0) {
-		log.Printf("[generation-retry] drive=%s reset_failed thumbnails=%d previews=%d fingerprints=%d", driveID, counts.Thumbnails, counts.Previews, counts.Fingerprints)
+		applog.Info(ctx, "reset failed generation items",
+			"component", "generation-retry",
+			"driveId", driveID,
+			"thumbnails", counts.Thumbnails,
+			"previews", counts.Previews,
+			"fingerprints", counts.Fingerprints,
+		)
 	}
 	return counts, err
 }
@@ -250,7 +256,7 @@ func (a *App) resetFailedGeneration(ctx context.Context, driveID string, kinds c
 func (a *App) listScanTargetIDs(ctx context.Context) ([]string, error) {
 	all, err := a.cat.ListDrives(ctx)
 	if err != nil {
-		log.Printf("[nightly] list scan target drives: %v", err)
+		applog.Error(ctx, "list scan target drives failed", err, "component", "nightly")
 		return nil, err
 	}
 	out := make([]string, 0, len(all))
@@ -267,7 +273,7 @@ func (a *App) listScanTargetIDs(ctx context.Context) ([]string, error) {
 func (a *App) listCrawlerDriveIDs(ctx context.Context) []string {
 	all, err := a.cat.ListDrives(ctx)
 	if err != nil {
-		log.Printf("[nightly] list crawler drives: %v", err)
+		applog.Error(ctx, "list crawler drives failed", err, "component", "nightly")
 		return nil
 	}
 	out := make([]string, 0, len(all))

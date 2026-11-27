@@ -4,11 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/drives"
 )
 
@@ -26,7 +26,7 @@ func (d *Driver) RequestStream(req *http.Request) (*http.Response, error) {
 	resp, err := d.requestStream(req)
 	if wait, limited := drives.RateLimitRetryAfter(err); limited {
 		until := d.pauseLinkCooldown(wait)
-		log.Printf("[googledrive] media stream cooling down drive=%s until=%s err=%v", d.id, until.Format(time.RFC3339), err)
+		applog.Warn(req.Context(), "media stream cooling down", err, "component", "googledrive", "driveId", d.id, "until", until.Format(time.RFC3339))
 	}
 	return resp, err
 }

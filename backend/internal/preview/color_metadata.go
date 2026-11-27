@@ -5,11 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/drives"
 )
 
@@ -65,7 +65,7 @@ func (g *Generator) runMediaCommand(
 		return out, err
 	}
 	repair.inputOptions = options
-	log.Printf("[media] normalize reserved source color metadata: %s", strings.Join(options, " "))
+	applog.Info(ctx, "Normalize reserved source color metadata", "component", "media", "options", strings.Join(options, " "))
 	return run()
 }
 

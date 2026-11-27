@@ -49,39 +49,50 @@ export type Schemas = {
     page: number;
     size: number;
   };
-  applogEntry: {
-    bytes?: number;
+  applogHTTPRecord: {
+    bytes: number;
+    durationMs: number;
+    method: string;
+    path: string;
+    remote?: string;
+    route?: string;
+    status: number;
+  };
+  applogMeta: {
+    components: string[];
+    level: string;
+    maxStorageBytes: number;
+    retentionDays: number;
+    storageBytes: number;
+    totalCount: number;
+    writeHealth: Schemas["applogWriteHealth"];
+  };
+  applogRecord: {
+    attrs?: Record<string, unknown>;
     component?: string;
     driveId?: string;
-    elapsed?: string;
     error?: string;
     fileId?: string;
+    http?: Schemas["applogHTTPRecord"];
     id: number;
     level: string;
     message: string;
-    method?: string;
-    path?: string;
-    remote?: string;
     requestId?: string;
     source: string;
     stack?: string;
     stage?: string;
-    status?: number;
     taskId?: string;
     timestamp: string;
     videoId?: string;
   };
   applogSnapshot: {
-    entries: Schemas["applogEntry"][] | null;
+    entries: Schemas["applogRecord"][];
     hasMore: boolean;
-    matched: number;
-    maxStorageBytes: number;
-    nextCursor?: string;
-    reset?: boolean;
-    storageBytes: number;
-    writeHealth: Schemas["applogWriteHealth"];
+    nextAfter?: number;
+    nextBefore?: number;
   };
   applogWriteHealth: {
+    droppedWrites: number;
     failedWrites: number;
     lastError?: string;
     lastFailureAt?: string;
@@ -333,6 +344,9 @@ export type Schemas = {
   };
   configLiveSettings: {
     generationConcurrency: number;
+    logLevel: string;
+    logMaxTotalSizeMB: number;
+    logRetentionDays: number;
     nightlyDisabled: boolean;
     nightlyStartTime: string;
     nightlyTimezone: string;

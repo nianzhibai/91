@@ -3,10 +3,10 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
 	"os"
 	"strings"
 
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/dedupe"
 	"github.com/nianzhibai/91/backend/internal/localpath"
@@ -34,7 +34,7 @@ func (a *App) cleanupDuplicateVideoAssets(ctx context.Context) error {
 		localDir = strings.TrimSpace(a.cfg.Storage.LocalPreviewDir)
 	}
 	if err := a.cleanupPendingDuplicateAssets(ctx, localDir); err != nil {
-		log.Printf("[dedupe-maintenance] retry pending asset cleanup: %v", err)
+		applog.Warn(ctx, "retry pending duplicate asset cleanup failed", err, "component", "dedupe-maintenance")
 	}
 	// Matching only compares stored signatures, so every channel runs even
 	// while previews are disabled.
@@ -51,7 +51,7 @@ func (a *App) cleanupDuplicateVideoAssets(ctx context.Context) error {
 		}
 		stats = duplicateVideoMaintenanceStats{VideosScanned: len(videos)}
 		if len(videos) == 0 {
-			log.Printf("[dedupe-maintenance] no videos to maintain")
+			applog.Info(ctx, "no videos to maintain", "component", "dedupe-maintenance")
 			return nil
 		}
 
@@ -65,7 +65,11 @@ func (a *App) cleanupDuplicateVideoAssets(ctx context.Context) error {
 		if !errors.Is(err, catalog.ErrDuplicatePlanStale) || attempt == maxPlanAttempts {
 			return err
 		}
-		log.Printf("[dedupe-maintenance] plan changed before commit; rebuilding attempt=%d/%d: %v", attempt+1, maxPlanAttempts, err)
+		applog.Warn(ctx, "duplicate maintenance plan changed before commit; rebuilding", err,
+			"component", "dedupe-maintenance",
+			"attempt", attempt+1,
+			"maxAttempts", maxPlanAttempts,
+		)
 	}
 	if err := a.replaceDuplicateReviews(ctx, plan.Reviews); err != nil {
 		return err
@@ -78,11 +82,19 @@ func (a *App) cleanupDuplicateVideoAssets(ctx context.Context) error {
 	stats.SignatureDeleted = plan.Stats.Signature.Deleted
 	stats.SignatureReviews = len(plan.Reviews)
 
-	log.Printf("[dedupe-maintenance] videos=%d exact_groups=%d exact_deleted=%d signature_candidates=%d signature_comparisons=%d signature_groups=%d signature_deleted=%d signature_reviews=%d",
-		stats.VideosScanned, stats.ExactGroups, stats.ExactDeleted,
-		stats.SignatureCandidates, stats.SignatureComparisons, stats.SignatureGroups, stats.SignatureDeleted, stats.SignatureReviews)
+	applog.Info(ctx, "duplicate maintenance completed",
+		"component", "dedupe-maintenance",
+		"videos", stats.VideosScanned,
+		"exactGroups", stats.ExactGroups,
+		"exactDeleted", stats.ExactDeleted,
+		"signatureCandidates", stats.SignatureCandidates,
+		"signatureComparisons", stats.SignatureComparisons,
+		"signatureGroups", stats.SignatureGroups,
+		"signatureDeleted", stats.SignatureDeleted,
+		"signatureReviews", stats.SignatureReviews,
+	)
 	if err := a.renewStaleMedia(ctx); err != nil && ctx.Err() == nil {
-		log.Printf("[dedupe-maintenance] renew stale media: %v", err)
+		applog.Warn(ctx, "renew stale media failed", err, "component", "dedupe-maintenance")
 	}
 	return nil
 }
@@ -112,7 +124,7 @@ func (a *App) renewStaleMedia(ctx context.Context) error {
 		}
 	}
 	if len(videos) > 0 {
-		log.Printf("[dedupe-maintenance] queued %d media renewals", len(videos))
+		applog.Info(ctx, "queued media renewals", "component", "dedupe-maintenance", "count", len(videos))
 	}
 	return nil
 }

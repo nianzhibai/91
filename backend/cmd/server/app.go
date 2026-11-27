@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/nianzhibai/91/backend/internal/api"
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/config"
 	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
@@ -57,6 +58,7 @@ type App struct {
 	// configManager 将 config.yaml 的已校验热更新字段发布给运行时消费者；
 	// 文件本身是唯一持久化事实来源。
 	configManager *config.Manager
+	logRuntime    *applog.Runtime
 	// onTagsChanged invalidates the API read cache after tag memberships change.
 	// It is installed before the HTTP server starts serving.
 	onTagsChanged func()

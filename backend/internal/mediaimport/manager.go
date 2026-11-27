@@ -296,7 +296,7 @@ func (m *Manager) run() {
 		}
 		retryDelay := 30 * time.Second
 		if !errors.Is(err, sql.ErrNoRows) && !errors.Is(err, context.Canceled) {
-			applog.Error(m.runCtx, "Remote upload queue lookup failed", err, applog.Fields{Component: "remote-upload", Stage: "queue"})
+			applog.Error(m.runCtx, "Remote upload queue lookup failed", err, "component", "remote-upload", "stage", "queue")
 			retryDelay = time.Second
 		}
 		retryTimer := time.NewTimer(retryDelay)
@@ -342,14 +342,14 @@ func (m *Manager) process(job *catalog.RemoteUploadJob) {
 	current, getErr := m.catalog.GetRemoteUploadJob(cleanupCtx, job.ID)
 	if getErr == nil {
 		if cleanupErr := m.cleanupArtifactRef(catalog.RemoteUploadCleanupRef{JobID: current.ID, TempFile: current.TempFile, FinalFile: current.FinalFile}); cleanupErr != nil {
-			applog.Error(jobCtx, "Import cleanup failed; artifacts retained for recovery", cleanupErr, applog.Fields{Stage: "cleanup"})
+			applog.Error(jobCtx, "Import cleanup failed; artifacts retained for recovery", cleanupErr, "stage", "cleanup")
 			return
 		}
 	}
 
 	if m.runCtx.Err() != nil {
 		if requeueErr := m.catalog.RequeueRemoteUploadOnShutdown(cleanupCtx, job.ID); requeueErr != nil {
-			applog.Error(jobCtx, "Shutdown requeue failed", requeueErr, applog.Fields{Stage: "requeue"})
+			applog.Error(jobCtx, "Shutdown requeue failed", requeueErr, "stage", "requeue")
 		}
 		return
 	}
@@ -359,7 +359,7 @@ func (m *Manager) process(job *catalog.RemoteUploadJob) {
 		_ = m.discardTelegram(cleanupCtx, job)
 		if cancelErr := m.catalog.MarkRemoteUploadCanceled(cleanupCtx, job.ID); cancelErr != nil &&
 			!errors.Is(cancelErr, catalog.ErrRemoteUploadTerminal) {
-			applog.Error(jobCtx, "Cancellation cleanup failed", cancelErr, applog.Fields{Stage: "cancel"})
+			applog.Error(jobCtx, "Cancellation cleanup failed", cancelErr, "stage", "cancel")
 		}
 		return
 	}
@@ -385,9 +385,9 @@ func (m *Manager) process(job *catalog.RemoteUploadJob) {
 	message := publicJobError(err)
 	if failErr := m.catalog.FailRemoteUploadJob(cleanupCtx, job.ID, message); failErr != nil &&
 		!errors.Is(failErr, catalog.ErrRemoteUploadTerminal) {
-		applog.Error(jobCtx, "Failure state update failed", failErr, applog.Fields{Stage: "save"})
+		applog.Error(jobCtx, "Failure state update failed", failErr, "stage", "save")
 	}
-	applog.Error(jobCtx, message, err, applog.Fields{Stage: "complete"})
+	applog.Error(jobCtx, message, err, "stage", "complete")
 }
 
 func (m *Manager) processJob(ctx context.Context, job *catalog.RemoteUploadJob) error {
@@ -456,7 +456,7 @@ func (m *Manager) processJob(ctx context.Context, job *catalog.RemoteUploadJob) 
 
 	info, err := m.probeFile(ctx, m.ffprobePath, partPath)
 	if err != nil || len(info.VideoCodecs) == 0 {
-		applog.Error(ctx, "Validate downloaded video failed", err, applog.Fields{Stage: "probe"})
+		applog.Error(ctx, "Validate downloaded video failed", err, "stage", "probe")
 		return taskError("下载内容不是有效的视频文件")
 	}
 	ext, err := supportedExtension(info, metadata)
@@ -865,7 +865,7 @@ func (m *Manager) discardTelegram(ctx context.Context, job *catalog.RemoteUpload
 	defer persistence.RUnlock()
 	err := m.telegramSource.Discard(ctx, job)
 	if err != nil {
-		applog.Error(ctx, "TG 视频清理失败，将在后续维护中重试", err, applog.Fields{Component: "telegram", Stage: "cleanup"})
+		applog.Error(ctx, "TG 视频清理失败，将在后续维护中重试", err, "component", "telegram", "stage", "cleanup")
 	}
 	return err
 }
@@ -888,7 +888,7 @@ func (m *Manager) cleanupAbandonedTelegram(ctx context.Context) error {
 			continue
 		}
 		if err := m.telegramSource.Discard(ctx, &catalog.RemoteUploadJob{ID: file.JobID, SourceKind: "telegram"}); err != nil {
-			applog.Error(ctx, "TG 视频清理失败，将在后续维护中重试", err, applog.Fields{Component: "telegram", Stage: "cleanup"})
+			applog.Error(ctx, "TG 视频清理失败，将在后续维护中重试", err, "component", "telegram", "stage", "cleanup")
 		}
 	}
 	return nil

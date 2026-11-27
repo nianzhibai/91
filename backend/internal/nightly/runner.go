@@ -33,11 +33,11 @@ package nightly
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/scanjob"
 	"github.com/nianzhibai/91/backend/internal/schedule"
 )
@@ -205,22 +205,22 @@ func (r *Runner) Run(ctx context.Context) {
 	t := time.NewTicker(pollInterval)
 	defer t.Stop()
 	startTime, timezone := r.Schedule()
-	log.Printf("[nightly] runner started; start_time=%s timezone=%s disabled=%t", startTime, timezone, r.Disabled())
+	applog.Info(ctx, "Nightly runner started", "component", "nightly", "startTime", startTime, "timezone", timezone, "disabled", r.Disabled())
 	for {
 		select {
 		case <-ctx.Done():
-			log.Printf("[nightly] runner stopping: %v", ctx.Err())
+			applog.Info(ctx, "Nightly runner stopping", "component", "nightly", "reason", ctx.Err())
 			return
 		case <-t.C:
 			r.tryNaturalRun(ctx)
 		case <-r.scheduleChanged:
 			startTime, timezone := r.Schedule()
-			log.Printf("[nightly] schedule updated; start_time=%s timezone=%s disabled=%t", startTime, timezone, r.Disabled())
+			applog.Info(ctx, "Nightly schedule updated", "component", "nightly", "startTime", startTime, "timezone", timezone, "disabled", r.Disabled())
 			// Re-evaluate immediately so saving the current minute does not have
 			// to wait for the next heartbeat and accidentally miss today's run.
 			r.tryNaturalRun(ctx)
 		case mode := <-r.trigger:
-			log.Printf("[scan-all] manual trigger received")
+			applog.Info(ctx, "Manual trigger received", "component", "scan-all")
 			r.runModeLocked(ctx, mode)
 		}
 	}
@@ -415,13 +415,13 @@ func (r *Runner) tryNaturalRun(ctx context.Context) {
 	}
 	last, err := r.readLastRunDate(ctx)
 	if err != nil {
-		log.Printf("[nightly] read last_run_date: %v", err)
+		applog.Error(ctx, "Read last_run_date failed", err, "component", "nightly")
 		return
 	}
 	if !shouldRun(now, last) {
 		return
 	}
-	log.Printf("[nightly] natural cron trigger at %s", now.Format(time.RFC3339))
+	applog.Info(ctx, "Natural cron trigger", "component", "nightly", "at", now.Format(time.RFC3339))
 	r.runModeLockedForDate(ctx, runModeScheduled, now.Format(dateLayout))
 }
 
@@ -458,12 +458,12 @@ func (r *Runner) runModeLockedForDate(ctx context.Context, mode runMode, schedul
 		queued := r.queued
 		r.stateMu.Unlock()
 		if !queued {
-			log.Printf("[%s] manual trigger was canceled before start", component)
+			applog.Info(ctx, "Manual trigger was canceled before start", "component", component)
 			return
 		}
 	}
 	if !r.runMu.TryLock() {
-		log.Printf("[%s] another pipeline is already running, skipping this trigger", component)
+		applog.Info(ctx, "Another pipeline is already running, skipping this trigger", "component", component)
 		return
 	}
 
@@ -481,7 +481,7 @@ func (r *Runner) runModeLockedForDate(ctx context.Context, mode runMode, schedul
 		r.runMu.Unlock()
 	}()
 
-	log.Printf("[%s] pipeline (%s) start", component, execution)
+	applog.Info(runCtx, "Pipeline start", "component", component, "execution", execution)
 
 	if mode == runModeScanAll {
 		r.runScanAllPipeline(runCtx)
@@ -490,7 +490,7 @@ func (r *Runner) runModeLockedForDate(ctx context.Context, mode runMode, schedul
 	}
 
 	finished := r.cfg.Now()
-	log.Printf("[%s] pipeline (%s) finish; took=%s", component, execution, finished.Sub(started).Round(time.Second))
+	applog.Info(runCtx, "Pipeline finish", "component", component, "execution", execution, "took", finished.Sub(started).Round(time.Second).String())
 
 	if mode == runModeScanAll {
 		return
@@ -500,7 +500,7 @@ func (r *Runner) runModeLockedForDate(ctx context.Context, mode runMode, schedul
 	// a partial / failing full pipeline should not automatically trigger again
 	// during the same scheduled minute. Scan-all returns above and never writes it.
 	if err := r.cfg.Settings.SetSetting(ctx, settingLastRunDate, scheduledDate); err != nil {
-		log.Printf("[nightly] persist last_run_date: %v", err)
+		applog.Error(ctx, "Persist last_run_date failed", err, "component", "nightly")
 	}
 }
 
@@ -593,9 +593,9 @@ func (r *Runner) runPipeline(ctx context.Context) {
 		return
 	}
 	if r.cfg.RunTelegramUpload != nil {
-		log.Printf("[nightly] Telegram upload phase")
+		applog.Info(ctx, "Telegram upload phase", "component", "nightly", "stage", "telegram_upload")
 		if err := r.cfg.RunTelegramUpload(ctx); err != nil {
-			log.Printf("[nightly] Telegram upload: %v", err)
+			applog.Error(ctx, "Telegram upload failed", err, "component", "nightly", "stage", "telegram_upload")
 			r.recordIssue("telegram_upload", err)
 		}
 	}
@@ -609,15 +609,15 @@ func (r *Runner) runPipeline(ctx context.Context) {
 		crawlerIDs = r.cfg.ListCrawlerDrives(ctx)
 	}
 	if len(crawlerIDs) == 0 {
-		log.Printf("[nightly] crawler phase skipped: no crawler configured")
+		applog.Info(ctx, "Crawler phase skipped: no crawler configured", "component", "nightly", "stage", "phase 2")
 	} else {
-		log.Printf("[nightly] phase 2: crawling %d crawler drive(s)", len(crawlerIDs))
+		applog.Info(ctx, "Crawling crawler drives", "component", "nightly", "stage", "phase 2", "count", len(crawlerIDs))
 		for _, id := range crawlerIDs {
 			if ctx.Err() != nil {
-				log.Printf("[nightly] phase 2 aborted by ctx: %v", ctx.Err())
+				applog.Warn(ctx, "Crawler phase aborted", ctx.Err(), "component", "nightly", "stage", "phase 2")
 				return
 			}
-			log.Printf("[nightly] phase 2: crawling drive=%s", id)
+			applog.Info(ctx, "Crawling drive", "component", "nightly", "stage", "phase 2", "driveId", id)
 			if err := r.cfg.RunCrawlerCrawl(ctx, id); err != nil {
 				r.recordIssue("crawl", fmt.Errorf("crawler %s: %w", id, err))
 			}
@@ -655,14 +655,14 @@ func (r *Runner) runScanPhase(ctx context.Context, component, phase string) bool
 		scanIDs, err = r.cfg.ListScanTargets(ctx)
 		if err != nil {
 			r.recordIssue(phase, err)
-			log.Printf("[%s] %s: list scan targets: %v", component, phase, err)
+			applog.Error(ctx, "List scan targets failed", err, "component", component, "stage", phase)
 			return false
 		}
 	}
 	if len(scanIDs) == 0 {
-		log.Printf("[%s] %s skipped: no cloud drives to scan", component, phase)
+		applog.Info(ctx, "Scan phase skipped: no cloud drives to scan", "component", component, "stage", phase)
 	} else {
-		log.Printf("[%s] %s: scanning %d drive(s) concurrently", component, phase, len(scanIDs))
+		applog.Info(ctx, "Scanning cloud drives concurrently", "component", component, "stage", phase, "count", len(scanIDs))
 		var scans sync.WaitGroup
 		for _, id := range scanIDs {
 			if ctx.Err() != nil {
@@ -674,7 +674,7 @@ func (r *Runner) runScanPhase(ctx context.Context, component, phase string) bool
 				if ctx.Err() != nil {
 					return
 				}
-				log.Printf("[%s] %s: scanning drive=%s", component, phase, id)
+				applog.Info(ctx, "Scanning drive", "component", component, "stage", phase, "driveId", id)
 				result := r.cfg.RunScan(ctx, id)
 				r.stateMu.Lock()
 				r.scanResults = append(r.scanResults, result)
@@ -688,7 +688,7 @@ func (r *Runner) runScanPhase(ctx context.Context, component, phase string) bool
 	if r.shouldStop(ctx, component, phase) {
 		return false
 	}
-	log.Printf("[%s] %s: waiting for drive generation to finish", component, phase)
+	applog.Info(ctx, "Waiting for drive generation to finish", "component", component, "stage", phase)
 	if err := r.waitIdle(ctx, component, phase); err != nil {
 		return false
 	}
@@ -702,10 +702,10 @@ func (r *Runner) runLocalAssetReconciliationPhase(ctx context.Context, component
 	if r.cfg.RunLocalAssetReconciliation == nil {
 		return true
 	}
-	log.Printf("[%s] %s: reconciling generated local assets", component, phase)
+	applog.Info(ctx, "Reconciling generated local assets", "component", component, "stage", phase)
 	resets, err := r.cfg.RunLocalAssetReconciliation(ctx)
 	if err != nil {
-		log.Printf("[%s] %s local asset reconciliation: %v", component, phase, err)
+		applog.Error(ctx, "Local asset reconciliation failed", err, "component", component, "stage", phase)
 		r.recordIssue(phase, err)
 	}
 	if r.shouldStop(ctx, component, phase) {
@@ -714,13 +714,13 @@ func (r *Runner) runLocalAssetReconciliationPhase(ctx context.Context, component
 	if resets <= 0 {
 		return true
 	}
-	log.Printf("[%s] %s: waiting for %d repaired local asset(s)", component, phase, resets)
+	applog.Info(ctx, "Waiting for repaired local assets", "component", component, "stage", phase, "resets", resets)
 	return r.waitIdle(ctx, component, phase) == nil
 }
 
 func (r *Runner) shouldStop(ctx context.Context, component, phase string) bool {
 	if err := ctx.Err(); err != nil {
-		log.Printf("[%s] %s: ctx done (%v), bailing out", component, phase, err)
+		applog.Warn(ctx, "Pipeline canceled, bailing out", err, "component", component, "stage", phase)
 		return true
 	}
 	return false
@@ -732,7 +732,7 @@ func (r *Runner) waitIdle(ctx context.Context, component, phase string) error {
 		return nil
 	}
 	if err := r.cfg.WaitGenerationIdle(ctx); err != nil {
-		log.Printf("[%s] %s: wait drive generation: %v", component, phase, err)
+		applog.Error(ctx, "Wait drive generation failed", err, "component", component, "stage", phase)
 		r.recordIssue(phase, err)
 		return err
 	}
@@ -746,9 +746,9 @@ func (r *Runner) runDedupeAssetCleanupPhase(ctx context.Context, component, phas
 	if r.cfg.RunDedupeAssetCleanup == nil {
 		return
 	}
-	log.Printf("[%s] %s: duplicate video maintenance", component, phase)
+	applog.Info(ctx, "Duplicate video maintenance started", "component", component, "stage", phase)
 	if err := r.cfg.RunDedupeAssetCleanup(ctx); err != nil {
-		log.Printf("[%s] %s duplicate video maintenance: %v", component, phase, err)
+		applog.Error(ctx, "Duplicate video maintenance failed", err, "component", component, "stage", phase)
 		r.recordIssue(phase, err)
 	}
 }

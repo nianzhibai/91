@@ -1,7 +1,9 @@
 package applog
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,13 +13,13 @@ import (
 	"time"
 )
 
-func openTestStore(t *testing.T, directory string, maxFileSize, maxTotalSize int64, maxLineBytes int) *Store {
+func openTestStore(t *testing.T, dir string, maxBytes int64, retentionDays int) *Store {
 	t.Helper()
-	store, err := Open(Config{
-		Directory:         directory,
-		MaxLineBytes:      maxLineBytes,
-		MaxFileSizeBytes:  maxFileSize,
-		MaxTotalSizeBytes: maxTotalSize,
+	store, err := Open(StoreConfig{
+		Directory:         dir,
+		MaxTotalSizeBytes: maxBytes,
+		RetentionDays:     retentionDays,
+		LevelFunc:         func() Level { return LevelInfo },
 	})
 	if err != nil {
 		t.Fatalf("open log store: %v", err)
@@ -26,267 +28,332 @@ func openTestStore(t *testing.T, directory string, maxFileSize, maxTotalSize int
 	return store
 }
 
-func appendTestEntry(t *testing.T, store *Store, entry Entry) {
+func appendTestRecord(t *testing.T, store *Store, rec Record) int64 {
 	t.Helper()
-	if err := store.AppendEntry(entry); err != nil {
-		t.Fatalf("append log entry: %v", err)
-	}
-}
-
-func queryTestLogs(t *testing.T, store *Store, query Query) Snapshot {
-	t.Helper()
-	snapshot, err := store.Query(context.Background(), query)
+	id, err := store.Append(context.Background(), rec)
 	if err != nil {
-		t.Fatalf("query logs: %v", err)
+		t.Fatalf("append log record: %v", err)
 	}
-	return snapshot
+	return id
 }
 
-func TestStoreDefaultSizeLimits(t *testing.T) {
-	store := openTestStore(t, t.TempDir(), 0, 0, 0)
-	if store.maxFileSizeBytes != 5*1024*1024 {
-		t.Fatalf("default file size = %d, want 5 MiB", store.maxFileSizeBytes)
-	}
-	if store.maxTotalSizeBytes != 30*1024*1024 {
-		t.Fatalf("default total size = %d, want 30 MiB", store.maxTotalSizeBytes)
-	}
-	if got := queryTestLogs(t, store, Query{}).MaxStorageBytes; got != 30*1024*1024 {
-		t.Fatalf("reported maximum storage = %d, want 30 MiB", got)
-	}
-}
+func TestStorePersistsStructuredRecordsAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	store := openTestStore(t, dir, 4<<20, 14)
 
-func TestStorePersistsStructuredEntriesAcrossRestart(t *testing.T) {
-	directory := t.TempDir()
-	store := openTestStore(t, directory, 1<<20, 4<<20, 1024)
-	if err := store.Append(SourceApplication, "worker ready"); err != nil {
+	id1 := appendTestRecord(t, store, Record{
+		Source:    SourceApp,
+		Level:     LevelInfo,
+		Component: "scan",
+		DriveID:   "drive-1",
+		Message:   "scan ready",
+		Attrs:     map[string]any{"scanned": 5},
+	})
+	id2 := appendTestRecord(t, store, Record{
+		Source: SourceHTTP,
+		Level:  LevelInfo,
+		HTTP: &HTTPRecord{
+			Method:     MethodPOST,
+			Path:       "/api/videos",
+			Status:     201,
+			Bytes:      42,
+			DurationMs: 2.5,
+			Remote:     "127.0.0.1",
+		},
+	})
+	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	appendTestEntry(t, store, Entry{
-		Source:  SourceHTTP,
-		Method:  MethodPOST,
-		Status:  201,
-		Path:    "/api/videos?q=ready",
-		Remote:  "127.0.0.1:1234",
-		Bytes:   42,
-		Elapsed: "2ms",
-		Message: `"POST /api/videos?q=ready" from 127.0.0.1:1234 - 201 42B in 2ms`,
+
+	reopened := openTestStore(t, dir, 4<<20, 14)
+	snap, err := reopened.Query(context.Background(), Query{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Entries) != 2 || snap.Entries[0].ID != id1 || snap.Entries[1].ID != id2 {
+		t.Fatalf("reopened entries = %+v", snap.Entries)
+	}
+	id3 := appendTestRecord(t, reopened, Record{Level: LevelInfo, Message: "after restart"})
+	if id3 != id2+1 {
+		t.Fatalf("id after restart = %d, want %d", id3, id2+1)
+	}
+}
+
+func TestStoreMultiFieldQueriesAndFTS5Search(t *testing.T) {
+	store := openTestStore(t, t.TempDir(), 8<<20, 0)
+	base := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+
+	appendTestRecord(t, store, Record{
+		Timestamp: base,
+		Source:    SourceApp,
+		Level:     LevelInfo,
+		Component: "scan",
+		DriveID:   "drive-a",
+		TaskID:    "task-1",
+		Message:   "Scan started for 元胞自动机",
+	})
+	appendTestRecord(t, store, Record{
+		Timestamp: base.Add(time.Minute),
+		Source:    SourceApp,
+		Level:     LevelError,
+		Component: "preview",
+		DriveID:   "drive-b",
+		VideoID:   "vid-99",
+		Error:     "ffmpeg timeout exceeded",
+		Message:   "Preview generation failed",
+	})
+	appendTestRecord(t, store, Record{
+		Timestamp: base.Add(2 * time.Minute),
+		Source:    SourceHTTP,
+		Level:     LevelWarn,
+		RequestID: "req-404",
+		HTTP: &HTTPRecord{
+			Method:     MethodGET,
+			Path:       "/api/video/vid-99",
+			Status:     404,
+			Bytes:      20,
+			DurationMs: 1250.5,
+			Remote:     "10.0.0.2",
+		},
+	})
+	appendTestRecord(t, store, Record{
+		Timestamp: base.Add(3 * time.Minute),
+		Source:    SourceHTTP,
+		Level:     LevelError,
+		RequestID: "req-500",
+		HTTP: &HTTPRecord{
+			Method:     MethodPOST,
+			Path:       "/admin/api/drives",
+			Status:     502,
+			Bytes:      60,
+			DurationMs: 55.2,
+			Remote:     "10.0.0.3",
+		},
 	})
 
-	before := queryTestLogs(t, store, Query{Method: MethodPOST, Limit: 10})
-	if len(before.Entries) != 1 || before.Entries[0].Status != 201 || before.Entries[0].Path != "/api/videos?q=ready" {
-		t.Fatalf("structured HTTP entry = %#v", before.Entries)
+	// Filter by multiple levels.
+	snap, err := store.Query(context.Background(), Query{Levels: []Level{LevelWarn, LevelError}})
+	if err != nil || len(snap.Entries) != 3 {
+		t.Fatalf("warn+error = %+v, err=%v", snap, err)
 	}
-	lastID := before.Entries[0].ID
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
+	// Filter by component + driveId.
+	snap, err = store.Query(context.Background(), Query{Component: "preview", DriveID: "drive-b"})
+	if err != nil || len(snap.Entries) != 1 || snap.Entries[0].VideoID != "vid-99" {
+		t.Fatalf("component+drive = %+v, err=%v", snap, err)
 	}
-
-	reopened := openTestStore(t, directory, 1<<20, 4<<20, 1024)
-	after := queryTestLogs(t, reopened, Query{Limit: 10})
-	if len(after.Entries) != 2 || after.Entries[1].ID != lastID {
-		t.Fatalf("reopened entries = %#v", after.Entries)
+	// Filter by status range (4xx) + minDurationMs.
+	snap, err = store.Query(context.Background(), Query{StatusMin: 400, StatusMax: 499, MinDurationMs: 1000})
+	if err != nil || len(snap.Entries) != 1 || snap.Entries[0].RequestID != "req-404" {
+		t.Fatalf("status+duration = %+v, err=%v", snap, err)
 	}
-	if err := reopened.Append(SourceApplication, "after restart"); err != nil {
-		t.Fatal(err)
+	// FTS5 trigram substring search (Unicode & ASCII).
+	for _, q := range []string{"元胞自", "timeout", "vid-99", "404", "go"} {
+		snap, err = store.Query(context.Background(), Query{Search: q})
+		if err != nil {
+			t.Fatalf("search %q failed: %v", q, err)
+		}
+		if q != "go" && len(snap.Entries) == 0 {
+			t.Fatalf("search %q returned no matches", q)
+		}
 	}
-	latest := queryTestLogs(t, reopened, Query{Limit: 1})
-	if len(latest.Entries) != 1 || latest.Entries[0].ID != lastID+1 {
-		t.Fatalf("persistent id sequence = %#v", latest.Entries)
+	// Short (<3 rune) LIKE fallback.
+	snap, err = store.Query(context.Background(), Query{Search: "元胞"})
+	if err != nil || len(snap.Entries) != 1 {
+		t.Fatalf("short search = %+v, err=%v", snap, err)
+	}
+	// Time range filter.
+	snap, err = store.Query(context.Background(), Query{From: base.Add(30 * time.Second), To: base.Add(150 * time.Second)})
+	if err != nil || len(snap.Entries) != 2 {
+		t.Fatalf("time range = %+v, err=%v", snap, err)
 	}
 }
 
-func TestStoreCursorReturnsOnlyNewMatchingEntries(t *testing.T) {
-	store := openTestStore(t, t.TempDir(), 1<<20, 4<<20, 1024)
-	_ = store.Append(SourceApplication, "worker ready")
-	appendTestEntry(t, store, Entry{Source: SourceHTTP, Method: MethodGET, Status: 200, Path: "/one", Message: "GET /one"})
-
-	initial := queryTestLogs(t, store, Query{Source: SourceHTTP, Limit: 10})
-	if len(initial.Entries) != 1 || initial.NextCursor == "" {
-		t.Fatalf("initial snapshot = %#v", initial)
+func TestStorePaginationBeforeAndAfter(t *testing.T) {
+	store := openTestStore(t, t.TempDir(), 8<<20, 0)
+	for i := 1; i <= 25; i++ {
+		appendTestRecord(t, store, Record{Level: LevelInfo, Message: fmt.Sprintf("msg-%02d", i)})
 	}
-	_ = store.Append(SourceApplication, "worker ignored by filter")
-	appendTestEntry(t, store, Entry{Source: SourceHTTP, Method: MethodPOST, Status: 503, Path: "/two", Message: "POST /two"})
-
-	incremental := queryTestLogs(t, store, Query{Source: SourceHTTP, Cursor: initial.NextCursor, Limit: 10})
-	if incremental.Reset || len(incremental.Entries) != 1 {
-		t.Fatalf("incremental snapshot = %#v", incremental)
-	}
-	if got := incremental.Entries[0]; got.Method != MethodPOST || got.Level != LevelError {
-		t.Fatalf("incremental entry = %#v", got)
-	}
-
-	noChanges := queryTestLogs(t, store, Query{Source: SourceHTTP, Cursor: incremental.NextCursor, Limit: 10})
-	if noChanges.Reset || len(noChanges.Entries) != 0 || noChanges.NextCursor != incremental.NextCursor {
-		t.Fatalf("stable cursor snapshot = %#v", noChanges)
-	}
-}
-
-func TestStoreCursorContinuesAcrossRotationAndRestart(t *testing.T) {
-	directory := t.TempDir()
-	store := openTestStore(t, directory, 420, 16<<10, 1024)
-	_ = store.Append(SourceApplication, "before cursor")
-	initial := queryTestLogs(t, store, Query{Limit: 10})
-
-	for i := 0; i < 12; i++ {
-		if err := store.Append(SourceApplication, fmt.Sprintf("rotated line %02d %s", i, strings.Repeat("x", 80))); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	reopened := openTestStore(t, directory, 420, 16<<10, 1024)
-	result := queryTestLogs(t, reopened, Query{Cursor: initial.NextCursor, Limit: 20})
-	if result.Reset || len(result.Entries) != 12 {
-		t.Fatalf("rotation snapshot reset=%v entries=%d: %#v", result.Reset, len(result.Entries), result.Entries)
-	}
-	for index, entry := range result.Entries {
-		if !strings.Contains(entry.Message, fmt.Sprintf("line %02d", index)) {
-			t.Fatalf("entry %d = %q", index, entry.Message)
-		}
-	}
-}
-
-func TestStoreClearInvalidatesCursorAndKeepsIDSequence(t *testing.T) {
-	store := openTestStore(t, t.TempDir(), 1<<20, 4<<20, 1024)
-	_ = store.Append(SourceApplication, "before clear")
-	initial := queryTestLogs(t, store, Query{Limit: 10})
-	oldID := initial.Entries[0].ID
-	if err := store.Clear(); err != nil {
-		t.Fatal(err)
-	}
-	_ = store.Append(SourceApplication, "after clear")
-
-	reset := queryTestLogs(t, store, Query{Cursor: initial.NextCursor, Limit: 10})
-	if !reset.Reset || len(reset.Entries) != 1 || reset.Entries[0].Message != "after clear" {
-		t.Fatalf("reset snapshot = %#v", reset)
-	}
-	if reset.Entries[0].ID != oldID+1 {
-		t.Fatalf("id after clear = %d, want %d", reset.Entries[0].ID, oldID+1)
-	}
-}
-
-func TestStoreEnforcesTotalRotatedFileSize(t *testing.T) {
-	directory := t.TempDir()
-	store := openTestStore(t, directory, 400, 900, 1024)
-	for i := 0; i < 30; i++ {
-		if err := store.Append(SourceApplication, fmt.Sprintf("line-%02d-%s", i, strings.Repeat("z", 90))); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	entries, err := os.ReadDir(directory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var total int64
-	var rotated int
-	for _, entry := range entries {
-		if !isRuntimeLogFile(entry.Name()) {
-			continue
-		}
-		info, err := entry.Info()
+	// Backward pagination via Before.
+	var before int64
+	seen := make(map[int64]bool)
+	for {
+		page, err := store.Query(context.Background(), Query{Limit: 10, Before: before})
 		if err != nil {
 			t.Fatal(err)
 		}
-		total += info.Size()
-		if entry.Name() != activeLogFileName {
-			rotated++
+		for i, e := range page.Entries {
+			if seen[e.ID] {
+				t.Fatalf("duplicate id %d", e.ID)
+			}
+			if i > 0 && e.ID <= page.Entries[i-1].ID {
+				t.Fatalf("entries not chronological: %+v", page.Entries)
+			}
+			seen[e.ID] = true
 		}
+		if !page.HasMore {
+			break
+		}
+		before = page.NextBefore
 	}
-	if total > 900 {
-		t.Fatalf("total log size = %d, want <= 900", total)
+	if len(seen) != 25 {
+		t.Fatalf("paged total = %d, want 25", len(seen))
 	}
-	if rotated == 0 {
-		t.Fatal("expected at least one retained rotated file")
-	}
-}
-
-func TestStoreRepairsTrailingPartialJSONOnRestart(t *testing.T) {
-	directory := t.TempDir()
-	store := openTestStore(t, directory, 1<<20, 4<<20, 1024)
-	_ = store.Append(SourceApplication, "complete")
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	activePath := filepath.Join(directory, activeLogFileName)
-	file, err := os.OpenFile(activePath, os.O_APPEND|os.O_WRONLY, 0o640)
+	// Forward catch-up via After.
+	page, err := store.Query(context.Background(), Query{Limit: 10, After: 20})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := file.WriteString(`{"id":999,"message":"partial"}`); err != nil {
-		t.Fatal(err)
-	}
-	_ = file.Close()
-
-	reopened := openTestStore(t, directory, 1<<20, 4<<20, 1024)
-	_ = reopened.Append(SourceApplication, "after repair")
-	result := queryTestLogs(t, reopened, Query{Limit: 10})
-	if len(result.Entries) != 2 || result.Entries[0].Message != "complete" || result.Entries[1].Message != "after repair" {
-		t.Fatalf("repaired entries = %#v", result.Entries)
+	if len(page.Entries) != 5 || page.Entries[0].ID != 21 || page.Entries[4].ID != 25 || page.HasMore {
+		t.Fatalf("after page = %+v", page)
 	}
 }
 
-func TestWriterParsesTimestampAndBoundsUTF8(t *testing.T) {
-	store := openTestStore(t, t.TempDir(), 1<<20, 4<<20, 5)
-	writer := store.Writer(SourceApplication)
-	if _, err := writer.Write([]byte("2026/08/02 12:34:56 你好世界\n")); err != nil {
+func TestStoreClearPruneAndMeta(t *testing.T) {
+	store := openTestStore(t, t.TempDir(), 4<<20, 7)
+	now := time.Now().UTC()
+	appendTestRecord(t, store, Record{Timestamp: now.Add(-10 * 24 * time.Hour), Component: "old", Level: LevelInfo, Message: "expired"})
+	appendTestRecord(t, store, Record{Timestamp: now, Component: "scan", Level: LevelInfo, Message: "fresh"})
+
+	if err := store.Prune(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	result := queryTestLogs(t, store, Query{Limit: 10})
-	if len(result.Entries) != 1 {
-		t.Fatalf("entries = %d", len(result.Entries))
+	snap, err := store.Query(context.Background(), Query{Limit: 10})
+	if err != nil || len(snap.Entries) != 1 || snap.Entries[0].Message != "fresh" {
+		t.Fatalf("after retention prune = %+v, err=%v", snap, err)
 	}
-	entry := result.Entries[0]
-	if entry.Timestamp.In(time.Local).Format("2006/01/02 15:04:05") != "2026/08/02 12:34:56" {
-		t.Fatalf("timestamp = %s", entry.Timestamp)
+
+	meta, err := store.Meta(context.Background())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if entry.Message != "你… [truncated]" {
-		t.Fatalf("message = %q", entry.Message)
+	if meta.TotalCount != 1 || meta.StorageBytes <= 0 || meta.MaxStorageBytes != 4<<20 ||
+		meta.RetentionDays != 7 || meta.Level != LevelInfo || len(meta.Components) != 1 || meta.Components[0] != "scan" {
+		t.Fatalf("meta = %+v", meta)
+	}
+
+	if err := store.Clear(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	snap, err = store.Query(context.Background(), Query{Limit: 10})
+	if err != nil || len(snap.Entries) != 0 {
+		t.Fatalf("after clear = %+v, err=%v", snap, err)
 	}
 }
 
-func TestStoreSupportsConcurrentWritesAndQueries(t *testing.T) {
-	store := openTestStore(t, t.TempDir(), 1<<20, 8<<20, 1024)
-	var group sync.WaitGroup
+func TestStoreEnforcesMaxSizeBudget(t *testing.T) {
+	const budget = 160 * 1024 // 160 KiB
+	store := openTestStore(t, t.TempDir(), budget, 0)
+	payload := strings.Repeat("diagnostic-payload-", 40)
+	for i := 0; i < 600; i++ {
+		store.Submit(Record{Level: LevelInfo, Component: "stress", Message: fmt.Sprintf("entry-%04d %s", i, payload)})
+	}
+	if err := store.Prune(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := store.Meta(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.TotalCount >= 600 {
+		t.Fatalf("expected pruning to remove oldest rows, total=%d bytes=%d", meta.TotalCount, meta.StorageBytes)
+	}
+}
+
+func TestStoreRecoversFromCorruptDatabaseFile(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, dbFileName)
+	if err := os.WriteFile(dbPath, []byte("not a valid sqlite database file"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	store := openTestStore(t, dir, 4<<20, 0)
+	appendTestRecord(t, store, Record{Level: LevelInfo, Message: "recovered"})
+	snap, err := store.Query(context.Background(), Query{Limit: 10})
+	if err != nil || len(snap.Entries) != 1 || snap.Entries[0].Message != "recovered" {
+		t.Fatalf("recovered store = %+v, err=%v", snap, err)
+	}
+	entries, _ := os.ReadDir(dir)
+	foundBackup := false
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), dbFileName+".corrupt-") {
+			foundBackup = true
+		}
+	}
+	if !foundBackup {
+		t.Fatal("expected corrupt db backup file to be preserved")
+	}
+}
+
+func TestStoreExportTextAndJSONL(t *testing.T) {
+	store := openTestStore(t, t.TempDir(), 4<<20, 0)
+	appendTestRecord(t, store, Record{
+		Source:    SourceApp,
+		Level:     LevelError,
+		Component: "preview",
+		DriveID:   "drive-1",
+		Message:   "failed job",
+		Error:     "boom",
+	})
+	var textBuf bytes.Buffer
+	if err := store.Export(context.Background(), Query{Levels: []Level{LevelError}}, "text", &textBuf); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(textBuf.String(), "[preview]") || !strings.Contains(textBuf.String(), "driveId=drive-1") || !strings.Contains(textBuf.String(), "error=boom") {
+		t.Fatalf("text export = %q", textBuf.String())
+	}
+
+	var jsonlBuf bytes.Buffer
+	if err := store.Export(context.Background(), Query{}, "jsonl", &jsonlBuf); err != nil {
+		t.Fatal(err)
+	}
+	var decoded Record
+	if err := json.Unmarshal(bytes.TrimSpace(jsonlBuf.Bytes()), &decoded); err != nil {
+		t.Fatalf("jsonl export invalid: %v (%s)", err, jsonlBuf.String())
+	}
+	if decoded.Component != "preview" || decoded.Error != "boom" {
+		t.Fatalf("decoded jsonl = %+v", decoded)
+	}
+}
+
+func TestStoreSubscribeDeliversMatchingLiveRecords(t *testing.T) {
+	store := openTestStore(t, t.TempDir(), 4<<20, 0)
+	ch, cancel := store.Subscribe(Query{Levels: []Level{LevelError}, Component: "scan"})
+	defer cancel()
+
+	store.Submit(Record{Level: LevelInfo, Component: "scan", Message: "ignored info"})
+	store.Submit(Record{Level: LevelError, Component: "preview", Message: "ignored component"})
+	expectedID := store.Submit(Record{Level: LevelError, Component: "scan", Message: "matched error"})
+
+	select {
+	case got := <-ch:
+		if got.ID != expectedID || got.Message != "matched error" {
+			t.Fatalf("live event = %+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for live record")
+	}
+}
+
+func TestStoreConcurrentWritesAndQueries(t *testing.T) {
+	store := openTestStore(t, t.TempDir(), 16<<20, 0)
+	var wg sync.WaitGroup
 	for worker := 0; worker < 6; worker++ {
-		group.Add(1)
-		go func(worker int) {
-			defer group.Done()
-			writer := store.Writer(SourceApplication)
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
 			for i := 0; i < 50; i++ {
-				_, _ = writer.Write([]byte(fmt.Sprintf("worker-%d line-%d\n", worker, i)))
-				_, _ = store.Query(context.Background(), Query{Limit: 20, Search: "line"})
+				store.Submit(Record{Level: LevelInfo, Component: "worker", Message: fmt.Sprintf("worker-%d line-%d", w, i)})
+				if i%10 == 0 {
+					_, _ = store.Query(context.Background(), Query{Limit: 20, Search: "line"})
+				}
 			}
 		}(worker)
 	}
-	group.Wait()
-	result := queryTestLogs(t, store, Query{Limit: 500})
-	if len(result.Entries) != 300 {
-		t.Fatalf("entries = %d, want 300", len(result.Entries))
+	wg.Wait()
+	snap, err := store.Query(context.Background(), Query{Limit: 500})
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestClassifyDoesNotTreatSuccessfulSummariesAsErrors(t *testing.T) {
-	tests := []struct {
-		name    string
-		source  Source
-		status  int
-		message string
-		want    Level
-	}{
-		{name: "zero error summary", source: SourceApplication, message: "[scan] done scanned=5 errors=0", want: LevelInfo},
-		{name: "nonzero errors", source: SourceApplication, message: "[scan] done scanned=5 errors=2", want: LevelWarning},
-		{name: "real failure", source: SourceApplication, message: "[scan] attach failed: unavailable", want: LevelError},
-		{name: "successful request", source: SourceHTTP, status: 200, message: "failed in path", want: LevelInfo},
-		{name: "client error", source: SourceHTTP, status: 404, want: LevelWarning},
-		{name: "server error", source: SourceHTTP, status: 503, want: LevelError},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if got := classify(test.source, test.status, test.message); got != test.want {
-				t.Fatalf("classify() = %q, want %q", got, test.want)
-			}
-		})
+	if len(snap.Entries) != 300 {
+		t.Fatalf("entries = %d, want 300", len(snap.Entries))
 	}
 }

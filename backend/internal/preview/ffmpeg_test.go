@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -530,9 +529,7 @@ func TestGenerateAcceptsDegradedTeaserAndLogsIt(t *testing.T) {
 	gen := newTeaserStubGenerator(t, 2)
 	link := &drives.StreamLink{URL: filepath.Join(t.TempDir(), "video.mp4")}
 
-	var logs strings.Builder
-	log.SetOutput(&logs)
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	_, logs := capturePreviewLogs(t)
 
 	path, err := gen.generatePath(context.Background(), link, 204)
 	if err != nil {
@@ -564,9 +561,7 @@ func TestGenerateKeepsFullPlanWhenEverySegmentWorks(t *testing.T) {
 	gen := newTeaserStubGenerator(t, 4)
 	link := &drives.StreamLink{URL: filepath.Join(t.TempDir(), "video.mp4")}
 
-	var logs strings.Builder
-	log.SetOutput(&logs)
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	_, logs := capturePreviewLogs(t)
 
 	path, err := gen.generatePath(context.Background(), link, 204)
 	if err != nil {

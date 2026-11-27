@@ -2,10 +2,10 @@ package scriptcrawler
 
 import (
 	"context"
-	"log"
 	"strings"
 	"time"
 
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/dedupe"
 	"github.com/nianzhibai/91/backend/internal/mediasig"
@@ -77,7 +77,7 @@ func (c *Importer) findSignatureDuplicate(ctx context.Context, left dedupe.Candi
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		log.Printf("[scriptcrawler] drive=%s source_id=%s signature failed: %v", c.cfg.Driver.ID(), left.ID, err)
+		applog.Warn(ctx, "signature extraction failed", err, "component", "scriptcrawler", "driveId", c.cfg.Driver.ID(), "videoId", left.ID, "stage", "dedupe")
 		return nil, nil
 	}
 	for _, candidate := range candidates {

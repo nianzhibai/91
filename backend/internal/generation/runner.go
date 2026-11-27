@@ -14,12 +14,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"log"
+	"fmt"
 	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/tasklimit"
 )
@@ -526,7 +527,7 @@ func (r *Runner) drain(ctx context.Context, l *lane) {
 		ids, err := l.list(ctx, previews, time.Now())
 		if err != nil {
 			if ctx.Err() == nil {
-				log.Printf("[generation] drive=%s lane=%s list due work: %v", r.cfg.DriveID, l.name, err)
+				applog.Error(ctx, "List due generation work failed", err, "component", "generation", "driveId", r.cfg.DriveID, "lane", l.name)
 			}
 			return
 		}
@@ -659,7 +660,7 @@ func (r *Runner) runVideo(ctx, jobCtx context.Context, l *lane, j *job) videoOut
 		return videoStopped
 	}
 	if err != nil {
-		log.Printf("[generation] drive=%s lane=%s video=%s read work: %v", r.cfg.DriveID, l.name, j.id, err)
+		applog.Error(jobCtx, "Read generation work failed", err, "component", "generation", "driveId", r.cfg.DriveID, "videoId", j.id, "lane", l.name)
 		return videoUnreadable
 	}
 	if outcome != StepPaused {
@@ -737,11 +738,12 @@ func (r *Runner) settle(ctx context.Context, l *lane, id string, previews bool) 
 	}
 	until := time.Now().Add(r.cfg.RetryDelay)
 	if err := r.cfg.Store.DeferGeneration(ctx, id, until); err != nil {
-		log.Printf("[generation] drive=%s video=%s defer unsettled work: %v", r.cfg.DriveID, id, err)
+		applog.Error(ctx, "Defer unsettled generation work failed", err, "component", "generation", "driveId", r.cfg.DriveID, "videoId", id)
 		return
 	}
-	log.Printf("[generation] drive=%s lane=%s video=%s left %+v unsettled; deferred until %s",
-		r.cfg.DriveID, l.name, id, steps, until.Format(time.RFC3339))
+	applog.Warn(ctx, "Generation work unsettled; deferred", nil,
+		"component", "generation", "driveId", r.cfg.DriveID, "videoId", id, "lane", l.name,
+		"steps", fmt.Sprintf("%+v", steps), "until", until.Format(time.RFC3339))
 }
 
 func (r *Runner) setCurrent(j *job, current *Activity) {

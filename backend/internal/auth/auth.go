@@ -7,12 +7,12 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
-	"log"
 	"net/http"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/httpapi"
 	"github.com/nianzhibai/91/backend/internal/requestmeta"
@@ -266,7 +266,7 @@ func writeAuthUnavailable(w http.ResponseWriter, r *http.Request, operation stri
 	if r.Context().Err() != nil {
 		return
 	}
-	log.Printf("[auth] %s method=%s path=%s: %v", operation, r.Method, r.URL.Path, err)
+	applog.Error(r.Context(), "auth unavailable", err, "component", "auth", "operation", operation, "method", r.Method, "path", r.URL.Path)
 	httpapi.Error(w, "service temporarily unavailable", http.StatusServiceUnavailable)
 }
 

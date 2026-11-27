@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"path"
@@ -189,8 +188,8 @@ func (d *Driver) listWithRetry(ctx context.Context, dirID string) (*[]sdk.File, 
 		if !isTransient115ListError(err) {
 			return nil, err
 		}
-		log.Printf("[p115] list cooling down drive=%s dir=%s cooldown=%s attempt=%d err=%v",
-			d.id, dirID, p115ListCooldown, attempt+1, err)
+		applog.Warn(ctx, "list cooling down", err,
+			"component", "p115", "driveId", d.id, "dir", dirID, "cooldown", p115ListCooldown, "attempt", attempt+1)
 		if err := sleepContext(ctx, p115ListCooldown); err != nil {
 			return nil, err
 		}
@@ -408,16 +407,16 @@ func (d *Driver) ListDirsOnly(ctx context.Context, dirID string) ([]drives.Entry
 			// 极端兜底：如果该目录的总条目数 > 1150 且目录条目不在首页，记一行
 			// warning 让运维知道可能漏目录；正常网盘单层目录数远小于 1150。
 			if int64(resp.Count) > sdk.MaxDirPageLimit {
-				log.Printf("[p115] list-dirs warning drive=%s dir=%s total=%d page=%d dirs_in_page=%d (sub-dirs beyond first page may be missed)",
-					d.id, dirID, resp.Count, sdk.MaxDirPageLimit, len(out))
+				applog.Warn(ctx, "list-dirs exceeded first page; sub-dirs beyond first page may be missed", nil,
+					"component", "p115", "driveId", d.id, "dir", dirID, "total", resp.Count, "page", sdk.MaxDirPageLimit, "dirs_in_page", len(out))
 			}
 			return out, nil
 		}
 		if !isTransient115ListError(err) {
 			return nil, fmt.Errorf("115 list dirs: %w", err)
 		}
-		log.Printf("[p115] list-dirs cooling down drive=%s dir=%s cooldown=%s attempt=%d err=%v",
-			d.id, dirID, p115ListCooldown, attempt+1, err)
+		applog.Warn(ctx, "list-dirs cooling down", err,
+			"component", "p115", "driveId", d.id, "dir", dirID, "cooldown", p115ListCooldown, "attempt", attempt+1)
 		if err := sleepContext(ctx, p115ListCooldown); err != nil {
 			return nil, err
 		}
@@ -574,7 +573,8 @@ func (d *Driver) GenerationStreamURL(ctx context.Context, fileID string, forceRe
 		session.disabledErr = err
 		if session == d.generationSession {
 			clear(d.generationCache)
-			log.Printf("[p115] hls disabled until next scan drive=%s file=%s: %v", d.id, fileID, err)
+			applog.Warn(ctx, "hls disabled until next scan", err,
+				"component", "p115", "driveId", d.id, "fileId", fileID)
 		}
 	}
 	// A concurrent resolution may succeed after another file disabled HLS.
@@ -670,8 +670,8 @@ func (d *Driver) fetchHLSMaster(ctx context.Context, fileID string) (string, []b
 		// download URL keeps media generation working when only online playback
 		// is refused, and lets a genuinely invalid cookie surface as the
 		// permanent authentication failure it is.
-		log.Printf("[p115] hls unavailable drive=%s file=%s status=%d",
-			d.id, fileID, resp.StatusCode)
+		applog.Warn(ctx, "hls unavailable", nil,
+			"component", "p115", "driveId", d.id, "fileId", fileID, "status", resp.StatusCode)
 		return "", nil, fmt.Errorf("115 hls: %w: status=%d", drives.ErrGenerationStreamUnavailable, resp.StatusCode)
 	}
 	if len(body) > p115HLSMaxPlaylist {

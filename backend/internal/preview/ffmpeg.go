@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"math"
 	"net/http"
 	"os"
@@ -463,7 +462,7 @@ func normalizedStoredDuration(ctx context.Context, cat *catalog.Catalog, v *cata
 	if plausibleMediaDuration(v.Size, duration) {
 		return duration, nil
 	}
-	log.Printf("[preview] discard implausible duration video=%s size=%d duration=%d", v.ID, v.Size, v.DurationSeconds)
+	applog.Warn(ctx, "Discard implausible stored duration", nil, "component", "preview", "videoId", v.ID, "size", v.Size, "duration", v.DurationSeconds)
 	if cat != nil {
 		if err := cat.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{
 			ExpectedSource:     v,
@@ -480,7 +479,7 @@ func normalizedStoredDuration(ctx context.Context, cat *catalog.Catalog, v *cata
 func storeProbedDuration(ctx context.Context, cat *catalog.Catalog, v *catalog.Video, duration float64) (float64, error) {
 	if v == nil || !plausibleMediaDuration(v.Size, duration) {
 		if v != nil && duration > 0 {
-			log.Printf("[preview] ignore implausible probed duration video=%s size=%d duration=%.1f", v.ID, v.Size, duration)
+			applog.Warn(ctx, "Ignore implausible probed duration", nil, "component", "preview", "videoId", v.ID, "size", v.Size, "duration", duration)
 		}
 		return 0, errDurationUnavailable
 	}
@@ -714,8 +713,8 @@ segmentLoop:
 	}
 	if err := segmentCtx.Err(); err != nil && len(segmentResults) < targetSegments {
 		lastErr = fmt.Errorf("teaser segment budget exhausted: %w", err)
-		applog.Warn(ctx, fmt.Sprintf("[preview] teaser segment budget exhausted segments=%d/%d duration=%.1fs",
-			len(segmentResults), targetSegments, duration), lastErr, applog.Fields{Component: "preview", Stage: "segments"})
+		applog.Warn(ctx, fmt.Sprintf("teaser segment budget exhausted segments=%d/%d duration=%.1fs",
+			len(segmentResults), targetSegments, duration), lastErr, "component", "preview", "stage", "segments")
 	}
 	cancelSegments()
 	if len(segmentResults) < requiredSegments {
@@ -726,8 +725,8 @@ segmentLoop:
 			}
 			return Media{}, fmt.Errorf("only generated %d/%d teaser segments", len(segmentResults), targetSegments)
 		}
-		applog.Warn(ctx, fmt.Sprintf("[preview] degraded teaser accepted segments=%d/%d duration=%.1fs",
-			len(segmentResults), targetSegments, duration), lastErr, applog.Fields{Component: "preview", Stage: "segments"})
+		applog.Warn(ctx, fmt.Sprintf("degraded teaser accepted segments=%d/%d duration=%.1fs",
+			len(segmentResults), targetSegments, duration), lastErr, "component", "preview", "stage", "segments")
 	}
 
 	// Fallback candidates are attempted after the primary plan and are not
@@ -1382,7 +1381,7 @@ const defaultThumbTransientMediaMaxFailures = 3
 func (w *MediaJob) skipIfRateLimited() bool {
 	until, ok := w.Cooldown.Until(time.Now())
 	if ok {
-		log.Printf("[preview] drive=%s cooling down until=%s; keep media job pending", generationDriveID(w.Drive), until.Format(time.RFC3339))
+		applog.Info(context.Background(), "Drive cooling down; keep media job pending", "component", "preview", "driveId", generationDriveID(w.Drive), "until", until.Format(time.RFC3339))
 	}
 	return ok
 }
@@ -1394,7 +1393,7 @@ func (w *MediaJob) pauseForRateLimit(err error, step, title string) bool {
 	}
 	until := pauseDrive(w.Cooldown, wait, w.RateLimitCooldown)
 	w.notifyCooldown()
-	log.Printf("[preview] drive=%s rate-limited until=%s step=%s video=%s: %v", w.Drive.ID(), until.Format(time.RFC3339), step, title, err)
+	applog.Warn(context.Background(), "Drive rate-limited; media job paused", err, "component", "preview", "driveId", w.Drive.ID(), "stage", step, "video", title, "until", until.Format(time.RFC3339))
 	return true
 }
 
@@ -1407,14 +1406,14 @@ func (w *MediaJob) pauseForRecoverableError(err error, step, title string) bool 
 	}
 	until := pauseDrive(w.Cooldown, 0, w.RateLimitCooldown)
 	w.notifyCooldown()
-	log.Printf("[preview] drive=%s transient media source error until=%s step=%s video=%s: %v", w.Drive.ID(), until.Format(time.RFC3339), step, title, err)
+	applog.Warn(context.Background(), "Transient media source error; drive cooling down", err, "component", "preview", "driveId", w.Drive.ID(), "stage", step, "video", title, "until", until.Format(time.RFC3339))
 	return true
 }
 
 func (w *ThumbnailJob) skipIfRateLimited() bool {
 	until, ok := w.Cooldown.Until(time.Now())
 	if ok {
-		log.Printf("[thumb] drive=%s cooling down until=%s; keep thumbnail pending", generationDriveID(w.Drive), until.Format(time.RFC3339))
+		applog.Info(context.Background(), "Drive cooling down; keep thumbnail pending", "component", "thumb", "driveId", generationDriveID(w.Drive), "until", until.Format(time.RFC3339))
 	}
 	return ok
 }
@@ -1428,7 +1427,7 @@ func (w *ThumbnailJob) pauseForProviderError(err error, step, title string) bool
 	}
 	until := pauseDrive(w.Cooldown, wait, w.RateLimitCooldown)
 	w.notifyCooldown()
-	log.Printf("[thumb] drive=%s provider error cooldown until=%s step=%s video=%s: %v", generationDriveID(w.Drive), until.Format(time.RFC3339), step, title, err)
+	applog.Warn(context.Background(), "Provider error cooldown", err, "component", "thumb", "driveId", generationDriveID(w.Drive), "stage", step, "video", title, "until", until.Format(time.RFC3339))
 	return true
 }
 
@@ -1449,16 +1448,16 @@ func (w *ThumbnailJob) pauseForRecoverableError(ctx context.Context, v *catalog.
 	if w.Catalog != nil && videoID != "" {
 		count, countErr := w.Catalog.IncrementThumbnailFailuresForSource(ctx, v)
 		if countErr != nil {
-			log.Printf("[thumb] drive=%s transient media source error count failed step=%s video=%s: %v", w.Drive.ID(), step, title, countErr)
+			applog.Warn(ctx, "Transient media source error count failed", countErr, "component", "thumb", "driveId", w.Drive.ID(), "videoId", videoID, "stage", step, "video", title)
 		} else {
 			failures = count
 		}
 	}
 	if failures >= defaultThumbTransientMediaMaxFailures {
-		log.Printf("[thumb] drive=%s transient media source error reached retry limit failures=%d/%d step=%s video=%s: %v", w.Drive.ID(), failures, defaultThumbTransientMediaMaxFailures, step, title, err)
+		applog.Warn(ctx, "Transient media source error reached retry limit", err, "component", "thumb", "driveId", w.Drive.ID(), "videoId", videoID, "stage", step, "video", title, "failures", failures, "maxFailures", defaultThumbTransientMediaMaxFailures)
 		return false
 	}
-	log.Printf("[thumb] drive=%s retry transient media source error failures=%d/%d step=%s video=%s", w.Drive.ID(), failures, defaultThumbTransientMediaMaxFailures, step, title)
+	applog.Warn(ctx, "Retry transient media source error", nil, "component", "thumb", "driveId", w.Drive.ID(), "videoId", videoID, "stage", step, "video", title, "failures", failures, "maxFailures", defaultThumbTransientMediaMaxFailures)
 	return w.pauseForProviderError(err, step, title)
 }
 
@@ -1501,7 +1500,7 @@ func (w *ThumbnailJob) Run(ctx context.Context, v *catalog.Video) generation.Ste
 		if w.pauseForRecoverableError(ctx, v, err, "streamURL") {
 			return generation.StepPaused
 		}
-		applog.Error(ctx, "Thumbnail stream link failed: "+v.Title, err, applog.Fields{Component: "thumb", DriveID: generationDriveID(w.Drive), VideoID: v.ID, FileID: v.FileID, Stage: "streamURL"})
+		applog.Error(ctx, "Thumbnail stream link failed: "+v.Title, err, "component", "thumb", "driveId", generationDriveID(w.Drive), "videoId", v.ID, "fileId", v.FileID, "stage", "streamURL")
 		_ = w.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{ExpectedSource: v, ThumbnailStatus: "failed"})
 		if v.DurationSeconds <= 0 {
 			return generation.StepUnsettled
@@ -1521,7 +1520,7 @@ func (w *ThumbnailJob) Run(ctx context.Context, v *catalog.Video) generation.Ste
 		if w.pauseForRecoverableError(ctx, v, err, "generate") {
 			return generation.StepPaused
 		}
-		applog.Error(ctx, "Thumbnail generation failed: "+v.Title, err, applog.Fields{Component: "thumb", DriveID: generationDriveID(w.Drive), VideoID: v.ID, FileID: v.FileID, Stage: "generate"})
+		applog.Error(ctx, "Thumbnail generation failed: "+v.Title, err, "component", "thumb", "driveId", generationDriveID(w.Drive), "videoId", v.ID, "fileId", v.FileID, "stage", "generate")
 		_ = w.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{ExpectedSource: v, ThumbnailStatus: "failed"})
 		if probeOutcome == generation.StepUnsettled {
 			return generation.StepUnsettled
@@ -1543,11 +1542,11 @@ func (w *ThumbnailJob) generateThumbnailFromLink(ctx context.Context, v *catalog
 	}
 	if err := w.Catalog.SaveGeneratedThumbnailForSource(ctx, v); err != nil {
 		_ = os.Remove(local)
-		applog.Error(ctx, "Save thumbnail metadata failed: "+v.Title, err, applog.Fields{Component: "thumb", DriveID: generationDriveID(w.Drive), VideoID: v.ID, Stage: "save"})
+		applog.Error(ctx, "Save thumbnail metadata failed: "+v.Title, err, "component", "thumb", "driveId", generationDriveID(w.Drive), "videoId", v.ID, "stage", "save")
 		return nil
 	}
 	v.ThumbnailURL = "/p/thumb/" + v.ID
-	applog.Info(ctx, "Thumbnail ready: "+v.Title, applog.Fields{Component: "thumb", DriveID: generationDriveID(w.Drive), VideoID: v.ID})
+	applog.Info(ctx, "Thumbnail ready: "+v.Title, "component", "thumb", "driveId", generationDriveID(w.Drive), "videoId", v.ID)
 	return nil
 }
 
@@ -1598,7 +1597,7 @@ func (w *MediaJob) Run(ctx context.Context, v *catalog.Video) generation.StepOut
 		if w.pauseForRecoverableError(err, "streamURL", v.Title) {
 			return generation.StepPaused
 		}
-		applog.Error(ctx, "Media stream link failed: "+v.Title, err, w.logFields(v, "streamURL"))
+		applog.Error(ctx, "Media stream link failed: "+v.Title, err, w.logArgs(v, "streamURL")...)
 		w.failMedia(ctx, v, v.MediaWants(previews))
 		if v.ThumbnailURL == "" || v.DurationSeconds <= 0 {
 			return generation.StepUnsettled
@@ -1619,7 +1618,7 @@ func (w *MediaJob) Run(ctx context.Context, v *catalog.Video) generation.StepOut
 		if w.pauseForRecoverableError(probeErr, "probe", v.Title) {
 			return generation.StepPaused
 		}
-		applog.Error(ctx, "Media duration probe failed: "+v.Title, probeErr, w.logFields(v, "probe"))
+		applog.Error(ctx, "Media duration probe failed: "+v.Title, probeErr, w.logArgs(v, "probe")...)
 	}
 	// The probe stores the duration on v, which decides the signature.
 	wants := v.MediaWants(previews)
@@ -1642,7 +1641,7 @@ func (w *MediaJob) Run(ctx context.Context, v *catalog.Video) generation.StepOut
 		if w.pauseForRecoverableError(err, "generate", v.Title) {
 			return generation.StepPaused
 		}
-		applog.Error(ctx, "Media generation failed: "+v.Title, err, w.logFields(v, "generate"))
+		applog.Error(ctx, "Media generation failed: "+v.Title, err, w.logArgs(v, "generate")...)
 		w.failMedia(ctx, v, wants)
 		if probeErr != nil && v.ThumbnailURL != "" {
 			return generation.StepUnsettled
@@ -1663,15 +1662,15 @@ func (w *MediaJob) Run(ctx context.Context, v *catalog.Video) generation.StepOut
 	}
 	applog.Info(ctx, fmt.Sprintf("Media ready: %s (duration=%.1fs teaser=%v sampled=%v thumbnail=%v)",
 		v.Title, duration, media.TeaserPath != "", media.Signature != nil, media.ThumbnailPath != ""),
-		applog.Fields{Component: "preview", DriveID: generationDriveID(w.Drive), VideoID: v.ID})
+		"component", "preview", "driveId", generationDriveID(w.Drive), "videoId", v.ID)
 	if probeErr != nil && v.ThumbnailURL != "" {
 		return generation.StepUnsettled
 	}
 	return generation.StepSettled
 }
 
-func (w *MediaJob) logFields(v *catalog.Video, stage string) applog.Fields {
-	return applog.Fields{Component: "preview", DriveID: generationDriveID(w.Drive), VideoID: v.ID, FileID: v.FileID, Stage: stage}
+func (w *MediaJob) logArgs(v *catalog.Video, stage string) []any {
+	return []any{"component", "preview", "driveId", generationDriveID(w.Drive), "videoId", v.ID, "fileId", v.FileID, "stage", stage}
 }
 
 // completeMedia settles the job once its segments were read. A signature
@@ -1694,7 +1693,7 @@ func (w *MediaJob) completeMedia(ctx context.Context, v *catalog.Video, wants ca
 		err = w.Catalog.CompleteMediaForSource(ctx, v, nil)
 	}
 	if err != nil {
-		applog.Warn(ctx, "Save media signature failed: "+v.Title, err, w.logFields(v, "signature"))
+		applog.Warn(ctx, "Save media signature failed: "+v.Title, err, w.logArgs(v, "signature")...)
 	}
 }
 
@@ -1713,7 +1712,7 @@ func (w *MediaJob) saveTeaser(ctx context.Context, v *catalog.Video, path string
 	local, err := w.Gen.MoveToLocal(path, v.ID)
 	if err != nil {
 		_ = os.Remove(path)
-		applog.Error(ctx, "Preview file move failed: "+v.Title, err, w.logFields(v, "move"))
+		applog.Error(ctx, "Preview file move failed: "+v.Title, err, w.logArgs(v, "move")...)
 		if v.PreviewStatus != "ready" {
 			_ = w.Catalog.UpdatePreviewForSource(ctx, v, "", "failed")
 		}
@@ -1722,11 +1721,11 @@ func (w *MediaJob) saveTeaser(ctx context.Context, v *catalog.Video, path string
 	reference := filepath.Base(local)
 	if err := w.Catalog.UpdatePreviewForSource(ctx, v, reference, "ready"); err != nil {
 		w.discardUnsavedTeaser(ctx, v.ID, local)
-		applog.Error(ctx, "Save preview metadata failed: "+v.Title, err, w.logFields(v, "save"))
+		applog.Error(ctx, "Save preview metadata failed: "+v.Title, err, w.logArgs(v, "save")...)
 		return
 	}
 	if previous, ok := localpath.Managed(filepath.Dir(local), v.PreviewLocal); ok {
-		removePreviousLocalTeaser(previous, local)
+		removePreviousLocalTeaser(ctx, previous, local)
 	}
 	v.PreviewLocal, v.PreviewStatus = reference, "ready"
 }
@@ -1735,12 +1734,12 @@ func (w *MediaJob) saveThumbnail(ctx context.Context, v *catalog.Video, path str
 	local, err := w.Gen.MoveThumbnailToLocal(path, v.ID)
 	if err != nil {
 		_ = os.Remove(path)
-		applog.Error(ctx, "Thumbnail file move failed: "+v.Title, err, w.logFields(v, "thumbnail"))
+		applog.Error(ctx, "Thumbnail file move failed: "+v.Title, err, w.logArgs(v, "thumbnail")...)
 		return
 	}
 	if err := w.Catalog.SaveGeneratedThumbnailForSource(ctx, v); err != nil {
 		_ = os.Remove(local)
-		applog.Error(ctx, "Save thumbnail metadata failed: "+v.Title, err, w.logFields(v, "thumbnail"))
+		applog.Error(ctx, "Save thumbnail metadata failed: "+v.Title, err, w.logArgs(v, "thumbnail")...)
 		return
 	}
 	v.ThumbnailURL = "/p/thumb/" + v.ID
@@ -1790,10 +1789,10 @@ func (w *MediaJob) discardUnsavedTeaser(ctx context.Context, videoID, local stri
 			return
 		}
 	}
-	removePreviousLocalTeaser(local, "")
+	removePreviousLocalTeaser(ctx, local, "")
 }
 
-func removePreviousLocalTeaser(previous, current string) {
+func removePreviousLocalTeaser(ctx context.Context, previous, current string) {
 	if previous == "" {
 		return
 	}
@@ -1801,7 +1800,7 @@ func removePreviousLocalTeaser(previous, current string) {
 		return
 	}
 	if err := os.Remove(previous); err != nil && !os.IsNotExist(err) {
-		log.Printf("[preview] remove old local teaser %s: %v", previous, err)
+		applog.Warn(ctx, "Remove old local teaser failed", err, "component", "preview", "path", previous)
 	}
 }
 

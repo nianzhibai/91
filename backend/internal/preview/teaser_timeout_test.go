@@ -143,9 +143,9 @@ func TestGenerateFinishesUsableSegmentsAfterSegmentBudgetExpires(t *testing.T) {
 				wantEntries = 2
 			}
 			fields.Stage = "segments"
-			var segmentEntries []applog.Entry
+			var segmentEntries []applog.Record
 			for _, entry := range snapshot.Entries {
-				if entry.Fields.Stage == fields.Stage {
+				if entry.Stage == fields.Stage {
 					segmentEntries = append(segmentEntries, entry)
 				}
 			}
@@ -153,7 +153,7 @@ func TestGenerateFinishesUsableSegmentsAfterSegmentBudgetExpires(t *testing.T) {
 				t.Fatalf("entries = %+v, want %d segment warnings", snapshot.Entries, wantEntries)
 			}
 			for _, entry := range segmentEntries {
-				if entry.Level != applog.LevelWarning || entry.Fields != fields ||
+				if entry.Level != applog.LevelWarn || recordFields(entry) != fields ||
 					!strings.Contains(entry.Error, "context deadline exceeded") {
 					t.Fatalf("segment diagnostic = %+v, want warning with task context and cause", entry)
 				}

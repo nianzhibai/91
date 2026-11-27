@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"time"
 
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/mediaasset"
 	"github.com/nianzhibai/91/backend/internal/persistence"
@@ -20,7 +20,7 @@ func (a *App) runDeletedVideoAssetCleanup(ctx context.Context) {
 	defer ticker.Stop()
 	for {
 		if err := a.cleanupExpiredDeletedVideoAssets(ctx, time.Now()); err != nil && ctx.Err() == nil {
-			log.Printf("[deleted-video-assets] cleanup: %v", err)
+			applog.Warn(ctx, "deleted video asset cleanup failed", err, "component", "deleted-video-assets")
 		}
 		select {
 		case <-ctx.Done():

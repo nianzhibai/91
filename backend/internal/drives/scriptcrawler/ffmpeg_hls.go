@@ -2,10 +2,11 @@ package scriptcrawler
 
 import (
 	"context"
-	"log"
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/nianzhibai/91/backend/internal/applog"
 )
 
 const ffmpegHLSCapabilityProbeTimeout = 5 * time.Second
@@ -27,7 +28,7 @@ func (c *Importer) ffmpegHLSInputOptions(ctx context.Context) []string {
 
 		caps, err := probeFFmpegHLSCapabilities(probeCtx, c.cfg.FFmpegPath)
 		if err != nil {
-			log.Printf("[scriptcrawler] inspect ffmpeg HLS capabilities: %v; using legacy-compatible options", err)
+			applog.Warn(probeCtx, "inspect ffmpeg HLS capabilities failed; using legacy-compatible options", err, "component", "scriptcrawler")
 			return
 		}
 		c.hlsCaps = caps

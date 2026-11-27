@@ -3,10 +3,10 @@ package scanner
 import (
 	"context"
 	"errors"
-	"log"
 	"strings"
 	"time"
 
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/drives"
 )
@@ -91,12 +91,12 @@ func (s *Scanner) Scan(ctx context.Context, startDirID string) (Result, error) {
 		return Result{}, err
 	}
 	stats := newStats()
-	snapshot, err := s.discover(ctx, startDirID, &stats, s.progressReporter(&stats))
+	snapshot, err := s.discover(ctx, startDirID, &stats, s.progressReporter(ctx, &stats))
 	result := newResult(snapshot, stats)
 	if err != nil {
 		return result, err
 	}
-	if err := s.reconcile(ctx, &result, s.progressReporter(&result.Stats)); err != nil {
+	if err := s.reconcile(ctx, &result, s.progressReporter(ctx, &result.Stats)); err != nil {
 		return result, err
 	}
 	return result, nil
@@ -109,7 +109,7 @@ func (s *Scanner) Discover(ctx context.Context, startDirID string) (Snapshot, St
 		return Snapshot{}, Stats{}, err
 	}
 	stats := newStats()
-	progress := s.progressReporter(&stats)
+	progress := s.progressReporter(ctx, &stats)
 	snapshot, err := s.discover(ctx, startDirID, &stats, progress)
 	return snapshot, stats, err
 }
@@ -121,7 +121,7 @@ func (s *Scanner) Reconcile(ctx context.Context, snapshot Snapshot) (Result, err
 	}
 	stats := statsForSnapshot(snapshot)
 	result := newResult(snapshot, stats)
-	progress := s.progressReporter(&result.Stats)
+	progress := s.progressReporter(ctx, &result.Stats)
 	if err := s.reconcile(ctx, &result, progress); err != nil {
 		return result, err
 	}
@@ -146,7 +146,7 @@ func statsForSnapshot(snapshot Snapshot) Stats {
 
 type progressFunc func(phase, currentDir string)
 
-func (s *Scanner) progressReporter(stats *Stats) progressFunc {
+func (s *Scanner) progressReporter(ctx context.Context, stats *Stats) progressFunc {
 	interval := s.ProgressInterval
 	if interval == 0 {
 		interval = defaultScanProgressInterval
@@ -172,10 +172,17 @@ func (s *Scanner) progressReporter(stats *Stats) progressFunc {
 		if currentDir == "" {
 			currentDir = "(root)"
 		}
-		log.Printf("[%s] drive=%s progress: phase=%s scanned=%d added=%d errors=%d dirs=%d elapsed=%s at=%s",
-			s.logPrefix(),
-			driveID, phase, stats.Scanned, stats.Added, stats.Errors,
-			len(stats.EnumeratedDirIDs), now.Sub(started).Round(time.Second), currentDir)
+		applog.Info(ctx, "Scan progress",
+			"component", s.logPrefix(),
+			"driveId", driveID,
+			"stage", phase,
+			"scanned", stats.Scanned,
+			"added", stats.Added,
+			"errors", stats.Errors,
+			"dirs", len(stats.EnumeratedDirIDs),
+			"elapsed", now.Sub(started).Round(time.Second).String(),
+			"at", currentDir,
+		)
 	}
 }
 

@@ -301,7 +301,7 @@ func (r *Result) addIssue(ctx context.Context, file File, stage IssueStage, err 
 	}
 	r.Issues = append(r.Issues, issue)
 	r.Stats.Errors++
-	applog.Error(ctx, "File reconciliation failed: "+file.Entry.Name, err, applog.Fields{Component: "scanner", DriveID: r.Snapshot.DriveID, FileID: file.Entry.ID, Stage: string(stage)})
+	applog.Error(ctx, "File reconciliation failed: "+file.Entry.Name, err, "component", "scanner", "driveId", r.Snapshot.DriveID, "fileId", file.Entry.ID, "stage", string(stage))
 }
 
 func metadataPatchSet(patch catalog.VideoMetaPatch) bool {

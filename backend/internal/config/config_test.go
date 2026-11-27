@@ -93,22 +93,24 @@ func TestLoggingDefaultsAndCanBeDisabled(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !defaults.Logging.IsFileEnabled() || defaults.Logging.Directory != filepath.Join("data", "logs") ||
-		defaults.Logging.MaxFileSizeMB != 5 || defaults.Logging.MaxTotalSizeMB != 30 {
+		defaults.Logging.Level != "info" || defaults.Logging.ConsoleFormat != "text" ||
+		defaults.Logging.MaxTotalSizeMB != 30 || defaults.Logging.EffectiveRetentionDays() != 14 {
 		t.Fatalf("logging defaults = %+v", defaults.Logging)
 	}
 
-	disabled, err := Parse([]byte("logging:\n  file_enabled: false\n"))
+	disabled, err := Parse([]byte("logging:\n  file_enabled: false\n  level: debug\n  console_format: json\n  retention_days: 0\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if disabled.Logging.IsFileEnabled() {
-		t.Fatal("file logging should be disabled explicitly")
+	if disabled.Logging.IsFileEnabled() || disabled.Logging.Level != "debug" ||
+		disabled.Logging.ConsoleFormat != "json" || disabled.Logging.EffectiveRetentionDays() != 0 {
+		t.Fatalf("custom logging = %+v", disabled.Logging)
 	}
 }
 
 func TestResolveLoggingPathsUsesStartupDirectoryWithoutMutatingConfig(t *testing.T) {
 	baseDir := t.TempDir()
-	logging := Logging{Directory: "./data/logs", MaxFileSizeMB: 10, MaxTotalSizeMB: 200}
+	logging := Logging{Directory: "./data/logs", Level: "info", ConsoleFormat: "text", MaxTotalSizeMB: 200}
 
 	resolved, err := ResolveLoggingPaths(logging, baseDir)
 	if err != nil {
@@ -122,11 +124,14 @@ func TestResolveLoggingPathsUsesStartupDirectoryWithoutMutatingConfig(t *testing
 	}
 }
 
-func TestParseRejectsInvalidLoggingSizeLimits(t *testing.T) {
+func TestParseRejectsInvalidLoggingSettings(t *testing.T) {
 	tests := []string{
-		"logging:\n  max_file_size_mb: -1\n",
-		"logging:\n  max_file_size_mb: 20\n  max_total_size_mb: 10\n",
+		"logging:\n  level: verbose\n",
+		"logging:\n  console_format: xml\n",
+		"logging:\n  max_total_size_mb: -1\n",
 		"logging:\n  max_total_size_mb: 10241\n",
+		"logging:\n  retention_days: -1\n",
+		"logging:\n  retention_days: 3651\n",
 	}
 	for _, data := range tests {
 		if _, err := Parse([]byte(data)); err == nil {

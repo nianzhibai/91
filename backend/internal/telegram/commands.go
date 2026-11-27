@@ -37,7 +37,7 @@ func (s *Service) syncCommandMenu(ctx context.Context) {
 		if err == nil || ctx.Err() != nil {
 			return
 		}
-		applog.Warn(ctx, "同步 TG 命令菜单失败，稍后重试", err, applog.Fields{Component: "telegram", Stage: "command_menu"})
+		applog.Warn(ctx, "同步 TG 命令菜单失败，稍后重试", err, "component", "telegram", "stage", "command_menu")
 		delay := backoff
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && apiErr.RetryAfter > delay {

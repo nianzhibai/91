@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/config"
 )
@@ -41,10 +41,10 @@ func migrateApplicationConfig(ctx context.Context, cat *catalog.Catalog, manager
 		return fmt.Errorf("update configuration from template: %w", err)
 	}
 	if changed {
-		log.Printf("[config] updated config.yaml from the release template, preserving existing settings")
+		applog.Info(ctx, "updated config.yaml from release template, preserving existing settings", "component", "config")
 	}
 	if legacyTelegram {
-		log.Printf("[config] Telegram now connects without the Bot API service and was disabled; enter the API ID and API Hash in the admin panel, then enable it again")
+		applog.Warn(ctx, "Telegram now connects without the Bot API service and was disabled; enter the API ID and API Hash in the admin panel, then enable it again", nil, "component", "config")
 	}
 	return nil
 }

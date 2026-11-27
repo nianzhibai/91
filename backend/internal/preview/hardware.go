@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -14,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/drives"
 	"github.com/nianzhibai/91/backend/internal/mediasig"
 )
@@ -106,7 +106,7 @@ func (h *Hardware) SetEnabled(ctx context.Context, enabled bool) {
 		if !status.Available {
 			// An unavailable GPU in a restored or externally edited config must
 			// not prevent the website from starting or generating assets.
-			log.Printf("[media] GPU unavailable, using CPU: %s", status.Reason)
+			applog.Warn(ctx, "GPU unavailable, using CPU", nil, "component", "media", "reason", status.Reason)
 		}
 	}
 	h.mu.Lock()
@@ -302,7 +302,7 @@ func (g *Generator) fallbackToCPU(ctx context.Context, err error) bool {
 	if ctx.Err() != nil || g.hardware == nil || !hardwareFailure(err) {
 		return false
 	}
-	log.Printf("[media] GPU %s failed; retrying asset with CPU: %v", g.hardware.kind, err)
+	applog.Warn(ctx, "GPU failed; retrying asset with CPU", err, "component", "media", "backend", g.hardware.kind)
 	if h := g.cfg.Hardware; h != nil {
 		h.mu.Lock()
 		h.fallbackCount++

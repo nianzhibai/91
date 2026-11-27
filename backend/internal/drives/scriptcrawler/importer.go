@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/dedupe"
 	"github.com/nianzhibai/91/backend/internal/fingerprint"
@@ -14,7 +15,6 @@ import (
 	"github.com/nianzhibai/91/backend/internal/persistence"
 	"golang.org/x/net/proxy"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -172,14 +172,14 @@ func (c *Importer) Import(downloadCtx, ctx context.Context, item Item) (ImportOu
 		thumbPath, err = c.cfg.Driver.ThumbPath(thumbFile)
 		if err == nil {
 			if _, err := c.materializeMedia(ctx, *item.Thumbnail, thumbPath); err != nil {
-				log.Printf("[scriptcrawler] drive=%s source_id=%s thumbnail failed: %v", c.cfg.Driver.ID(), sourceID, err)
+				applog.Warn(ctx, "thumbnail download failed", err, "component", "scriptcrawler", "driveId", c.cfg.Driver.ID(), "videoId", videoID, "stage", "import", "source_id", sourceID)
 			} else if c.cfg.CommonThumbDir != "" {
 				if err := os.MkdirAll(c.cfg.CommonThumbDir, 0o755); err != nil {
-					log.Printf("[scriptcrawler] drive=%s common thumbs mkdir: %v", c.cfg.Driver.ID(), err)
+					applog.Warn(ctx, "common thumbs mkdir failed", err, "component", "scriptcrawler", "driveId", c.cfg.Driver.ID(), "stage", "import")
 				} else {
 					dst := mediaasset.ThumbnailPathInDir(c.cfg.CommonThumbDir, videoID)
 					if err := mediaasset.NormalizeThumbnailJPEG(thumbPath, dst); err != nil {
-						log.Printf("[scriptcrawler] drive=%s source_id=%s normalize thumbnail: %v", c.cfg.Driver.ID(), sourceID, err)
+						applog.Warn(ctx, "normalize thumbnail failed", err, "component", "scriptcrawler", "driveId", c.cfg.Driver.ID(), "videoId", videoID, "stage", "import", "source_id", sourceID)
 					} else {
 						commonThumbPath = dst
 						thumbReady = true
@@ -244,7 +244,7 @@ func (c *Importer) Import(downloadCtx, ctx context.Context, item Item) (ImportOu
 	}
 	if len(tagAssignments) > 0 {
 		if _, err := c.cfg.Catalog.AddVideoTagAssignments(ctx, v.ID, tagAssignments); err != nil {
-			log.Printf("[scriptcrawler] drive=%s source_id=%s attach tags: %v", c.cfg.Driver.ID(), sourceID, err)
+			applog.Warn(ctx, "attach tags failed", err, "component", "scriptcrawler", "driveId", c.cfg.Driver.ID(), "videoId", v.ID, "stage", "import", "source_id", sourceID)
 		} else {
 			for _, a := range tagAssignments {
 				v.Tags = append(v.Tags, a.Label)
@@ -253,7 +253,7 @@ func (c *Importer) Import(downloadCtx, ctx context.Context, item Item) (ImportOu
 	}
 	if crawlerTagLabel != "" {
 		if _, err := c.cfg.Catalog.EnsureCrawlerTagForVideo(ctx, v.ID, crawlerTagLabel); err != nil {
-			log.Printf("[scriptcrawler] drive=%s source_id=%s attach crawler tag %q: %v", c.cfg.Driver.ID(), sourceID, crawlerTagLabel, err)
+			applog.Warn(ctx, "attach crawler tag failed", err, "component", "scriptcrawler", "driveId", c.cfg.Driver.ID(), "videoId", v.ID, "stage", "import", "source_id", sourceID, "tag", crawlerTagLabel)
 		} else {
 			seen := false
 			for _, label := range v.Tags {
@@ -348,7 +348,7 @@ func (c *Importer) RestoreRequestedVideos(ctx context.Context) (int, error) {
 		// Crawler timestamps are backend-owned. Restoring an older crawler
 		// tombstone must not reintroduce a source-supplied publication date.
 		video.PublishedAt = video.CreatedAt
-		if c.restoreCrawlerThumbnail(video, fileID) {
+		if c.restoreCrawlerThumbnail(ctx, video, fileID) {
 			video.ThumbnailURL, video.ThumbnailSource = catalog.GeneratedThumbnailURL(video.ID), catalog.ThumbnailProvided
 		}
 
@@ -369,12 +369,12 @@ func (c *Importer) RestoreRequestedVideos(ctx context.Context) (int, error) {
 			continue
 		}
 		restored++
-		log.Printf("[scriptcrawler] drive=%s restored retained video=%s file=%s size=%d", c.cfg.Driver.ID(), request.ID, fileID, file.size)
+		applog.Info(ctx, "restored retained video", "component", "scriptcrawler", "driveId", c.cfg.Driver.ID(), "videoId", request.ID, "fileId", fileID, "stage", "restore", "size", file.size)
 	}
 	return restored, errors.Join(restoreErrors...)
 }
 
-func (c *Importer) restoreCrawlerThumbnail(video *catalog.Video, fileID string) bool {
+func (c *Importer) restoreCrawlerThumbnail(ctx context.Context, video *catalog.Video, fileID string) bool {
 	if video == nil || strings.TrimSpace(c.cfg.CommonThumbDir) == "" {
 		return false
 	}
@@ -392,7 +392,7 @@ func (c *Importer) restoreCrawlerThumbnail(video *catalog.Video, fileID string) 
 			return false
 		}
 		if err := mediaasset.NormalizeThumbnailJPEG(source, mediaasset.ThumbnailPathInDir(c.cfg.CommonThumbDir, video.ID)); err != nil {
-			log.Printf("[scriptcrawler] drive=%s restore thumbnail video=%s: %v", c.cfg.Driver.ID(), video.ID, err)
+			applog.Warn(ctx, "restore thumbnail failed", err, "component", "scriptcrawler", "driveId", c.cfg.Driver.ID(), "videoId", video.ID, "stage", "restore")
 			return false
 		}
 		return true

@@ -36,14 +36,19 @@ func diagnosticText(err error) string {
 }
 
 func logFailure(ctx context.Context, videoID, driveID string, err error) {
-	fields := applog.Fields{Component: "telegram-upload", VideoID: videoID, DriveID: driveID}
+	stage := ""
 	var detail *transferError
 	if errors.As(err, &detail) {
-		fields.Stage = detail.stage
+		stage = detail.stage
 	}
 	cause := err
 	if direct, ok := err.(*transferError); ok && direct.cause != nil {
 		cause = direct.cause
 	}
-	applog.Error(ctx, err.Error(), failure(fields.Stage, diagnosticText(cause), cause), fields)
+	applog.Error(ctx, err.Error(), failure(stage, diagnosticText(cause), cause),
+		"component", "telegram-upload",
+		"videoId", videoID,
+		"driveId", driveID,
+		"stage", stage,
+	)
 }

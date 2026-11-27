@@ -6,7 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -265,14 +265,28 @@ func TestTransferPreservesErrorClassificationAcrossStages(t *testing.T) {
 	}
 }
 
+func captureDiagnosticLogs(t *testing.T, format applog.ConsoleFormat) *bytes.Buffer {
+	t.Helper()
+	var output bytes.Buffer
+	rt, err := applog.OpenRuntime(applog.RuntimeConfig{
+		ConsoleWriter: &output,
+		ConsoleFormat: format,
+		Level:         applog.LevelDebug,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := slog.Default()
+	slog.SetDefault(rt.Logger())
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	return &output
+}
+
 func TestTransferDiagnosticLogsKeepCauseAndRedactSecrets(t *testing.T) {
 	cfg, v, cloud := fixture(t)
 	cause := errors.New("HTTP 503 access_token=PRIVATE_TOKEN https://user:PRIVATE_PASSWORD@example.com/upload?token=PRIVATE_QUERY")
 	cloud.uploadErr = cause
-	var output bytes.Buffer
-	previous := log.Writer()
-	log.SetOutput(&output)
-	t.Cleanup(func() { log.SetOutput(previous) })
+	output := captureDiagnosticLogs(t, applog.ConsoleFormatJSON)
 	err := Run(context.Background(), cfg)
 	if !errors.Is(err, cause) || strings.Contains(err.Error(), "PRIVATE_") {
 		t.Fatalf("public message or cause changed: %v", err)
@@ -282,12 +296,12 @@ func TestTransferDiagnosticLogsKeepCauseAndRedactSecrets(t *testing.T) {
 	}
 	found := false
 	for _, line := range strings.Split(output.String(), "\n") {
-		_, encoded, ok := strings.Cut(line, "@applog ")
-		if !ok {
+		line = strings.TrimSpace(line)
+		if line == "" {
 			continue
 		}
-		var entry applog.Entry
-		if err := json.Unmarshal([]byte(encoded), &entry); err != nil {
+		var entry applog.Record
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			t.Fatal(err)
 		}
 		if entry.VideoID == v.ID && entry.Stage == "upload" && strings.Contains(entry.Error, "HTTP 503") && strings.Contains(entry.Error, "REDACTED") {
@@ -300,29 +314,23 @@ func TestTransferDiagnosticLogsKeepCauseAndRedactSecrets(t *testing.T) {
 }
 
 func TestTransferDiagnosticLogsPreserveCancellationLevel(t *testing.T) {
-	var output bytes.Buffer
-	previous := log.Writer()
-	log.SetOutput(&output)
-	t.Cleanup(func() { log.SetOutput(previous) })
+	output := captureDiagnosticLogs(t, applog.ConsoleFormatJSON)
 	logFailure(context.Background(), "video", "cloud", failure("upload", "TG 转存已取消", context.Canceled))
-	_, encoded, ok := strings.Cut(strings.TrimSpace(output.String()), "@applog ")
-	if !ok {
+	encoded := strings.TrimSpace(output.String())
+	if encoded == "" {
 		t.Fatalf("missing diagnostic: %s", output.String())
 	}
-	var entry applog.Entry
+	var entry applog.Record
 	if err := json.Unmarshal([]byte(encoded), &entry); err != nil {
 		t.Fatal(err)
 	}
-	if entry.Level != applog.LevelWarning || entry.Stage != "upload" || entry.Error != context.Canceled.Error() {
+	if entry.Level != applog.LevelWarn || entry.Stage != "upload" || entry.Error != context.Canceled.Error() {
 		t.Fatalf("cancellation classification discarded: %+v", entry)
 	}
 }
 
 func TestTransferDiagnosticLogsPreserveJoinedFailures(t *testing.T) {
-	var output bytes.Buffer
-	previous := log.Writer()
-	log.SetOutput(&output)
-	t.Cleanup(func() { log.SetOutput(previous) })
+	output := captureDiagnosticLogs(t, applog.ConsoleFormatJSON)
 	joined := errors.Join(
 		failure("cleanup", "清理失败", errors.New("filesystem read-only")),
 		failure("directory", "读取目录失败", errors.New("HTTP 503 access_token=PRIVATE_TOKEN")),

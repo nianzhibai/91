@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/localpath"
 	"github.com/nianzhibai/91/backend/internal/mediaasset"
@@ -28,7 +28,7 @@ type localAssetReconciliationStats struct {
 // persisted marker exists, startup performs no thumbnail directory scan.
 func (a *App) runStartupThumbnailNormalization(ctx context.Context) {
 	if _, err := a.normalizeLegacyThumbnailFiles(ctx); err != nil {
-		log.Printf("[thumbnail-maintenance] migration failed: %v", err)
+		applog.Error(ctx, "legacy thumbnail migration failed", err, "component", "thumbnail-maintenance")
 	}
 }
 
@@ -52,10 +52,10 @@ func (a *App) reconcileLocalGeneratedAssets(ctx context.Context) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return resets, errors.Join(reconcileErr, err)
 	}
-	log.Printf(
-		"[asset-reconciliation] waking drives for repaired assets thumbnail_resets=%d preview_resets=%d",
-		thumbnailStats.Reset,
-		previewStats.Reset,
+	applog.Info(ctx, "waking drives for repaired assets",
+		"component", "asset-reconciliation",
+		"thumbnailResets", thumbnailStats.Reset,
+		"previewResets", previewStats.Reset,
 	)
 	a.wakeAllDriveGeneration()
 	return resets, reconcileErr
@@ -92,10 +92,10 @@ func (a *App) normalizeLegacyThumbnailFiles(ctx context.Context) (mediaasset.Thu
 	if err := a.cat.SetSetting(ctx, thumbnailJPEGNormalizationSetting, "1"); err != nil {
 		return stats, fmt.Errorf("write migration marker: %w", err)
 	}
-	log.Printf(
-		"[thumbnail-maintenance] scanned=%d normalized=%d",
-		stats.Scanned,
-		stats.Normalized,
+	applog.Info(ctx, "legacy thumbnail normalization completed",
+		"component", "thumbnail-maintenance",
+		"scanned", stats.Scanned,
+		"normalized", stats.Normalized,
 	)
 	return stats, nil
 }
@@ -140,12 +140,12 @@ func (a *App) reconcileMissingLocalThumbnailFiles(ctx context.Context) (localAss
 	if err != nil {
 		return stats, fmt.Errorf("reset missing local thumbnails: %w", err)
 	}
-	log.Printf(
-		"[thumbnail-maintenance] reconciled scanned=%d present=%d missing=%d reset=%d",
-		stats.Scanned,
-		stats.Present,
-		stats.Missing,
-		stats.Reset,
+	applog.Info(ctx, "reconciled local thumbnails",
+		"component", "thumbnail-maintenance",
+		"scanned", stats.Scanned,
+		"present", stats.Present,
+		"missing", stats.Missing,
+		"reset", stats.Reset,
 	)
 	return stats, nil
 }
@@ -205,12 +205,12 @@ func (a *App) reconcileMissingLocalPreviewFiles(ctx context.Context) (localAsset
 	if err != nil {
 		return stats, fmt.Errorf("reset missing local previews: %w", err)
 	}
-	log.Printf(
-		"[preview-maintenance] reconciled scanned=%d present=%d missing=%d reset=%d",
-		stats.Scanned,
-		stats.Present,
-		stats.Missing,
-		stats.Reset,
+	applog.Info(ctx, "reconciled local previews",
+		"component", "preview-maintenance",
+		"scanned", stats.Scanned,
+		"present", stats.Present,
+		"missing", stats.Missing,
+		"reset", stats.Reset,
 	)
 	return stats, nil
 }

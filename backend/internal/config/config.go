@@ -130,14 +130,24 @@ type Storage struct {
 }
 
 type Logging struct {
+	Level          string `yaml:"level"`
+	ConsoleFormat  string `yaml:"console_format"`
 	FileEnabled    *bool  `yaml:"file_enabled"`
 	Directory      string `yaml:"-"` // derived from storage.data_dir
-	MaxFileSizeMB  int    `yaml:"max_file_size_mb"`
+	MaxFileSizeMB  int    `yaml:"max_file_size_mb,omitempty"` // retired; ignored when loading legacy config
 	MaxTotalSizeMB int    `yaml:"max_total_size_mb"`
+	RetentionDays  *int   `yaml:"retention_days"`
 }
 
 func (l Logging) IsFileEnabled() bool {
 	return l.FileEnabled == nil || *l.FileEnabled
+}
+
+func (l Logging) EffectiveRetentionDays() int {
+	if l.RetentionDays == nil {
+		return 14
+	}
+	return *l.RetentionDays
 }
 
 // ResolveStoragePaths returns the storage configuration used by the running
@@ -318,18 +328,37 @@ func (c *Config) applyDefaults() error {
 		enabled := true
 		c.Logging.FileEnabled = &enabled
 	}
+	c.Logging.Level = strings.ToLower(strings.TrimSpace(c.Logging.Level))
+	switch c.Logging.Level {
+	case "":
+		c.Logging.Level = "info"
+	case "warning":
+		c.Logging.Level = "warn"
+	case "debug", "info", "warn", "error":
+	default:
+		return fmt.Errorf("logging.level must be one of debug, info, warn, error (got %q)", c.Logging.Level)
+	}
+	c.Logging.ConsoleFormat = strings.ToLower(strings.TrimSpace(c.Logging.ConsoleFormat))
+	switch c.Logging.ConsoleFormat {
+	case "":
+		c.Logging.ConsoleFormat = "text"
+	case "text", "json":
+	default:
+		return fmt.Errorf("logging.console_format must be text or json (got %q)", c.Logging.ConsoleFormat)
+	}
 	c.Logging.Directory = filepath.Join(c.Storage.DataDir, "logs")
-	if c.Logging.MaxFileSizeMB == 0 {
-		c.Logging.MaxFileSizeMB = 5
-	}
-	if c.Logging.MaxFileSizeMB < 1 || c.Logging.MaxFileSizeMB > 1024 {
-		return errors.New("logging.max_file_size_mb must be between 1 and 1024")
-	}
 	if c.Logging.MaxTotalSizeMB == 0 {
 		c.Logging.MaxTotalSizeMB = 30
 	}
-	if c.Logging.MaxTotalSizeMB < c.Logging.MaxFileSizeMB || c.Logging.MaxTotalSizeMB > 10240 {
-		return errors.New("logging.max_total_size_mb must be at least max_file_size_mb and no more than 10240")
+	if c.Logging.MaxTotalSizeMB < 1 || c.Logging.MaxTotalSizeMB > 10240 {
+		return errors.New("logging.max_total_size_mb must be between 1 and 10240")
+	}
+	if c.Logging.RetentionDays == nil {
+		days := 14
+		c.Logging.RetentionDays = &days
+	}
+	if *c.Logging.RetentionDays < 0 || *c.Logging.RetentionDays > 3650 {
+		return errors.New("logging.retention_days must be between 0 and 3650")
 	}
 	if c.Scanner.MaxDepth == 0 {
 		c.Scanner.MaxDepth = 5

@@ -251,8 +251,8 @@ type Comment struct {
 func (s *Server) RegisterRoutes(r chi.Router, a *auth.Authenticator) {
 	// 公开端点：拿当前生效的主题。登录页本身要在挂前就能读，所以单独挂在
 	// 鉴权组之外。只暴露 theme 一个字段，避免泄露其他设置。
-	r.Get("/api/settings/theme", s.handleGetTheme)
-	r.Get("/api/settings/preview", s.handleGetPreviewSettings)
+	r.With(applog.QuietRequestLog).Get("/api/settings/theme", s.handleGetTheme)
+	r.With(applog.QuietRequestLog).Get("/api/settings/preview", s.handleGetPreviewSettings)
 
 	// 一次性分享的领取和媒体路由必须公开，但每个媒体请求都会再次校验
 	// HttpOnly 分享会话，并且只能访问该分享绑定的单个视频。
@@ -310,10 +310,10 @@ func (s *Server) RegisterRoutes(r chi.Router, a *auth.Authenticator) {
 func (s *Server) RegisterAdminRoutes(r chi.Router) {
 	r.Put("/videos/{id}/tags", s.handleUpdateVideoTags)
 	r.Post("/videos/{id}/hide", s.handleHideVideo)
-	r.Get("/upload/tags", s.handleUploadTags)
+	r.With(applog.QuietRequestLog).Get("/upload/tags", s.handleUploadTags)
 	r.Post("/upload", s.handleUploadVideo)
 	r.Post("/upload/remote", s.handleCreateRemoteUpload)
-	r.Get("/upload/remote", s.handleListRemoteUploads)
+	r.With(applog.QuietRequestLog).Get("/upload/remote", s.handleListRemoteUploads)
 	r.Post("/upload/remote/{jobId}/cancel", s.handleCancelRemoteUpload)
 }
 
@@ -1906,7 +1906,11 @@ func writeJSON(w http.ResponseWriter, code int, body any) {
 
 func writeErr(w http.ResponseWriter, r *http.Request, code int, err error) {
 	if code >= http.StatusInternalServerError {
-		applog.Error(r.Context(), "HTTP request failed", err, applog.Fields{Component: "api", Stage: r.Method + " " + r.URL.Path})
+		if r.Context().Err() != nil {
+			applog.Warn(r.Context(), "HTTP request canceled", err, "component", "api", "stage", r.Method+" "+r.URL.Path)
+			return
+		}
+		applog.Error(r.Context(), "HTTP request failed", err, "component", "api", "stage", r.Method+" "+r.URL.Path)
 	}
 	httpapi.Error(w, err.Error(), code)
 }
@@ -1923,6 +1927,6 @@ func writeServiceUnavailable(w http.ResponseWriter, r *http.Request, operation s
 	if r.Context().Err() != nil {
 		return
 	}
-	applog.Error(r.Context(), "Service unavailable", err, applog.Fields{Component: "api", Stage: operation + " " + r.Method + " " + r.URL.Path})
+	applog.Error(r.Context(), "Service unavailable", err, "component", "api", "stage", operation+" "+r.Method+" "+r.URL.Path)
 	httpapi.Error(w, "service temporarily unavailable", http.StatusServiceUnavailable)
 }

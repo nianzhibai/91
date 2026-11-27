@@ -69,7 +69,7 @@ func (m *Migrator) runDrive(ctx context.Context, driveID string, stoppedTargets 
 	ctx = applog.WithFields(ctx, applog.Fields{TaskID: result.TaskID, DriveID: driveID, Component: "crawlerupload"})
 	result.State = "running"
 	result.StartedAt = time.Now()
-	applog.Info(ctx, "爬虫上传开始", applog.Fields{})
+	applog.Info(ctx, "爬虫上传开始")
 	defer func() {
 		if result.TargetDriveID != "" && targetUploadRejected(runErr) {
 			stoppedTargets[result.TargetDriveID] = runErr
@@ -116,17 +116,17 @@ func (m *Migrator) runDrive(ctx context.Context, driveID string, stoppedTargets 
 			persistence.RUnlock()
 		}
 		if saveErr != nil {
-			applog.Error(ctx, "保存上传结果失败", saveErr, applog.Fields{Stage: "save_result"})
+			applog.Error(ctx, "保存上传结果失败", saveErr, "stage", "save_result")
 			runErr = errors.Join(runErr, saveErr)
 		}
 		message := fmt.Sprintf("爬虫上传结束 state=%s target=%s candidates=%d uploaded=%d reused=%d blocked=%d failed=%d remaining=%d",
 			result.State, result.TargetDriveID, result.CandidateCount, result.UploadedCount, result.ReusedCount, result.BlockedCount, result.FailedCount, result.RemainingCount)
 		if runErr != nil {
-			applog.Error(ctx, message, runErr, applog.Fields{})
+			applog.Error(ctx, message, runErr)
 		} else if result.BlockedCount > 0 {
-			applog.Warn(ctx, message, nil, applog.Fields{})
+			applog.Warn(ctx, message, nil)
 		} else {
-			applog.Info(ctx, message, applog.Fields{})
+			applog.Info(ctx, message)
 		}
 		// Polling clients may stop refreshing as soon as they observe idle.
 		m.reportUploadProgress(UploadProgress{DriveID: driveID, State: "idle"})
@@ -166,7 +166,7 @@ func (m *Migrator) runDrive(ctx context.Context, driveID string, stoppedTargets 
 		return fmt.Errorf("清理已迁移的本地文件: %w", err)
 	}
 	if deleted > 0 {
-		applog.Info(ctx, fmt.Sprintf("已清理 %d 个已迁移文件的本地副本", deleted), applog.Fields{Stage: "cleanup"})
+		applog.Info(ctx, fmt.Sprintf("已清理 %d 个已迁移文件的本地副本", deleted), "stage", "cleanup")
 	}
 	return nil
 }
@@ -222,7 +222,7 @@ func (m *Migrator) migrateCandidates(ctx context.Context, plan migrationPlan, be
 					if m.cfg.OnMigrated != nil {
 						m.cfg.OnMigrated(v.ID)
 					}
-					applog.Info(itemCtx, "已复用目标网盘中的视频", applog.Fields{Stage: "complete"})
+					applog.Info(itemCtx, "已复用目标网盘中的视频", "stage", "complete")
 				}
 				continue
 			}
@@ -243,7 +243,7 @@ func (m *Migrator) migrateCandidates(ctx context.Context, plan migrationPlan, be
 					return errors.New("上传网盘返回了空目录标识")
 				}
 			}
-			applog.Info(itemCtx, "开始上传视频到 "+plan.targetDriveID, applog.Fields{Stage: "upload"})
+			applog.Info(itemCtx, "开始上传视频到 "+plan.targetDriveID, "stage", "upload")
 			reused, err := m.uploadWithReconciliation(itemCtx, v, plan, parent)
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -270,7 +270,7 @@ func (m *Migrator) migrateCandidates(ctx context.Context, plan migrationPlan, be
 			if m.cfg.OnMigrated != nil {
 				m.cfg.OnMigrated(v.ID)
 			}
-			applog.Info(itemCtx, "视频已迁移到 "+plan.targetDriveID, applog.Fields{Stage: "complete"})
+			applog.Info(itemCtx, "视频已迁移到 "+plan.targetDriveID, "stage", "complete")
 		}
 		progress("")
 	}
@@ -284,14 +284,13 @@ func recordUploadIssue(ctx context.Context, result *uploadjob.Result, v *catalog
 	issue.VideoID, issue.Title = v.ID, v.Title
 	issue.Message = applog.Redact(issue.Message)
 	result.AddIssue(issue)
-	fields := applog.Fields{Stage: issue.Stage}
 	message := issue.Reason + ": " + issue.Message
 	if blocked {
 		result.BlockedCount++
-		applog.Warn(ctx, message, nil, fields)
+		applog.Warn(ctx, message, nil, "stage", issue.Stage)
 	} else {
 		result.FailedCount++
-		applog.Error(ctx, message, nil, fields)
+		applog.Error(ctx, message, nil, "stage", issue.Stage)
 	}
 }
 
@@ -368,7 +367,7 @@ func (m *Migrator) uploadWithReconciliation(ctx context.Context, v *catalog.Vide
 		return reused, err
 	}
 	refresher.invalidateExisting(parent)
-	applog.Warn(ctx, "上传连接中断，核对目标文件后重试一次", err, applog.Fields{Stage: "retry"})
+	applog.Warn(ctx, "上传连接中断，核对目标文件后重试一次", err, "stage", "retry")
 	if err := readretry.Wait(ctx, time.Second); err != nil {
 		return false, err
 	}

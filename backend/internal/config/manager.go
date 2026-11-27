@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"gopkg.in/yaml.v3"
 )
 
@@ -33,6 +33,9 @@ type LiveSettings struct {
 	NightlyDisabled       bool   `json:"nightlyDisabled"`
 	NightlyStartTime      string `json:"nightlyStartTime"`
 	NightlyTimezone       string `json:"nightlyTimezone"`
+	LogLevel              string `json:"logLevel"`
+	LogMaxTotalSizeMB     int    `json:"logMaxTotalSizeMB"`
+	LogRetentionDays      int    `json:"logRetentionDays"`
 }
 
 // LegacyRuntimeSettings carries values written by the short-lived SQLite
@@ -101,6 +104,9 @@ func DefaultLiveSettings() LiveSettings {
 		NightlyStartTime:      DefaultNightlyStartTime,
 		NightlyTimezone:       DefaultNightlyTimezone,
 		GenerationConcurrency: DefaultGenerationConcurrency,
+		LogLevel:              "info",
+		LogMaxTotalSizeMB:     30,
+		LogRetentionDays:      14,
 	}
 }
 
@@ -116,6 +122,9 @@ func liveSettingsFromConfig(cfg *Config) LiveSettings {
 		NightlyStartTime:      cfg.Nightly.StartTime,
 		NightlyTimezone:       cfg.Nightly.Timezone,
 		GenerationConcurrency: cfg.Generation.Concurrency,
+		LogLevel:              cfg.Logging.Level,
+		LogMaxTotalSizeMB:     cfg.Logging.MaxTotalSizeMB,
+		LogRetentionDays:      cfg.Logging.EffectiveRetentionDays(),
 	}
 }
 
@@ -384,9 +393,9 @@ func (m *Manager) Watch(ctx context.Context) {
 		case <-ticker.C:
 			changed, err := m.Reload()
 			if err != nil {
-				log.Printf("[config] external config reload rejected: %v", err)
+				applog.Warn(ctx, "external config reload rejected", err, "component", "config")
 			} else if changed {
-				log.Printf("[config] external config change loaded; live fields applied")
+				applog.Info(ctx, "external config change loaded; live fields applied", "component", "config")
 			}
 		}
 	}
@@ -479,6 +488,9 @@ func removeLiveDocumentValues(document any) {
 	removeNestedValue(root, "preview", "enabled")
 	removeNestedValue(root, "generation", "concurrency")
 	removeNestedValue(root, "generation", "use_gpu")
+	removeNestedValue(root, "logging", "level")
+	removeNestedValue(root, "logging", "max_total_size_mb")
+	removeNestedValue(root, "logging", "retention_days")
 }
 
 func removeNestedValue(root map[string]any, section, key string) {

@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"log"
 	"math"
 	"net/http"
 	"net/url"
@@ -22,6 +21,7 @@ import (
 
 	"github.com/go-resty/resty/v2"
 
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/drives"
 	"github.com/nianzhibai/91/backend/internal/scopedproxy"
 	"github.com/nianzhibai/91/backend/internal/streamhttp"
@@ -288,7 +288,7 @@ func (d *Driver) StreamURL(ctx context.Context, fileID string) (*drives.StreamLi
 		err = fmt.Errorf("googledrive stream: %w", err)
 		if wait, ok := drives.RateLimitRetryAfter(err); ok {
 			until := d.pauseLinkCooldown(wait)
-			log.Printf("[googledrive] stream link cooling down drive=%s until=%s err=%v", d.id, until.Format(time.RFC3339), err)
+			applog.Warn(ctx, "stream link cooling down", err, "component", "googledrive", "driveId", d.id, "fileId", fileID, "until", until.Format(time.RFC3339))
 		}
 		return nil, err
 	}

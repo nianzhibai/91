@@ -5,10 +5,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/tagging"
 )
 
@@ -561,7 +561,7 @@ func (c *Catalog) dropColumnIfExists(ctx context.Context, table, column string) 
 		return nil
 	}
 	if table == "videos" && isRetiredVideoColumn(column) {
-		log.Printf("[catalog] native drop column videos.%s failed, rebuilding videos table with current columns: %v", column, err)
+		applog.Warn(ctx, "native drop column failed, rebuilding videos table with current columns", err, "component", "catalog", "stage", "migrate", "column", column)
 		return c.rebuildVideosTableWithCurrentColumns(ctx)
 	}
 	return err
@@ -1127,7 +1127,7 @@ UPDATE videos
 		return fmt.Errorf("reconcile thumbnail_status: %w", err)
 	}
 	if affected, err := res.RowsAffected(); err == nil && affected > 0 {
-		log.Printf("[catalog] reconciled %d video(s) thumbnail_status pending→ready (url already written)", affected)
+		applog.Info(ctx, "reconciled thumbnail_status pending to ready (url already written)", "component", "catalog", "stage", "migrate", "affected", affected)
 	}
 	if err := c.SetSetting(ctx, markerKey, "1"); err != nil {
 		return fmt.Errorf("write %s marker: %w", markerKey, err)
@@ -1191,7 +1191,7 @@ UPDATE videos
 		return fmt.Errorf("requeue failed thumbnails with ready preview: %w", err)
 	}
 	if affected, rowsErr := result.RowsAffected(); rowsErr == nil && affected > 0 {
-		log.Printf("[catalog] requeued %d failed thumbnail(s) with a ready local preview", affected)
+		applog.Info(ctx, "requeued failed thumbnails with a ready local preview", "component", "catalog", "stage", "migrate", "affected", affected)
 	}
 	if err := c.SetSetting(ctx, markerKey, "1"); err != nil {
 		return fmt.Errorf("write %s marker: %w", markerKey, err)
@@ -1213,7 +1213,7 @@ UPDATE videos
 		return fmt.Errorf("requeue inactive previews: %w", err)
 	}
 	if affected, err := res.RowsAffected(); err == nil && affected > 0 {
-		log.Printf("[catalog] requeued %d inactive preview(s) for generation", affected)
+		applog.Info(ctx, "requeued inactive previews for generation", "component", "catalog", "stage", "migrate", "affected", affected)
 	}
 	return nil
 }
@@ -1276,7 +1276,7 @@ func (c *Catalog) clearRemoteP123ThumbnailsOnce(ctx context.Context) error {
 		return err
 	}
 	if affected, err := res.RowsAffected(); err == nil && affected > 0 {
-		log.Printf("[catalog] cleared %d remote 123pan thumbnail(s) for local regeneration", affected)
+		applog.Info(ctx, "cleared remote 123pan thumbnails for local regeneration", "component", "catalog", "stage", "migrate", "affected", affected)
 	}
 	if err := c.SetSetting(ctx, markerKey, "1"); err != nil {
 		return fmt.Errorf("write %s marker: %w", markerKey, err)
@@ -1303,7 +1303,7 @@ UPDATE videos
 		return err
 	}
 	if affected, err := res.RowsAffected(); err == nil && affected > 0 {
-		log.Printf("[catalog] cleared %d remote thumbnail(s) for local regeneration", affected)
+		applog.Info(ctx, "cleared remote thumbnails for local regeneration", "component", "catalog", "stage", "migrate", "affected", affected)
 	}
 	return nil
 }

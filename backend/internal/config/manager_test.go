@@ -93,7 +93,8 @@ future_section:
 	if strings.Contains(text, "builtin_pack_enabled") {
 		t.Fatalf("retired tag setting remains:\n%s", text)
 	}
-	want := LiveSettings{PreviewEnabled: true, NightlyStartTime: "04:25", NightlyTimezone: "Asia/Shanghai", GenerationConcurrency: DefaultGenerationConcurrency}
+	want := DefaultLiveSettings()
+	want.NightlyStartTime = "04:25"
 	if got := manager.LiveSettings(); got != want {
 		t.Fatalf("live settings = %#v, want %#v", got, want)
 	}
@@ -108,7 +109,8 @@ func TestManagerYAMLValuesWinOverLegacySQLiteValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := LiveSettings{PreviewEnabled: true, NightlyStartTime: "02:10", NightlyTimezone: "Asia/Shanghai", GenerationConcurrency: DefaultGenerationConcurrency}
+	want := DefaultLiveSettings()
+	want.NightlyStartTime = "02:10"
 	if got := manager.LiveSettings(); got != want {
 		t.Fatalf("live settings = %#v, want YAML %#v", got, want)
 	}
@@ -179,7 +181,9 @@ func TestManagerReloadPublishesExternalValidChangeAndKeepsLastGoodOnError(t *tes
 	if err != nil || !changed {
 		t.Fatalf("reload changed=%v err=%v", changed, err)
 	}
-	want := LiveSettings{PreviewEnabled: true, NightlyDisabled: true, NightlyStartTime: "06:30", NightlyTimezone: "Asia/Shanghai", GenerationConcurrency: DefaultGenerationConcurrency}
+	want := DefaultLiveSettings()
+	want.NightlyDisabled = true
+	want.NightlyStartTime = "06:30"
 	if got := manager.LiveSettings(); got != want {
 		t.Fatalf("settings = %#v, want %#v", got, want)
 	}
@@ -199,7 +203,7 @@ func TestManagerReloadPublishesExternalValidChangeAndKeepsLastGoodOnError(t *tes
 
 func TestRestartRequiredComparisonIgnoresOnlyLivePaths(t *testing.T) {
 	before := []byte("nightly:\n  start_time: \"01:00\"\nfuture:\n  value: one\n")
-	liveOnly := []byte("nightly:\n  disabled: true\n  start_time: \"03:15\"\n  timezone: Asia/Shanghai\ntags:\n  builtin_pack_enabled: false\ngeneration:\n  concurrency: 3\nfuture:\n  value: one\n")
+	liveOnly := []byte("nightly:\n  disabled: true\n  start_time: \"03:15\"\n  timezone: Asia/Shanghai\ntags:\n  builtin_pack_enabled: false\ngeneration:\n  concurrency: 3\nlogging:\n  level: debug\n  max_total_size_mb: 64\n  retention_days: 7\nfuture:\n  value: one\n")
 	if hasRestartRequiredChange(before, liveOnly) {
 		t.Fatal("live-only values were reported as restart-required")
 	}

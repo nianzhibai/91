@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/catalog"
 )
 
@@ -109,9 +110,17 @@ while True:
 				t.Fatal(err)
 			}
 			var logs bytes.Buffer
-			previous := log.Writer()
-			log.SetOutput(&logs)
-			t.Cleanup(func() { log.SetOutput(previous) })
+			rt, err := applog.OpenRuntime(applog.RuntimeConfig{
+				ConsoleWriter: &logs,
+				ConsoleFormat: applog.ConsoleFormatText,
+				Level:         applog.LevelInfo,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			previous := slog.Default()
+			slog.SetDefault(rt.Logger())
+			t.Cleanup(func() { slog.SetDefault(previous) })
 			task, err := c.Prepare(context.Background(), 10, "")
 			if err != nil {
 				t.Fatal(err)

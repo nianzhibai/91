@@ -4,9 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"log"
 	"strings"
 
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/tagging"
 )
 
@@ -146,7 +146,7 @@ DELETE FROM settings WHERE key IN (
 		return err
 	}
 	if removedAssignments > 0 || removedTags > 0 {
-		log.Printf("[catalog] removed retired automatic tagging artifacts: assignments=%d tags=%d", removedAssignments, removedTags)
+		applog.Info(ctx, "removed retired automatic tagging artifacts", "component", "catalog", "stage", "migrate", "assignments", removedAssignments, "tags", removedTags)
 		if removedTags > 0 {
 			if err := c.bumpTagRulesVersion(ctx); err != nil {
 				return err

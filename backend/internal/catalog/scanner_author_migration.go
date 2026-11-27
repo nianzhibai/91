@@ -3,11 +3,12 @@ package catalog
 import (
 	"context"
 	"fmt"
-	"log"
 	"path"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/nianzhibai/91/backend/internal/applog"
 )
 
 const settingScannerParsedAuthorsCleaned = "scanner.parsed_authors_cleaned_v1"
@@ -114,7 +115,7 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.upd
 		return 0, err
 	}
 	if removed > 0 {
-		log.Printf("[migrate] cleared %d scanner filename-parsed author value(s)", removed)
+		applog.Info(ctx, "cleared scanner filename-parsed author values", "component", "catalog", "stage", "migrate", "removed", removed)
 	}
 	return removed, nil
 }

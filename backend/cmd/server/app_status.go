@@ -3,12 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/nianzhibai/91/backend/internal/api"
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/crawlerupload"
 	"github.com/nianzhibai/91/backend/internal/driveevents"
 	"github.com/nianzhibai/91/backend/internal/generation"
@@ -42,7 +42,7 @@ func (a *App) SetTheme(ctx context.Context, theme string) error {
 func (a *App) loadTheme(ctx context.Context) {
 	v, err := a.cat.GetSetting(ctx, "ui.theme", "dark")
 	if err != nil {
-		log.Printf("[theme] load setting: %v (fallback to dark)", err)
+		applog.Warn(ctx, "load theme setting failed; falling back to dark", err, "component", "theme")
 		a.mu.Lock()
 		a.theme = "dark"
 		a.mu.Unlock()
@@ -51,7 +51,7 @@ func (a *App) loadTheme(ctx context.Context) {
 	if v == "pink" || v == "sky" {
 		v = "light"
 		if err := a.cat.SetSetting(ctx, "ui.theme", v); err != nil {
-			log.Printf("[theme] migrate light theme: %v", err)
+			applog.Warn(ctx, "migrate light theme setting failed", err, "component", "theme")
 		}
 	}
 	if v != "light" && v != "dark" {

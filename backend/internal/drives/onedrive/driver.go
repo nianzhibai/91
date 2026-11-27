@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"path"
@@ -19,6 +18,7 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/drives"
 	"github.com/nianzhibai/91/backend/internal/readretry"
 	"github.com/nianzhibai/91/backend/internal/scopedproxy"
@@ -200,7 +200,7 @@ func (d *Driver) List(ctx context.Context, dirID string) ([]drives.Entry, error)
 						wait = onedriveListCooldown
 					}
 				}
-				log.Printf("[onedrive] list cooling down drive=%s dir=%s cooldown=%s err=%v", d.id, dirID, wait, err)
+				applog.Warn(ctx, "list cooling down", err, "component", "onedrive", "driveId", d.id, "dir", dirID, "cooldown", wait)
 				if err := sleepContext(ctx, wait); err != nil {
 					return nil, err
 				}

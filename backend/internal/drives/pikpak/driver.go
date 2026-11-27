@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"path"
 	"strconv"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/drives"
 	"github.com/nianzhibai/91/backend/internal/scopedproxy"
 )
@@ -235,8 +235,8 @@ func (d *Driver) listWithRetry(ctx context.Context, dirID string) ([]file, error
 		if !isTransientPikPakListError(err) {
 			return nil, err
 		}
-		log.Printf("[pikpak] list cooling down drive=%s dir=%s cooldown=%s attempt=%d err=%v",
-			d.id, dirID, pikpakListCooldown, attempt+1, err)
+		applog.Warn(ctx, "list cooling down", err,
+			"component", "pikpak", "driveId", d.id, "dir", dirID, "cooldown", pikpakListCooldown, "attempt", attempt+1)
 		if err := pikpakSleepContext(ctx, pikpakListCooldown); err != nil {
 			return nil, err
 		}

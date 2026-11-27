@@ -68,7 +68,7 @@ func TestTemplateMigrationConvertsUnifiedLegacyDataDirectory(t *testing.T) {
 		t.Run(root, func(t *testing.T) {
 			data, err := yaml.Marshal(map[string]any{
 				"storage": map[string]string{"db_path": filepath.Join(root, "video-site.db"), "local_preview_dir": filepath.Join(root, "previews")},
-				"logging": map[string]any{"directory": filepath.Join(root, "logs"), "max_file_size_mb": 10},
+				"logging": map[string]any{"directory": filepath.Join(root, "logs"), "max_total_size_mb": 64},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -87,7 +87,7 @@ func TestTemplateMigrationConvertsUnifiedLegacyDataDirectory(t *testing.T) {
 			}
 			assertTemplateStructure(t, written)
 			after, err := Parse(written)
-			if err != nil || before.Storage != after.Storage || before.Logging.Directory != after.Logging.Directory || after.Logging.MaxFileSizeMB != 10 {
+			if err != nil || before.Storage != after.Storage || before.Logging.Directory != after.Logging.Directory || after.Logging.MaxTotalSizeMB != 64 {
 				t.Fatalf("migration changed effective paths: before=%+v after=%+v err=%v", before, after, err)
 			}
 			if changed, err := manager.SyncTemplate(); err != nil || changed {

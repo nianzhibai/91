@@ -51,7 +51,7 @@ func (s *Service) processMediaGroups(ctx context.Context) {
 				if ctx.Err() != nil {
 					return
 				}
-				applog.Error(ctx, "保存 TG 媒体组失败，稍后重试", err, applog.Fields{Component: "telegram", Stage: "media_group"})
+				applog.Error(ctx, "保存 TG 媒体组失败，稍后重试", err, "component", "telegram", "stage", "media_group")
 				if !wait(ctx, 5*time.Second) {
 					return
 				}

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/aliyun/aliyun-oss-go-sdk/oss"
 
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/drives"
 	"github.com/nianzhibai/91/backend/internal/scopedproxy"
 )
@@ -395,14 +395,14 @@ func uploadGuangYaPartWithNoProgressTimeout(
 			break
 		}
 		retryDelay := time.Duration(attempt) * 500 * time.Millisecond
-		log.Printf(
-			"[guangyapan] multipart part %d/%d attempt %d/%d failed; retrying in %s: %v",
-			chunk.number,
-			totalParts,
-			attempt,
-			guangYaMultipartPartAttempts,
-			retryDelay,
-			err,
+		applog.Warn(ctx, "multipart part upload failed; retrying", err,
+			"component", "guangyapan",
+			"stage", "upload",
+			"part", chunk.number,
+			"totalParts", totalParts,
+			"attempt", attempt,
+			"maxAttempts", guangYaMultipartPartAttempts,
+			"retryDelay", retryDelay,
 		)
 		if err := sleepGuangYaUpload(ctx, retryDelay); err != nil {
 			return oss.UploadPart{}, err

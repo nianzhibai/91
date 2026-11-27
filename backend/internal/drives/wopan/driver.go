@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"path"
@@ -15,6 +14,7 @@ import (
 
 	sdk "github.com/OpenListTeam/wopan-sdk-go"
 	"github.com/go-resty/resty/v2"
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/drives"
 	"github.com/nianzhibai/91/backend/internal/generationsource"
 	"github.com/nianzhibai/91/backend/internal/scopedproxy"
@@ -141,8 +141,8 @@ func (d *Driver) List(ctx context.Context, dirID string) ([]drives.Entry, error)
 			if wait <= 0 {
 				wait = d.listCooldown
 			}
-			log.Printf("[wopan] list cooling down drive=%s dir=%s page=%d cooldown=%s attempt=%d err=%v",
-				d.id, dirID, pageNum, wait, attempt+1, err)
+			applog.Warn(ctx, "list cooling down", err,
+				"component", "wopan", "driveId", d.id, "dir", dirID, "page", pageNum, "cooldown", wait, "attempt", attempt+1)
 			if err := sleepContext(ctx, wait); err != nil {
 				return nil, err
 			}
@@ -224,7 +224,8 @@ func (d *Driver) Upload(ctx context.Context, parentID, name string, r io.Reader,
 		}); err == nil {
 			d.rememberFIDMapping(fid, objectID)
 		} else {
-			log.Printf("[wopan] upload drive=%s parent=%s fid=%s resolve object id: %v", d.id, parentID, fid, err)
+			applog.Warn(ctx, "upload resolve object id failed", err,
+				"component", "wopan", "driveId", d.id, "stage", "upload", "parent", parentID, "fileId", fid)
 		}
 	}
 	return fid, nil
@@ -346,8 +347,8 @@ func (d *Driver) findDeleteFileIDInParent(ctx context.Context, parentID string, 
 			if wait <= 0 {
 				wait = d.listCooldown
 			}
-			log.Printf("[wopan] resolve delete id cooling down drive=%s parent=%s page=%d cooldown=%s attempt=%d err=%v",
-				d.id, parentID, pageNum, wait, attempt+1, err)
+			applog.Warn(ctx, "resolve delete id cooling down", err,
+				"component", "wopan", "driveId", d.id, "parent", parentID, "page", pageNum, "cooldown", wait, "attempt", attempt+1)
 			if err := sleepContext(ctx, wait); err != nil {
 				return "", err
 			}

@@ -39,7 +39,23 @@ test("OpenAPI describes the query parameters sent by SDK library and log request
   await client.videos.list(2, 12, { q: "sample", tag: "demo", sort: "hot", includeTotal: false });
   await client.videos.getFeed({ kind: "listing", cursor: { feedToken: "", position: 0 }, count: 2, q: "sample", tag: "demo", sort: "latest" });
   await client.videos.getFeed({ kind: "listing", cursor: { feedToken: "existing-feed", position: 1 }, count: 2 });
-  await client.admin.listLogs({ from: "2026-01-01T00:00:00Z", to: "2026-01-02T00:00:00Z", source: "http", level: "error", method: "GET", query: "sample", limit: 100, before: 10 });
+  await client.admin.listLogs({
+    from: "2026-01-01T00:00:00Z",
+    to: "2026-01-02T00:00:00Z",
+    source: "http",
+    level: ["warn", "error"],
+    component: "scan",
+    method: "GET",
+    status: "5xx",
+    minDurationMs: 250,
+    requestId: "req-1",
+    taskId: "task-1",
+    driveId: "drive-1",
+    videoId: "video-1",
+    query: "sample",
+    limit: 100,
+    before: 10,
+  });
 
   for (const url of calls) {
     const parameters = contract.paths[url.pathname]?.get?.parameters;
@@ -306,7 +322,7 @@ test("SDK runtime requests match OpenAPI operations in both directions", async (
       if (method === "GET" && url.pathname === "/admin/api/config.yaml") {
         return new Response("theme: dark\n", { status: 200, headers: { ETag: '"v1"' } });
       }
-      if (method === "GET" && url.pathname === "/admin/api/logs" && url.searchParams.get("download") === "1") {
+      if (method === "GET" && url.pathname === "/admin/api/logs/export") {
         return new Response("log\n", { status: 200 });
       }
       if (method === "DELETE" && url.pathname.startsWith("/admin/api/videos/")) {
@@ -374,7 +390,9 @@ test("SDK runtime requests match OpenAPI operations in both directions", async (
   // Admin: system & users
   await admin.checkUpdate();
   await admin.listLogs();
-  await admin.downloadLogs();
+  await admin.getLogsMeta();
+  recorded.push({ method: "GET", pathname: new URL(admin.logStreamURL()).pathname });
+  await admin.downloadLogs({ format: "jsonl" });
   await admin.clearLogs();
   await admin.getSettings();
   await admin.updateSettings({ theme: "dark" });

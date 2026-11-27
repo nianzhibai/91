@@ -81,7 +81,7 @@ func (s *Service) notifyOne(ctx context.Context, c transport, r catalog.Telegram
 				if ctx.Err() != nil {
 					return
 				}
-				applog.Warn(ctx, "读取 TG 转存统计失败", err, applog.Fields{Component: "telegram", Stage: "status"})
+				applog.Warn(ctx, "读取 TG 转存统计失败", err, "component", "telegram", "stage", "status")
 				message = botMessage{text: "⚠️ 暂时无法读取转存统计，请稍后重试 /status。"}
 			}
 		}

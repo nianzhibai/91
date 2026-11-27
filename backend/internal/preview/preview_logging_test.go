@@ -3,7 +3,7 @@ package preview
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,16 +14,33 @@ import (
 
 func capturePreviewLogs(t *testing.T) (*applog.Store, *strings.Builder) {
 	t.Helper()
-	store, err := applog.Open(applog.Config{Directory: t.TempDir()})
+	var output strings.Builder
+	rt, err := applog.OpenRuntime(applog.RuntimeConfig{
+		Directory:     t.TempDir(),
+		Level:         applog.LevelInfo,
+		ConsoleWriter: &output,
+		FileEnabled:   true,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = store.Close() })
-	var output strings.Builder
-	previous := log.Writer()
-	log.SetOutput(applog.Output(&output, store))
-	t.Cleanup(func() { log.SetOutput(previous) })
-	return store, &output
+	t.Cleanup(func() { _ = rt.Close() })
+	prev := slog.Default()
+	slog.SetDefault(rt.Logger())
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return rt.Store(), &output
+}
+
+func recordFields(r applog.Record) applog.Fields {
+	return applog.Fields{
+		Component: r.Component,
+		RequestID: r.RequestID,
+		TaskID:    r.TaskID,
+		DriveID:   r.DriveID,
+		VideoID:   r.VideoID,
+		FileID:    r.FileID,
+		Stage:     r.Stage,
+	}
 }
 
 func TestGenerateLogsDegradationAsWarningWithTaskContext(t *testing.T) {
@@ -40,9 +57,9 @@ func TestGenerateLogsDegradationAsWarningWithTaskContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	fields.Stage = "segments"
-	var degradations []applog.Entry
+	var degradations []applog.Record
 	for _, entry := range snapshot.Entries {
-		if entry.Fields.Stage == fields.Stage {
+		if entry.Stage == fields.Stage {
 			degradations = append(degradations, entry)
 		}
 	}
@@ -50,7 +67,7 @@ func TestGenerateLogsDegradationAsWarningWithTaskContext(t *testing.T) {
 		t.Fatalf("entries = %+v, want one degradation warning", snapshot.Entries)
 	}
 	entry := degradations[0]
-	if entry.Level != applog.LevelWarning || entry.Fields != fields ||
+	if entry.Level != applog.LevelWarn || recordFields(entry) != fields ||
 		!strings.Contains(entry.Message, "degraded teaser accepted segments=2/4") ||
 		!strings.Contains(entry.Error, "produced empty file") {
 		t.Fatalf("degradation event = %+v", entry)

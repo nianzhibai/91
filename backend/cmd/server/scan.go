@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -24,17 +23,17 @@ import (
 // generation and configuration tasks.
 func (a *App) scheduleScan(ctx context.Context, driveID string) bool {
 	if a.driveHasActiveWork(driveID) {
-		log.Printf("[scan] drive=%s has active work, skip duplicate request", driveID)
+		applog.Info(ctx, "skip duplicate scan request; drive has active work", "component", "scan", "driveId", driveID)
 		return false
 	}
 	taskCtx, done, admitted := a.registerDriveTaskContext(ctx, driveID, driveTaskScopeScan)
 	if !admitted {
-		log.Printf("[scan] drive=%s configuration update in progress, reject scan", driveID)
+		applog.Warn(ctx, "reject scan; drive configuration update in progress", nil, "component", "scan", "driveId", driveID)
 		return false
 	}
 	if !a.beginDriveScanOrCrawl(driveID) {
 		done()
-		log.Printf("[scan] drive=%s already queued or running, skip duplicate request", driveID)
+		applog.Info(ctx, "skip duplicate scan request; drive already queued or running", "component", "scan", "driveId", driveID)
 		return false
 	}
 
@@ -52,12 +51,12 @@ func (a *App) scheduleScan(ctx context.Context, driveID string) bool {
 func (a *App) runScan(ctx context.Context, driveID string) scanjob.Result {
 	taskCtx, done, admitted := a.registerDriveTaskContext(ctx, driveID, driveTaskScopeScan)
 	if !admitted {
-		log.Printf("[scan] drive=%s configuration update in progress, reject direct scan", driveID)
+		applog.Warn(ctx, "reject direct scan; drive configuration update in progress", nil, "component", "scan", "driveId", driveID)
 		return skippedScanResult(driveID, "配置正在更新，本次扫描已跳过")
 	}
 	defer done()
 	if !a.beginDriveScanOrCrawl(driveID) {
-		log.Printf("[scan] drive=%s already queued or running, skip direct scan", driveID)
+		applog.Info(ctx, "skip direct scan; drive already queued or running", "component", "scan", "driveId", driveID)
 		return skippedScanResult(driveID, "该网盘已有扫描任务，本次扫描已跳过")
 	}
 	defer a.endDriveScanOrCrawl(driveID)
@@ -71,7 +70,7 @@ func skippedScanResult(driveID, message string) scanjob.Result {
 
 func (a *App) runScanWithTaskContext(ctx context.Context, driveID string) (report scanjob.Result) {
 	ctx = applog.NewTask(ctx, "scan", driveID)
-	applog.Info(ctx, "Scan started", applog.Fields{})
+	applog.Info(ctx, "Scan started")
 	report = scanjob.Result{DriveID: driveID, State: scanjob.Succeeded, StartedAt: time.Now()}
 	defer func() {
 		report.FinishedAt = time.Now()
@@ -93,24 +92,30 @@ func (a *App) runScanWithTaskContext(ctx context.Context, driveID string) (repor
 			persistence.RUnlock()
 			if err != nil {
 				report.AddIssue("save_result", err)
-				log.Printf("[scan] save result drive=%s: %v", driveID, err)
+				applog.Error(saveCtx, "save scan result failed", err, "stage", "save_result")
 			}
 		}
 		if report.State == scanjob.Succeeded && report.ErrorCount > 0 {
 			report.State = scanjob.Partial
 		}
-		message := fmt.Sprintf("Scan finished state=%s scanned=%d added=%d cleaned=%d errors=%d", report.State, report.ScannedCount, report.AddedCount, report.CleanedCount, report.ErrorCount)
+		finishArgs := []any{
+			"state", string(report.State),
+			"scanned", report.ScannedCount,
+			"added", report.AddedCount,
+			"cleaned", report.CleanedCount,
+			"errors", report.ErrorCount,
+		}
 		switch report.State {
 		case scanjob.Failed:
-			applog.Error(ctx, message, nil, applog.Fields{})
+			applog.Error(ctx, "Scan finished", nil, finishArgs...)
 		case scanjob.Partial, scanjob.Canceled:
-			applog.Warn(ctx, message, nil, applog.Fields{})
+			applog.Warn(ctx, "Scan finished", nil, finishArgs...)
 		default:
-			applog.Info(ctx, message, applog.Fields{})
+			applog.Info(ctx, "Scan finished", finishArgs...)
 		}
 	}()
 	fail := func(stage string, err error) {
-		applog.Error(ctx, "Scan failed", err, applog.Fields{Stage: stage})
+		applog.Error(ctx, "Scan failed", err, "stage", stage)
 		report.State = scanjob.Failed
 		report.Message = err.Error()
 		if ctx.Err() == nil {
@@ -118,23 +123,20 @@ func (a *App) runScanWithTaskContext(ctx context.Context, driveID string) (repor
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		log.Printf("[scan] drive=%s canceled before start: %v", driveID, err)
+		applog.Warn(ctx, "scan canceled before start", err)
 		return report
 	}
 	if err := a.ensureDriveAttached(ctx, driveID); err != nil {
-		log.Printf("[scan] drive=%s attach failed: %v", driveID, err)
 		fail("attach", err)
 		return report
 	}
 	drv, ok := a.registry.Get(driveID)
 	if !ok {
-		log.Printf("[scan] drive=%s not attached", driveID)
 		fail("attach", errors.New("网盘未挂载"))
 		return report
 	}
 	driveConfig, err := a.activeDriveConfig(ctx, driveID)
 	if err != nil {
-		log.Printf("[scan] get active drive config %s: %v", driveID, err)
 		fail("config", err)
 		return report
 	}
@@ -153,17 +155,13 @@ func (a *App) runScanWithTaskContext(ctx context.Context, driveID string) (repor
 	}
 	if err != nil {
 		fail("scan", err)
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			log.Printf("[scan] drive=%s canceled: %v", driveID, ctxErr)
-		} else if errors.Is(err, scanner.ErrRateLimitBudgetExhausted) {
-			log.Printf("[scan] drive=%s rate-limit retry budget exhausted: %v", driveID, err)
-		} else {
-			log.Printf("[scan] drive=%s error: %v", driveID, err)
+		if ctx.Err() == nil && errors.Is(err, scanner.ErrRateLimitBudgetExhausted) {
+			applog.Warn(ctx, "scan rate-limit retry budget exhausted", err, "stage", "scan")
 		}
 		return report
 	}
 	if err := ctx.Err(); err != nil {
-		log.Printf("[scan] drive=%s canceled after reconciliation: %v", driveID, err)
+		applog.Warn(ctx, "scan canceled after reconciliation", err)
 		return report
 	}
 
@@ -172,11 +170,18 @@ func (a *App) runScanWithTaskContext(ctx context.Context, driveID string) (repor
 	if reconciliationIssues < 0 {
 		reconciliationIssues = 0
 	}
-	log.Printf(
-		"[scan] drive=%s done scanned=%d added=%d updated=%d duplicates=%d tombstoned=%d enumerated_dirs=%d failed_dirs=%d excluded_dirs=%d discovery_issues=%d reconciliation_issues=%d errors=%d",
-		driveID, stats.Scanned, stats.Added, result.Updated, result.Duplicates,
-		result.Tombstoned, len(result.Snapshot.EnumeratedDirIDs), len(result.Snapshot.FailedDirIDs),
-		len(result.Snapshot.ExcludedDirIDs), len(result.Snapshot.Issues), reconciliationIssues, stats.Errors,
+	applog.Info(ctx, "scan discovery and reconciliation completed",
+		"scanned", stats.Scanned,
+		"added", stats.Added,
+		"updated", result.Updated,
+		"duplicates", result.Duplicates,
+		"tombstoned", result.Tombstoned,
+		"enumeratedDirs", len(result.Snapshot.EnumeratedDirIDs),
+		"failedDirs", len(result.Snapshot.FailedDirIDs),
+		"excludedDirs", len(result.Snapshot.ExcludedDirIDs),
+		"discoveryIssues", len(result.Snapshot.Issues),
+		"reconciliationIssues", reconciliationIssues,
+		"errors", stats.Errors,
 	)
 
 	// Reconciliation refreshes ancestry for every discovered catalog row before
@@ -187,31 +192,29 @@ func (a *App) runScanWithTaskContext(ctx context.Context, driveID string) (repor
 	)
 	report.CleanedCount += skipCleanupResult.RemovedCount
 	if skipCleanupErr != nil {
-		applog.Error(ctx, "Skipped-directory cleanup failed", skipCleanupErr, applog.Fields{Stage: "skip_cleanup"})
 		report.AddIssue("skip_cleanup", skipCleanupErr)
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			log.Printf("[skip-cleanup] drive=%s canceled: %v", driveID, ctxErr)
+			applog.Warn(ctx, "skipped-directory cleanup canceled", ctxErr, "stage", "skip_cleanup")
 			return report
 		}
 		if errors.Is(skipCleanupErr, scanner.ErrRateLimitBudgetExhausted) {
-			log.Printf("[skip-cleanup] drive=%s rate-limit retry budget exhausted; continuing cleanup: %v", driveID, skipCleanupErr)
+			applog.Warn(ctx, "skipped-directory cleanup rate-limit retry budget exhausted; continuing cleanup", skipCleanupErr, "stage", "skip_cleanup")
 		} else {
-			log.Printf("[skip-cleanup] drive=%s error; continuing cleanup: %v", driveID, skipCleanupErr)
+			applog.Error(ctx, "Skipped-directory cleanup failed", skipCleanupErr, "stage", "skip_cleanup")
 		}
 	}
 	removed, err := a.cleanupScanResult(ctx, drv, result, skipCleanupResult.ProtectUnlocated)
 	report.CleanedCount += removed
 	if err != nil {
-		applog.Error(ctx, "Missing-file cleanup failed", err, applog.Fields{Stage: "presence_cleanup"})
 		report.AddIssue("presence_cleanup", err)
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			log.Printf("[cleanup] canceled stale cleanup drive=%s kind=%s: %v", drv.ID(), drv.Kind(), ctxErr)
+			applog.Warn(ctx, "missing-file cleanup canceled", ctxErr, "stage", "presence_cleanup", "driveKind", drv.Kind())
 			return report
 		}
-		log.Printf("[cleanup] stale cleanup drive=%s kind=%s error: %v", drv.ID(), drv.Kind(), err)
+		applog.Error(ctx, "Missing-file cleanup failed", err, "stage", "presence_cleanup", "driveKind", drv.Kind())
 	}
 	if err := ctx.Err(); err != nil {
-		log.Printf("[scan] drive=%s canceled before derived-task dispatch: %v", driveID, err)
+		applog.Warn(ctx, "scan canceled before derived-task dispatch", err)
 		return report
 	}
 
@@ -225,7 +228,7 @@ func (a *App) runScanWithTaskContext(ctx context.Context, driveID string) (repor
 		Fingerprints: true,
 	}); err != nil {
 		report.AddIssue("generation_retry", err)
-		log.Printf("[scan] reset failed generation drive=%s: %v", driveID, err)
+		applog.Error(ctx, "reset failed generation after scan failed", err, "stage", "generation_retry")
 		if ctx.Err() != nil {
 			return report
 		}
@@ -257,7 +260,7 @@ func (a *App) scanDrive(
 	scan.OnProgress = func(stats scanner.Stats) {
 		a.updateDriveScanProgress(drv.ID(), stats.Scanned, stats.Added)
 	}
-	log.Printf("[scan] drive=%s start=%s skip_dirs=%d", drv.ID(), driveConfig.RootID, len(driveConfig.SkipDirIDs))
+	applog.Info(ctx, "starting drive scan", "component", "scan", "driveId", drv.ID(), "rootId", driveConfig.RootID, "skipDirs", len(driveConfig.SkipDirIDs))
 	return scan.Scan(ctx, driveConfig.RootID)
 }
 
@@ -278,16 +281,23 @@ func (a *App) cleanupScanResult(
 	}
 	mode := missingFileCleanupMode(result.Snapshot)
 	if mode == catalog.MissingFileCleanupConfirmTwice {
-		log.Printf(
-			"[cleanup] guarded stale cleanup drive=%s kind=%s enumerated_dirs=%d failed_dirs=%d discovery_issues=%d",
-			drv.ID(), drv.Kind(), len(result.Snapshot.EnumeratedDirIDs),
-			len(result.Snapshot.FailedDirIDs), len(result.Snapshot.Issues),
+		applog.Warn(ctx, "guarded stale cleanup", nil,
+			"component", "scan",
+			"stage", "presence_cleanup",
+			"driveId", drv.ID(),
+			"driveKind", drv.Kind(),
+			"enumeratedDirs", len(result.Snapshot.EnumeratedDirIDs),
+			"failedDirs", len(result.Snapshot.FailedDirIDs),
+			"discoveryIssues", len(result.Snapshot.Issues),
 		)
 	}
 	if protectUnlocated {
-		log.Printf(
-			"[cleanup] protecting unlocated videos drive=%s kind=%s reason=incomplete_skip_policy_backfill",
-			drv.ID(), drv.Kind(),
+		applog.Info(ctx, "protecting unlocated videos during cleanup",
+			"component", "scan",
+			"stage", "presence_cleanup",
+			"driveId", drv.ID(),
+			"driveKind", drv.Kind(),
+			"reason", "incomplete_skip_policy_backfill",
 		)
 	}
 	presenceAuthoritative := result.Snapshot.PresenceAuthoritative()
@@ -312,7 +322,14 @@ func (a *App) cleanupScanResult(
 		if mode == catalog.MissingFileCleanupImmediate {
 			modeName = "immediate"
 		}
-		log.Printf("[cleanup] removed %d stale videos for drive=%s kind=%s mode=%s", removed, drv.ID(), drv.Kind(), modeName)
+		applog.Info(ctx, "removed stale videos",
+			"component", "scan",
+			"stage", "presence_cleanup",
+			"driveId", drv.ID(),
+			"driveKind", drv.Kind(),
+			"removed", removed,
+			"mode", modeName,
+		)
 	}
 	return removed, nil
 }
@@ -398,7 +415,13 @@ func (a *App) cleanupSkippedDriveVideos(
 		return result, fmt.Errorf("exact cleanup: %w", err)
 	}
 	if exactRemoved > 0 {
-		log.Printf("[skip-cleanup] drive=%s removed=%d mode=exact", drv.ID(), exactRemoved)
+		applog.Info(ctx, "removed skipped-directory videos",
+			"component", "scan",
+			"stage", "skip_cleanup",
+			"driveId", drv.ID(),
+			"removed", exactRemoved,
+			"mode", "exact",
+		)
 	}
 
 	var cleanupErrors []error
@@ -497,19 +520,34 @@ func (a *App) cleanupLegacySkippedDirectory(
 		return legacyRemoved, false, fmt.Errorf("legacy cleanup under skipped directory %s: %w", skippedDirID, err)
 	}
 	if legacyRemoved > 0 {
-		log.Printf("[skip-cleanup] drive=%s dir=%s removed=%d mode=legacy", drv.ID(), skippedDirID, legacyRemoved)
+		applog.Info(ctx, "removed legacy skipped-directory videos",
+			"component", "scan",
+			"stage", "skip_cleanup",
+			"driveId", drv.ID(),
+			"dirId", skippedDirID,
+			"removed", legacyRemoved,
+			"mode", "legacy",
+		)
 	}
 	if discoverErr != nil {
 		if errors.Is(discoverErr, scanner.ErrRateLimitBudgetExhausted) {
 			return legacyRemoved, false, discoverErr
 		}
-		log.Printf("[skip-cleanup] drive=%s dir=%s legacy discovery incomplete: %v", drv.ID(), skippedDirID, discoverErr)
+		applog.Warn(ctx, "legacy skipped-directory discovery incomplete", discoverErr,
+			"component", "scan",
+			"stage", "skip_cleanup",
+			"driveId", drv.ID(),
+			"dirId", skippedDirID,
+		)
 		return legacyRemoved, false, nil
 	}
 	if !snapshot.Complete() {
-		log.Printf(
-			"[skip-cleanup] drive=%s dir=%s legacy discovery incomplete failed_dirs=%d",
-			drv.ID(), skippedDirID, len(snapshot.FailedDirIDs),
+		applog.Warn(ctx, "legacy skipped-directory discovery incomplete", nil,
+			"component", "scan",
+			"stage", "skip_cleanup",
+			"driveId", drv.ID(),
+			"dirId", skippedDirID,
+			"failedDirs", len(snapshot.FailedDirIDs),
 		)
 		return legacyRemoved, false, nil
 	}

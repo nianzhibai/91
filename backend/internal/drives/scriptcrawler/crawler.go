@@ -250,7 +250,7 @@ func (t *Task) saveTerminal(ctx context.Context) {
 		if err == nil {
 			return
 		}
-		applog.Error(ctx, "保存爬虫任务结果失败，将重试", err, applog.Fields{Stage: "save_result"})
+		applog.Error(ctx, "保存爬虫任务结果失败，将重试", err, "stage", "save_result")
 		time.Sleep(delay)
 		delay = min(delay*2, 5*time.Second)
 	}
@@ -390,7 +390,7 @@ func (c *Crawler) RunTask(ctx context.Context, t *Task, followUp func(context.Co
 		}
 		t.saveTerminal(ctx)
 		_ = os.RemoveAll(t.dir)
-		applog.Info(ctx, fmt.Sprintf("Crawler finished state=%s reason=%s target=%d pages=%d checked=%d known=%d resolved=%d new=%d duplicates=%d failed=%d limit=%s crawl_elapsed=%s total_elapsed=%s", t.Result.State, t.Result.StopReason, t.Result.TargetNew, t.Result.Pages, t.Result.Checked, t.Result.Known, t.Result.Resolved, t.Result.NewVideos, t.Result.Duplicates, t.Result.Failed, c.cfg.RunTimeout, crawlElapsed, time.Since(t.Result.StartedAt)), applog.Fields{Stage: "complete"})
+		applog.Info(ctx, fmt.Sprintf("Crawler finished state=%s reason=%s target=%d pages=%d checked=%d known=%d resolved=%d new=%d duplicates=%d failed=%d limit=%s crawl_elapsed=%s total_elapsed=%s", t.Result.State, t.Result.StopReason, t.Result.TargetNew, t.Result.Pages, t.Result.Checked, t.Result.Known, t.Result.Resolved, t.Result.NewVideos, t.Result.Duplicates, t.Result.Failed, c.cfg.RunTimeout, crawlElapsed, time.Since(t.Result.StartedAt)), "stage", "complete")
 	}()
 	crawlErr := func() error {
 		if err := runCtx.Err(); err != nil {
@@ -416,7 +416,7 @@ func (c *Crawler) RunTask(ctx context.Context, t *Task, followUp func(context.Co
 		if crawlErr == nil || ((errors.Is(crawlErr, context.DeadlineExceeded) || errors.Is(crawlErr, errCrawlTimeLimit)) && !errors.Is(crawlErr, errOperationTimeout)) {
 			t.Result.StopReason = "time_limit"
 			crawlErr = nil
-			applog.Info(ctx, fmt.Sprintf("Crawler time limit reached limit=%s target=%d new=%d checked=%d known=%d resolved=%d", c.cfg.RunTimeout, t.Result.TargetNew, t.Result.NewVideos, t.Result.Checked, t.Result.Known, t.Result.Resolved), applog.Fields{Stage: t.Result.Stage})
+			applog.Info(ctx, fmt.Sprintf("Crawler time limit reached limit=%s target=%d new=%d checked=%d known=%d resolved=%d", c.cfg.RunTimeout, t.Result.TargetNew, t.Result.NewVideos, t.Result.Checked, t.Result.Known, t.Result.Resolved), "stage", t.Result.Stage)
 		}
 	}
 	// End the acquisition budget before generation/upload. A long upload must
@@ -450,14 +450,13 @@ func (c *Crawler) crawl(ctx, processingCtx context.Context, t *Task) error {
 		if json.Unmarshal([]byte(line), &diagnostic) != nil || diagnostic.Message == "" {
 			diagnostic.Message = line
 		}
-		fields := applog.Fields{Component: "scriptcrawler:script", Stage: "script"}
 		switch diagnostic.Level {
 		case "error":
-			applog.Error(ctx, diagnostic.Message, nil, fields)
+			applog.Error(ctx, diagnostic.Message, nil, "component", "scriptcrawler:script", "stage", "script")
 		case "warning":
-			applog.Warn(ctx, diagnostic.Message, nil, fields)
+			applog.Warn(ctx, diagnostic.Message, nil, "component", "scriptcrawler:script", "stage", "script")
 		default:
-			applog.Info(ctx, diagnostic.Message, fields)
+			applog.Info(ctx, diagnostic.Message, "component", "scriptcrawler:script", "stage", "script")
 		}
 	}})
 	if err != nil {
@@ -606,7 +605,7 @@ func (c *Crawler) crawl(ctx, processingCtx context.Context, t *Task) error {
 		if err := t.save(ctx); err != nil {
 			return err
 		}
-		applog.Info(ctx, fmt.Sprintf("Discovery page=%d checked=%d known=%d new=%d duplicates=%d", r.Pages, r.Checked, r.Known, r.NewVideos, r.Duplicates), applog.Fields{Stage: "discover"})
+		applog.Info(ctx, fmt.Sprintf("Discovery page=%d checked=%d known=%d new=%d duplicates=%d", r.Pages, r.Checked, r.Known, r.NewVideos, r.Duplicates), "stage", "discover")
 		if r.NewVideos >= r.TargetNew {
 			r.StopReason = "target_reached"
 			break

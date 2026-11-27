@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
-	"log"
 	"math"
 	"math/rand"
 	"net/http"
@@ -23,6 +22,7 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/drives"
 	"github.com/nianzhibai/91/backend/internal/scopedproxy"
 )
@@ -198,8 +198,8 @@ func (d *Driver) List(ctx context.Context, dirID string) ([]drives.Entry, error)
 				if wait <= 0 {
 					wait = listCooldown
 				}
-				log.Printf("[p123] list cooling down drive=%s dir=%s page=%d cooldown=%s attempt=%d err=%v",
-					d.id, dirID, page, wait, attempt+1, err)
+				applog.Warn(ctx, "list cooling down", err,
+					"component", "p123", "driveId", d.id, "dir", dirID, "page", page, "cooldown", wait, "attempt", attempt+1)
 				if err := sleepContext(ctx, wait); err != nil {
 					return nil, err
 				}

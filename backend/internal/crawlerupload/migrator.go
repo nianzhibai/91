@@ -17,7 +17,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -26,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/drives"
 	"github.com/nianzhibai/91/backend/internal/drives/googledrive"
@@ -602,7 +602,7 @@ func (m *Migrator) StartDrive(ctx context.Context, driveID string) (<-chan error
 	result, err := m.acceptDrive(ctx, driveID)
 	if err != nil {
 		m.finishRun()
-		log.Printf("[crawlerupload] admission: %v", err)
+		applog.Error(ctx, "Crawler upload admission failed", err, "component", "crawlerupload", "driveId", driveID)
 		return nil, false
 	}
 	done := make(chan error, 1)
@@ -791,7 +791,7 @@ func (m *Migrator) migrateOne(ctx context.Context, v *catalog.Video, plan migrat
 			if err := m.completeMigration(ctx, v, plan, *existing, uploadName, parent); err != nil {
 				return false, err
 			}
-			log.Printf("[crawlerupload] %s reconciled existing drive=%s(kind=%s) file=%s name=%q", v.ID, plan.targetDriveID, pp.Kind(), existing.FileID, uploadName)
+			applog.Info(ctx, "Reconciled existing uploaded video", "component", "crawlerupload", "videoId", v.ID, "targetDriveId", plan.targetDriveID, "targetKind", pp.Kind(), "targetFileId", existing.FileID, "name", uploadName)
 			return true, nil
 		}
 	}
@@ -807,7 +807,7 @@ func (m *Migrator) migrateOne(ctx context.Context, v *catalog.Video, plan migrat
 		return false, err
 	}
 
-	log.Printf("[crawlerupload] %s migrated to drive=%s(kind=%s) file=%s name=%q", v.ID, plan.targetDriveID, pp.Kind(), res.FileID, uploadName)
+	applog.Info(ctx, "Migrated video to target drive", "component", "crawlerupload", "videoId", v.ID, "targetDriveId", plan.targetDriveID, "targetKind", pp.Kind(), "targetFileId", res.FileID, "name", uploadName)
 	return false, nil
 }
 
@@ -881,7 +881,7 @@ func (m *Migrator) bindToExistingTarget(ctx context.Context, v, target *catalog.
 	}
 	m.preserveCrawledThumbnail(ctx, plan.source, v)
 	CleanupLocal(plan.source, v.FileID)
-	log.Printf("[crawlerupload] %s bound to existing drive=%s(kind=%s) file=%s duplicate=%s", v.ID, plan.targetDriveID, plan.target.Kind(), target.FileID, target.ID)
+	applog.Info(ctx, "Bound video to existing target video", "component", "crawlerupload", "videoId", v.ID, "targetDriveId", plan.targetDriveID, "targetKind", plan.target.Kind(), "targetFileId", target.FileID, "duplicateVideoId", target.ID)
 	return true, nil
 }
 
@@ -919,29 +919,29 @@ func (m *Migrator) preserveCrawledThumbnail(ctx context.Context, src LocalSource
 	thumbPath, ok := findCrawlerThumbPath(src, v.FileID)
 	if !ok {
 		if v.ThumbnailURL == "" {
-			log.Printf("[crawlerupload] %s crawled thumbnail missing before migration cleanup", v.ID)
+			applog.Warn(ctx, "Crawled thumbnail missing before migration cleanup", nil, "component", "crawlerupload", "videoId", v.ID)
 		}
 		return
 	}
 	if err := os.MkdirAll(commonDir, 0o755); err != nil {
-		log.Printf("[crawlerupload] %s mkdir common thumbs: %v", v.ID, err)
+		applog.Warn(ctx, "Create common thumbnail directory failed", err, "component", "crawlerupload", "videoId", v.ID)
 		return
 	}
 	dst := mediaasset.ThumbnailPathInDir(commonDir, v.ID)
 	if _, err := os.Stat(dst); err != nil {
 		if !os.IsNotExist(err) {
-			log.Printf("[crawlerupload] %s stat common thumb: %v", v.ID, err)
+			applog.Warn(ctx, "Stat common thumbnail failed", err, "component", "crawlerupload", "videoId", v.ID)
 			return
 		}
 		if err := mediaasset.NormalizeThumbnailJPEG(thumbPath, dst); err != nil {
-			log.Printf("[crawlerupload] %s preserve crawled thumbnail: %v", v.ID, err)
+			applog.Warn(ctx, "Preserve crawled thumbnail failed", err, "component", "crawlerupload", "videoId", v.ID)
 			return
 		}
 	}
 	if err := m.cfg.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{
 		ThumbnailURL: catalog.GeneratedThumbnailURL(v.ID), ThumbnailSource: catalog.ThumbnailProvided,
 	}); err != nil {
-		log.Printf("[crawlerupload] %s update crawled thumbnail url: %v", v.ID, err)
+		applog.Warn(ctx, "Update crawled thumbnail URL failed", err, "component", "crawlerupload", "videoId", v.ID)
 		return
 	}
 	v.ThumbnailURL, v.ThumbnailSource = catalog.GeneratedThumbnailURL(v.ID), catalog.ThumbnailProvided
@@ -971,7 +971,7 @@ func CleanupLocal(src LocalSource, fileID string) {
 	videoPath, err := src.VideoPath(fileID)
 	if err == nil {
 		if err := os.Remove(videoPath); err != nil && !os.IsNotExist(err) {
-			log.Printf("[crawlerupload] remove local mp4 %s: %v", videoPath, err)
+			applog.Warn(context.Background(), "Remove local mp4 failed", err, "component", "crawlerupload", "fileId", fileID, "path", videoPath)
 		}
 	}
 	// thumb 文件名是 <sourceID>.<ext>；fileID 是 <sourceID>.<videoExt>，
@@ -1036,7 +1036,7 @@ func (m *Migrator) cleanupOldLocalVideos(ctx context.Context, plan migrationPlan
 			continue
 		}
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			log.Printf("[crawlerupload] cleanup remove %s: %v", path, err)
+			applog.Warn(ctx, "Cleanup remove local video failed", err, "component", "crawlerupload", "path", path)
 			continue
 		}
 		// thumb 一并删（best-effort）

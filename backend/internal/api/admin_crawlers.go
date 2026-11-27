@@ -823,7 +823,7 @@ func (a *AdminServer) handleUploadCrawlerVideos(w http.ResponseWriter, r *http.R
 		return
 	}
 	reject := func(reason string) {
-		applog.Warn(r.Context(), "手动上传未启动: "+reason, nil, applog.Fields{Component: "crawlerupload", DriveID: id, Stage: "admission"})
+		applog.Warn(r.Context(), "手动上传未启动: "+reason, nil, "component", "crawlerupload", "driveId", id, "stage", "admission")
 		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "accepted": false, "message": reason})
 	}
 	status := a.nightlyJobStatus()

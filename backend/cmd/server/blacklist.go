@@ -5,13 +5,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/nianzhibai/91/backend/internal/api"
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/drives"
 	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
@@ -29,22 +29,22 @@ func (a *App) migrateHiddenVideosToTombstone(ctx context.Context) {
 	}
 	hidden, err := a.cat.ListLegacyHiddenVideos(ctx)
 	if err != nil {
-		log.Printf("[migrate] list hidden videos: %v", err)
+		applog.Error(ctx, "list legacy hidden videos failed", err, "component", "migrate")
 		return
 	}
 	if len(hidden) == 0 {
 		return
 	}
-	log.Printf("[migrate] converting %d hidden video(s) to blacklist tombstones", len(hidden))
+	applog.Info(ctx, "converting legacy hidden videos to blacklist tombstones", "component", "migrate", "count", len(hidden))
 	migrated := 0
 	for _, v := range hidden {
 		if err := a.cat.DeleteVideoWithTombstoneOptions(ctx, v.ID, catalog.DeleteVideoTombstoneOptions{AssetCleanupAfter: time.Now().Add(videoDeletionGracePeriod)}); err != nil {
-			log.Printf("[migrate] hidden->tombstone %s: %v", v.ID, err)
+			applog.Warn(ctx, "convert hidden video to tombstone failed", err, "component", "migrate", "videoId", v.ID)
 			continue
 		}
 		migrated++
 	}
-	log.Printf("[migrate] hidden->tombstone done: %d/%d", migrated, len(hidden))
+	applog.Info(ctx, "legacy hidden video migration completed", "component", "migrate", "migrated", migrated, "total", len(hidden))
 }
 
 func (a *App) deleteVideo(ctx context.Context, videoID string, options catalog.VideoDeletionOptions) (api.DeleteVideoResult, error) {
@@ -180,11 +180,24 @@ func (a *App) runBlacklistSourceDelete(ctx context.Context, reqs ...api.Blacklis
 		a.blacklistSourceDeleteMu.Unlock()
 
 		if deleteErr != nil {
-			log.Printf("[blacklist-source-delete] id=%s drive=%s file=%s failed: %v", item.ID, item.DriveID, item.FileID, deleteErr)
+			applog.Error(ctx, "delete blacklisted video source failed", deleteErr,
+				"component", "blacklist-source-delete",
+				"videoId", item.ID,
+				"driveId", item.DriveID,
+				"fileId", item.FileID,
+			)
 		} else if skipped {
-			log.Printf("[blacklist-source-delete] id=%s skipped: tombstone changed or is no longer pending", item.ID)
+			applog.Info(ctx, "skipped blacklisted video source deletion; tombstone changed or no longer pending",
+				"component", "blacklist-source-delete",
+				"videoId", item.ID,
+			)
 		} else {
-			log.Printf("[blacklist-source-delete] id=%s drive=%s file=%s deleted", item.ID, item.DriveID, item.FileID)
+			applog.Info(ctx, "deleted blacklisted video source",
+				"component", "blacklist-source-delete",
+				"videoId", item.ID,
+				"driveId", item.DriveID,
+				"fileId", item.FileID,
+			)
 		}
 
 		if index+1 < len(items) {
@@ -311,7 +324,13 @@ func (a *App) removeDeletedVideoSourceFile(ctx context.Context, item *catalog.De
 		a.blacklistSourceDeleteMu.Lock()
 		a.blacklistSourceDeleteState.LastError = fmt.Sprintf("%s 限流，等待 %s 后重试", item.FileName, wait)
 		a.blacklistSourceDeleteMu.Unlock()
-		log.Printf("[blacklist-source-delete] id=%s drive=%s rate limited; retry_in=%s attempt=%d", item.ID, item.DriveID, wait, attempt+1)
+		applog.Warn(ctx, "blacklisted video source deletion rate limited; retrying", err,
+			"component", "blacklist-source-delete",
+			"videoId", item.ID,
+			"driveId", item.DriveID,
+			"retryIn", wait,
+			"attempt", attempt+1,
+		)
 		if err := waitForBlacklistSourceDelete(ctx, wait); err != nil {
 			return err
 		}

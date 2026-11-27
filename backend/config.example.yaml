@@ -15,13 +15,18 @@ storage:
   # 可选数据库目录；留空时跟随 data_dir，文件名为 91.db
   db_dir: ""
 
-# 日志：重启生效
+# 日志：level、max_total_size_mb、retention_days 热更新；其余字段重启生效
 logging:
-  # 是否将运行日志写入文件
+  # 最低日志级别：debug / info / warn / error
+  level: "info"
+  # 终端（stderr）输出格式：text / json
+  console_format: "text"
+  # 是否将结构化运行日志持久化到 data/logs/logs.db
   file_enabled: true
-  # 单文件上限和总量上限（MiB）；超限后轮转或清理最旧日志
-  max_file_size_mb: 5
+  # 持久化日志库总量上限（MiB）；超限后自动清理最旧日志并回收空间
   max_total_size_mb: 30
+  # 最长保留天数；设为 0 表示仅按总量上限清理
+  retention_days: 14
 
 # 扫描：重启生效；定时扫描由 nightly 调度，递归不限深度
 scanner:

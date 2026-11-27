@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/catalog"
 )
 
@@ -324,11 +324,11 @@ func (s *Server) storeShortsFeed(token string, videoIDs []string) {
 	}
 	ctx := context.Background()
 	if err := s.Catalog.SaveShortsFeed(ctx, token, videoIDs, now); err != nil {
-		log.Printf("shorts: persist feed session: %v", err)
+		applog.Warn(ctx, "persist shorts feed session failed", err, "component", "shorts")
 		return
 	}
 	if err := s.Catalog.PruneShortsFeeds(ctx, now.Add(-shortsFeedTTL), maxShortsFeedSessions); err != nil {
-		log.Printf("shorts: prune persisted feed sessions: %v", err)
+		applog.Warn(ctx, "prune persisted shorts feed sessions failed", err, "component", "shorts")
 	}
 }
 
@@ -359,11 +359,11 @@ func (s *Server) persistShortsFeedSnapshot(token string, snapshot *catalog.Short
 	}
 	ctx := context.Background()
 	if err := s.Catalog.SaveShortsFeedSnapshot(ctx, token, snapshot, now); err != nil {
-		log.Printf("shorts: persist feed session: %v", err)
+		applog.Warn(ctx, "persist shorts feed session failed", err, "component", "shorts")
 		return
 	}
 	if err := s.Catalog.PruneShortsFeeds(ctx, now.Add(-shortsFeedTTL), maxShortsFeedSessions); err != nil {
-		log.Printf("shorts: prune persisted feed sessions: %v", err)
+		applog.Warn(ctx, "prune persisted shorts feed sessions failed", err, "component", "shorts")
 	}
 }
 
@@ -392,7 +392,7 @@ func (s *Server) loadPersistedShortsFeedSnapshot(token string, now time.Time) *c
 	ctx := context.Background()
 	snapshot, lastAccess, err := s.Catalog.LoadShortsFeedSnapshot(ctx, token)
 	if err != nil {
-		log.Printf("shorts: load persisted feed session: %v", err)
+		applog.Warn(ctx, "load persisted shorts feed session failed", err, "component", "shorts")
 		return nil
 	}
 	if snapshot == nil {
@@ -400,12 +400,12 @@ func (s *Server) loadPersistedShortsFeedSnapshot(token string, now time.Time) *c
 	}
 	if snapshot.Total() == 0 || now.Sub(lastAccess) >= shortsFeedTTL {
 		if err := s.Catalog.DeleteShortsFeed(ctx, token); err != nil {
-			log.Printf("shorts: delete expired feed session: %v", err)
+			applog.Warn(ctx, "delete expired shorts feed session failed", err, "component", "shorts")
 		}
 		return nil
 	}
 	if err := s.Catalog.TouchShortsFeed(ctx, token, now); err != nil {
-		log.Printf("shorts: touch persisted feed session: %v", err)
+		applog.Warn(ctx, "touch persisted shorts feed session failed", err, "component", "shorts")
 	}
 	return snapshot
 }
@@ -415,7 +415,7 @@ func (s *Server) touchPersistedShortsFeed(token string, now time.Time) {
 		return
 	}
 	if err := s.Catalog.TouchShortsFeed(context.Background(), token, now); err != nil {
-		log.Printf("shorts: touch persisted feed session: %v", err)
+		applog.Warn(context.Background(), "touch persisted shorts feed session failed", err, "component", "shorts")
 	}
 }
 

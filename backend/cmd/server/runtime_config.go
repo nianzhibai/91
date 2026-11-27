@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/config"
 	"github.com/nianzhibai/91/backend/internal/preview"
@@ -43,6 +43,12 @@ func (a *App) applyLiveConfig(ctx context.Context, settings config.LiveSettings)
 		runner.NotifyCapacityChanged()
 	}
 
+	if a.logRuntime != nil {
+		if lvl, err := applog.ParseLevel(settings.LogLevel); err == nil {
+			a.logRuntime.SetLevel(lvl)
+		}
+		a.logRuntime.SetLimits(int64(settings.LogMaxTotalSizeMB)*1024*1024, settings.LogRetentionDays)
+	}
 	a.applyPreviewEnabled(ctx, settings.PreviewEnabled)
 	return nil
 }
@@ -82,11 +88,11 @@ func (a *App) resumePreviewGeneration(ctx context.Context) {
 	if a.cat != nil {
 		if a.cfg != nil {
 			if _, err := a.reconcileMissingLocalPreviewFiles(ctx); err != nil && ctx.Err() == nil {
-				log.Printf("[preview] reconcile local previews after enabling: %v", err)
+				applog.Error(ctx, "reconcile local previews after enabling failed", err, "component", "preview")
 			}
 		}
 		if _, err := a.cat.LiftPreviewDeferrals(ctx); err != nil && ctx.Err() == nil {
-			log.Printf("[preview] lift deferrals after enabling: %v", err)
+			applog.Error(ctx, "lift preview deferrals after enabling failed", err, "component", "preview")
 		}
 	}
 	a.wakeAllDriveGeneration()

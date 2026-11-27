@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/httpapi"
 )
 
@@ -12,11 +13,11 @@ import (
 var openAPIDocument []byte
 
 func (a *AdminServer) registerAuthRoutes(r chi.Router) {
-	r.Get("/setup", a.handleSetupStatus)
+	r.With(applog.QuietRequestLog).Get("/setup", a.handleSetupStatus)
 	r.Post("/setup", a.handleSetup)
 	r.Post("/login", a.handleLogin)
 	r.Post("/logout", a.handleLogout)
-	r.Get("/me", a.handleMe)
+	r.With(applog.QuietRequestLog).Get("/me", a.handleMe)
 }
 
 func (a *AdminServer) handleServerInfo(w http.ResponseWriter, r *http.Request) {

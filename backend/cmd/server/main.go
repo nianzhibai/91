@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -50,18 +49,23 @@ func main() {
 		}
 		return
 	}
-	// stderr is always kept as the operational log sink. The durable admin log
-	// file is attached after configuration paths have been resolved.
-	log.SetOutput(applog.Output(os.Stderr, nil))
+	// Bootstrap console logging to stderr before configuration paths are resolved.
+	bootstrapLogs, _ := applog.OpenRuntime(applog.RuntimeConfig{
+		Level:         applog.LevelInfo,
+		ConsoleFormat: applog.ConsoleFormatText,
+		ConsoleWriter: os.Stderr,
+		FileEnabled:   false,
+	})
+	bootstrapLogs.InstallDefault()
 
 	cfgPath := applicationConfigPath()
 	workingDir, err := os.Getwd()
 	if err != nil {
-		log.Fatalf("resolve startup directory: %v", err)
+		exitFatal("resolve startup directory", err)
 	}
 	fileConfig, cfg, err := loadApplicationConfig(cfgPath, workingDir)
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		exitFatal("load config", err)
 	}
 
 	// A restore is activated before SQLite is opened. The switch itself only
@@ -73,7 +77,7 @@ func main() {
 	pendingRestoreAtStartup := pendingRestoreStatErr == nil
 	appliedRestore, err := backup.ApplyPendingRestore(dataRoot)
 	if err != nil {
-		log.Fatalf("apply pending restore: %v", err)
+		exitFatal("apply pending restore", err)
 	}
 	// Reload after either applying a restore or resuming an interrupted
 	// rollback. The config read before ApplyPendingRestore may have belonged to
@@ -83,60 +87,60 @@ func main() {
 		if err != nil {
 			if appliedRestore != nil {
 				if rollbackErr := backup.RollbackAppliedRestore(appliedRestore, err); rollbackErr != nil {
-					log.Fatalf("reload restored config: %v (rollback failed: %v)", err, rollbackErr)
+					exitFatal("reload restored config and rollback failed", err, "rollbackError", rollbackErr.Error())
 				}
-				log.Fatalf("reload restored config: %v; old data restored", err)
+				exitFatal("reload restored config failed; old data restored", err)
 			}
-			log.Fatalf("reload config after restore rollback: %v", err)
+			exitFatal("reload config after restore rollback", err)
 		}
 	}
 
-	logStore := openRuntimeLogs(cfg.Logging)
-	if logStore != nil {
-		defer func() {
-			if err := logStore.Close(); err != nil {
-				fmt.Fprintf(os.Stderr, "close runtime log: %s\n", applog.Redact(err.Error()))
-			}
-		}()
-	}
+	logRuntime := openRuntimeLogs(cfg.Logging)
+	defer func() {
+		if err := logRuntime.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "close runtime log: %s\n", applog.Redact(err.Error()))
+		}
+	}()
+	logStore := logRuntime.Store()
 	if err := os.MkdirAll(filepath.Dir(cfg.Storage.DBPath), 0o755); err != nil {
-		log.Fatalf("mkdir db dir: %v", err)
+		exitFatal("mkdir db dir", err, "dir", filepath.Dir(cfg.Storage.DBPath))
 	}
 	if err := os.MkdirAll(cfg.Storage.LocalPreviewDir, 0o755); err != nil {
-		log.Fatalf("mkdir preview dir: %v", err)
+		exitFatal("mkdir preview dir", err, "dir", cfg.Storage.LocalPreviewDir)
 	}
 	assetLease, err := acquireAssetDirectoryLease(cfg.Storage.LocalPreviewDir, cfg.Storage.DBPath)
 	if err != nil {
-		log.Fatalf("acquire generated asset directory lease: %v", err)
+		exitFatal("acquire generated asset directory lease", err)
 	}
 	defer func() {
 		if closeErr := assetLease.Close(); closeErr != nil {
-			log.Printf("release generated asset directory lease: %v", closeErr)
+			applog.Warn(context.Background(), "release generated asset directory lease failed", closeErr, "component", "server")
 		}
 	}()
 	removeRetiredFrameSignatureCache(cfg.Storage.LocalPreviewDir)
 
 	cat, err := openStartupCatalog(context.Background(), cfg.Storage, appliedRestore)
 	if err != nil {
-		log.Fatalf("open startup catalog: %v", err)
+		exitFatal("open startup catalog", err)
 	}
 	defer cat.Close()
 	configManager, err := config.NewManager(cfgPath)
 	if err != nil {
-		log.Fatalf("configure config manager: %v", err)
+		exitFatal("configure config manager", err)
 	}
 	if err := migrateApplicationConfig(context.Background(), cat, configManager); err != nil {
-		log.Fatalf("migrate config.yaml: %v", err)
+		exitFatal("migrate config.yaml", err)
 	}
 	fileConfig, cfg, err = loadApplicationConfig(cfgPath, workingDir)
 	if err != nil {
-		log.Fatalf("reload migrated config: %v", err)
+		exitFatal("reload migrated config", err)
 	}
 
 	app := &App{
 		cfg:            cfg,
 		cat:            cat,
 		configManager:  configManager,
+		logRuntime:     logRuntime,
 		registry:       proxy.NewRegistry(),
 		scriptCrawlers: make(map[string]*scriptcrawler.Crawler),
 	}
@@ -159,38 +163,37 @@ func main() {
 	if err := configManager.SetApply(func(settings config.LiveSettings) error {
 		return app.applyLiveConfig(ctx, settings)
 	}); err != nil {
-		log.Fatalf("apply initial live configuration: %v", err)
+		exitFatal("apply initial live configuration", err)
 	}
 
 	legacyCrawlerStats, err := app.cleanupLegacyDeletedCrawlers(ctx)
 	if err != nil {
-		log.Printf(
-			"[scriptcrawler-maintenance] cleanup incomplete removed_crawlers=%d removed_videos=%d: %v",
-			legacyCrawlerStats.RemovedCrawlers,
-			legacyCrawlerStats.RemovedVideos,
-			err,
+		applog.Warn(ctx, "legacy deleted crawler cleanup incomplete", err,
+			"component", "scriptcrawler-maintenance",
+			"removedCrawlers", legacyCrawlerStats.RemovedCrawlers,
+			"removedVideos", legacyCrawlerStats.RemovedVideos,
 		)
 	} else if legacyCrawlerStats.RemovedCrawlers > 0 {
-		log.Printf(
-			"[scriptcrawler-maintenance] removed legacy deleted crawlers=%d videos=%d",
-			legacyCrawlerStats.RemovedCrawlers,
-			legacyCrawlerStats.RemovedVideos,
+		applog.Info(ctx, "removed legacy deleted crawlers",
+			"component", "scriptcrawler-maintenance",
+			"removedCrawlers", legacyCrawlerStats.RemovedCrawlers,
+			"removedVideos", legacyCrawlerStats.RemovedVideos,
 		)
 	}
 	app.loadTheme(ctx)
 	if orphans, err := app.cat.ListVideosWithMissingDrive(ctx); err != nil {
-		log.Printf("[catalog-maintenance] inspect orphan drive videos: %v", err)
+		applog.Warn(ctx, "inspect orphan drive videos failed", err, "component", "catalog-maintenance")
 	} else if len(orphans) > 0 {
-		log.Printf(
-			"[catalog-maintenance] preserved %d videos with missing drive metadata; assets are removed only by an explicit drive deletion",
-			len(orphans),
+		applog.Info(ctx, "preserved videos with missing drive metadata; assets are removed only by an explicit drive deletion",
+			"component", "catalog-maintenance",
+			"count", len(orphans),
 		)
 	}
 	if err := app.attachLocalUpload(ctx); err != nil {
-		log.Printf("[local-upload] attach failed: %v", err)
+		applog.Error(ctx, "attach local upload failed", err, "component", "local-upload")
 	}
 	if err := app.cleanupTelegramUploadSources(ctx); err != nil {
-		log.Printf("[telegram-upload] startup source cleanup: %v", err)
+		applog.Warn(ctx, "telegram upload startup source cleanup failed", err, "component", "telegram-upload")
 	}
 	go app.runDeletedVideoAssetCleanup(ctx)
 
@@ -213,10 +216,10 @@ func main() {
 		},
 	})
 	if err != nil {
-		log.Fatalf("configure remote upload: %v", err)
+		exitFatal("configure remote upload", err)
 	}
 	if err := remoteUploader.Start(ctx); err != nil {
-		log.Fatalf("start remote upload: %v", err)
+		exitFatal("start remote upload", err)
 	}
 	telegramService.SetWake(remoteUploader.Wake)
 	telegramService.Start(ctx)
@@ -245,7 +248,7 @@ func main() {
 		RestartManaged:    restartIsManaged(),
 	})
 	if err != nil {
-		log.Fatalf("configure backup service: %v", err)
+		exitFatal("configure backup service", err)
 	}
 	backupManager.Start(ctx)
 	defer backupManager.Close()
@@ -254,14 +257,14 @@ func main() {
 		RootDir: filepath.Join(cfg.Storage.DataDir, "backups", ".peer-transfer"),
 	})
 	if err != nil {
-		log.Fatalf("configure backup transfer service: %v", err)
+		exitFatal("configure backup transfer service", err)
 	}
 	backupTransferManager.Start(ctx)
 	defer func() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer shutdownCancel()
 		if err := backupTransferManager.Shutdown(shutdownCtx); err != nil {
-			log.Printf("[backup-transfer] shutdown: %v", err)
+			applog.Warn(shutdownCtx, "backup transfer shutdown failed", err, "component", "backup-transfer")
 		}
 	}()
 
@@ -403,12 +406,7 @@ func main() {
 	}
 
 	r := chi.NewRouter()
-	accessLogger := log.New(
-		os.Stdout,
-		"",
-		log.LstdFlags,
-	)
-	r.Use(requestLogMiddleware(accessLogger, log.Default(), logStore))
+	r.Use(requestLogMiddleware())
 	r.Use(responseCompressionMiddleware)
 	r.Use(middleware.Recoverer)
 	r.Use(corsMiddleware(cfg.Server.AllowedOrigins))
@@ -417,15 +415,15 @@ func main() {
 	builtinFrontend, _ := resolveFrontendDir()
 	frontendManager, err := frontend.New(cfg.Storage.DataDir, builtinFrontend, httpapi.Version)
 	if err != nil {
-		log.Fatalf("prepare frontend storage: %v", err)
+		exitFatal("prepare frontend storage", err)
 	}
 	if err := frontendManager.RetainBuiltin(); err != nil {
-		log.Fatalf("retain bundled frontend: %v", err)
+		exitFatal("retain bundled frontend", err)
 	}
 	adminServer.Frontend = frontendManager
 	adminServer.Register(r, apiServer.RegisterAdminRoutes)
 	if err := mountFrontend(r, frontendManager); err != nil {
-		log.Fatal(err)
+		exitFatal("mount frontend", err)
 	}
 
 	// 凌晨流水线：每天按后台可热更新的 HH:mm + IANA 时区触发一次，依次运行以下阶段：
@@ -466,12 +464,12 @@ func main() {
 	}
 	listener, err := net.Listen("tcp", cfg.Server.Listen)
 	if err != nil {
-		log.Fatalf("listen %s: %v", cfg.Server.Listen, err)
+		exitFatal("listen failed", err, "addr", cfg.Server.Listen)
 	}
 	go func() {
-		log.Printf("91 backend listening on %s", cfg.Server.Listen)
+		applog.Info(ctx, "91 backend listening on "+cfg.Server.Listen, "component", "server", "addr", cfg.Server.Listen)
 		if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("server error: %v", err)
+			exitFatal("server error", err, "addr", cfg.Server.Listen)
 		}
 	}()
 	go app.attachExistingDrives(ctx)
@@ -488,7 +486,7 @@ func main() {
 		restoreRestart = true
 	}
 	signal.Stop(sigs)
-	log.Println("shutting down...")
+	applog.Info(context.Background(), "shutting down", "component", "server")
 	cancel()
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutCancel()
@@ -496,34 +494,59 @@ func main() {
 	remoteShutCtx, remoteShutCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer remoteShutCancel()
 	if err := remoteUploader.Shutdown(remoteShutCtx); err != nil {
-		log.Printf("[remote-upload] shutdown: %v", err)
+		applog.Warn(remoteShutCtx, "remote upload shutdown failed", err, "component", "remote-upload")
 	}
 	if restoreRestart {
 		// Keep the restore maintenance barrier held until process exit. Releasing
 		// it here would let canceled background workers write after the target
 		// snapshot that is about to replace the live database.
-		log.Printf("[restore] pending restore staged; exiting with restart code %d", backup.RestartExitCode)
+		applog.Info(context.Background(), "pending restore staged; exiting with restart code",
+			"component", "restore",
+			"exitCode", backup.RestartExitCode,
+		)
 		os.Exit(backup.RestartExitCode)
 	}
 	backupManager.Close()
 }
 
-func openRuntimeLogs(cfg config.Logging) *applog.Store {
-	if !cfg.IsFileEnabled() {
-		return nil
-	}
-	store, err := applog.Open(applog.Config{
-		Directory: cfg.Directory, MaxLineBytes: applog.DefaultMaxLineBytes,
-		MaxFileSizeBytes:  int64(cfg.MaxFileSizeMB) * 1024 * 1024,
-		MaxTotalSizeBytes: int64(cfg.MaxTotalSizeMB) * 1024 * 1024,
-	})
+func exitFatal(msg string, err error, args ...any) {
+	attrs := append([]any{"component", "server"}, args...)
+	applog.Error(context.Background(), msg, err, attrs...)
+	os.Exit(1)
+}
+
+func openRuntimeLogs(cfg config.Logging) *applog.Runtime {
+	level, err := applog.ParseLevel(cfg.Level)
 	if err != nil {
-		log.Printf("[logging] file logging unavailable: %v", err)
-		return nil
+		level = applog.LevelInfo
 	}
-	log.SetOutput(applog.Output(os.Stderr, store))
-	log.Printf("[logging] durable runtime log enabled dir=%s max_file_mb=%d max_total_mb=%d", store.Directory(), cfg.MaxFileSizeMB, cfg.MaxTotalSizeMB)
-	return store
+	format, err := applog.ParseConsoleFormat(cfg.ConsoleFormat)
+	if err != nil {
+		format = applog.ConsoleFormatText
+	}
+	rt, storeErr := applog.OpenRuntime(applog.RuntimeConfig{
+		Directory:         cfg.Directory,
+		Level:             level,
+		ConsoleFormat:     format,
+		ConsoleWriter:     os.Stderr,
+		FileEnabled:       cfg.IsFileEnabled(),
+		MaxTotalSizeBytes: int64(cfg.MaxTotalSizeMB) * 1024 * 1024,
+		RetentionDays:     cfg.EffectiveRetentionDays(),
+	})
+	rt.InstallDefault()
+	if storeErr != nil {
+		applog.Warn(context.Background(), "durable runtime log store unavailable; falling back to console only", storeErr, "component", "logging", "dir", cfg.Directory)
+	} else if rt.Store() != nil {
+		applog.Info(context.Background(), "runtime log store enabled",
+			"component", "logging",
+			"db", rt.Store().DBPath(),
+			"level", string(level),
+			"consoleFormat", string(format),
+			"maxTotalMB", cfg.MaxTotalSizeMB,
+			"retentionDays", cfg.EffectiveRetentionDays(),
+		)
+	}
+	return rt
 }
 
 func loadApplicationConfig(path, workingDir string) (*config.Config, *config.Config, error) {
@@ -558,7 +581,7 @@ func openApplicationCatalog(storage config.Storage) (*catalog.Catalog, error) {
 		return nil, fmt.Errorf("convert managed file references: %w", err)
 	}
 	if changed > 0 {
-		log.Printf("[storage] converted %d catalog records to portable file references", changed)
+		applog.Info(context.Background(), "converted catalog records to portable file references", "component", "storage", "count", changed)
 	}
 	return cat, nil
 }

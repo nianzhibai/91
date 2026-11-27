@@ -3,10 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/backup"
 	"github.com/nianzhibai/91/backend/internal/catalog"
 	"github.com/nianzhibai/91/backend/internal/config"
@@ -67,9 +67,9 @@ func openStartupCatalog(ctx context.Context, storage config.Storage, applied *ba
 				_ = cat.Close()
 				return nil, fmt.Errorf("finish restore before migrating database filename: %w", err)
 			}
-			log.Printf("[restore] restored catalog opened, but rollback cleanup/report write failed: %v", err)
+			applog.Warn(ctx, "restored catalog opened, but rollback cleanup or report write failed", err, "component", "restore")
 		} else {
-			log.Printf("[restore] backup restored successfully; previous sessions were cleared")
+			applog.Info(ctx, "backup restored successfully; previous sessions were cleared", "component", "restore")
 		}
 	}
 	if restored.DBPath == storage.DBPath {

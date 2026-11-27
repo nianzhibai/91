@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -17,6 +16,7 @@ import (
 	sdk "github.com/SheltonZhu/115driver/pkg/driver"
 	"github.com/aliyun/aliyun-oss-go-sdk/oss"
 
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/scopedproxy"
 )
 
@@ -340,14 +340,15 @@ func uploadP115PartWithNoProgressTimeout(
 		}
 		retryDelay := time.Duration(attempt) * time.Second
 		if errors.Is(err, errP115MultipartPartNoProgress) {
-			log.Printf(
-				"[p115] multipart part %d/%d attempt %d/%d made no progress for %s; canceled its connection and retrying the same multipart session in %s",
-				chunk.number,
-				totalParts,
-				attempt,
-				p115MultipartPartAttempts,
-				noProgressTimeout,
-				retryDelay,
+			applog.Warn(ctx, "multipart part made no progress; canceled connection and retrying", err,
+				"component", "p115",
+				"stage", "upload",
+				"part", chunk.number,
+				"totalParts", totalParts,
+				"attempt", attempt,
+				"maxAttempts", p115MultipartPartAttempts,
+				"noProgressTimeout", noProgressTimeout,
+				"retryDelay", retryDelay,
 			)
 		}
 		if err := sleepContext(ctx, retryDelay); err != nil {

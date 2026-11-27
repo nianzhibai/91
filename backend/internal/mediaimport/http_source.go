@@ -48,7 +48,7 @@ func (m *Manager) download(
 		if ctx.Err() != nil {
 			return downloadMetadata{}, ctx.Err()
 		}
-		applog.Error(ctx, "Remote video connection failed", err, applog.Fields{Stage: "connect"})
+		applog.Error(ctx, "Remote video connection failed", err, "stage", "connect")
 		return downloadMetadata{}, taskError("远程视频连接失败")
 	}
 	defer response.Body.Close()
@@ -101,7 +101,7 @@ func (m *Manager) download(
 				if writeErr == nil {
 					writeErr = io.ErrShortWrite
 				}
-				applog.Error(ctx, "Write download file failed", writeErr, applog.Fields{Stage: "write_file"})
+				applog.Error(ctx, "Write download file failed", writeErr, "stage", "write_file")
 				return downloadMetadata{}, taskError("无法写入下载文件")
 			}
 			downloaded += int64(n)
@@ -124,12 +124,12 @@ func (m *Manager) download(
 			if ctx.Err() != nil {
 				return downloadMetadata{}, ctx.Err()
 			}
-			applog.Error(ctx, "Read remote video failed", readErr, applog.Fields{Stage: "read"})
+			applog.Error(ctx, "Read remote video failed", readErr, "stage", "read")
 			return downloadMetadata{}, taskError("远程视频下载中断")
 		}
 	}
 	if err := dst.Sync(); err != nil {
-		applog.Error(ctx, "Sync download file failed", err, applog.Fields{Stage: "sync"})
+		applog.Error(ctx, "Sync download file failed", err, "stage", "sync")
 		return downloadMetadata{}, taskError("无法同步下载文件")
 	}
 

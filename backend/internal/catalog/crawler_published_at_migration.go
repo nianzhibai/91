@@ -3,8 +3,9 @@ package catalog
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
+
+	"github.com/nianzhibai/91/backend/internal/applog"
 )
 
 const settingCrawlerPublishedAtAligned = "crawler.published_at_aligned_with_created_at_v1"
@@ -60,7 +61,7 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.upd
 		return 0, err
 	}
 	if aligned > 0 {
-		log.Printf("[migrate] aligned published_at with created_at for %d crawler video(s)", aligned)
+		applog.Info(ctx, "aligned published_at with created_at for crawler videos", "component", "catalog", "stage", "migrate", "aligned", aligned)
 	}
 	return aligned, nil
 }

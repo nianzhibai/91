@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -131,10 +130,10 @@ func Run(ctx context.Context, cfg Config) (runErr error) {
 				continue
 			}
 			completed++
-			log.Printf("[telegram-upload] video=%s stored on drive=%s", v.ID, cfg.Target.ID())
+			applog.Info(ctx, "TG 视频已转存到网盘", "component", "telegram-upload", "videoId", v.ID, "driveId", cfg.Target.ID(), "stage", "upload")
 		}
 	}
-	log.Printf("[telegram-upload] finished: completed=%d failed=%d", completed, failed)
+	applog.Info(ctx, "TG 转存批次完成", "component", "telegram-upload", "driveId", cfg.Target.ID(), "stage", "sweep", "completed", completed, "failed", failed)
 	if failed > 0 {
 		return errors.Join(cleanupErr, failure("sweep", fmt.Sprintf("%d 个 TG 视频转存失败，请检查网盘连接和本地文件；下次定时任务会重试", failed), errors.Join(failures...)))
 	}
@@ -229,7 +228,7 @@ func transferOne(ctx context.Context, cfg Config, uploader drives.Uploader, pare
 		if saved, err := cfg.Catalog.GetVideo(ctx, v.ID); err == nil {
 			cfg.OnMigrated(saved)
 		} else {
-			applog.Warn(ctx, "TG 视频已转存，但读取生成任务所需的视频记录失败", err, applog.Fields{Component: "telegram-upload", VideoID: v.ID, Stage: "generation"})
+			applog.Warn(ctx, "TG 视频已转存，但读取生成任务所需的视频记录失败", err, "component", "telegram-upload", "videoId", v.ID, "stage", "generation")
 		}
 	}
 	return cleanupSource(ctx, cfg, cleanup)

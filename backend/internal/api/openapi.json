@@ -6093,59 +6093,28 @@
         "x-role": "admin",
         "parameters": [
           {
-            "name": "before",
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "cursor",
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "download",
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "level",
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
             "name": "limit",
             "in": "query",
             "schema": {
-              "type": "string"
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5000
             }
           },
           {
-            "name": "method",
+            "name": "before",
             "in": "query",
             "schema": {
-              "type": "string"
+              "type": "integer",
+              "minimum": 1
             }
           },
           {
-            "name": "q",
+            "name": "after",
             "in": "query",
             "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "source",
-            "in": "query",
-            "schema": {
-              "type": "string"
+              "type": "integer",
+              "minimum": 1
             }
           },
           {
@@ -6164,6 +6133,96 @@
             "schema": {
               "type": "string",
               "format": "date-time"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "all",
+                "app",
+                "http"
+              ]
+            }
+          },
+          {
+            "name": "level",
+            "in": "query",
+            "description": "Single level or comma-separated levels (debug, info, warn, error).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "component",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          {
+            "name": "method",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Exact HTTP status code or class (2xx, 3xx, 4xx, 5xx).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "minDurationMs",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "requestId",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          {
+            "name": "taskId",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          {
+            "name": "driveId",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          {
+            "name": "videoId",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 200
             }
           }
         ],
@@ -6211,6 +6270,299 @@
                   "required": [
                     "success"
                   ]
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/admin/api/logs/meta": {
+      "get": {
+        "operationId": "get_admin_api_logs_meta",
+        "summary": "Log Metadata",
+        "tags": [
+          "Management"
+        ],
+        "x-role": "admin",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/applogMeta"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/admin/api/logs/export": {
+      "get": {
+        "operationId": "get_admin_api_logs_export",
+        "summary": "Export Logs",
+        "tags": [
+          "Management"
+        ],
+        "x-role": "admin",
+        "parameters": [
+          {
+            "name": "format",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "text",
+                "jsonl"
+              ]
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "level",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "component",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "method",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "minDurationMs",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "requestId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "taskId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "driveId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "videoId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "application/x-ndjson": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/admin/api/logs/stream": {
+      "get": {
+        "operationId": "get_admin_api_logs_stream",
+        "summary": "Stream Logs",
+        "tags": [
+          "Management"
+        ],
+        "x-role": "admin",
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "level",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "component",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "method",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "minDurationMs",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "requestId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "taskId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "driveId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "videoId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Server-Sent Events stream of live log records.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -9299,34 +9651,13 @@
         ],
         "type": "object"
       },
-      "applogEntry": {
+      "applogHTTPRecord": {
         "properties": {
           "bytes": {
             "type": "integer"
           },
-          "component": {
-            "type": "string"
-          },
-          "driveId": {
-            "type": "string"
-          },
-          "elapsed": {
-            "type": "string"
-          },
-          "error": {
-            "type": "string"
-          },
-          "fileId": {
-            "type": "string"
-          },
-          "id": {
-            "type": "integer"
-          },
-          "level": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
+          "durationMs": {
+            "type": "number"
           },
           "method": {
             "type": "string"
@@ -9335,6 +9666,90 @@
             "type": "string"
           },
           "remote": {
+            "type": "string"
+          },
+          "route": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "method",
+          "path",
+          "status",
+          "bytes",
+          "durationMs"
+        ],
+        "type": "object"
+      },
+      "applogMeta": {
+        "properties": {
+          "components": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "level": {
+            "type": "string"
+          },
+          "maxStorageBytes": {
+            "type": "integer"
+          },
+          "retentionDays": {
+            "type": "integer"
+          },
+          "storageBytes": {
+            "type": "integer"
+          },
+          "totalCount": {
+            "type": "integer"
+          },
+          "writeHealth": {
+            "$ref": "#/components/schemas/applogWriteHealth"
+          }
+        },
+        "required": [
+          "storageBytes",
+          "maxStorageBytes",
+          "totalCount",
+          "level",
+          "retentionDays",
+          "components",
+          "writeHealth"
+        ],
+        "type": "object"
+      },
+      "applogRecord": {
+        "properties": {
+          "attrs": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "component": {
+            "type": "string"
+          },
+          "driveId": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "fileId": {
+            "type": "string"
+          },
+          "http": {
+            "$ref": "#/components/schemas/applogHTTPRecord"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "level": {
+            "type": "string"
+          },
+          "message": {
             "type": "string"
           },
           "requestId": {
@@ -9348,9 +9763,6 @@
           },
           "stage": {
             "type": "string"
-          },
-          "status": {
-            "type": "integer"
           },
           "taskId": {
             "type": "string"
@@ -9376,47 +9788,31 @@
         "properties": {
           "entries": {
             "items": {
-              "$ref": "#/components/schemas/applogEntry"
+              "$ref": "#/components/schemas/applogRecord"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "hasMore": {
             "type": "boolean"
           },
-          "matched": {
+          "nextAfter": {
             "type": "integer"
           },
-          "maxStorageBytes": {
+          "nextBefore": {
             "type": "integer"
-          },
-          "nextCursor": {
-            "type": "string"
-          },
-          "reset": {
-            "type": "boolean"
-          },
-          "storageBytes": {
-            "type": "integer"
-          },
-          "writeHealth": {
-            "$ref": "#/components/schemas/applogWriteHealth"
           }
         },
         "required": [
           "entries",
-          "matched",
-          "storageBytes",
-          "maxStorageBytes",
-          "hasMore",
-          "writeHealth"
+          "hasMore"
         ],
         "type": "object"
       },
       "applogWriteHealth": {
         "properties": {
+          "droppedWrites": {
+            "type": "integer"
+          },
           "failedWrites": {
             "type": "integer"
           },
@@ -9433,7 +9829,8 @@
           }
         },
         "required": [
-          "failedWrites"
+          "failedWrites",
+          "droppedWrites"
         ],
         "type": "object"
       },
@@ -10270,6 +10667,15 @@
           "generationConcurrency": {
             "type": "integer"
           },
+          "logLevel": {
+            "type": "string"
+          },
+          "logMaxTotalSizeMB": {
+            "type": "integer"
+          },
+          "logRetentionDays": {
+            "type": "integer"
+          },
           "nightlyDisabled": {
             "type": "boolean"
           },
@@ -10296,7 +10702,10 @@
           "generationConcurrency",
           "nightlyDisabled",
           "nightlyStartTime",
-          "nightlyTimezone"
+          "nightlyTimezone",
+          "logLevel",
+          "logMaxTotalSizeMB",
+          "logRetentionDays"
         ],
         "type": "object"
       },

@@ -65,22 +65,22 @@ func (j *Job) Run(ctx context.Context, v *catalog.Video) generation.StepOutcome 
 		if j.pauseForProviderError(ctx, err) {
 			return generation.StepPaused
 		}
-		applog.Error(ctx, "Fingerprint computation failed", err, applog.Fields{Stage: "compute"})
+		applog.Error(ctx, "Fingerprint computation failed", err, "stage", "compute")
 		_, _ = j.Catalog.UpdateVideoFingerprintForSource(ctx, v, "", "failed", err.Error())
 		return generation.StepSettled
 	}
 	replaced, err := j.Catalog.UpdateVideoFingerprintForSource(ctx, v, sum, "ready", "")
 	if err != nil {
-		applog.Error(ctx, "Save fingerprint failed", err, applog.Fields{Stage: "save"})
+		applog.Error(ctx, "Save fingerprint failed", err, "stage", "save")
 		return generation.StepUnsettled
 	}
 	if replaced {
 		// The catalog cleared the assets made from the old bytes; the runner
 		// regenerates them from the row's state.
-		applog.Info(ctx, "Source replaced in place; regenerating its assets", applog.Fields{})
+		applog.Info(ctx, "Source replaced in place; regenerating its assets")
 		return generation.StepSettled
 	}
-	applog.Info(ctx, "Fingerprint ready", applog.Fields{})
+	applog.Info(ctx, "Fingerprint ready")
 	return generation.StepSettled
 }
 
@@ -99,7 +99,7 @@ func (j *Job) pauseForProviderError(ctx context.Context, err error) bool {
 	if j.OnCooldown != nil {
 		j.OnCooldown()
 	}
-	applog.Warn(ctx, "Fingerprint paused; drive cooling down until "+until.Format(time.RFC3339), err, applog.Fields{Stage: "compute"})
+	applog.Warn(ctx, "Fingerprint paused; drive cooling down until "+until.Format(time.RFC3339), err, "stage", "compute")
 	return true
 }
 

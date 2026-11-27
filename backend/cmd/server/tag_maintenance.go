@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
-	"log"
 	"strings"
 	"time"
 
 	"github.com/nianzhibai/91/backend/internal/api"
+	"github.com/nianzhibai/91/backend/internal/applog"
 	"github.com/nianzhibai/91/backend/internal/drives/scriptcrawler"
 )
 
@@ -79,7 +79,7 @@ func (a *App) runTagRetag(ctx context.Context) {
 		return
 	}
 	if err := a.ensureAllScriptCrawlerNameTags(ctx); err != nil {
-		log.Printf("[tag-retag] ensure crawler name tags: %v", err)
+		applog.Warn(ctx, "ensure crawler name tags failed", err, "component", "tag-retag")
 	}
 	a.tagJobMu.Lock()
 	a.tagJobState.Processed = total

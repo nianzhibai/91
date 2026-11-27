@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/url"
 	"os"
 	"strconv"
@@ -18,6 +17,7 @@ import (
 
 	cipher "github.com/SheltonZhu/115driver/pkg/crypto/ec115"
 	sdk "github.com/SheltonZhu/115driver/pkg/driver"
+	"github.com/nianzhibai/91/backend/internal/applog"
 )
 
 const (
@@ -164,8 +164,8 @@ func (d *Driver) UploadAndReportSha1(ctx context.Context, parentID, name string,
 		if attempt >= p115UploadMaxAttempts || !isRetryableP115UploadError(err) {
 			return UploadResult{}, err
 		}
-		log.Printf("[p115] upload retry drive=%s name=%q next_attempt=%d/%d err=%v",
-			d.id, name, attempt+1, p115UploadMaxAttempts, err)
+		applog.Warn(ctx, "upload retry", err,
+			"component", "p115", "driveId", d.id, "stage", "upload", "name", name, "nextAttempt", attempt+1, "maxAttempts", p115UploadMaxAttempts)
 		if err := sleepContext(ctx, time.Duration(attempt)*time.Second); err != nil {
 			return UploadResult{}, err
 		}
@@ -312,7 +312,8 @@ func (d *Driver) p115UploadAppVersionFor(ctx context.Context) (string, error) {
 		if err == nil {
 			err = errors.New("empty version response")
 		}
-		log.Printf("[p115] upload app version lookup failed drive=%s; using fallback=%s err=%v", d.id, version, err)
+		applog.Warn(ctx, "upload app version lookup failed; using fallback", err,
+			"component", "p115", "driveId", d.id, "stage", "upload", "fallback", version)
 	}
 	d.uploadAppVersion = version
 	d.uploadAppVersionResolved = true
